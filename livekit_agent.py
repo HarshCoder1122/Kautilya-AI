@@ -691,8 +691,19 @@ TRANSCRIPT:
     asyncio.create_task(perform_post_call_analysis())
 
 
+async def supervised_entrypoint(ctx: JobContext):
+    """Wrapper to ensure any crash in entrypoint doesn't kill the worker process."""
+    try:
+        await entrypoint(ctx)
+    except Exception as e:
+        print(f"[CRITICAL Error] Entrypoint exception: {e}")
+        try:
+            await ctx.room.disconnect()
+        except:
+            pass
+
 if __name__ == "__main__":
     cli.run_app(WorkerOptions(
-        entrypoint_fnc=entrypoint,
+        entrypoint_fnc=supervised_entrypoint,
         initialize_process_timeout=120.0,
     ))
