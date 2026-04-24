@@ -389,11 +389,12 @@ async def entrypoint(ctx: JobContext):
             base_url="https://api.groq.com/openai/v1",
             api_key=chosen_key,
             model="llama-3.3-70b-versatile",
-            temperature=0.7
+            temperature=0.7,
+            max_tokens=512
         )
     elif sarvam_key:
         print(f"[LLM Config] Groq unavailable. Using Sarvam LLM (sarvam-105b) - Fallback")
-        llm_plugin = sarvam.LLM(model="sarvam-105b", api_key=sarvam_key, temperature=0.7)
+        llm_plugin = sarvam.LLM(model="sarvam-105b", api_key=sarvam_key, temperature=0.7, max_tokens=512)
     else:
         print(f"[LLM Config] WARNING: No reliable LLM key found. Defaulting to OpenAI.")
         llm_plugin = openai.LLM()
