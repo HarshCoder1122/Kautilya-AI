@@ -382,12 +382,11 @@ async def entrypoint(ctx: JobContext):
     sarvam_key = os.environ.get("SARVAM_API_KEY")
 
     if groq_keys:
-        import random
-        # Shuffle to ensure we try different keys on process restarts
-        random.shuffle(groq_keys)
-        chosen_key = groq_keys[0]
+        # Time-based round-robin selection to ensure even distribution across workers
+        key_index = int(time.time()) % len(groq_keys)
+        chosen_key = groq_keys[key_index]
         masked_key = f"{chosen_key[:6]}...{chosen_key[-4:]}" if len(chosen_key) > 10 else "***"
-        print(f"[LLM Config] Detected {len(groq_keys)} Groq keys. Using: {masked_key}")
+        print(f"[LLM Config] Multi-key rotation (Index {key_index}/{len(groq_keys)}). Using: {masked_key}")
         
         llm_plugin = openai.LLM(
             base_url="https://api.groq.com/openai/v1",
@@ -395,6 +394,7 @@ async def entrypoint(ctx: JobContext):
             model="llama-3.3-70b-versatile",
             temperature=0.7
         )
+
 
     elif sarvam_key:
         print(f"[LLM Config] Groq unavailable. Using Sarvam LLM (sarvam-105b) - Fallback")
