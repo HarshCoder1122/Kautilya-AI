@@ -222,8 +222,8 @@ async def entrypoint(ctx: JobContext):
     tts_provider = "sarvam"
     agent_model = "kautilya-daily"
     interruption_mode = "allow"
-    silence_timeout_sec = 45
-    nudge_timeout_sec = 15
+    silence_timeout_sec = 90
+    nudge_timeout_sec = 45
     max_call_duration = 300
     call_objective = "Assist the caller and resolve their query."
     webhook_url = ""
@@ -251,9 +251,9 @@ async def entrypoint(ctx: JobContext):
         agent_model = config.get("model") or config.get("agent_model") or agent_model
         interruption_mode = config.get("interruption_mode", interruption_mode)
         
-        # Hardened silence timeout: Minimum floor of 30 seconds to prevent immediate disconnects
+        # Hardened silence timeout: Minimum floor of 60 seconds to prevent immediate disconnects
         raw_timeout = int(float(config.get("silence_timeout", silence_timeout_sec)))
-        silence_timeout_sec = max(30, raw_timeout)
+        silence_timeout_sec = max(60, raw_timeout)
         
         max_call_duration = int(config.get("max_call_duration", max_call_duration))
         call_objective = config.get("call_objective") or config.get("objective") or call_objective
@@ -401,6 +401,7 @@ async def entrypoint(ctx: JobContext):
     user_is_speaking = False
     agent_is_thinking = False
     agent_is_speaking = False
+    user_speech_end_time = 0.0  # Grace period after user finishes speaking
     total_tts_chars = 0
 
     async def terminate_session():
@@ -452,8 +453,9 @@ async def entrypoint(ctx: JobContext):
 
     @session.on("user_speech_committed")
     def on_user_speech(msg: ChatMessage):
-        nonlocal last_user_interaction, nudge_sent, user_is_speaking
+        nonlocal last_user_interaction, nudge_sent, user_is_speaking, user_speech_end_time
         user_is_speaking = False
+        user_speech_end_time = time.time()  # Mark when speech ended for grace period
         content = msg.content if isinstance(msg.content, str) else str(msg.content)
         if content:
             transcript_log.append(f"User: {content}")
@@ -508,14 +510,22 @@ async def entrypoint(ctx: JobContext):
     # --- Silence Monitor (separate task, safe) ---
     async def silence_monitor():
         nonlocal nudge_sent, session_active, last_user_interaction
+        GRACE_PERIOD = 5.0  # seconds after user finishes speaking before silence timer is considered
         while session_active:
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)  # Check every 2s instead of 1s to reduce false positives
             if not session_active:
                 break
 
-            # 
+            # Keep the timer alive whenever any party is active
             if user_is_speaking or agent_is_thinking or agent_is_speaking:
                 last_user_interaction = time.time()
+                continue  # Skip all silence checks while actively conversing
+
+            # Grace period: don't count silence immediately after user finishes speaking
+            # This accounts for STT processing delay and LLM thinking time
+            if user_speech_end_time > 0 and (time.time() - user_speech_end_time) < GRACE_PERIOD:
+                last_user_interaction = time.time()
+                continue
 
             silence_duration = time.time() - last_user_interaction
 
@@ -538,6 +548,9 @@ async def entrypoint(ctx: JobContext):
                 try:
                     await session.say("Are you still there? I'm here to help.", allow_interruptions=True)
                     nudge_sent = True
+                    # CRITICAL: Reset timer after nudge so user gets full silence_timeout
+                    # to respond before being disconnected
+                    last_user_interaction = time.time()
                 except RuntimeError:
                     break
 
@@ -568,7 +581,10 @@ async def entrypoint(ctx: JobContext):
 
     # --- Post-Call Analysis ---
     async def perform_post_call_analysis():
-        if not transcript_log or duration < 5:
+        if not transcript_log or duration < 2:
+            return
+        if not agent_id:
+            print(f"[Intelligence] Skipping post-call analysis: No agent_id resolved.")
             return
 
         print(f"[Intelligence] Starting post-call analysis for agent {agent_id}...")
@@ -606,7 +622,8 @@ TRANSCRIPT:
             }
 
             async with aiohttp.ClientSession() as http_sess:
-                await http_sess.post(f"{flask_url}/api/agents/{agent_id}/calls", json=payload, timeout=5)
+                post_resp = await http_sess.post(f"{flask_url}/api/agents/{agent_id}/calls", json=payload, timeout=10)
+                print(f"[Intelligence] Post-call data sent to /api/agents/{agent_id}/calls -> Status: {post_resp.status}")
                 if webhook_url:
                     await http_sess.post(webhook_url, json=payload, timeout=5)
                     print(f"[Intelligence] ✅ Dispatched to webhook: {webhook_url}")
