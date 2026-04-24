@@ -433,18 +433,21 @@ async def entrypoint(ctx: JobContext):
     agent.set_config(system_prompt, call_objective, agent_kb)
     agent.room = ctx.room
 
-    # --- TTS Cleaning Hook ---
-    def before_tts_cb(session: AgentSession, text: str) -> str:
-        return clean_text_for_tts(text)
-
     # --- Build Session ---
     session = AgentSession(
         vad=vad,
         stt=stt,
         llm=llm_plugin,
         tts=tts,
-        before_tts_cb=before_tts_cb
     )
+
+    # --- TTS Cleaning Wrapper ---
+    # Since before_tts_cb might not be supported in all versions, we wrap the synthesize method
+    original_synthesize = tts.synthesize
+    def clean_synthesize(text: str, *args, **kwargs):
+        return original_synthesize(clean_text_for_tts(text), *args, **kwargs)
+    tts.synthesize = clean_synthesize
+
     agent._session = session  # Back-reference so tools can call session.say()
 
     # --- Transcript & Interaction Tracking ---

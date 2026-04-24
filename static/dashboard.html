@@ -4471,7 +4471,7 @@ document.addEventListener('DOMContentLoaded', function() {
             nameDiv.innerText = "Loading...";
             urlDiv.innerText = "";
             contentDiv.innerText = "Fetching extracted content from server...";
-            modal.style.display = 'flex';
+            modal.classList.add('show');
             
             const token = await getToken();
             try {
@@ -4491,8 +4491,9 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         function closeKbContentModal() {
-            document.getElementById('kbContentModal').style.display = 'none';
+            document.getElementById('kbContentModal').classList.remove('show');
         }
+
 
         async function triggerOverlayCall() {
 
