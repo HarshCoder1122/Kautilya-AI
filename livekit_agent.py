@@ -574,30 +574,18 @@ async def entrypoint(ctx: JobContext):
 
             silence_duration = time.time() - last_user_interaction
 
-            if silence_duration > silence_timeout_sec:
-                print(f"[Timeout] No speech for {silence_duration:.0f}s. Ending call.")
-                try:
-                    await session.say(
-                        "I haven't heard from you in a while. I'll end the call now. Goodbye!",
-                        allow_interruptions=False,
-                    )
-                    await asyncio.sleep(4)
-                except RuntimeError:
-                    pass  # Session already gone
-                
+            if silence_duration > 300: # 5 min fallback
+                print(f"[Timeout] 5 min silence. Ending.")
                 await terminate_session()
                 break
 
+
             elif silence_duration > nudge_timeout_sec and not nudge_sent:
-                print(f"[Nudge] Silence {silence_duration:.0f}s. Sending nudge.")
-                try:
-                    await session.say("Are you still there? I'm here to help.", allow_interruptions=True)
-                    nudge_sent = True
-                    # CRITICAL: Reset timer after nudge so user gets full silence_timeout
-                    # to respond before being disconnected
-                    last_user_interaction = time.time()
-                except RuntimeError:
-                    break
+                print(f"[Nudge] Silence {silence_duration:.0f}s. Tracking only.")
+                nudge_sent = True
+                last_user_interaction = time.time()
+                session_vars['last_user_interaction'] = last_user_interaction
+
 
     silence_task = asyncio.create_task(silence_monitor())
 
