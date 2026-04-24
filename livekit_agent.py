@@ -144,7 +144,15 @@ class KautilyaAgent(Agent):
         self._agent_kb = agent_kb
         self._call_objective = call_objective
         # In v1.x, the 'instructions' property is read-only. We set the internal attribute.
-        self._instructions = f"CALL OBJECTIVE: {call_objective}\n\n{system_prompt}"
+        self._instructions = (
+            f"CALL OBJECTIVE: {call_objective}\n\n{system_prompt}\n\n"
+            "CRITICAL TOOL-CALLING RULES:\n"
+            "1. NEVER call end_call unless the user literally says 'bye', 'goodbye', 'hang up', or 'end the call'.\n"
+            "2. NEVER call end_call due to silence, pauses, or lack of response — the system handles silence automatically.\n"
+            "3. NEVER call human_handoff unless the user explicitly asks for a human agent.\n"
+            "4. If you are unsure, just keep talking naturally. DO NOT use any tool.\n"
+            "5. Keep responses SHORT and conversational (1-2 sentences max for voice).\n"
+        )
 
     # ---------- Tools ----------
 
@@ -166,7 +174,7 @@ class KautilyaAgent(Agent):
 
     @function_tool
     async def end_call(self, context: RunContext, reason: str = "User requested to end the call") -> str:
-        """ONLY call this if the user says goodbye or explicitly asks to hang up."""
+        """End the phone call. ONLY use this when the user explicitly says 'bye', 'goodbye', 'hang up', or 'end the call'. NEVER call this for silence or pauses."""
         print(f"[Tool] Ending call: {reason}")
         if self._session:
             try:
@@ -184,8 +192,7 @@ class KautilyaAgent(Agent):
 
     @function_tool
     async def human_handoff(self, context: RunContext, reason: str = "Complex query") -> str:
-        """ONLY call this if the user EXPLICITLY asks to speak to a human or person. 
-        Never use this for missing knowledge or internal errors."""
+        """Transfer to a human agent. ONLY use this when the user explicitly says 'talk to a human', 'speak to a person', or 'transfer me'. NEVER use for any other reason."""
         print(f"[Tool] Human handoff: {reason}")
         if self._session:
             try:
@@ -352,18 +359,43 @@ async def entrypoint(ctx: JobContext):
     else:
         stt = sarvam.STT(language=agent_language)
 
-    # LLM (Primary: OpenRouter)
-    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
-    if openrouter_key:
-        print(f"[LLM Config] Using OpenRouter (openai/gpt-oss-120b:free)")
+    # LLM (Primary: Sarvam, Fallback: Groq)
+    sarvam_key = os.environ.get("SARVAM_API_KEY")
+    groq_keys_raw = [
+        os.environ.get("GROQ_API_KEY", ""),
+        os.environ.get("GROQ_API_KEY_BACKUP", ""),
+        os.environ.get("GROQ_API_KEY_3", ""),
+        os.environ.get("GROQ_API_KEY_4", ""),
+        os.environ.get("GROQ_API_KEY_5", ""),
+    ]
+    groq_keys = [k for k in groq_keys_raw if k]
+
+    if sarvam_key:
+        print(f"[LLM Config] Using Sarvam LLM (sarvam-m)")
+        llm_plugin = sarvam.LLM(model="sarvam-m", api_key=sarvam_key)
+    elif groq_keys:
+        # Round-robin Groq key selection per session
+        import random
+        chosen_key = random.choice(groq_keys)
+        key_idx = groq_keys.index(chosen_key) + 1
+        print(f"[LLM Config] Sarvam unavailable. Using Groq Key#{key_idx} (llama-3.3-70b-versatile)")
         llm_plugin = openai.LLM(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=openrouter_key,
-            model="openai/gpt-oss-120b:free"
+            base_url="https://api.groq.com/openai/v1",
+            api_key=chosen_key,
+            model="llama-3.3-70b-versatile"
         )
     else:
-        print(f"[LLM Config] WARNING: No LLM key found. Defaulting to OpenAI (if key exists).")
-        llm_plugin = openai.LLM()
+        openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+        if openrouter_key:
+            print(f"[LLM Config] Fallback to OpenRouter")
+            llm_plugin = openai.LLM(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=openrouter_key,
+                model="meta-llama/llama-3.3-70b-instruct:free"
+            )
+        else:
+            print(f"[LLM Config] WARNING: No LLM key found. Defaulting to OpenAI.")
+            llm_plugin = openai.LLM()
 
     # TTS
     if tts_provider == "openai":
