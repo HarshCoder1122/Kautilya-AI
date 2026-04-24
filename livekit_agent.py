@@ -359,8 +359,7 @@ async def entrypoint(ctx: JobContext):
     else:
         stt = sarvam.STT(language=agent_language)
 
-    # LLM (Primary: Sarvam-105b for Tool Calling, Fallback: Groq)
-    sarvam_key = os.environ.get("SARVAM_API_KEY")
+    # LLM (Primary: Groq, Fallback: Sarvam-105b)
     groq_keys_raw = [
         os.environ.get("GROQ_API_KEY", ""),
         os.environ.get("GROQ_API_KEY_BACKUP", ""),
@@ -369,27 +368,21 @@ async def entrypoint(ctx: JobContext):
         os.environ.get("GROQ_API_KEY_5", ""),
     ]
     groq_keys = [k for k in groq_keys_raw if k]
-    nvidia_key = os.environ.get("NVIDIA_API_KEY")
+    sarvam_key = os.environ.get("SARVAM_API_KEY")
 
-    if sarvam_key:
-        print(f"[LLM Config] Using Sarvam LLM (sarvam-105b) with streaming & tools")
-        llm_plugin = sarvam.LLM(model="sarvam-105b", api_key=sarvam_key, temperature=0.7)
-    elif groq_keys:
+    if groq_keys:
         import random
         chosen_key = random.choice(groq_keys)
-        print(f"[LLM Config] Sarvam unavailable. Using Groq (llama-3.3-70b-versatile)")
+        print(f"[LLM Config] Using Groq (llama-3.3-70b-versatile) - Primary")
         llm_plugin = openai.LLM(
             base_url="https://api.groq.com/openai/v1",
             api_key=chosen_key,
-            model="llama-3.3-70b-versatile"
+            model="llama-3.3-70b-versatile",
+            temperature=0.7
         )
-    elif nvidia_key:
-        print(f"[LLM Config] Using NVIDIA NIM (meta/llama-3.3-70b-instruct)")
-        llm_plugin = openai.LLM(
-            base_url="https://integrate.api.nvidia.com/v1",
-            api_key=nvidia_key,
-            model="meta/llama-3.3-70b-instruct"
-        )
+    elif sarvam_key:
+        print(f"[LLM Config] Groq unavailable. Using Sarvam LLM (sarvam-105b) - Fallback")
+        llm_plugin = sarvam.LLM(model="sarvam-105b", api_key=sarvam_key, temperature=0.7)
     else:
         print(f"[LLM Config] WARNING: No reliable LLM key found. Defaulting to OpenAI.")
         llm_plugin = openai.LLM()
