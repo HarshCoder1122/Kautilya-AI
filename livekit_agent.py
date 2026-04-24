@@ -116,11 +116,16 @@ def load_system_prompt():
         "Speak only in pure natural text. No tags."
     )
 
-def clean_text(text: str) -> str:
+    return cleaned.strip()
+
+def clean_prompt(text: str) -> str:
     if not text:
         return ""
-    cleaned = re.sub(r'<[^>]+>', '', text)
-    cleaned = cleaned.replace('**', '').replace('###', '').replace('`', '')
+    # Remove any unpopulated placeholders like {NAME}, {name}, {LOCATION}, etc.
+    # We replace them with 'there' or empty strings for natural flow.
+    cleaned = re.sub(r'\{[A-Z_a-z]+\}', '', text)
+    # Also handle common literal placeholders
+    cleaned = cleaned.replace('NAME', 'there').replace('{NAME}', 'there')
     return cleaned.strip()
 
 
@@ -144,14 +149,15 @@ class KautilyaAgent(Agent):
         self._agent_kb = agent_kb
         self._call_objective = call_objective
         # In v1.x, the 'instructions' property is read-only. We set the internal attribute.
+        cleaned_prompt = clean_prompt(system_prompt)
         self._instructions = (
-            f"CALL OBJECTIVE: {call_objective}\n\n{system_prompt}\n\n"
-            "CRITICAL TOOL-CALLING RULES:\n"
-            "1. NEVER call end_call unless the user literally says 'bye', 'goodbye', 'hang up', or 'end the call'.\n"
-            "2. NEVER call end_call due to silence, pauses, or lack of response — the system handles silence automatically.\n"
-            "3. NEVER call human_handoff unless the user explicitly asks for a human agent.\n"
-            "4. If you are unsure, just keep talking naturally. DO NOT use any tool.\n"
-            "5. Keep responses SHORT and conversational (1-2 sentences max for voice).\n"
+            f"CALL OBJECTIVE: {call_objective}\n\n{cleaned_prompt}\n\n"
+            "CRITICAL CONVERSATION RULES:\n"
+            "1. LANGUAGE MATCHING: ALWAYS respond in the same language as the user. If they speak English, you speak English. If they speak Hindi, you speak Hindi. If they mix (Hinglish), you speak Hinglish.\n"
+            "2. MISSING NAME: If you don't know the person's name (or if it was a placeholder), DO NOT use 'NAME'. Instead, ask 'May I know who am I speaking with?' or address them naturally as 'there'.\n"
+            "3. NEVER call end_call unless the user literally says 'bye', 'goodbye', 'hang up', or 'end the call'.\n"
+            "4. NEVER call end_call due to silence or pauses — the system handles this.\n"
+            "5. Keep responses SHORT (1-2 sentences max).\n"
         )
 
     # ---------- Tools ----------
@@ -160,6 +166,11 @@ class KautilyaAgent(Agent):
     async def search_knowledge_base(self, context: RunContext, query: str) -> str:
         """Search the agent's knowledge base for relevant information."""
         print(f"[RAG] Searching KB for: {query}")
+        
+        # Keep the session alive during potentially long RAG calls
+        if hasattr(self, '_session_vars'):
+            self._session_vars['agent_is_thinking'] = True
+            self._session_vars['last_user_interaction'] = time.time()
         results = []
         q_low = query.lower()
         for doc in self._agent_kb:
@@ -229,9 +240,9 @@ async def entrypoint(ctx: JobContext):
     tts_provider = "sarvam"
     agent_model = "kautilya-daily"
     interruption_mode = "allow"
-    silence_timeout_sec = 90
-    nudge_timeout_sec = 45
-    max_call_duration = 300
+    silence_timeout_sec = 120
+    nudge_timeout_sec = 60
+    max_call_duration = 600
     call_objective = "Assist the caller and resolve their query."
     webhook_url = ""
     config_source = "Defaults"
@@ -258,9 +269,9 @@ async def entrypoint(ctx: JobContext):
         agent_model = config.get("model") or config.get("agent_model") or agent_model
         interruption_mode = config.get("interruption_mode", interruption_mode)
         
-        # Hardened silence timeout: Minimum floor of 60 seconds to prevent immediate disconnects
+        # Hardened silence timeout: Minimum floor of 120 seconds to prevent immediate disconnects
         raw_timeout = int(float(config.get("silence_timeout", silence_timeout_sec)))
-        silence_timeout_sec = max(60, raw_timeout)
+        silence_timeout_sec = max(120, raw_timeout)
         
         max_call_duration = int(config.get("max_call_duration", max_call_duration))
         call_objective = config.get("call_objective") or config.get("objective") or call_objective
@@ -424,6 +435,13 @@ async def entrypoint(ctx: JobContext):
     agent_is_thinking = False
     agent_is_speaking = False
     user_speech_end_time = 0.0  # Grace period after user finishes speaking
+    
+    # Shared variables for tools to update state
+    session_vars = {
+        'agent_is_thinking': agent_is_thinking,
+        'last_user_interaction': last_user_interaction
+    }
+    agent._session_vars = session_vars
     total_tts_chars = 0
 
     async def terminate_session():
@@ -532,21 +550,26 @@ async def entrypoint(ctx: JobContext):
     # --- Silence Monitor (separate task, safe) ---
     async def silence_monitor():
         nonlocal nudge_sent, session_active, last_user_interaction
-        GRACE_PERIOD = 5.0  # seconds after user finishes speaking before silence timer is considered
+        GRACE_PERIOD = 8.0  # seconds after user finishes speaking before silence timer is considered
         while session_active:
-            await asyncio.sleep(2)  # Check every 2s instead of 1s to reduce false positives
+            await asyncio.sleep(2)  # Check every 2s
             if not session_active:
                 break
+
+            # Sync with shared session vars (updated by tools)
+            agent_is_thinking = session_vars['agent_is_thinking']
+            last_user_interaction = session_vars['last_user_interaction']
 
             # Keep the timer alive whenever any party is active
             if user_is_speaking or agent_is_thinking or agent_is_speaking:
                 last_user_interaction = time.time()
-                continue  # Skip all silence checks while actively conversing
+                session_vars['last_user_interaction'] = last_user_interaction
+                continue 
 
-            # Grace period: don't count silence immediately after user finishes speaking
-            # This accounts for STT processing delay and LLM thinking time
+            # Grace period
             if user_speech_end_time > 0 and (time.time() - user_speech_end_time) < GRACE_PERIOD:
                 last_user_interaction = time.time()
+                session_vars['last_user_interaction'] = last_user_interaction
                 continue
 
             silence_duration = time.time() - last_user_interaction
