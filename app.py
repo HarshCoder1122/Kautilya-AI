@@ -544,14 +544,15 @@ def generate_semantic_chunks(text, max_chunks=10):
     if not text or len(text) < 500:
         return [text] if text else []
     
-    prompt = f"Split the following text into up to {max_chunks} logical, semantic sections. Each section should be a complete thought or topic. Return each section separated by '|||'.\n\nTEXT:\n{text[:15000]}"
+    prompt = f"Split the following text into up to {max_chunks} logical, semantic sections. Each section should be a complete thought or topic. Return each section separated by '|||'.\n\nTEXT:\n{text[:10000]}"
     try:
-        resp = call_groq([{"role": "user", "content": prompt}], temperature=0.3, model="llama-3.1-8b-instant")
+        resp = call_groq([{"role": "user", "content": prompt}], temperature=0.3, model="llama-3.3-70b-versatile")
         if resp:
             chunks = [c.strip() for c in resp.split('|||') if c.strip()]
             return chunks
     except Exception as e:
         print(f"[AI Chunking] Error: {e}")
+
     
     # Fallback to simple split if AI fails
     size = 2000
