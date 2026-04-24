@@ -6631,4 +6631,5 @@ if __name__ == '__main__':
     # Local development use only. Gunicorn uses the 'app' object directly.
     port = int(os.environ.get("PORT", 5000))
     print(f"[KAUTILYA AI] Launching Local Dev Server on port {port}")
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+
