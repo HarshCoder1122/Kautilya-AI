@@ -1181,7 +1181,8 @@ def _mark_groq_key_exhausted(key_index):
     print(f"[Groq] Key #{key_index + 1} rate-limited. Cooldown: {GROQ_COOLDOWN_SECONDS}s")
 
 
-def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False, model="llama-3.3-70b-versatile"):
+def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False, model="llama-3.3-70b-versatile", tools=None, tool_choice=None):
+
     """Call Groq API with automatic multi-key rotation and 429 handling."""
     if not GROQ_API_KEYS:
         return None
@@ -1251,8 +1252,13 @@ def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False, model="l
             }
             if stream:
                 payload["stream_options"] = {"include_usage": True}
+            if tools:
+                payload["tools"] = tools
+            if tool_choice:
+                payload["tool_choice"] = tool_choice
                 
             resp = requests.post(
+
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={
                     "Authorization": f"Bearer {api_key}",
@@ -1266,8 +1272,12 @@ def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False, model="l
             if resp.status_code == 200:
                 print(f"[Groq] Success with {key_label} (model: {model})")
                 if not stream:
-                    # Non-streaming: Return content string directly
-                    return resp.json()["choices"][0]["message"].get("content", "")
+                    # Non-streaming: Return content string or tool calls dict
+                    msg = resp.json()["choices"][0]["message"]
+                    if tools:
+                        return {"content": msg.get("content", ""), "tool_calls": msg.get("tool_calls")}
+                    return msg.get("content", "")
+
 
                 def generate():
                     for line in resp.iter_lines():
@@ -1290,6 +1300,11 @@ def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False, model="l
                                     if content:
                                         # Pass through all content including <think> tags
                                         yield {"chunk": content}
+                                        
+                                    tool_calls = data["choices"][0]["delta"].get("tool_calls")
+                                    if tool_calls:
+                                        yield {"tool_calls": tool_calls}
+
                                 except GeneratorExit:
                                     return
                                 except Exception:
@@ -1806,7 +1821,8 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None):
             return
 
 
-def get_llm_response(messages, uid=None, model="daily", user_ip=None):
+def get_llm_response(messages, uid=None, model="daily", user_ip=None, tools=None, tool_choice=None):
+
     """
     Entry point for chat. Now uses agent_loop.
     """
@@ -1825,7 +1841,8 @@ def get_llm_response(messages, uid=None, model="daily", user_ip=None):
         def fast_generator():
             try:
                 # Direct streaming from Groq
-                response_gen = call_groq(messages, stream=True, model='llama-3.3-70b-versatile', temperature=0.6)
+                response_gen = call_groq(messages, stream=True, model='llama-3.3-70b-versatile', temperature=0.6, tools=tools, tool_choice=tool_choice)
+
                 if not response_gen:
                     yield json.dumps({"chunk": "I am currently overloaded. Please try again."})
                     return
@@ -6047,27 +6064,44 @@ def api_v1_chat():
                 yield f"data: {json.dumps(init_data)}\n\n"
                 
                 output_chars = 0
-                for chunk in get_llm_response(api_messages, uid=uid, model=model_choice, user_ip=user_ip):
+                for chunk in get_llm_response(api_messages, uid=uid, model=model_choice, user_ip=user_ip, tools=data.get('tools'), tool_choice=data.get('tool_choice')):
                     if isinstance(chunk, str):
                         try:
                             parsed = json.loads(chunk) if chunk.startswith('{') else None
                         except: parsed = None
                         
-                        text_chunk = ""
-                        if parsed and isinstance(parsed, dict) and "chunk" in parsed:
-                            text_chunk = parsed["chunk"]
-                        elif not parsed:
-                            text_chunk = chunk
+                        if parsed and isinstance(parsed, dict):
+                            if "chunk" in parsed:
+                                text_chunk = parsed["chunk"]
+                                if text_chunk:
+                                    output_chars += len(text_chunk)
+                                    chunk_data = {
+                                        "id": response_id,
+                                        "object": "chat.completion.chunk",
+                                        "model": model,
+                                        "choices": [{"index": 0, "delta": {"content": text_chunk}, "finish_reason": None}]
+                                    }
+                                    yield f"data: {json.dumps(chunk_data)}\n\n"
                             
-                        if text_chunk:
-                            output_chars += len(text_chunk)
+                            if "tool_calls" in parsed:
+                                chunk_data = {
+                                    "id": response_id,
+                                    "object": "chat.completion.chunk",
+                                    "model": model,
+                                    "choices": [{"index": 0, "delta": {"tool_calls": parsed["tool_calls"]}, "finish_reason": None}]
+                                }
+                                yield f"data: {json.dumps(chunk_data)}\n\n"
+                        elif not parsed:
+                            # Direct string chunk
+                            output_chars += len(chunk)
                             chunk_data = {
                                 "id": response_id,
                                 "object": "chat.completion.chunk",
                                 "model": model,
-                                "choices": [{"index": 0, "delta": {"content": text_chunk}, "finish_reason": None}]
+                                "choices": [{"index": 0, "delta": {"content": chunk}, "finish_reason": None}]
                             }
                             yield f"data: {json.dumps(chunk_data)}\n\n"
+
                 
                 # Deduct Quota
                 total_t = prompt_tokens + (output_chars // 4)
@@ -6087,21 +6121,42 @@ def api_v1_chat():
         else:
             # Collect full response (non-streaming for API)
             full_text = ""
-            for chunk in get_llm_response(api_messages, uid=uid, model=model_choice, user_ip=user_ip):
+            full_tool_calls = []
+            
+            for chunk in get_llm_response(api_messages, uid=uid, model=model_choice, user_ip=user_ip, tools=data.get('tools'), tool_choice=data.get('tool_choice')):
                 if isinstance(chunk, str):
                     try:
                         parsed = json.loads(chunk) if chunk.startswith('{') else None
-                    except:
-                        parsed = None
+                    except: parsed = None
+                    
                     if parsed and isinstance(parsed, dict):
                         if "chunk" in parsed:
                             full_text += parsed["chunk"]
+                        if "tool_calls" in parsed:
+                            for tc in parsed["tool_calls"]:
+                                idx = tc.get("index", 0)
+                                # Simple append for now, usually tool calls aren't split across chunks in this generator
+                                # unless the underlying call_groq streams them that way.
+                                if idx >= len(full_tool_calls):
+                                    full_tool_calls.append(tc)
+                                else:
+                                    # Merge delta
+                                    if "function" in tc:
+                                        if "arguments" in tc["function"]:
+                                            full_tool_calls[idx]["function"]["arguments"] += tc["function"]["arguments"]
                     else:
                         full_text += chunk
             
-            completion_tokens = len(full_text) // 4
+            completion_tokens = len(full_text) // 4 + (len(str(full_tool_calls)) // 4)
             total_tokens = prompt_tokens + completion_tokens
             check_api_rate_limit(uid, 'llm_tokens', is_pro, amount=total_tokens, model=model)
+            
+            message = {"role": "assistant", "content": full_text}
+            if full_tool_calls:
+                # Remove index from final tool calls as per OpenAI spec
+                for tc in full_tool_calls:
+                    if "index" in tc: del tc["index"]
+                message["tool_calls"] = full_tool_calls
         
             return jsonify({
                 "id": response_id,
@@ -6109,8 +6164,8 @@ def api_v1_chat():
                 "model": model,
                 "choices": [{
                     "index": 0,
-                    "message": {"role": "assistant", "content": full_text},
-                    "finish_reason": "stop"
+                    "message": message,
+                    "finish_reason": "tool_calls" if full_tool_calls else "stop"
                 }],
                 "usage": {
                     "prompt_tokens": prompt_tokens,
@@ -6118,6 +6173,7 @@ def api_v1_chat():
                     "total_tokens": total_tokens
                 }
             })
+
     except Exception as e:
         print(f"[API v1] Chat error: {e}")
         return jsonify({"error": {"message": "Internal server error", "type": "server_error"}}), 500
