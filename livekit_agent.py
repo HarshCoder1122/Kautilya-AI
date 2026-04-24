@@ -383,14 +383,19 @@ async def entrypoint(ctx: JobContext):
 
     if groq_keys:
         import random
-        chosen_key = random.choice(groq_keys)
-        print(f"[LLM Config] Using Groq (llama-3.3-70b-versatile) - Primary")
+        # Shuffle to ensure we try different keys on process restarts
+        random.shuffle(groq_keys)
+        chosen_key = groq_keys[0]
+        masked_key = f"{chosen_key[:6]}...{chosen_key[-4:]}" if len(chosen_key) > 10 else "***"
+        print(f"[LLM Config] Detected {len(groq_keys)} Groq keys. Using: {masked_key}")
+        
         llm_plugin = openai.LLM(
             base_url="https://api.groq.com/openai/v1",
             api_key=chosen_key,
             model="llama-3.3-70b-versatile",
             temperature=0.7
         )
+
     elif sarvam_key:
         print(f"[LLM Config] Groq unavailable. Using Sarvam LLM (sarvam-105b) - Fallback")
         llm_plugin = sarvam.LLM(model="sarvam-105b", api_key=sarvam_key, temperature=0.7)
