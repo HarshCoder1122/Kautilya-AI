@@ -1099,7 +1099,8 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True, model=
                     "reasoning_budget": min(max_tokens, 16384)
                 } if "nemotron" in model.lower() else {})
             },
-            timeout=60,
+            timeout=300,
+
             stream=stream
         )
 
@@ -1265,7 +1266,8 @@ def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False, model="l
                     "Content-Type": "application/json"
                 },
                 json=payload,
-                timeout=30,
+                timeout=120,
+
                 stream=stream
             )
             
