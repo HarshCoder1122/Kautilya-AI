@@ -128,6 +128,17 @@ def clean_prompt(text: str) -> str:
     cleaned = cleaned.replace('NAME', 'there').replace('{NAME}', 'there')
     return cleaned.strip()
 
+def clean_text_for_tts(text: str) -> str:
+    """Removes special characters that TTS might read literally (like <=, >=, etc.)"""
+    if not text: return ""
+    # Replace math symbols and markdown with space
+    # Matches: <=, >=, ==, !=, <, >, =, *, _, #, `, ~
+    text = re.sub(r'[<>!=]=?|[=*_#`~]', ' ', text)
+    # Collapse multiple spaces
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
 
 # ============== Agent Class (v1.x) ==============
 
@@ -158,6 +169,7 @@ class KautilyaAgent(Agent):
             "3. NEVER call end_call unless the user literally says 'bye', 'goodbye', 'hang up', or 'end the call'.\n"
             "4. NEVER call end_call due to silence or pauses — the system handles this.\n"
             "5. Keep responses SHORT (1-2 sentences max).\n"
+            "6. NO SPECIAL CHARACTERS: NEVER use symbols like <=, >=, =, <, >, *, _, or # in your speech. Use plain words instead.\n"
         )
 
     # ---------- Tools ----------
@@ -421,13 +433,17 @@ async def entrypoint(ctx: JobContext):
     agent.set_config(system_prompt, call_objective, agent_kb)
     agent.room = ctx.room
 
-    # --- Build Session (v1.x Optimized for high speed and low error) ---
+    # --- TTS Cleaning Hook ---
+    def before_tts_cb(session: AgentSession, text: str) -> str:
+        return clean_text_for_tts(text)
+
+    # --- Build Session ---
     session = AgentSession(
         vad=vad,
         stt=stt,
         llm=llm_plugin,
         tts=tts,
-        # close_on_disconnect=False  # Uncomment to keep session alive after disconnect
+        before_tts_cb=before_tts_cb
     )
     agent._session = session  # Back-reference so tools can call session.say()
 

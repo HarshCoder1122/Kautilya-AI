@@ -2691,8 +2691,11 @@ def serve_google_verification():
 
 @app.route('/static/<path:filename>')
 def serve_static(filename):
-    """Serve static assets"""
-    return send_from_directory(STATIC_FOLDER, filename)
+    """Serve static assets with caching."""
+    resp = send_from_directory(STATIC_FOLDER, filename)
+    resp.headers['Cache-Control'] = 'public, max-age=3600'
+    return resp
+
 
 
 @app.route('/api/status')
@@ -5200,6 +5203,36 @@ def api_agent_kb_url(agent_id):
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/agents/<agent_id>/kb/<file_id>/content', methods=['GET'])
+def api_agent_kb_content(agent_id, file_id):
+    """Fetch the full content and chunks of a KB file."""
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Authentication required"}), 401
+    
+    try:
+        agent_ref = db.collection('agents').document(agent_id)
+        doc = agent_ref.get()
+        if not doc.exists or doc.to_dict().get('uid') != uid:
+            return jsonify({"error": "Agent not found"}), 404
+            
+        kb = doc.to_dict().get('knowledge_base', [])
+        target_file = next((f for f in kb if f['id'] == file_id), None)
+        
+        if not target_file:
+            return jsonify({"error": "File not found"}), 404
+            
+        return jsonify({
+            "name": target_file.get("name"),
+            "content": target_file.get("content", ""),
+            "chunks": target_file.get("chunks", []),
+            "url": target_file.get("url")
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/agents/<agent_id>/kb/<file_id>', methods=['DELETE'])
 def api_agent_kb_delete(agent_id, file_id):
