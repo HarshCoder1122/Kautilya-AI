@@ -128,13 +128,35 @@ def clean_prompt(text: str) -> str:
     cleaned = cleaned.replace('NAME', 'there').replace('{NAME}', 'there')
     return cleaned.strip()
 
+# ============== Fallback TTS Wrapper ==============
+
+class FallbackTTS:
+    """Wraps multiple TTS plugins to provide automatic fallback if the primary fails."""
+    def __init__(self, primary, fallback):
+        self.primary = primary
+        self.fallback = fallback
+        self._current = primary
+
+    def synthesize(self, text, *args, **kwargs):
+        try:
+            return self.primary.synthesize(text, *args, **kwargs)
+        except Exception as e:
+            print(f"[FallbackTTS] Primary failed: {e}. Switching to fallback.")
+            return self.fallback.synthesize(text, *args, **kwargs)
+
+    @property
+    def capabilities(self):
+        return self.primary.capabilities
+
+    # Forward other necessary attributes/methods
+    def __getattr__(self, name):
+        return getattr(self.primary, name)
+
 def clean_text_for_tts(text: str) -> str:
     """Removes special characters that TTS might read literally (like <=, >=, etc.)"""
     if not text: return ""
     # Replace math symbols and markdown with space
-    # Matches: <=, >=, ==, !=, <, >, =, *, _, #, `, ~
     text = re.sub(r'[<>!=]=?|[=*_#`~]', ' ', text)
-    # Collapse multiple spaces
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -170,6 +192,7 @@ class KautilyaAgent(Agent):
             "4. NEVER call end_call due to silence or pauses — the system handles this.\n"
             "5. Keep responses SHORT (1-2 sentences max).\n"
             "6. NO SPECIAL CHARACTERS: NEVER use symbols like <=, >=, =, <, >, *, _, or # in your speech. Use plain words instead.\n"
+            "7. TOOL CALLING: When using search_knowledge_base, pass a simple string as the query. Do not add extra parameters. If a tool fails, continue the conversation naturally.\n"
         )
 
     # ---------- Tools ----------
@@ -380,7 +403,7 @@ async def entrypoint(ctx: JobContext):
     elif stt_provider == "deepgram":
         stt = deepgram.STT()
     else:
-        stt = sarvam.STT(language=agent_language)
+        stt = sarvam.STT(language=agent_language, model="saaras:v3")
 
     # LLM (Primary: Groq, Fallback: Sarvam-105b)
     groq_keys_raw = [
@@ -398,13 +421,17 @@ async def entrypoint(ctx: JobContext):
         key_index = int(time.time()) % len(groq_keys)
         chosen_key = groq_keys[key_index]
         masked_key = f"{chosen_key[:6]}...{chosen_key[-4:]}" if len(chosen_key) > 10 else "***"
-        print(f"[LLM Config] Multi-key rotation (Index {key_index}/{len(groq_keys)}). Using: {masked_key}")
+        
+        # Use Llama-3.3-70b-versatile for maximum intelligence
+        # Optimized with lower max_tokens (150) and temperature (0.5) for factual voice responses
+        model_name = os.environ.get("GROQ_VOICE_MODEL", "llama-3.3-70b-versatile")
+        print(f"[LLM Config] Key Rotation (Index {key_index}/{len(groq_keys)}). Using: {masked_key} | Model: {model_name}")
         
         llm_plugin = openai.LLM(
             base_url="https://api.groq.com/openai/v1",
             api_key=chosen_key,
-            model="llama-3.3-70b-versatile",
-            temperature=0.7
+            model=model_name,
+            temperature=0.5
         )
 
 
@@ -416,17 +443,21 @@ async def entrypoint(ctx: JobContext):
         llm_plugin = openai.LLM()
 
     # TTS
+    # TTS with Automatic Fallback
+    v_id = get_cartesia_voice_id(raw_voice)
+    tts_model = "sonic-multilingual" if "en" not in agent_language.lower() else "sonic-english"
+    cartesia_tts = cartesia.TTS(model=tts_model, voice=v_id)
+
     if tts_provider == "openai":
         tts = openai.TTS()
     elif tts_provider == "sarvam":
         speaker = raw_voice if raw_voice and '-' not in str(raw_voice) else "aditya"
-        print(f"[TTS Config] Sarvam Bulbul:v3 | Speaker: {speaker}")
-        tts = sarvam.TTS(target_language_code=agent_language, speaker=speaker, model="bulbul:v3")
+        print(f"[TTS Config] Primary: Sarvam v3 ({speaker}) | Fallback: Cartesia ({v_id})")
+        sarvam_tts = sarvam.TTS(target_language_code=agent_language, speaker=speaker, model="bulbul:v3")
+        tts = FallbackTTS(primary=sarvam_tts, fallback=cartesia_tts)
     else:
-        v_id = get_cartesia_voice_id(raw_voice)
-        tts_model = "sonic-multilingual" if "en" not in agent_language.lower() else "sonic-english"
         print(f"[TTS Config] Cartesia {tts_model} | Voice: {v_id}")
-        tts = cartesia.TTS(model=tts_model, voice=v_id)
+        tts = cartesia_tts
 
     # --- Build Agent ---
     agent = KautilyaAgent()
@@ -548,7 +579,7 @@ async def entrypoint(ctx: JobContext):
         nonlocal total_tts_chars
         content = msg.content if isinstance(msg.content, str) else str(msg.content)
         if content:
-            cleaned = clean_text(content)
+            cleaned = clean_text_for_tts(content)
             transcript_log.append(f"Agent: {cleaned}")
             total_tts_chars += len(cleaned)
 
