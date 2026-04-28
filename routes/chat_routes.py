@@ -231,10 +231,6 @@ def jarvis_stream():
         'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'
     })
 
-
-    })
-
-
 @chat_bp.route('/api/jarvis/command', methods=['POST'])
 def jarvis_command():
     """Wrapper for jarvis_stream to support the dashboard's /command endpoint."""

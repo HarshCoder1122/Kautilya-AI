@@ -295,7 +295,12 @@ async def entrypoint(ctx: JobContext):
 
     # === PRIORITY 0: SIP DID Lookup ===
     sip_resolved = False
-    for p in ctx.room.remote_participants.values():
+
+    async def handle_participant(p: rtc.RemoteParticipant):
+        nonlocal sip_resolved
+        if sip_resolved:
+            return
+
         if p.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP:
             sip_attrs = p.attributes or {}
             did_number = sip_attrs.get("sip.trunkPhoneNumber", "")
@@ -317,7 +322,13 @@ async def entrypoint(ctx: JobContext):
                         print(f"[SIP Routing] ⚠️ No agent found for DID {did_number}")
                 except Exception as e:
                     print(f"[SIP Routing] Firestore query error: {e}")
-            break
+
+    # Register listener for future participants
+    ctx.room.on("participant_connected", lambda p: asyncio.create_task(handle_participant(p)))
+    
+    # Check existing participants
+    for p in ctx.room.remote_participants.values():
+        await handle_participant(p)
 
     # === PRIORITY 1: Room Name / ENV → Firestore ===
     if not sip_resolved:
