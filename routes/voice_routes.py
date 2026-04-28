@@ -91,3 +91,68 @@ def voice_speak():
         return Response(audio_data, mimetype="audio/mpeg")
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@voice_bp.route('/api/livekit/token', methods=['POST', 'GET'])
+def generate_livekit_token():
+    """Generates a token for the LiveKit agent voice streaming connection."""
+    import os
+    from extensions import db
+    try:
+        from livekit import api
+    except ImportError:
+        return jsonify({"error": "LiveKit SDK not installed"}), 500
+
+    lk_api_key = os.environ.get("LIVEKIT_API_KEY")
+    lk_api_secret = os.environ.get("LIVEKIT_API_SECRET")
+    if not lk_api_key or not lk_api_secret:
+        return jsonify({"error": "LiveKit configuration missing on server."}), 500
+
+    data = request.get_json() if request.is_json else request.args
+    participant_name = data.get("participantName", "RevealIQ User")
+    agent_id = data.get("agentId", "")
+    
+    room_name = f"room-{uuid.uuid4().hex[:8]}"
+    identity = f"user-{uuid.uuid4().hex[:8]}"
+    
+    token = api.AccessToken(lk_api_key, lk_api_secret) \
+        .with_identity(identity) \
+        .with_name(participant_name) \
+        .with_grants(api.VideoGrants(
+            room_join=True,
+            room=room_name,
+        ))
+    
+    # Add room metadata if agent_id is provided
+    if agent_id and db:
+        try:
+            agent_doc = db.collection('agents').document(agent_id).get()
+            if agent_doc.exists:
+                agent_data = agent_doc.to_dict()
+                import json
+                token.with_metadata(json.dumps({
+                    "agent_id": agent_id,
+                    "system_prompt": agent_data.get("system_prompt", ""),
+                    "voice": agent_data.get("voice", "shubh"),
+                    "model": agent_data.get("model", "kautilya-daily"),
+                    "welcome_message": agent_data.get("welcome_message", "")
+                }))
+        except Exception as e:
+            print(f"[LiveKit] Metadata error: {e}")
+
+    return jsonify({"token": token.to_jwt(), "roomName": room_name})
+
+
+@voice_bp.route('/api/v1/audio/voices', methods=['GET'])
+def api_v1_voices():
+    """Returns a list of available TTS voices (cached)."""
+    from flask import current_app
+    if not hasattr(current_app, 'edge_voices_cache'):
+        try:
+            import asyncio
+            import edge_tts
+            voices = asyncio.run(edge_tts.list_voices())
+            current_app.edge_voices_cache = [{"name": v["Name"], "shortName": v["ShortName"], "gender": v["Gender"], "locale": v["Locale"]} for v in voices]
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    return jsonify({"voices": current_app.edge_voices_cache})

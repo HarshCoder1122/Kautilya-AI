@@ -215,6 +215,18 @@ def jarvis_stream():
     })
 
 
+@chat_bp.route('/api/jarvis/command', methods=['POST'])
+def jarvis_command():
+    """Wrapper for jarvis_stream to support the dashboard's /command endpoint."""
+    return jarvis_stream()
+
+
+@chat_bp.route('/api/jarvis/prewarm', methods=['POST'])
+def jarvis_prewarm():
+    """Pre-warm endpoint to initialize conversation state."""
+    return jsonify({"status": "ok", "message": "Kautilya Brain pre-warmed."})
+
+
 @chat_bp.route('/api/chat', methods=['POST'])
 def chat_legacy():
     """Legacy non-streaming chat endpoint."""

@@ -122,3 +122,56 @@ def get_user_account():
         except Exception as e:
             print(f"[Account] Fetch failed: {e}")
     return jsonify(account_info)
+
+
+@user_bp.route('/api/telephony/config', methods=['GET'])
+def api_telephony_config():
+    """Return configured telephony providers for the user from Firestore."""
+    from extensions import db
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Authentication required"}), 401
+    try:
+        config_ref = db.collection('users').document(uid).collection('config').document('telephony')
+        doc = config_ref.get()
+        if doc.exists:
+            return jsonify(doc.to_dict())
+        return jsonify({
+            "providers": [
+                {"type": "exotel", "name": "Exotel Cloud", "active": True},
+                {"type": "vobiz", "name": "Vobiz AI", "active": False}
+            ]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@user_bp.route('/api/analytics/usage', methods=['GET'])
+def get_usage_analytics():
+    """Return usage data for graphs and stats."""
+    from extensions import db
+    from firebase_admin import firestore
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Authentication required"}), 401
+    if not db:
+        return jsonify({"error": "Database not available"}), 503
+    try:
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        seven_days_ago = now - timedelta(days=7)
+        logs = db.collection('usage_logs').where(filter=firestore.FieldFilter('uid', '==', uid))\
+                 .where(filter=firestore.FieldFilter('timestamp', '>=', seven_days_ago))\
+                 .order_by('timestamp').stream()
+        daily_usage = {}
+        for log in logs:
+            d = log.to_dict()
+            ts = d.get('timestamp')
+            if ts:
+                date_str = ts.strftime("%Y-%m-%d")
+                daily_usage[date_str] = daily_usage.get(date_str, 0) + 1
+        return jsonify({"daily_usage": daily_usage})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500

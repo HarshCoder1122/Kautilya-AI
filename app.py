@@ -82,6 +82,9 @@ def set_security_headers(response):
 
 @app.errorhandler(Exception)
 def handle_exception(e):
+    from werkzeug.exceptions import HTTPException
+    if isinstance(e, HTTPException):
+        return e
     logger.error(f"Unhandled Exception: {str(e)}")
     return jsonify({
         "error": "Internal Server Error",
