@@ -114,6 +114,11 @@ async def entrypoint(ctx: JobContext):
                 else:
                     print(f"[Config] ❌ Mapping not found after 5 attempts for {call_uuid}")
 
+            # Also extract call_id for transcript saving
+            call_id = clean_name.split("--")[-1]
+            if "_" in call_id: call_id = call_id.split("_")[-1]
+            print(f"[Config] Extracted Call ID for transcripts: {call_id}")
+
             doc = db.collection('agents').document(agent_id).get()
             if doc.exists:
                 data = doc.to_dict()
@@ -181,6 +186,37 @@ async def entrypoint(ctx: JobContext):
     # Keep alive while connected
     while ctx.room.connection_state == rtc.ConnectionState.CONN_CONNECTED:
         await asyncio.sleep(1)
+
+    # SESSION ENDED - Save Transcript
+    print(f"[Agent] Session ended for {ctx.room.name}. Saving transcript...")
+    try:
+        if FIREBASE_AVAILABLE and db and agent_id:
+            transcript_text = ""
+            if hasattr(session, 'chat_ctx'):
+                for m in session.chat_ctx.messages:
+                    role = m.role.upper()
+                    content = m.content
+                    if isinstance(content, list):
+                        # Extract text from list of ChatContent or strings
+                        parts = []
+                        for p in content:
+                            if hasattr(p, 'text'): parts.append(p.text)
+                            elif isinstance(p, str): parts.append(p)
+                        content = " ".join(parts)
+                    transcript_text += f"{role}: {content}\n"
+            
+            if transcript_text.strip():
+                db.collection('agents').document(agent_id).collection('transcripts').add({
+                    "call_id": call_id or ctx.room.name,
+                    "agent_id": agent_id,
+                    "transcript": transcript_text,
+                    "created_at": firestore.SERVER_TIMESTAMP
+                })
+                print(f"[Agent] ✅ Transcript saved for call: {call_id}")
+            else:
+                print("[Agent] ⚠️ No transcript content to save.")
+    except Exception as e:
+        print(f"[Agent] ❌ Error saving transcript: {e}")
 
 if __name__ == "__main__":
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))

@@ -8,23 +8,35 @@ import traceback
 
 # You can use the standard OpenAI library to interact with NVIDIA NIM
 def get_nim_client():
+    # Primary: NVIDIA NIM
     api_key = os.environ.get("NVIDIA_NIM_API_KEY")
-    if not api_key:
-        print("[NIM] Warning: NVIDIA_NIM_API_KEY is not set.")
-        return None
-    return OpenAI(
-        base_url="https://integrate.api.nvidia.com/v1",
-        api_key=api_key
-    )
+    if api_key:
+        print("[NIM] Using NVIDIA NIM for analytics.")
+        return OpenAI(
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key=api_key
+        ), "meta/llama-3.1-405b-instruct"
+    
+    # Fallback: Groq (OpenAI Compatible)
+    groq_key = os.environ.get("GROQ_API_KEY")
+    if groq_key:
+        print("[NIM] Warning: NVIDIA_NIM_API_KEY missing. Falling back to Groq.")
+        return OpenAI(
+            base_url="https://api.groq.com/openai/v1",
+            api_key=groq_key
+        ), "llama-3.3-70b-versatile"
+        
+    print("[NIM] Error: Neither NVIDIA_NIM_API_KEY nor GROQ_API_KEY is set.")
+    return None, None
 
 def analyze_call_transcript(transcript: str) -> dict:
     """
     Analyzes a call transcript using Nvidia NIM (Nemotron-120B or similar).
     Returns a structured dictionary with analytics.
     """
-    client = get_nim_client()
+    client, model_name = get_nim_client()
     if not client:
-        return _fallback_analytics()
+        return _fallback_analytics(reason="No API keys (NIM/Groq) configured")
 
     if not transcript or len(transcript.strip()) < 10:
         return _fallback_analytics(reason="Transcript too short or empty")
@@ -47,7 +59,7 @@ def analyze_call_transcript(transcript: str) -> dict:
 
     try:
         response = client.chat.completions.create(
-            model="meta/llama-3.1-405b-instruct", # Using Llama 3.1 405B on NIM as a powerful analytics model, or nemotron
+            model=model_name,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
             top_p=0.7,
