@@ -145,12 +145,19 @@ async def entrypoint(ctx: JobContext):
             # LAST RESORT: Search by Vobiz Number (Old logic style)
             if not agent_id or (doc and not doc.exists):
                  vobiz_num = clean_name.split("_")[-2] if "_" in clean_name else ""
-                 if vobiz_num.startswith("+"):
-                     print(f"[Config] Last resort: searching by Vobiz number {vobiz_num}")
-                     agents_ref = db.collection('agents').where('vobiz_number', '==', vobiz_num).limit(1).get()
-                     if agents_ref:
-                         agent_id = agents_ref[0].id
-                         print(f"[Config] 🎯 Found Agent ID via Vobiz Number: {agent_id}")
+                 if vobiz_num:
+                     print(f"[Config] Last resort: searching by Vobiz number variants for {vobiz_num}")
+                     # Try with and without '+'
+                     variants = [vobiz_num]
+                     if vobiz_num.startswith("+"): variants.append(vobiz_num.lstrip("+"))
+                     else: variants.append("+" + vobiz_num)
+                     
+                     for v in variants:
+                         agents_ref = db.collection('agents').where('vobiz_number', '==', v).limit(1).get()
+                         if agents_ref:
+                             agent_id = agents_ref[0].id
+                             print(f"[Config] 🎯 Found Agent ID via Vobiz Number variant '{v}': {agent_id}")
+                             break
 
             if agent_id:
                 doc = db.collection('agents').document(agent_id).get()
