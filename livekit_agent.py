@@ -13,6 +13,7 @@ from livekit.agents import (
     Agent,
     AgentSession,
 )
+from livekit.agents.llm import ChatMessage
 from livekit.plugins import sarvam, openai, silero, cartesia, google
 
 load_dotenv()
@@ -90,10 +91,23 @@ async def entrypoint(ctx: JobContext):
     else:
         agent_id = clean_name.lstrip("_")
         
-    print(f"[Config] Resolved agent_id: {agent_id}")
+    print(f"[Config] Resolved agent_id candidate: {agent_id}")
 
     if agent_id and FIREBASE_AVAILABLE and db:
         try:
+            # If the resolved ID looks like a phone number (starts with + or digits)
+            # we try to find the agent mapped to this number
+            if agent_id.startswith("+") or (len(agent_id) > 5 and agent_id.isdigit()):
+                print(f"[Config] Candidate looks like a phone number. Searching for mapped agent...")
+                # Search by vobiz_number or exotel_number
+                agents_ref = db.collection('agents').where('vobiz_number', '==', agent_id).limit(1).get()
+                if not agents_ref:
+                    agents_ref = db.collection('agents').where('exotel_number', '==', agent_id).limit(1).get()
+                
+                if agents_ref:
+                    agent_id = agents_ref[0].id
+                    print(f"[Config] 🎯 Mapped phone number to Agent ID: {agent_id}")
+
             doc = db.collection('agents').document(agent_id).get()
             if doc.exists:
                 data = doc.to_dict()
