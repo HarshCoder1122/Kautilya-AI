@@ -1,6 +1,6 @@
 """
-Kautilya AI — Telephony Webhooks (Latent-Fix Version)
-Adds a greeting in XML to keep the call alive during Agent startup.
+Kautilya AI — Telephony Webhooks (Concurrency-Fix Version)
+Optimized for high-speed response to prevent Vobiz retries and multiple room spawns.
 """
 import os
 import json
@@ -14,56 +14,56 @@ from config import LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL, LIVEKIT_SIP
 
 webhooks_bp = Blueprint('webhooks', __name__)
 
-def _run_async_safe(coro):
-    import asyncio, threading
-    result, error = [None], [None]
-    def _target():
+def create_room_background(room_name, agent_id):
+    """Truly background room creation without blocking Flask."""
+    def _task():
         try:
+            # New event loop for the thread
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            result[0] = loop.run_until_complete(coro)
+            
+            async def _do():
+                if not db: return
+                agent_doc = db.collection('agents').document(agent_id).get()
+                agent_data = agent_doc.to_dict() if agent_doc.exists else {}
+                room_metadata = {
+                    "source": "telephony_bridge",
+                    "agent_id": agent_id,
+                    "welcome_message": agent_data.get("welcome_message", "")
+                }
+                lk_url = LIVEKIT_URL.replace("wss://", "https://").replace("ws://", "http://")
+                lkapi = LiveKitAPI(url=lk_url, api_key=LIVEKIT_API_KEY, api_secret=LIVEKIT_API_SECRET)
+                try:
+                    await lkapi.room.create_room(CreateRoomRequest(
+                        name=room_name, 
+                        empty_timeout=300, 
+                        metadata=json.dumps(room_metadata)
+                    ))
+                    print(f"[Bridge] ✅ Room {room_name} pre-created in background.")
+                finally:
+                    await lkapi.aclose()
+            
+            loop.run_until_complete(_do())
             loop.close()
-        except Exception as e: error[0] = e
-    t = threading.Thread(target=_target); t.start(); t.join(timeout=10)
-    if error[0]: raise error[0]
-    return result[0]
+        except Exception as e:
+            print(f"[Bridge] ❌ Background Error: {e}")
 
-async def pre_create_legacy(room_name, agent_id):
-    if not db: return
-    try:
-        agent_doc = db.collection('agents').document(agent_id).get()
-        agent_data = agent_doc.to_dict() if agent_doc.exists else {}
-        room_metadata = {
-            "source": "telephony_bridge",
-            "agent_id": agent_id,
-            "system_prompt": agent_data.get("system_prompt", ""),
-            "voice": agent_data.get("voice", "shubh"),
-            "language": agent_data.get("language", "hi-IN"),
-            "welcome_message": agent_data.get("welcome_message", ""),
-            "stt_provider": agent_data.get("stt_provider", "sarvam"),
-            "tts_provider": agent_data.get("tts_provider", "sarvam")
-        }
-        lk_url = LIVEKIT_URL.replace("wss://", "https://").replace("ws://", "http://")
-        lkapi = LiveKitAPI(url=lk_url, api_key=LIVEKIT_API_KEY, api_secret=LIVEKIT_API_SECRET)
-        try:
-            await lkapi.room.create_room(CreateRoomRequest(name=room_name, empty_timeout=300, metadata=json.dumps(room_metadata)))
-            print(f"[Bridge] ✅ Room {room_name} pre-created.")
-        finally: await lkapi.aclose()
-    except Exception as e: print(f"[Bridge] ❌ Error: {e}")
+    threading.Thread(target=_task, daemon=True).start()
 
 @webhooks_bp.route('/api/webhooks/vobiz/answer/<agent_id>', methods=['POST', 'GET'])
 def vobiz_answer(agent_id):
-    room_name = f"voice-{agent_id}--{uuid.uuid4().hex[:4]}"
+    # Use Vobiz unique ID if available, else random but stable
+    call_sid = request.values.get('callid') or request.values.get('CallSid') or uuid.uuid4().hex[:8]
+    room_name = f"voice-{agent_id}--{call_sid}"
     sip_uri = f"sip:{room_name}@{LIVEKIT_SIP_URI}"
     
-    # Pre-create room in background
-    try: _run_async_safe(pre_create_legacy(room_name, agent_id))
-    except: pass
+    # 1. Fire and forget room creation (No blocking!)
+    create_room_background(room_name, agent_id)
     
-    # Add <Say> to hold the call for 2-3 seconds while HF Agent wakes up
+    # 2. Immediate XML Response
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Connecting your call to Kautilya AI assistant. Please wait.</Say>
+    <Say>Connecting...</Say>
     <Dial timeout="30">
         <Sip>{sip_uri}</Sip>
     </Dial>
@@ -72,7 +72,7 @@ def vobiz_answer(agent_id):
 
 @webhooks_bp.route('/api/webhooks/exotel/answer/<agent_id>', methods=['POST', 'GET'])
 def exotel_answer(agent_id):
-    room_name = f"voice-{agent_id}--{uuid.uuid4().hex[:4]}"
+    room_name = f"voice-{agent_id}--{uuid.uuid4().hex[:8]}"
     sip_uri = f"sip:{room_name}@{LIVEKIT_SIP_URI}"
     xml = f'<?xml version="1.0" encoding="UTF-8"?><Response><Say>Connecting...</Say><Dial><Sip>{sip_uri}</Sip></Dial></Response>'
     return Response(xml, mimetype='text/xml')
