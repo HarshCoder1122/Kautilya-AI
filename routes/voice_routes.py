@@ -108,7 +108,7 @@ def generate_livekit_token():
     if not lk_api_key or not lk_api_secret:
         return jsonify({"error": "LiveKit configuration missing on server."}), 500
 
-    data = request.get_json() if request.is_json else request.args
+    data = request.get_json(silent=True) or request.args or {}
     participant_name = data.get("participantName", "RevealIQ User")
     agent_id = data.get("agentId", "")
     
