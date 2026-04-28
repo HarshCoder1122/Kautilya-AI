@@ -67,16 +67,20 @@ async def entrypoint(ctx: JobContext):
     # HARDCODED: gemini-3.1-flash-live-preview
     agent_model = "gemini-3.1-flash-live-preview"
     
-    # Extract agent ID from room name
-    # Room name formats:
-    #   SIP call:  "agentId--uuid"       (from SIP trunk)
-    #   Web call:  "voice-agentId--uuid"  (from frontend)
+    # Extract agent ID from room name safely
     r_name = ctx.room.name
-    if "--" in r_name:
-        prefix = r_name.split("--")[0]
-        # Strip known prefixes
-        agent_id = prefix.replace("voice-", "").replace("phone-", "")
+    print(f"[Agent] Raw Room Name: {r_name}")
     
+    # Clean up any potential SIP/LiveKit prefixes
+    clean_name = r_name.replace("sip:", "").replace("sip-", "")
+    
+    if "voice-" in clean_name:
+        agent_id = clean_name.split("voice-")[-1].split("--")[0]
+    elif "--" in clean_name:
+        agent_id = clean_name.split("--")[0]
+    else:
+        agent_id = clean_name
+        
     print(f"[Config] Resolved agent_id: {agent_id}")
 
     if agent_id and FIREBASE_AVAILABLE and db:
@@ -116,7 +120,15 @@ async def entrypoint(ctx: JobContext):
         session = AgentSession(llm=llm_plugin)
         agent = KautilyaAgent(instructions=gemini_instructions)
         await session.start(room=ctx.room, agent=agent)
-        # Gemini 3.1 handles greeting via instructions (say() not supported)
+        
+        # Trigger Gemini to speak first by simulating a user message or system prompt
+        try:
+            from livekit.agents.llm import ChatMessage
+            msg = ChatMessage(role="user", content="I have just joined the call. Please introduce yourself exactly as instructed.")
+            if hasattr(session, 'chat_ctx'):
+                session.chat_ctx.messages.append(msg)
+        except Exception as e:
+            print(f"[Gemini] Greeting trigger warning: {e}")
     else:
         vad = silero.VAD.load()
         stt = sarvam.STT(language=agent_language)
