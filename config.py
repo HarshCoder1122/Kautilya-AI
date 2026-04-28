@@ -209,18 +209,10 @@ LIVEKIT_URL = os.environ.get("LIVEKIT_URL", "")
 LIVEKIT_API_KEY = os.environ.get("LIVEKIT_API_KEY", "")
 LIVEKIT_API_SECRET = os.environ.get("LIVEKIT_API_SECRET", "")
 
-# Derive SIP domain from LIVEKIT_URL if not explicitly set
-_derived_sip = ""
-if LIVEKIT_URL:
-    try:
-        from urllib.parse import urlparse
-        _host = urlparse(LIVEKIT_URL).netloc or LIVEKIT_URL.replace('wss://', '').replace('https://', '')
-        if '.livekit.cloud' in _host:
-            _project = _host.split('.')[0]
-            _derived_sip = f"{_project}.sip.livekit.cloud"
-    except: pass
-
-LIVEKIT_SIP_URI = os.environ.get('LIVEKIT_SIP_URI', _derived_sip or '4mu6v2usrj9.sip.livekit.cloud')
+# SIP URI — hardcoded to match LiveKit Cloud project SIP domain
+# Project URL (meet-2wx5nfq3) is DIFFERENT from SIP domain (4mu6v2usrj9)
+# Do NOT derive from LIVEKIT_URL — they are separate domains
+LIVEKIT_SIP_URI = os.environ.get('LIVEKIT_SIP_URI', '4mu6v2usrj9.sip.livekit.cloud')
 
 # ============== Admin ==============
 ADMIN_SECRET_KEY = os.environ.get("ADMIN_SECRET_KEY", "")
