@@ -1,0 +1,171 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Kautilya API Documentation | RevealIQ</title><meta name="description"
+        content="Official developer documentation for Kautilya AI. Learn how to integrate our LLM, speech-to-text, and generative chat APIs into your applications."><meta name="keywords"
+        content="Kautilya API Docs, RevealIQ Documentation, AI Integration, LLM API tutorial, Kautilya developer guide"><meta property="og:type" content="website"><meta property="og:url" content="https://ai.revealiq.in/apidocs"><meta property="og:title" content="Kautilya API Documentation"><meta property="og:description"
+        content="Integrate Kautilya AI into your apps. Read the official API guides and documentation."><meta property="og:image" content="https://ai.revealiq.in/static/kautilya_logo.png"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:url" content="https://ai.revealiq.in/apidocs"><meta name="twitter:title" content="Kautilya API Documentation"><meta name="twitter:description" content="Integrate Kautilya AI into your apps easily."><meta name="twitter:image" content="https://ai.revealiq.in/static/kautilya_logo.png"><meta name="theme-color" content="#131314"><link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet"><link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet"><style>
+        :root {
+            --bg-primary: #131314;
+            --bg-secondary: #1a1a1c;
+            --bg-card: #1E1F20;
+            --border: #444746;
+            --text-primary: #E3E3E3;
+            --text-secondary: #C4C7C5;
+            --text-muted: #8E918F;
+            --accent: #A8C7FA;
+            --gradient-primary: linear-gradient(135deg, #4285F4 0%, #9B72CB 40%, #EA4335 70%, #FBBC05 100%);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+        }
+
+        .header {
+            padding: 20px 40px;
+            border-bottom: 1px solid var(--border);
+            background: rgba(19, 19, 20, 0.9);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .brand {
+            font-size: 1.2rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .brand img {
+            height: 32px;
+            border-radius: 6px;
+        }
+
+        .nav-links a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        .nav-links a:hover {
+            color: var(--accent);
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 60px 20px;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            background: var(--gradient-primary);
+            background-clip: text;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        h2 {
+            font-size: 1.5rem;
+            margin: 40px 0 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        h3 {
+            font-size: 1.2rem;
+            margin: 25px 0 10px;
+            color: var(--accent);
+        }
+
+        p {
+            margin-bottom: 16px;
+            color: var(--text-secondary);
+        }
+
+        .docs-section {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 30px;
+        }
+
+        code {
+            font-family: 'JetBrains Mono', monospace;
+            background: var(--bg-secondary);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            color: #ffab40;
+        }
+
+        pre {
+            background: #0d0d0e;
+            padding: 16px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            overflow-x: auto;
+            margin-bottom: 16px;
+        }
+
+        pre code {
+            background: none;
+            padding: 0;
+            color: #c9d1d9;
+            font-size: 0.85rem;
+        }
+
+        ul {
+            margin: 0 0 16px 24px;
+            color: var(--text-secondary);
+        }
+
+        li {
+            margin-bottom: 8px;
+        }
+    </style></head><body><header class="header"><div class="brand"><img src="/static/kautilya_logo.png" alt="Kautilya">
+            KAUTILYA AI Documentation
+        </div><div class="nav-links"><a href="/playground">Go to Dashboard</a></div></header><div class="container"><h1>Overview</h1><p>Welcome to the ultimate guide for integrating and using <strong>Kautilya AI</strong> services. Here you will
+            find comprehensive documentation on how to utilize the Workspace Dashboard, handle API authentications, and
+            make external calls to our powerful models.</p><div class="docs-section"><h2>Dashboard Features</h2><p>The new <strong>RevealIQ Studio</strong> Dashboard offers centralized management for all your
+                AI assets.</p><ul><li><strong>Home (Overview):</strong> Real-time snapshot of your credits usage across Voice Agents,
+                    Text-to-Speech (TTS), and Speech-to-Text (STT) services.</li><li><strong>Playground:</strong> Interactive tools to quickly test our TTS engines, stream audio to
+                    text, or experiment with speech translation without writing code.</li><li><strong>Conversational Agents:</strong> Manage custom AI agents. Track their status (Active, Idle,
+                    Offline) and dive into advanced configurations.</li><li><strong>Account & Payments:</strong> Monitor your tier limits, generate and revoke API keys
+                    securely, and upgrade to Pro.</li></ul></div><div class="docs-section"><h2>API Integration Basics</h2><p>To use the API, you must first generate an API key from the Dashboard and include it in your HTTP headers
+                as a Bearer token.</p><h3>Authentication Header</h3><pre><code>Authorization: Bearer kautilya-your_api_key_here</code></pre><p>All endpoints are hosted at: <code>https://ai.revealiq.in/api/v1/</code></p></div><div class="docs-section"><h2>Text Generation (Chat Completions)</h2><p>Interact with our fast and capable LLMs. Compatible with OpenAI standard schema.</p><h3>Endpoint</h3><p><code>POST /api/v1/chat/completions</code></p><h3>Example Request</h3><pre><code>curl -X POST https://ai.revealiq.in/api/v1/chat/completions \
+  -H "Authorization: Bearer kautilya-xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "kautilya-daily",
+    "messages": [
+      {"role": "user", "content": "Hello, Kautilya!"}
+    ]
+  }'</code></pre></div><div class="docs-section"><h2>Text to Speech (TTS)</h2><p>High-quality neural text-to-speech built for low latency. Billed by characters.</p><h3>Endpoint</h3><p><code>POST /api/v1/audio/speech</code></p><h3>Example Request</h3><pre><code>curl -X POST https://ai.revealiq.in/api/v1/audio/speech \
+  -H "Authorization: Bearer kautilya-xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "नमस्ते, मैं कौटिल्य हूँ।",
+    "language": "hi-IN"
+  }' \
+  --output audio.mp3</code></pre></div><div class="docs-section"><h2>Speech to Text (STT)</h2><p>Transcribe large audio files quickly. Billed by audio seconds.</p><h3>Endpoint</h3><p><code>POST /api/v1/audio/transcriptions</code></p><h3>Example Request</h3><pre><code>curl -X POST https://ai.revealiq.in/api/v1/audio/transcriptions \
+  -H "Authorization: Bearer kautilya-xxx" \
+  -F file="@/path/to/meeting.mp3" \
+  -F model="whisper-large-v3"</code></pre></div></div></body></html>

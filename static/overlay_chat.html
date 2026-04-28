@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KAUTILYA AI | Floating Overlay</title>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+    <style>
+        :root {
+            --bg-glass: rgba(10, 10, 12, 0.85);
+            --border-glass: rgba(255, 255, 255, 0.08);
+            --accent-primary: #6366f1;
+            --accent-secondary: #f43f5e;
+            --text-main: #f8fafc;
+            --text-dim: #94a3b8;
+            --radius-main: 24px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: transparent;
+            font-family: 'Inter', sans-serif;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            padding: 20px;
+        }
+
+        /* The Container */
+        .overlay-chat {
+            width: 100%;
+            max-width: 480px;
+            height: 600px;
+            background: var(--bg-glass);
+            backdrop-filter: blur(40px);
+            -webkit-backdrop-filter: blur(40px);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-main);
+            box-shadow: 0 40px 100px rgba(0, 0, 0, 0.6);
+            display: flex;
+            flex-direction: column;
+            animation: slide-up 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+            position: relative;
+        }
+
+        @keyframes slide-up {
+            from { opacity: 0; transform: translateY(40px) scale(0.95); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        /* Header */
+        .header {
+            padding: 18px 24px;
+            border-bottom: 1px solid var(--border-glass);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .brand i {
+            font-size: 24px;
+            color: var(--accent-primary);
+        }
+
+        .brand span {
+            font-family: 'Space Grotesk', sans-serif;
+            font-weight: 700;
+            color: var(--text-main);
+            letter-spacing: -0.5px;
+            font-size: 18px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: #22c55e;
+            border-radius: 50%;
+            box-shadow: 0 0 10px #22c55e;
+        }
+
+        /* Messages Area */
+        .messages {
+            flex: 1;
+            padding: 24px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .message {
+            max-width: 85%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            font-size: 14px;
+            line-height: 1.5;
+            position: relative;
+        }
+
+        .msg-jarvis {
+            align-self: flex-start;
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-main);
+            border-bottom-left-radius: 4px;
+        }
+
+        .msg-user {
+            align-self: flex-end;
+            background: var(--accent-primary);
+            color: #fff;
+            border-bottom-right-radius: 4px;
+        }
+
+        /* Input Panel */
+        .input-panel {
+            padding: 20px;
+            border-top: 1px solid var(--border-glass);
+        }
+
+        .input-wrapper {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--border-glass);
+            border-radius: 16px;
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: var(--text-main);
+            font-size: 14px;
+            outline: none;
+        }
+
+        .btn-send {
+            background: none;
+            border: none;
+            color: var(--accent-primary);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+        }
+
+        /* Drag Handle Support (Electron/Browser) */
+        .drag-handle {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 30px;
+            cursor: move;
+            -webkit-app-region: drag;
+        }
+
+    </style>
+</head>
+<body>
+    <div class="overlay-chat">
+        <div class="drag-handle"></div>
+        <div class="header">
+            <div class="brand">
+                <i class="material-icons-round">bolt</i>
+                <span>KAUTILYA OVERLAY</span>
+            </div>
+            <div class="status-dot"></div>
+        </div>
+
+        <div class="messages" id="chat">
+            <div class="message msg-jarvis">
+                Bhai, I am active now! You can keep this window open while the CLI works. I'll stay synced.
+            </div>
+        </div>
+
+        <div class="input-panel">
+            <div class="input-wrapper">
+                <input type="text" id="userInput" placeholder="Type a message..." autocomplete="off">
+                <button class="btn-send" onclick="sendMessage()">
+                    <i class="material-icons-round">send</i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const chat = document.getElementById('chat');
+        const input = document.getElementById('userInput');
+
+        function addMessage(text, role) {
+            const msg = document.createElement('div');
+            msg.className = `message msg-${role}`;
+            msg.textContent = text;
+            chat.appendChild(msg);
+            chat.scrollTop = chat.scrollHeight;
+        }
+
+        function sendMessage() {
+            const text = input.value.trim();
+            if(!text) return;
+            addMessage(text, 'user');
+            input.value = '';
+            
+            // Simulating sync back to terminal (future upgrade)
+            setTimeout(() => {
+                addMessage("Got it. Syncing with CLI core...", 'jarvis');
+            }, 800);
+        }
+
+        input.onkeypress = (e) => { if(e.key === 'Enter') sendMessage(); };
+    </script>
+</body>
+</html>
