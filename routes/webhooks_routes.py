@@ -22,6 +22,7 @@ def exotel_answer(agent_id):
     
     # LiveKit SIP URI: sip:<room_name>@<sip_domain>
     sip_uri = f"sip:{room_name}@{LIVEKIT_SIP_URI}"
+    print(f"[Exotel Webhook] Bridging agent {agent_id} to {sip_uri}")
     
     exoml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -40,6 +41,7 @@ def vobiz_answer(agent_id):
     import uuid
     room_name = f"voice-{agent_id}--{uuid.uuid4().hex[:4]}"
     sip_uri = f"sip:{room_name}@{LIVEKIT_SIP_URI}"
+    print(f"[Vobiz Webhook] Bridging agent {agent_id} to {sip_uri}")
     
     vxml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
