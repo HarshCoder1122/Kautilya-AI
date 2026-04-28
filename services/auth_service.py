@@ -20,16 +20,20 @@ def verify_firebase_token():
         return {"uid": "admin", "email": "system@revealiq.in", "provider": "system", "is_admin": True}
     from extensions import FIREBASE_AVAILABLE
     if not FIREBASE_AVAILABLE:
+        print("[AUTH] ❌ Firebase not available. Returning 401.")
         return None
     try:
         from firebase_admin import auth as firebase_auth
         decoded = firebase_auth.verify_id_token(token)
+        print(f"[AUTH] ✅ Firebase token verified for UID: {decoded.get('uid')}")
         fd = decoded.get('firebase', {})
         return {"uid": decoded.get('uid'), "email": decoded.get('email'), "provider": fd.get('sign_in_provider', 'unknown')}
-    except Exception:
+    except Exception as e:
+        print(f"[AUTH] ⚠️ Firebase token verification failed: {e}")
         try:
             ki = verify_api_key()
             if ki:
+                print(f"[AUTH] ✅ API Key verified for UID: {ki['uid']}")
                 return {"uid": ki['uid'], "email": "api@user.com", "provider": "api_key"}
         except:
             pass
