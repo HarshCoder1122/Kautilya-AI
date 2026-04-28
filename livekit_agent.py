@@ -95,16 +95,24 @@ async def entrypoint(ctx: JobContext):
 
     if agent_id and FIREBASE_AVAILABLE and db:
         try:
-            # FALLBACK 1: If it looks like a phone number, it might be a SIP room mangled by the trunk
-            # We check if it's a CallUUID from our mapping
-            if "_" in agent_id or len(agent_id) < 20:
-                # Try to extract the last part which is likely the CallUUID
+            # FALLBACK: If it looks like a phone number or SIP-mangled name, check our Call Mapping
+            if "_" in agent_id or len(agent_id) < 20 or agent_id.startswith("+"):
                 call_uuid = agent_id.split("_")[-1]
-                print(f"[Config] Searching mapping for CallUUID: {call_uuid}")
-                mapping_doc = db.collection('call_mappings').document(call_uuid).get()
-                if mapping_doc.exists:
-                    agent_id = mapping_doc.to_dict().get('agent_id')
-                    print(f"[Config] 🎯 Mapped CallUUID to Agent ID: {agent_id}")
+                print(f"[Config] Searching mapping for CallUUID: {call_uuid} (Retry Loop Enabled)")
+                
+                # Retry loop to handle Firestore write latency from the webhook process
+                for attempt in range(5):
+                    mapping_doc = db.collection('call_mappings').document(call_uuid).get()
+                    if mapping_doc.exists:
+                        agent_id = mapping_doc.to_dict().get('agent_id')
+                        print(f"[Config] 🎯 Attempt {attempt+1}: Mapped CallUUID to Agent ID: {agent_id}")
+                        break
+                    if attempt < 4:
+                        print(f"[Config] Attempt {attempt+1}: Mapping not found yet, retrying in 500ms...")
+                        import time
+                        time.sleep(0.5)
+                else:
+                    print(f"[Config] ❌ Mapping not found after 5 attempts for {call_uuid}")
 
             doc = db.collection('agents').document(agent_id).get()
             if doc.exists:
