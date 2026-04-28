@@ -21,6 +21,8 @@ ENV OMP_NUM_THREADS=1
 ENV MKL_NUM_THREADS=1
 ENV PYTHONUNBUFFERED=1
 
-# Expose port 7860 for Hugging Face health check (even if we don't serve a UI)
-# We use a tiny python command to listen on the port while the agent runs
-CMD python -m http.server 7860 & python livekit_agent.py start
+# Expose the port (Koyeb/Cloud providers usually provide PORT env var)
+EXPOSE 8000
+
+# Start via start.sh which handles gunicorn and background workers
+CMD ["sh", "start.sh"]
