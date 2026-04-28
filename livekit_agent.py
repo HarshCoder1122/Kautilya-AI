@@ -453,12 +453,13 @@ async def entrypoint(ctx: JobContext):
     )
 
     # --- TTS Cleaning Wrapper ---
-    # Since before_tts_cb might not be supported in all versions, we wrap the synthesize method
     if tts:
         original_synthesize = tts.synthesize
         def clean_synthesize(text: str, *args, **kwargs):
             return original_synthesize(clean_text_for_tts(text), *args, **kwargs)
         tts.synthesize = clean_synthesize
+    elif is_gemini_live:
+        print("[LLM Config] Gemini Multimodal Live active. Skipping traditional TTS wrapper.")
 
     agent._session = session  # Back-reference so tools can call session.say()
 
@@ -571,11 +572,13 @@ async def entrypoint(ctx: JobContext):
         room_options=room_io.RoomOptions(),
     )
 
-    # Say welcome
-    await session.say(welcome_message, allow_interruptions=(interruption_mode == "allow"))
+    # Say welcome (Only if not Gemini Live or if TTS is present)
+    if not is_gemini_live and tts:
+        await session.say(welcome_message, allow_interruptions=(interruption_mode == "allow"))
+    elif is_gemini_live:
+        print("[Gemini Live] Skipping session.say() - Multimodal handles greeting via instructions.")
     
-    # CRITICAL: Reset the silence timer ONLY after the welcome message finishes
-    # This prevents the agent from disconnecting while the session is just starting up.
+    # CRITICAL: Reset the silence timer
     last_user_interaction = time.time()
     nudge_sent = False
     
