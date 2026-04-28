@@ -201,14 +201,14 @@ async def entrypoint(ctx: JobContext):
     agent.set_config(system_prompt, call_objective, agent_kb)
     agent.room = ctx.room
     
-    session = AgentSession(vad=vad, stt=stt, llm=llm, tts=tts)
+    session = AgentSession(agent, vad=vad, stt=stt, llm=llm, tts=tts)
     agent._session = session
     
     async def terminate():
         await ctx.room.disconnect()
     agent._on_shutdown = terminate
 
-    await session.start(ctx.room, agent)
+    await session.start(ctx.room)
     await session.say(welcome_message)
 
     while ctx.room.connection_state == rtc.ConnectionState.CONN_CONNECTED:
