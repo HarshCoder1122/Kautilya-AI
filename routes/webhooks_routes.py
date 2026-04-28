@@ -1,6 +1,6 @@
 """
-Kautilya AI — Telephony Webhooks (Concurrency-Fix Version)
-Optimized for high-speed response to prevent Vobiz retries and multiple room spawns.
+Kautilya AI — Telephony Webhooks (Stability Version)
+Uses caller phone number for stable room naming to prevent duplicate spawns.
 """
 import os
 import json
@@ -15,13 +15,10 @@ from config import LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL, LIVEKIT_SIP
 webhooks_bp = Blueprint('webhooks', __name__)
 
 def create_room_background(room_name, agent_id):
-    """Truly background room creation without blocking Flask."""
     def _task():
         try:
-            # New event loop for the thread
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            
             async def _do():
                 if not db: return
                 agent_doc = db.collection('agents').document(agent_id).get()
@@ -35,35 +32,33 @@ def create_room_background(room_name, agent_id):
                 lkapi = LiveKitAPI(url=lk_url, api_key=LIVEKIT_API_KEY, api_secret=LIVEKIT_API_SECRET)
                 try:
                     await lkapi.room.create_room(CreateRoomRequest(
-                        name=room_name, 
-                        empty_timeout=300, 
-                        metadata=json.dumps(room_metadata)
+                        name=room_name, empty_timeout=300, metadata=json.dumps(room_metadata)
                     ))
-                    print(f"[Bridge] ✅ Room {room_name} pre-created in background.")
-                finally:
-                    await lkapi.aclose()
-            
+                    print(f"[Bridge] ✅ Stable Room {room_name} ready.")
+                finally: await lkapi.aclose()
             loop.run_until_complete(_do())
             loop.close()
-        except Exception as e:
-            print(f"[Bridge] ❌ Background Error: {e}")
-
+        except Exception as e: print(f"[Bridge] ❌ Background Error: {e}")
     threading.Thread(target=_task, daemon=True).start()
 
 @webhooks_bp.route('/api/webhooks/vobiz/answer/<agent_id>', methods=['POST', 'GET'])
 def vobiz_answer(agent_id):
-    # Use Vobiz unique ID if available, else random but stable
-    call_sid = request.values.get('callid') or request.values.get('CallSid') or uuid.uuid4().hex[:8]
-    room_name = f"voice-{agent_id}--{call_sid}"
+    # Log all incoming parameters to debug Vobiz
+    print(f"[Vobiz] Incoming Request: {request.values.to_dict()}")
+    
+    # Use From number or CallSid for stable room name
+    caller_num = request.values.get('From') or request.values.get('from') or request.values.get('callid') or uuid.uuid4().hex[:8]
+    # Clean caller_num (remove +, etc)
+    caller_num = str(caller_num).replace("+", "").strip()
+    
+    room_name = f"voice-{agent_id}--{caller_num}"
     sip_uri = f"sip:{room_name}@{LIVEKIT_SIP_URI}"
     
-    # 1. Fire and forget room creation (No blocking!)
     create_room_background(room_name, agent_id)
     
-    # 2. Immediate XML Response
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Connecting...</Say>
+    <Say>Connecting to Kautilya.</Say>
     <Dial timeout="30">
         <Sip>{sip_uri}</Sip>
     </Dial>

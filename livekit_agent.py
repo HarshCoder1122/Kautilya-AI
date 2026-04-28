@@ -7,7 +7,6 @@ import re
 from datetime import datetime
 from dotenv import load_dotenv
 
-# Heavy imports at top level to avoid delay during job start
 from livekit import rtc, api
 from livekit.agents import (
     AutoSubscribe,
@@ -21,7 +20,7 @@ from livekit.plugins import sarvam, openai, silero, cartesia, google
 
 load_dotenv()
 
-# ============== Firebase Admin Initialization (Pre-warmed) ==============
+# ============== Firebase Admin Initialization ==============
 db = None
 FIREBASE_AVAILABLE = False
 def initialize_firebase():
@@ -58,7 +57,7 @@ class KautilyaAgent(Agent):
         super().__init__(**kwargs)
 
 async def entrypoint(ctx: JobContext):
-    # START CONNECTING IMMEDIATELY
+    # Immediate connection
     connect_task = asyncio.create_task(ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY))
     
     print(f"[Agent] Rapid Startup for room: {ctx.room.name}")
@@ -68,14 +67,14 @@ async def entrypoint(ctx: JobContext):
     welcome_message = "Hello, I am Kautilya."
     agent_id = None
     agent_language = "hi-IN"
-    agent_model = "kautilya-daily"
+    # HARDCODED GEMINI 2.5 FLASH
+    agent_model = "gemini-2.5-flash"
     
     # Quick Identity Resolution
     r_name = ctx.room.name
     if "--" in r_name:
         agent_id = r_name.split("--")[0].replace("voice-", "").replace("phone-", "")
 
-    # PARALLEL CONFIG FETCH
     if agent_id and FIREBASE_AVAILABLE and db:
         try:
             doc = db.collection('agents').document(agent_id).get()
@@ -84,18 +83,25 @@ async def entrypoint(ctx: JobContext):
                 system_prompt = data.get("system_prompt", system_prompt)
                 welcome_message = data.get("welcome_message", welcome_message)
                 agent_language = data.get("language", agent_language)
-                agent_model = data.get("model", agent_model)
+                db_model = data.get("model", "").lower()
+                
+                # If Gemini is selected in Dashboard, use the specific gemini-2.5-flash model
+                if "gemini" in db_model:
+                    agent_model = "gemini-2.5-flash"
+                else:
+                    agent_model = db_model
         except: pass
 
-    # Wait for connection to finish
     await connect_task
 
-    # --- Mode Selection ---
     is_gemini_live = "gemini" in agent_model.lower()
 
     if is_gemini_live:
+        print(f"[Gemini] Initializing RealtimeModel ({agent_model})...")
         gemini_instructions = f"{system_prompt}\n\nIMPORTANT: Start the conversation by saying exactly: '{welcome_message}'"
+        
         llm_plugin = google.realtime.RealtimeModel(
+            model=agent_model,
             voice="Puck",
             instructions=gemini_instructions,
             temperature=0.8
@@ -103,9 +109,7 @@ async def entrypoint(ctx: JobContext):
         session = AgentSession(llm=llm_plugin)
         agent = KautilyaAgent(instructions=gemini_instructions)
         await session.start(room=ctx.room, agent=agent)
-        # Gemini handles greeting via instructions
     else:
-        # Optimized Standard Pipeline
         vad = silero.VAD.load()
         stt = sarvam.STT(language=agent_language)
         tts = sarvam.TTS(target_language_code=agent_language, model="bulbul:v3")
