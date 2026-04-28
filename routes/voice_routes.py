@@ -10,7 +10,7 @@ import requests
 
 from flask import Blueprint, request, jsonify, Response
 
-from config import GROQ_API_KEY, SARVAM_API_KEY, STATIC_FOLDER
+from config import GROQ_API_KEY, SARVAM_API_KEY, STATIC_FOLDER, LIVEKIT_URL
 from services.tts_service import clean_text_for_tts, detect_tts_voice
 
 voice_bp = Blueprint('voice', __name__)
@@ -140,7 +140,11 @@ def generate_livekit_token():
         except Exception as e:
             print(f"[LiveKit] Metadata error: {e}")
 
-    return jsonify({"token": token.to_jwt(), "roomName": room_name})
+    return jsonify({
+        "token": token.to_jwt(), 
+        "roomName": room_name,
+        "wsUrl": LIVEKIT_URL or "wss://your-project.livekit.cloud"
+    })
 
 
 @voice_bp.route('/api/v1/audio/voices', methods=['GET'])
