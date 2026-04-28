@@ -13,6 +13,9 @@ from livekit.api import LiveKitAPI, CreateRoomRequest
 from extensions import db
 from config import LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL, LIVEKIT_SIP_URI
 
+# Strip sip: prefix if present — we add it ourselves in the URI
+SIP_DOMAIN = LIVEKIT_SIP_URI.replace("sip:", "").strip()
+
 webhooks_bp = Blueprint('webhooks', __name__)
 
 def create_room_fire_and_forget(room_name, agent_id):
@@ -53,7 +56,7 @@ def vobiz_answer(agent_id):
     
     call_uid = uuid.uuid4().hex[:4]
     room_name = f"voice-{agent_id}--{call_uid}"
-    sip_uri = f"sip:{room_name}@{LIVEKIT_SIP_URI}"
+    sip_uri = f"sip:{room_name}@{SIP_DOMAIN}"
     
     # Fire-and-forget room creation
     create_room_fire_and_forget(room_name, agent_id)
@@ -73,7 +76,7 @@ def vobiz_answer(agent_id):
 def exotel_answer(agent_id):
     call_uid = uuid.uuid4().hex[:4]
     room_name = f"voice-{agent_id}--{call_uid}"
-    sip_uri = f"sip:{room_name}@{LIVEKIT_SIP_URI}"
+    sip_uri = f"sip:{room_name}@{SIP_DOMAIN}"
     create_room_fire_and_forget(room_name, agent_id)
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
