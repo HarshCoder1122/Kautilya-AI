@@ -116,18 +116,21 @@ async def entrypoint(ctx: JobContext):
 
             # FINAL FALLBACK: Search by Customer Number (if mapping by UUID failed)
             doc = db.collection('agents').document(agent_id).get()
-            if not doc.exists:
+            if not doc or not doc.exists:
                 print(f"[Config] UUID mapping failed. Searching for active call by customer number...")
                 # We try to find any active call mapping for the participant in the room
                 # Wait for at least one participant to join if it's a SIP call
-                for attempt in range(3):
-                    participants = ctx.room.participants
+                for attempt in range(5):
+                    participants = ctx.room.remote_participants
                     if participants:
                         for p_sid, p in participants.items():
                             identity = p.identity
-                            if "sip-" in identity or identity.startswith("+"):
+                            if "sip-" in identity or identity.startswith("+") or p.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP:
+                                # Extract phone number from identity or attributes
                                 clean_id = identity.replace("sip-", "").lstrip("+")
-                                print(f"[Config] Found SIP participant: {clean_id}. Checking active_calls...")
+                                if "_" in clean_id: clean_id = clean_id.split("_")[0] # handle sip_number_uuid
+                                
+                                print(f"[Config] Found participant: {clean_id}. Checking active_calls...")
                                 call_doc = db.collection('active_calls').document(clean_id).get()
                                 if call_doc.exists:
                                     agent_id = call_doc.to_dict().get('agent_id')
@@ -135,9 +138,20 @@ async def entrypoint(ctx: JobContext):
                                     break
                         if agent_id: break
                     import time
-                    time.sleep(1)
+                    time.sleep(0.5)
 
-            # Also extract call_id for transcript saving
+            # LAST RESORT: Search by Vobiz Number (Old logic style)
+            if not agent_id or (doc and not doc.exists):
+                 vobiz_num = clean_name.split("_")[-2] if "_" in clean_name else ""
+                 if vobiz_num.startswith("+"):
+                     print(f"[Config] Last resort: searching by Vobiz number {vobiz_num}")
+                     agents_ref = db.collection('agents').where('vobiz_number', '==', vobiz_num).limit(1).get()
+                     if agents_ref:
+                         agent_id = agents_ref[0].id
+                         print(f"[Config] 🎯 Found Agent ID via Vobiz Number: {agent_id}")
+
+            if agent_id:
+                doc = db.collection('agents').document(agent_id).get()
             call_id = clean_name.split("--")[-1]
             if "_" in call_id: call_id = call_id.split("_")[-1]
             print(f"[Config] Extracted Call ID for transcripts: {call_id}")
