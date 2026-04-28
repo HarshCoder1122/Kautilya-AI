@@ -1,0 +1,1195 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Kautilya API - Developer Playground | RevealIQ</title><meta name="description"
+        content="Test and integrate Kautilya AI's powerful cloud LLM APIs. The interactive developer playground for reasoning, chat, and system prompts by RevealIQ."><meta name="keywords"
+        content="Kautilya API, AI Playground, Kautilya Developers, RevealIQ API, LLM API, generative AI playground, chat API"><meta property="og:type" content="website"><meta property="og:url" content="https://ai.revealiq.in/playground"><meta property="og:title" content="Kautilya API - Developer Playground"><meta property="og:description"
+        content="Build with Kautilya AI. Test our powerful API endpoints in the interactive developer playground."><meta property="og:image" content="https://ai.revealiq.in/static/kautilya_logo.png"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:url" content="https://ai.revealiq.in/playground"><meta name="twitter:title" content="Kautilya API - Developer Playground"><meta name="twitter:description" content="Build with Kautilya AI. Test our powerful API endpoints."><meta name="twitter:image" content="https://ai.revealiq.in/static/kautilya_logo.png"><link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet"><link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet"><script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script><script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script><style>
+        :root {
+            --bg-primary: #131314;
+            --bg-secondary: #1a1a1c;
+            --bg-card: #1E1F20;
+            --bg-card-hover: #2D2E30;
+            --bg-input: #1a1b1c;
+            --border: #444746;
+            --border-glow: rgba(168, 199, 250, 0.25);
+            --text-primary: #E3E3E3;
+            --text-secondary: #C4C7C5;
+            --text-muted: #8E918F;
+            --accent: #A8C7FA;
+            --accent-light: #c5dbfc;
+            --accent-dark: #7ba8f0;
+            --accent-glow: rgba(168, 199, 250, 0.15);
+            --success: #34A853;
+            --error: #EA4335;
+            --warning: #FBBC05;
+            --gradient-primary: linear-gradient(135deg, #4285F4 0%, #9B72CB 40%, #EA4335 70%, #FBBC05 100%);
+            --gradient-bg: linear-gradient(180deg, #131314 0%, #1E1F20 100%);
+            --radius: 12px;
+            --radius-sm: 8px;
+            --radius-lg: 16px;
+            --shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+            --shadow-glow: 0 0 30px rgba(66, 133, 244, 0.1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* ===== Header ===== */
+        .pg-header {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: rgba(10, 10, 15, 0.85);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px;
+        }
+
+        .pg-header-inner {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            height: 64px;
+        }
+
+        .pg-logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            text-decoration: none;
+            color: var(--text-primary);
+        }
+
+        .pg-logo img {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+        }
+
+        .pg-logo-text {
+            font-size: 1.1rem;
+            font-weight: 700;
+            letter-spacing: -0.3px;
+        }
+
+        .pg-logo-badge {
+            font-size: 0.65rem;
+            font-weight: 600;
+            padding: 2px 8px;
+            border-radius: 20px;
+            background: var(--gradient-primary);
+            color: #fff;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .pg-header-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .pg-btn {
+            padding: 8px 18px;
+            border-radius: var(--radius-sm);
+            font-family: inherit;
+            font-size: 0.85rem;
+            font-weight: 600;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .pg-btn-primary {
+            background: var(--gradient-primary);
+            color: #fff;
+            box-shadow: 0 2px 12px rgba(66, 133, 244, 0.3);
+        }
+
+        .pg-btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 20px rgba(66, 133, 244, 0.4);
+        }
+
+        .pg-btn-ghost {
+            background: transparent;
+            color: var(--text-secondary);
+            border: 1px solid var(--border);
+        }
+
+        .pg-btn-ghost:hover {
+            background: var(--bg-card);
+            color: var(--text-primary);
+            border-color: var(--text-muted);
+        }
+
+        .pg-btn-danger {
+            background: var(--error);
+            color: #fff;
+        }
+
+        .pg-btn-danger:hover {
+            opacity: 0.9;
+        }
+
+        .pg-btn-sm {
+            padding: 6px 12px;
+            font-size: 0.78rem;
+        }
+
+        .pg-btn .material-icons-round {
+            font-size: 16px;
+        }
+
+        .pg-user-chip {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 12px 4px 4px;
+            border-radius: 24px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+        }
+
+        .pg-user-avatar {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: var(--accent);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: #fff;
+            overflow: hidden;
+        }
+
+        .pg-user-avatar img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .pg-user-name {
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+
+        /* ===== Hero ===== */
+        .pg-hero {
+            text-align: center;
+            padding: 80px 24px 60px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .pg-hero::before {
+            content: '';
+            position: absolute;
+            top: -200px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 600px;
+            height: 600px;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(66, 133, 244, 0.08) 0%, transparent 70%);
+            pointer-events: none;
+        }
+
+        .pg-hero h1 {
+            font-size: 3rem;
+            font-weight: 900;
+            letter-spacing: -1.5px;
+            background: var(--gradient-primary);
+            background-clip: text;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 14px;
+        }
+
+        .pg-hero p {
+            font-size: 1.15rem;
+            color: var(--text-secondary);
+            max-width: 550px;
+            margin: 0 auto 30px;
+            line-height: 1.6;
+        }
+
+        .pg-hero-badges {
+            display: flex;
+            justify-content: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .pg-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 14px;
+            border-radius: 20px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            font-size: 0.82rem;
+            color: var(--text-secondary);
+        }
+
+        .pg-badge .material-icons-round {
+            font-size: 16px;
+            color: var(--accent);
+        }
+
+        /* ===== Container ===== */
+        .pg-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 24px 80px;
+        }
+
+        /* ===== Section ===== */
+        .pg-section {
+            margin-bottom: 48px;
+        }
+
+        .pg-section-title {
+            font-size: 1.3rem;
+            font-weight: 700;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .pg-section-title .material-icons-round {
+            color: var(--accent);
+            font-size: 22px;
+        }
+
+        /* ===== Cards ===== */
+        .pg-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 24px;
+            transition: border-color 0.3s;
+        }
+
+        .pg-card:hover {
+            border-color: var(--border-glow);
+        }
+
+        /* ===== Auth Gate ===== */
+        .pg-auth-gate {
+            text-align: center;
+            padding: 60px 24px;
+            background: var(--bg-card);
+            border: 1px dashed var(--border);
+            border-radius: var(--radius-lg);
+        }
+
+        .pg-auth-gate .material-icons-round {
+            font-size: 48px;
+            color: var(--text-muted);
+            margin-bottom: 16px;
+        }
+
+        .pg-auth-gate h3 {
+            font-size: 1.2rem;
+            margin-bottom: 8px;
+        }
+
+        .pg-auth-gate p {
+            color: var(--text-secondary);
+            margin-bottom: 20px;
+        }
+
+        /* ===== API Keys ===== */
+        .pg-keys-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .pg-key-card {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 20px;
+            border-radius: var(--radius);
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            transition: all 0.2s;
+        }
+
+        .pg-key-card:hover {
+            border-color: var(--accent);
+            background: var(--bg-card-hover);
+        }
+
+        .pg-key-info {
+            flex: 1;
+        }
+
+        .pg-key-name {
+            font-weight: 600;
+            font-size: 0.9rem;
+            margin-bottom: 4px;
+        }
+
+        .pg-key-preview {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .pg-key-meta {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        .pg-key-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .pg-create-key-row {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .pg-input {
+            flex: 1;
+            padding: 10px 16px;
+            border-radius: var(--radius-sm);
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            font-family: inherit;
+            font-size: 0.9rem;
+            transition: border-color 0.2s;
+        }
+
+        .pg-input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+
+        .pg-input::placeholder {
+            color: var(--text-muted);
+        }
+
+        /* ===== New Key Alert ===== */
+        .pg-new-key-alert {
+            display: none;
+            padding: 16px 20px;
+            border-radius: var(--radius);
+            background: rgba(34, 197, 94, 0.08);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+            margin-bottom: 16px;
+        }
+
+        .pg-new-key-alert.show {
+            display: block;
+        }
+
+        .pg-new-key-alert h4 {
+            color: var(--success);
+            font-size: 0.9rem;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .pg-new-key-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.82rem;
+            background: var(--bg-primary);
+            padding: 10px 14px;
+            border-radius: var(--radius-sm);
+            word-break: break-all;
+            color: var(--success);
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+
+        .pg-new-key-value code {
+            flex: 1;
+        }
+
+        .pg-new-key-warn {
+            font-size: 0.78rem;
+            color: var(--warning);
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        /* ===== Usage Bar ===== */
+        .pg-usage-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 16px;
+        }
+
+        .pg-usage-card {
+            padding: 18px;
+            border-radius: var(--radius);
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+        }
+
+        .pg-usage-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+
+        .pg-usage-label {
+            font-size: 0.82rem;
+            font-weight: 600;
+        }
+
+        .pg-usage-count {
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .pg-progress-bar {
+            height: 6px;
+            border-radius: 3px;
+            background: var(--bg-primary);
+            overflow: hidden;
+        }
+
+        .pg-progress-fill {
+            height: 100%;
+            border-radius: 3px;
+            background: var(--gradient-primary);
+            transition: width 0.3s;
+            min-width: 0;
+        }
+
+        /* ===== Playground Tabs ===== */
+        .pg-tabs {
+            display: flex;
+            gap: 2px;
+            margin-bottom: 20px;
+            background: var(--bg-input);
+            border-radius: var(--radius-sm);
+            padding: 3px;
+        }
+
+        .pg-tab {
+            flex: 1;
+            padding: 10px;
+            text-align: center;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            color: var(--text-secondary);
+            transition: all 0.2s;
+            border: none;
+            background: none;
+            font-family: inherit;
+        }
+
+        .pg-tab.active {
+            background: var(--accent);
+            color: #131314;
+        }
+
+        .pg-tab:hover:not(.active) {
+            color: var(--text-primary);
+        }
+
+        .pg-tab-content {
+            display: none;
+        }
+
+        .pg-tab-content.active {
+            display: block;
+        }
+
+        /* ===== Playground ===== */
+        .pg-playground-area {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .pg-pane {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .pg-pane-title {
+            font-size: 0.82rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .pg-textarea {
+            width: 100%;
+            min-height: 200px;
+            padding: 14px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            color: var(--text-primary);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            resize: vertical;
+            line-height: 1.5;
+        }
+
+        .pg-textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        .pg-response-box {
+            flex: 1;
+            min-height: 200px;
+            padding: 14px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            overflow: auto;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            line-height: 1.5;
+            color: var(--text-secondary);
+            white-space: pre-wrap;
+        }
+
+        .pg-run-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 12px;
+        }
+
+        .pg-latency {
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* ===== Docs ===== */
+        .pg-docs-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+            gap: 16px;
+        }
+
+        .pg-code-block {
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+
+        .pg-code-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 14px;
+            background: var(--bg-input);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .pg-code-lang {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--accent);
+            text-transform: uppercase;
+        }
+
+        .pg-code-copy {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 0.75rem;
+            font-family: inherit;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            transition: color 0.2s;
+        }
+
+        .pg-code-copy:hover {
+            color: var(--text-primary);
+        }
+
+        .pg-code-copy .material-icons-round {
+            font-size: 14px;
+        }
+
+        .pg-code-body {
+            padding: 14px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            line-height: 1.6;
+            overflow-x: auto;
+            color: #c9d1d9;
+            white-space: pre;
+        }
+
+        .pg-endpoint-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .pg-endpoint-tag.post {
+            background: rgba(34, 197, 94, 0.15);
+            color: var(--success);
+        }
+
+        .pg-endpoint-tag.get {
+            background: rgba(59, 130, 246, 0.15);
+            color: #3b82f6;
+        }
+
+        .pg-endpoint-path {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            color: var(--text-primary);
+            margin-left: 8px;
+        }
+
+        /* ===== Tier Banner ===== */
+        .pg-tier {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .pg-tier.free {
+            background: rgba(136, 136, 160, 0.15);
+            color: var(--text-secondary);
+        }
+
+        .pg-tier.pro {
+            background: rgba(255, 215, 0, 0.15);
+            color: #FFD700;
+        }
+
+        /* ===== Audio Player ===== */
+        .pg-audio-player {
+            margin-top: 12px;
+            width: 100%;
+        }
+
+        .pg-audio-player audio {
+            width: 100%;
+            border-radius: var(--radius-sm);
+        }
+
+        /* ===== Spinner ===== */
+        .pg-spinner {
+            width: 18px;
+            height: 18px;
+            border: 2px solid transparent;
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: pgSpin 0.6s linear infinite;
+            display: none;
+        }
+
+        .pg-btn.loading .pg-spinner {
+            display: inline-block;
+        }
+
+        .pg-btn.loading .pg-btn-text {
+            display: none;
+        }
+
+        @keyframes pgSpin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* ===== Footer ===== */
+        .pg-footer {
+            text-align: center;
+            padding: 32px 24px;
+            border-top: 1px solid var(--border);
+            color: var(--text-muted);
+            font-size: 0.8rem;
+        }
+
+        .pg-footer a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        /* ===== Responsiveness ===== */
+        @media (max-width: 768px) {
+            .pg-hero h1 {
+                font-size: 2rem;
+            }
+
+            .pg-playground-area {
+                grid-template-columns: 1fr;
+            }
+
+            .pg-create-key-row {
+                flex-direction: column;
+            }
+
+            .pg-docs-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style></head><body><header class="pg-header"><div class="pg-header-inner"><a href="/" class="pg-logo"><img src="/static/kautilya_logo.png" alt="K"><span class="pg-logo-text">Kautilya API</span><span class="pg-logo-badge">Beta</span></a><div class="pg-header-actions"><a href="/" class="pg-btn pg-btn-ghost pg-btn-sm"><span class="material-icons-round">chat</span> Chat
+                </a><div id="authArea"><button id="signInBtn" class="pg-btn pg-btn-primary pg-btn-sm" onclick="signInWithGoogle()"><span class="material-icons-round">login</span> Sign In
+                    </button></div></div></div></header><section class="pg-hero"><h1>Kautilya API</h1><p>Build intelligent apps with India's most powerful AI. Access LLM, Text-to-Speech, and Speech-to-Text through
+            a simple, OpenAI-compatible API.</p><div class="pg-hero-badges"><div class="pg-badge"><span class="material-icons-round">smart_toy</span> LLM Chat</div><div class="pg-badge"><span class="material-icons-round">record_voice_over</span> Text-to-Speech</div><div class="pg-badge"><span class="material-icons-round">mic</span> Speech-to-Text</div><div class="pg-badge"><span class="material-icons-round">speed</span> Low Latency</div></div></section><div class="pg-container"><div id="authGate" class="pg-auth-gate pg-section"><span class="material-icons-round">lock</span><h3>Sign in to get started</h3><p>Create API keys and start using Kautilya AI in your projects.</p><button class="pg-btn pg-btn-primary" onclick="signInWithGoogle()"><span class="material-icons-round">login</span> Sign in with Google
+            </button></div><div id="authContent" style="display:none;"><section class="pg-section"><div class="pg-section-title"><span class="material-icons-round">vpn_key</span> API Keys
+                    <span id="tierBadge" class="pg-tier free">Free</span></div><div class="pg-card"><div class="pg-create-key-row"><input type="text" id="keyNameInput" class="pg-input" placeholder="Key name (e.g. My App)"
+                            maxlength="50"><button id="createKeyBtn" class="pg-btn pg-btn-primary" onclick="createApiKey()"><span class="pg-btn-text"><span class="material-icons-round">add</span> Create Key</span><span class="pg-spinner"></span></button></div><div id="newKeyAlert" class="pg-new-key-alert"><h4><span class="material-icons-round" style="font-size:18px;">check_circle</span> API Key
+                            Created!</h4><div class="pg-new-key-value"><code id="newKeyValue"></code><button class="pg-btn pg-btn-ghost pg-btn-sm" onclick="copyNewKey()"><span class="material-icons-round">content_copy</span></button></div><div class="pg-new-key-warn"><span class="material-icons-round" style="font-size:14px;">warning</span>
+                            Copy this key now — it won't be shown again!
+                        </div></div><div id="keysGrid" class="pg-keys-grid"><div style="text-align:center; padding:24px; color:var(--text-muted);">Loading keys...</div></div></div></section><section class="pg-section"><div class="pg-section-title"><span class="material-icons-round">bar_chart</span> Today's Usage
+                </div><div id="usageGrid" class="pg-usage-grid"></div></section><section class="pg-section"><div class="pg-section-title"><span class="material-icons-round">play_circle</span> Playground
+                </div><div class="pg-card"><div class="pg-tabs"><button class="pg-tab active" onclick="switchTab('chat')">💬 Chat</button><button class="pg-tab" onclick="switchTab('tts')">🔊 Text-to-Speech</button><button class="pg-tab" onclick="switchTab('stt')">🎙️ Speech-to-Text</button></div><div id="tab-chat" class="pg-tab-content active"><div class="pg-playground-area"><div class="pg-pane"><div class="pg-pane-title">Request</div><textarea id="chatInput" class="pg-textarea"
+                                    placeholder='Enter your message here...'></textarea><div class="pg-run-row"><div><select id="chatModel" class="pg-input" style="flex:none; width:auto;"><option value="kautilya-daily">kautilya-daily</option><option value="kautilya-creative">kautilya-creative</option><option value="kautilya-pro">kautilya-pro</option><option value="kautilya-coder">kautilya-coder</option></select></div><div style="display:flex;align-items:center;gap:12px;"><span id="chatLatency" class="pg-latency"></span><button id="chatRunBtn" class="pg-btn pg-btn-primary" onclick="runChat()"><span class="pg-btn-text"><span
+                                                    class="material-icons-round">play_arrow</span> Run</span><span class="pg-spinner"></span></button></div></div></div><div class="pg-pane"><div class="pg-pane-title">Response</div><div id="chatResponse" class="pg-response-box">Response will appear here...</div></div></div></div><div id="tab-tts" class="pg-tab-content"><div class="pg-playground-area"><div class="pg-pane"><div class="pg-pane-title">Text Input</div><textarea id="ttsInput" class="pg-textarea"
+                                    placeholder="Enter text to convert to speech..."></textarea><div class="pg-run-row"><div style="display:flex;gap:8px;"><select id="ttsLang" class="pg-input" style="flex:none; width:auto;"><option value="">Auto-detect</option><option value="en-IN">English (India)</option><option value="hi-IN">Hindi</option><option value="bn-IN">Bengali</option><option value="ta-IN">Tamil</option><option value="te-IN">Telugu</option><option value="gu-IN">Gujarati</option><option value="kn-IN">Kannada</option><option value="ml-IN">Malayalam</option><option value="pa-IN">Punjabi</option></select></div><div style="display:flex;align-items:center;gap:12px;"><span id="ttsLatency" class="pg-latency"></span><button id="ttsRunBtn" class="pg-btn pg-btn-primary" onclick="runTTS()"><span class="pg-btn-text"><span
+                                                    class="material-icons-round">play_arrow</span> Run</span><span class="pg-spinner"></span></button></div></div></div><div class="pg-pane"><div class="pg-pane-title">Audio Output</div><div id="ttsResponse" class="pg-response-box"
+                                    style="display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;"><span class="material-icons-round"
+                                        style="font-size:48px;color:var(--text-muted);">volume_up</span><span style="color:var(--text-muted);">Audio will play here...</span></div></div></div></div><div id="tab-stt" class="pg-tab-content"><div class="pg-playground-area"><div class="pg-pane"><div class="pg-pane-title">Audio Input</div><div class="pg-response-box"
+                                    style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;"><span class="material-icons-round"
+                                        style="font-size:48px;color:var(--text-muted);">mic</span><input type="file" id="sttFileInput" accept="audio/*" style="display:none;"
+                                        onchange="handleSTTFile(event)"><button class="pg-btn pg-btn-ghost"
+                                        onclick="document.getElementById('sttFileInput').click()"><span class="material-icons-round">upload_file</span> Upload Audio File
+                                    </button><span id="sttFileName" style="font-size:0.8rem;color:var(--text-muted);"></span></div><div class="pg-run-row"><span></span><div style="display:flex;align-items:center;gap:12px;"><span id="sttLatency" class="pg-latency"></span><button id="sttRunBtn" class="pg-btn pg-btn-primary" onclick="runSTT()"><span class="pg-btn-text"><span
+                                                    class="material-icons-round">play_arrow</span> Transcribe</span><span class="pg-spinner"></span></button></div></div></div><div class="pg-pane"><div class="pg-pane-title">Transcription</div><div id="sttResponse" class="pg-response-box">Transcription will appear here...</div></div></div></div></div></section><section class="pg-section"><div class="pg-section-title"><span class="material-icons-round">menu_book</span> Quick Start
+                </div><div class="pg-card" style="margin-bottom:20px;"><h3 style="font-size:1rem;margin-bottom:16px;">Endpoints</h3><div style="display:flex;flex-direction:column;gap:12px;"><div><span class="pg-endpoint-tag post">POST</span><span class="pg-endpoint-path">/api/v1/chat/completions</span><span style="color:var(--text-muted);font-size:0.8rem;margin-left:8px;">— Chat completions
+                                (OpenAI-compatible)</span></div><div><span class="pg-endpoint-tag post">POST</span><span class="pg-endpoint-path">/api/v1/audio/speech</span><span style="color:var(--text-muted);font-size:0.8rem;margin-left:8px;">— Text-to-Speech
+                                (returns audio/mpeg)</span></div><div><span class="pg-endpoint-tag post">POST</span><span class="pg-endpoint-path">/api/v1/audio/transcriptions</span><span style="color:var(--text-muted);font-size:0.8rem;margin-left:8px;">— Speech-to-Text
+                                (multipart audio upload)</span></div><div><span class="pg-endpoint-tag get">GET</span><span class="pg-endpoint-path">/api/v1/models</span><span style="color:var(--text-muted);font-size:0.8rem;margin-left:8px;">— List available
+                                models</span></div></div></div><div class="pg-docs-grid"><div class="pg-code-block"><div class="pg-code-header"><span class="pg-code-lang">Python</span><button class="pg-code-copy" onclick="copyCode(this)"><span
+                                    class="material-icons-round">content_copy</span> Copy</button></div><div class="pg-code-body">import requests
+
+                            resp = requests.post(
+                            "https://ai.revealiq.in/api/v1/chat/completions",
+                            headers={
+                            "Authorization": "Bearer YOUR_API_KEY",
+                            "Content-Type": "application/json"
+                            },
+                            json={
+                            "model": "kautilya-daily",
+                            "messages": [
+                            {"role": "user", "content": "Hello Kautilya!"}
+                            ]
+                            }
+                            )
+
+                            print(resp.json()["choices"][0]["message"]["content"])</div></div><div class="pg-code-block"><div class="pg-code-header"><span class="pg-code-lang">JavaScript</span><button class="pg-code-copy" onclick="copyCode(this)"><span
+                                    class="material-icons-round">content_copy</span> Copy</button></div><div class="pg-code-body">const resp = await fetch(
+                            "https://ai.revealiq.in/api/v1/chat/completions",
+                            {
+                            method: "POST",
+                            headers: {
+                            "Authorization": "Bearer YOUR_API_KEY",
+                            "Content-Type": "application/json"
+                            },
+                            body: JSON.stringify({
+                            model: "kautilya-daily",
+                            messages: [
+                            { role: "user", content: "Hello Kautilya!" }
+                            ]
+                            })
+                            }
+                            );
+
+                            const data = await resp.json();
+                            console.log(data.choices[0].message.content);</div></div><div class="pg-code-block"><div class="pg-code-header"><span class="pg-code-lang">cURL</span><button class="pg-code-copy" onclick="copyCode(this)"><span
+                                    class="material-icons-round">content_copy</span> Copy</button></div><div class="pg-code-body">curl -X POST https://ai.revealiq.in/api/v1/chat/completions \
+                            -H "Authorization: Bearer YOUR_API_KEY" \
+                            -H "Content-Type: application/json" \
+                            -d '{
+                            "model": "kautilya-daily",
+                            "messages": [
+                            {"role": "user", "content": "Hello Kautilya!"}
+                            ]
+                            }'</div></div><div class="pg-code-block"><div class="pg-code-header"><span class="pg-code-lang">Python — TTS</span><button class="pg-code-copy" onclick="copyCode(this)"><span
+                                    class="material-icons-round">content_copy</span> Copy</button></div><div class="pg-code-body">import requests
+
+                            resp = requests.post(
+                            "https://ai.revealiq.in/api/v1/audio/speech",
+                            headers={
+                            "Authorization": "Bearer YOUR_API_KEY",
+                            "Content-Type": "application/json"
+                            },
+                            json={
+                            "input": "Namaste! Main Kautilya hoon.",
+                            "voice": "shubh",
+                            "language": "hi-IN"
+                            }
+                            )
+
+                            with open("output.mp3", "wb") as f:
+                            f.write(resp.content)
+
+                            print("Audio saved as output.mp3")</div></div></div></section></div></div><footer class="pg-footer"><p>Built with ❤️ by <a href="/">RevealIQ Industries</a> — Kautilya API v1.0</p></footer><script>
+        // ===== Firebase Config =====
+        const firebaseConfig = {
+            apiKey: "AIzaSyA5GIkQSRq2Kdcn0SVsWDNgokA1IgL3k2c",
+            authDomain: "ai.revealiq.in",
+            projectId: "jarvis-a6e18",
+            storageBucket: "jarvis-a6e18.firebasestorage.app",
+            messagingSenderId: "872168972424",
+            appId: "1:872168972424:web:2b0b9b82922860a52c3f3d",
+            measurementId: "G-H2FB26YQ9R"
+        };
+
+        let app, auth, currentUser = null;
+        let activeApiKey = localStorage.getItem('kautilya_api_key') || ''; // Auto-load saved key
+
+        try {
+            app = firebase.initializeApp(firebaseConfig);
+            auth = firebase.auth();
+        } catch (e) { console.warn('Firebase init failed', e); }
+
+        // ===== Auth =====
+        function signInWithGoogle() {
+            if (!auth) return;
+            const provider = new firebase.auth.GoogleAuthProvider();
+            auth.signInWithPopup(provider).catch(e => alert('Sign-in failed: ' + e.message));
+        }
+
+        if (auth) {
+            auth.onAuthStateChanged(user => {
+                currentUser = user;
+                const authGate = document.getElementById('authGate');
+                const authContent = document.getElementById('authContent');
+                const authArea = document.getElementById('authArea');
+
+                if (user) {
+                    authGate.style.display = 'none';
+                    authContent.style.display = 'block';
+                    const initial = (user.displayName || user.email || 'U')[0].toUpperCase();
+                    authArea.innerHTML = `
+                <div class="pg-user-chip"><div class="pg-user-avatar">
+                        ${user.photoURL ? `<img src="${user.photoURL}" referrerpolicy="no-referrer">` : initial}
+                    </div><span class="pg-user-name">${user.displayName || 'User'}</span></div>
+            `;
+                    loadKeys();
+                } else {
+                    authGate.style.display = 'block';
+                    authContent.style.display = 'none';
+                    authArea.innerHTML = `
+                <button id="signInBtn" class="pg-btn pg-btn-primary pg-btn-sm" onclick="signInWithGoogle()"><span class="material-icons-round">login</span> Sign In
+                </button>
+            `;
+                }
+            });
+        }
+
+        async function getToken() {
+            if (!currentUser) return null;
+            return await currentUser.getIdToken();
+        }
+
+        // ===== API Keys Management =====
+        async function loadKeys() {
+            const token = await getToken();
+            if (!token) return;
+
+            try {
+                const resp = await fetch('/api/keys/list', { headers: { 'Authorization': `Bearer ${token}` } });
+                const data = await resp.json();
+
+                // Auto-load API key from cross-device sync if missing locally
+                if (data.active_key && (!activeApiKey || activeApiKey !== data.active_key)) {
+                    activeApiKey = data.active_key;
+                    localStorage.setItem('kautilya_api_key', activeApiKey);
+                    console.log('Restored API key from server sync');
+                }
+
+                // Update tier badge
+                const badge = document.getElementById('tierBadge');
+                badge.textContent = data.tier === 'pro' ? '⭐ Pro' : 'Free';
+                badge.className = `pg-tier ${data.tier}`;
+
+                // Render keys
+                const grid = document.getElementById('keysGrid');
+                if (!data.keys || data.keys.length === 0) {
+                    grid.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-muted);">No API keys yet. Create one above!</div>';
+                } else {
+                    grid.innerHTML = data.keys.map(k => `
+                <div class="pg-key-card"><div class="pg-key-info"><div class="pg-key-name">${escapeHtml(k.name)}</div><div class="pg-key-preview">kautilya-•••••••••${k.preview}</div><div class="pg-key-meta">
+                            Created: ${k.created_at ? new Date(k.created_at).toLocaleDateString() : 'Unknown'}
+                            ${k.last_used ? ' · Last used: ' + new Date(k.last_used).toLocaleDateString() : ''}
+                        </div></div><div class="pg-key-actions"><button class="pg-btn pg-btn-danger pg-btn-sm" onclick="revokeKey('${k.key_hash}')"><span class="material-icons-round">delete</span> Revoke
+                        </button></div></div>
+            `).join('');
+                }
+
+                // Render usage
+                renderUsage(data.usage || {}, data.limits || {});
+            } catch (e) {
+                console.error('Load keys failed:', e);
+            }
+        }
+
+        async function createApiKey() {
+            const btn = document.getElementById('createKeyBtn');
+            btn.classList.add('loading');
+
+            const name = document.getElementById('keyNameInput').value.trim() || 'Default Key';
+            const token = await getToken();
+
+            try {
+                const resp = await fetch('/api/keys/create', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
+                const data = await resp.json();
+
+                if (data.error) {
+                    alert(data.error);
+                } else {
+                    // Show new key & save to localStorage
+                    const alert = document.getElementById('newKeyAlert');
+                    document.getElementById('newKeyValue').textContent = data.key;
+                    alert.classList.add('show');
+                    activeApiKey = data.key;
+                    localStorage.setItem('kautilya_api_key', data.key);
+                    document.getElementById('keyNameInput').value = '';
+                    loadKeys();
+                }
+            } catch (e) {
+                alert('Failed to create key: ' + e.message);
+            }
+            btn.classList.remove('loading');
+        }
+
+        function copyNewKey() {
+            const key = document.getElementById('newKeyValue').textContent;
+            navigator.clipboard.writeText(key).then(() => {
+                const btn = event.target.closest('button');
+                const icon = btn.querySelector('.material-icons-round');
+                if (icon) { icon.textContent = 'check'; setTimeout(() => icon.textContent = 'content_copy', 1500); }
+            });
+        }
+
+        async function revokeKey(keyHash) {
+            if (!confirm('Are you sure you want to revoke this API key? This cannot be undone.')) return;
+            const token = await getToken();
+
+            try {
+                const resp = await fetch('/api/keys/revoke', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ key_hash: keyHash })
+                });
+                // Clear saved key if it was the revoked one
+                const saved = localStorage.getItem('kautilya_api_key');
+                if (saved) {
+                    // We can't compare hash to raw key here, so clear it to be safe
+                    // User will need to create a new key or the next loadKeys will find remaining keys
+                    localStorage.removeItem('kautilya_api_key');
+                    activeApiKey = '';
+                }
+                loadKeys();
+            } catch (e) {
+                alert('Revoke failed: ' + e.message);
+            }
+        }
+
+        // ===== Usage =====
+        function formatNumber(n) {
+            if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+            if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+            return n.toString();
+        }
+
+        function renderUsage(usage, limits) {
+            const grid = document.getElementById('usageGrid');
+            const items = [
+                { label: 'LLM Tokens', key: 'llm_tokens', limit: limits.llm_tokens || 10000, icon: 'smart_toy', unit: 'tokens' },
+                { label: 'TTS Characters', key: 'tts_chars', limit: limits.tts_chars || 5000, icon: 'record_voice_over', unit: 'chars' },
+                { label: 'STT Seconds', key: 'stt_seconds', limit: limits.stt_seconds || 60, icon: 'mic', unit: 'sec' },
+            ];
+            grid.innerHTML = items.map(item => {
+                const used = usage[item.key] || 0;
+                const pct = Math.min((used / item.limit) * 100, 100);
+                return `
+            <div class="pg-usage-card"><div class="pg-usage-header"><span class="pg-usage-label"><span class="material-icons-round" style="font-size:16px;vertical-align:middle;color:var(--accent);">${item.icon}</span> ${item.label}</span><span class="pg-usage-count">${formatNumber(used)} / ${formatNumber(item.limit)} ${item.unit}</span></div><div class="pg-progress-bar"><div class="pg-progress-fill" style="width:${pct}%"></div></div></div>
+        `;
+            }).join('');
+        }
+
+        // ===== Playground Tabs =====
+        function switchTab(tab) {
+            document.querySelectorAll('.pg-tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.pg-tab-content').forEach(t => t.classList.remove('active'));
+            event.target.closest('.pg-tab').classList.add('active');
+            document.getElementById('tab-' + tab).classList.add('active');
+        }
+
+        // ===== Playground: Chat =====
+        async function runChat() {
+            if (!activeApiKey) return alert('Create an API key first — your key is saved automatically for next time.');
+            const btn = document.getElementById('chatRunBtn');
+            btn.classList.add('loading');
+            const input = document.getElementById('chatInput').value.trim();
+            if (!input) { btn.classList.remove('loading'); return alert('Enter a message.'); }
+
+            const model = document.getElementById('chatModel').value;
+            const start = Date.now();
+            document.getElementById('chatResponse').textContent = 'Generating...';
+
+            try {
+                const resp = await fetch('/api/v1/chat/completions', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${activeApiKey}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model, messages: [{ role: 'user', content: input }] })
+                });
+                const data = await resp.json();
+                const elapsed = Date.now() - start;
+                document.getElementById('chatLatency').textContent = `${elapsed}ms`;
+
+                if (data.error) {
+                    document.getElementById('chatResponse').textContent = JSON.stringify(data, null, 2);
+                } else {
+                    document.getElementById('chatResponse').textContent = JSON.stringify(data, null, 2);
+                }
+            } catch (e) {
+                document.getElementById('chatResponse').textContent = 'Error: ' + e.message;
+            }
+            btn.classList.remove('loading');
+            loadKeys(); // Refresh usage
+        }
+
+        // ===== Playground: TTS =====
+        async function runTTS() {
+            if (!activeApiKey) return alert('Create an API key first — your key is saved automatically for next time.');
+            const btn = document.getElementById('ttsRunBtn');
+            btn.classList.add('loading');
+            const input = document.getElementById('ttsInput').value.trim();
+            if (!input) { btn.classList.remove('loading'); return alert('Enter text.'); }
+
+            const lang = document.getElementById('ttsLang').value;
+            const start = Date.now();
+
+            try {
+                const body = { input };
+                if (lang) body.language = lang;
+
+                const resp = await fetch('/api/v1/audio/speech', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${activeApiKey}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const elapsed = Date.now() - start;
+                document.getElementById('ttsLatency').textContent = `${elapsed}ms`;
+
+                if (resp.ok) {
+                    const blob = await resp.blob();
+                    const url = URL.createObjectURL(blob);
+                    document.getElementById('ttsResponse').innerHTML = `
+                <span class="material-icons-round" style="font-size:48px;color:var(--success);">check_circle</span><span style="color:var(--success);">Audio generated!</span><audio controls autoplay src="${url}" style="width:100%;margin-top:12px;"></audio>
+            `;
+                } else {
+                    const data = await resp.json();
+                    document.getElementById('ttsResponse').innerHTML = `<span style="color:var(--error);">${JSON.stringify(data, null, 2)}</span>`;
+                }
+            } catch (e) {
+                document.getElementById('ttsResponse').innerHTML = `<span style="color:var(--error);">Error: ${e.message}</span>`;
+            }
+            btn.classList.remove('loading');
+            loadKeys();
+        }
+
+        // ===== Playground: STT =====
+        let sttFile = null;
+        function handleSTTFile(e) {
+            sttFile = e.target.files[0];
+            document.getElementById('sttFileName').textContent = sttFile ? sttFile.name : '';
+        }
+
+        async function runSTT() {
+            if (!activeApiKey) return alert('Create an API key first.');
+            if (!sttFile) return alert('Upload an audio file first.');
+            const btn = document.getElementById('sttRunBtn');
+            btn.classList.add('loading');
+
+            const start = Date.now();
+            const formData = new FormData();
+            formData.append('file', sttFile);
+
+            try {
+                const resp = await fetch('/api/v1/audio/transcriptions', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${activeApiKey}` },
+                    body: formData
+                });
+                const data = await resp.json();
+                const elapsed = Date.now() - start;
+                document.getElementById('sttLatency').textContent = `${elapsed}ms`;
+                document.getElementById('sttResponse').textContent = JSON.stringify(data, null, 2);
+            } catch (e) {
+                document.getElementById('sttResponse').textContent = 'Error: ' + e.message;
+            }
+            btn.classList.remove('loading');
+            loadKeys();
+        }
+
+        // ===== Utils =====
+        function escapeHtml(str) { const d = document.createElement('div'); d.innerText = str; return d.innerHTML; }
+
+        function copyCode(btn) {
+            const code = btn.closest('.pg-code-block').querySelector('.pg-code-body').textContent;
+            navigator.clipboard.writeText(code).then(() => {
+                btn.innerHTML = '<span class="material-icons-round">check</span> Copied!';
+                setTimeout(() => btn.innerHTML = '<span class="material-icons-round">content_copy</span> Copy', 1500);
+            });
+        }
+    </script></body></html>

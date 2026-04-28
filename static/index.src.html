@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Kautilya AI - Advanced AI Assistant | RevealIQ</title>
+    <meta name="description"
+        content="Kautilya AI is a strategic, cloud-based AI assistant powered by advanced LLMs. Built by RevealIQ with an Indian Soul, it offers deep reasoning, web search, and intelligent chat.">
+    <meta name="keywords"
+        content="Kautilya AI, AI Assistant, Kautilya Chat, RevealIQ, ChatGPT alternative, Gemini alternative, Indian AI, smart chatbot, cloud AI">
+
+    <!-- Open Graph / Web Social -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://ai.revealiq.in/">
+    <meta property="og:title" content="Kautilya AI - Advanced AI Assistant | RevealIQ">
+    <meta property="og:description"
+        content="Strategic Intelligence, Indian Soul. A powerful cloud AI assistant by RevealIQ with real-time web search and logical reasoning.">
+    <meta property="og:image" content="https://ai.revealiq.in/static/kautilya_logo.png">
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:url" content="https://ai.revealiq.in/">
+    <meta name="twitter:title" content="Kautilya AI - Advanced AI Assistant">
+    <meta name="twitter:description"
+        content="Strategic Intelligence, Indian Soul. Experience the new cloud AI assistant by RevealIQ.">
+    <meta name="twitter:image" content="https://ai.revealiq.in/static/kautilya_logo.png">
+
+    <meta name="theme-color" content="#131314">
+    <link rel="manifest" href="/static/manifest.json">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+    <!-- Material Icons -->
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+
+    <!-- Markdown & Syntax Highlighting -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- DOMPurify for XSS Protection -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
+    <link rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+
+    <!-- KaTeX for LaTeX Math -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+
+    <!-- LiveKit SDK & Voice Integration -->
+    <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+    <script src="/static/livekit-voice.js"></script>
+
+    <!-- Image Generation is handled server-side via api.airforce Flux-2-Dev -->
+</head>
+
+<body>
+
+    <!-- Splash Screen -->
+    <div class="splash-screen" id="splashScreen">
+        <div class="splash-logo-container">
+            <div class="splash-ring"></div>
+            <div class="splash-ring splash-ring-2"></div>
+            <div class="splash-ring splash-ring-3"></div>
+            <img src="/static/kautilya_logo.png" alt="KAUTILYA AI" class="splash-logo">
+        </div>
+        <div class="splash-text">K.A.U.T.I.L.Y.A.</div>
+        <div class="splash-subtitle">Knowledge-driven Autonomous Utility for Tactical Intelligence, Learning & Yield
+            Advancement</div>
+    </div>
+
+
+
+    <!-- Sidebar -->
+    <aside class="app-sidebar" id="appSidebar">
+        <div class="sidebar-header">
+            <!-- KAUTILYA AI Logo -->
+            <div class="sidebar-logo-container" id="sidebarEmoji">
+                <img src="/static/kautilya_logo.png" alt="KAUTILYA AI" class="sidebar-brand-logo">
+            </div>
+        </div>
+
+        <button class="new-chat-btn" id="newChatBtn">
+            <span class="material-icons-round">add</span>
+            New Chat
+        </button>
+
+        <div class="recent-chats-label">Recent</div>
+        <div class="recent-list" id="recentList">
+            <!-- Populated by JS -->
+        </div>
+
+        <div class="sidebar-footer">
+            <button class="icon-btn" id="loginBtn" title="Sign In">
+                <span class="material-icons-round">account_circle</span>
+                <span class="login-label">Sign In</span>
+            </button>
+
+            <div class="user-profile-section" id="sidebarProfile" style="display: none;">
+                <img src="https://lh3.googleusercontent.com/a/default-user" alt="User" class="sidebar-avatar"
+                    id="sidebarAvatarImg">
+                <div class="sidebar-user-info">
+                    <span class="sidebar-username" id="sidebarUsername">User</span>
+                    <span class="sidebar-status">Free Plan</span>
+                </div>
+                <button class="sidebar-settings-btn" id="openSettingsBtn" title="Settings">
+                    <span class="material-icons-round">settings</span>
+                </button>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <div class="main-layout">
+
+        <!-- Header -->
+        <header class="app-header">
+            <button class="menu-btn" id="toggleSidebar">
+                <span class="material-icons-round">menu</span>
+            </button>
+            <div class="brand">
+                <div class="logo-anim-wrapper">
+                    <div class="logo-ring"></div>
+                    <div class="logo-ring ring-2"></div>
+                    <img src="/static/kautilya_logo.png" alt="KAUTILYA AI Logo" class="header-logo">
+                </div>
+                KAUTILYA
+            </div>
+            <div class="header-actions">
+                <!-- User avatar with dropdown -->
+                <div class="profile-dropdown-wrapper" id="profileWrapper">
+                    <div class="user-badge" id="userAvatar" style="display:none;">
+                        <span class="material-icons-round">account_circle</span>
+                    </div>
+
+                    <!-- Dropdown Menu -->
+                    <div class="profile-dropdown" id="profileDropdown">
+                        <!-- User Info Header -->
+                        <div class="dropdown-user-info" id="dropdownUserInfo">
+                            <div class="dropdown-avatar" id="dropdownAvatar">
+                                <span class="material-icons-round">account_circle</span>
+                            </div>
+                            <div class="dropdown-user-details">
+                                <div class="dropdown-user-name" id="dropdownUserName">Guest</div>
+                                <div class="dropdown-user-email" id="dropdownUserEmail"></div>
+                            </div>
+                        </div>
+
+                        <div class="dropdown-divider"></div>
+
+                        <!-- Memory Section -->
+                        <button class="dropdown-item" id="dropdownMemory">
+                            <span class="material-icons-round">psychology</span>
+                            <span>My Memory</span>
+                            <span class="dropdown-badge" id="memoryCount">0</span>
+                        </button>
+
+                        <button class="dropdown-item" id="dropdownClearMemory">
+                            <span class="material-icons-round">delete_sweep</span>
+                            <span>Clear Memory</span>
+                        </button>
+
+                        <div class="dropdown-divider"></div>
+
+                        <!-- Info Links -->
+                        <button class="dropdown-item" id="dropdownFAQ">
+                            <span class="material-icons-round">help_outline</span>
+                            <span>FAQs</span>
+                        </button>
+
+                        <button class="dropdown-item" id="dropdownTerms">
+                            <span class="material-icons-round">description</span>
+                            <span>Terms & Conditions</span>
+                        </button>
+
+                        <button class="dropdown-item" id="dropdownPrivacy">
+                            <span class="material-icons-round">shield</span>
+                            <span>Privacy Policy</span>
+                        </button>
+
+                        <div class="dropdown-divider"></div>
+
+                        <div class="dropdown-app-info">
+                            <span class="material-icons-round">info</span>
+                            KAUTILYA AI v2.0 &middot; by RevealIQ
+                        </div>
+
+                        <div class="dropdown-divider"></div>
+
+                        <!-- Sign Out -->
+                        <button class="dropdown-item dropdown-signout" id="dropdownSignOut">
+                            <span class="material-icons-round">logout</span>
+                            <span>Sign Out</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Info Modal (FAQ / Terms / Privacy) -->
+        <div class="info-modal-overlay" id="infoModalOverlay">
+            <div class="info-modal">
+                <div class="info-modal-header">
+                    <h2 id="infoModalTitle">Information</h2>
+                    <button class="info-modal-close" id="infoModalClose">
+                        <span class="material-icons-round">close</span>
+                    </button>
+                </div>
+                <div class="info-modal-body" id="infoModalBody">
+                </div>
+            </div>
+        </div>
+
+        <!-- Chat Area -->
+        <main class="chat-container" id="chatHistory">
+            <div class="welcome-screen" id="welcomeScreen">
+                <div class="greeting-header">
+                    <span class="greeting-text">Hello there</span>
+                </div>
+                <h1 class="welcome-title">How can I help you today?</h1>
+
+                <!-- Suggestion Chips -->
+                <div class="suggestion-chips">
+                    <button class="chip" data-prompt="Create an image of a cyberpunk city">
+                        <span class="material-icons-round chip-icon">image</span>
+                        Create image
+                    </button>
+                    <button class="chip" data-prompt="What is the latest cricket score?">
+                        <span class="material-icons-round chip-icon">sports_cricket</span>
+                        Explore cricket
+                    </button>
+                    <button class="chip" data-prompt="Write a poem about space">
+                        <span class="material-icons-round chip-icon">edit</span>
+                        Write anything
+                    </button>
+                    <button class="chip" data-prompt="Tell me a fun fact to boost my day">
+                        <span class="material-icons-round chip-icon">sentiment_satisfied</span>
+                        Boost my day
+                    </button>
+                    <button class="chip" data-prompt="Explain quantum physics like I'm 5">
+                        <span class="material-icons-round chip-icon">school</span>
+                        Help me learn
+                    </button>
+                </div>
+            </div>
+        </main>
+
+        <!-- Input Area -->
+        <section class="input-area">
+            <div class="input-wrapper">
+                <input type="file" id="fileInput" multiple hidden accept="image/*,audio/*,.pdf,.doc,.docx,.txt">
+
+                <div class="attach-menu" id="attachMenu" style="display: none;">
+                    <button class="attach-option" data-type="image">
+                        <span class="material-icons-round" style="color:#4caf50">image</span>
+                        Image
+                    </button>
+                    <button class="attach-option" data-type="file">
+                        <span class="material-icons-round" style="color:#2196f3">description</span>
+                        File
+                    </button>
+                </div>
+
+                <div class="file-preview-area" id="filePreviewArea" style="display: none;"></div>
+
+                <div class="input-row">
+                    <button class="icon-btn-input" id="attachBtn" title="Add Attachment">
+                        <span class="material-icons-round">add</span>
+                    </button>
+
+                    <textarea class="text-input" id="commandInput" placeholder="Ask anything..." rows="1"
+                        autocomplete="off"></textarea>
+
+                    <div class="input-actions">
+                        <select id="modelSelector" class="model-selector" title="Select Model">
+                            <option value="daily">Daily</option>
+                            <option value="pro">Pro</option>
+                            <option value="coder">Coder</option>
+                        </select>
+                        <button class="voice-mode-trigger" id="voiceModeTrigger" title="Start Live Voice">
+                            <span class="material-icons-round">mic</span>
+                        </button>
+
+                        <button class="send-btn" id="submitCommand">
+                            <span class="material-icons-round">send</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </div>
+
+    <!-- Artifact Preview Panel (Claude-like side panel) -->
+    <aside class="artifact-panel" id="artifactPanel">
+        <div class="artifact-header">
+            <div class="artifact-title-area">
+                <span class="material-icons-round artifact-type-icon">code</span>
+                <span class="artifact-title" id="artifactTitle">Preview</span>
+            </div>
+            <div class="artifact-actions">
+                <button class="artifact-action-btn" id="artifactCopyBtn" title="Copy Code">
+                    <span class="material-icons-round">content_copy</span>
+                </button>
+                <button class="artifact-action-btn" id="artifactDownloadBtn" title="Download">
+                    <span class="material-icons-round">download</span>
+                </button>
+                <button class="artifact-action-btn artifact-close-btn" id="artifactCloseBtn" title="Close">
+                    <span class="material-icons-round">close</span>
+                </button>
+            </div>
+        </div>
+        <div class="artifact-tabs">
+            <button class="artifact-tab active" data-tab="preview" id="artifactTabPreview">
+                <span class="material-icons-round" style="font-size:16px;">visibility</span> Preview
+            </button>
+            <button class="artifact-tab" data-tab="code" id="artifactTabCode">
+                <span class="material-icons-round" style="font-size:16px;">code</span> Code
+            </button>
+        </div>
+        <div class="artifact-body">
+            <iframe id="artifactPreviewFrame" class="artifact-preview-frame"
+                sandbox="allow-scripts allow-same-origin allow-modals allow-popups" title="Artifact Preview"></iframe>
+            <div id="artifactCodeView" class="artifact-code-view" style="display:none;">
+                <pre><code id="artifactCodeContent"></code></pre>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Login Modal -->
+    <div class="login-modal-overlay" id="loginModal">
+        <div class="login-modal">
+            <button class="login-close" id="closeLoginModal">
+                <span class="material-icons-round">close</span>
+            </button>
+            <div class="login-header">
+                <img src="/static/kautilya_logo.png" alt="KAUTILYA AI" class="login-logo">
+                <h2>Sign in to KAUTILYA AI</h2>
+                <p class="login-subtitle">Save your conversations across devices</p>
+            </div>
+            <div class="login-body">
+                <button class="google-signin-btn" id="googleSignIn">
+                    <svg width="20" height="20" viewBox="0 0 48 48">
+                        <path fill="#EA4335"
+                            d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+                        <path fill="#4285F4"
+                            d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+                        <path fill="#FBBC05"
+                            d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+                        <path fill="#34A853"
+                            d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+                    </svg>
+                    Continue with Google
+                </button>
+                <div class="login-divider">
+                    <span>or</span>
+                </div>
+                <input type="email" class="login-input" id="loginEmail" placeholder="Email address">
+                <input type="password" class="login-input" id="loginPassword" placeholder="Password">
+                <button class="login-submit-btn" id="loginSubmit">Sign In</button>
+                <p class="login-toggle">Don't have an account? <a href="#" id="toggleSignUp">Sign Up</a></p>
+            </div>
+            <p class="login-optional">Sign-in is optional. You can use KAUTILYA AI without an account.</p>
+        </div>
+    </div>
+
+    <!-- Voice Mode Overlay -->
+    <div class="voice-overlay" id="voiceOverlay">
+        <div class="voice-status" id="voiceStatus">Listening...</div>
+
+        <div class="waveform" id="waveform">
+            <!-- JS generates bars here -->
+        </div>
+
+        <div class="voice-controls">
+            <button class="v-btn btn-mic-toggle" id="voiceMuteBtn">
+                <span class="material-icons-round">mic</span>
+            </button>
+            <button class="v-btn btn-end" id="voiceEndBtn">
+                <span class="material-icons-round">close</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Settings Modal (Claude Style) -->
+    <div class="settings-modal-overlay" id="settingsModal">
+        <div class="settings-modal">
+            <button class="settings-close" id="closeSettingsModal">
+                <span class="material-icons-round">close</span>
+            </button>
+            <div class="settings-layout">
+                <div class="settings-sidebar">
+                    <h2 class="settings-title">Settings</h2>
+                    <nav class="settings-nav">
+                        <button class="settings-tab active" data-target="settings-general">General</button>
+                        <button class="settings-tab" data-target="settings-memory">Memory</button>
+                        <button class="settings-tab" data-target="settings-account">Account</button>
+                        <button class="settings-tab" data-target="settings-appearance">Appearance</button>
+                        <button class="settings-tab" data-target="settings-voice">Voice</button>
+                        <button class="settings-tab" data-target="settings-system">System</button>
+                    </nav>
+                </div>
+                <div class="settings-content-area">
+                    
+                    <!-- General Settings -->
+                    <div class="settings-section active" id="settings-general">
+                        <div class="settings-group">
+                            <h3>Profile</h3>
+                            <div class="settings-row split">
+                                <div class="setting-item expanded">
+                                    <label class="setting-label">Full name</label>
+                                    <div class="input-with-avatar">
+                                        <div class="input-avatar-badge" id="settingsAvatarBadge">HV</div>
+                                        <input type="text" class="setting-input sleek" id="settingDisplayName" placeholder="e.g. Harsh Vardhan Sharma">
+                                    </div>
+                                </div>
+                                <div class="setting-item expanded">
+                                    <label class="setting-label">What should Kautilya call you?</label>
+                                    <input type="text" class="setting-input sleek" id="settingPreferredName" placeholder="e.g. Harsh">
+                                </div>
+                            </div>
+                            
+                            <div class="setting-item">
+                                <label class="setting-label">What best describes your work?</label>
+                                <div class="select-wrapper">
+                                    <select class="setting-select sleek" id="settingWorkFunction">
+                                        <option value="" disabled selected>Select your work function</option>
+                                        <option value="engineering">Software Engineering</option>
+                                        <option value="data">Data Science & AI</option>
+                                        <option value="design">Design</option>
+                                        <option value="product">Product Management</option>
+                                        <option value="student">Student / Research</option>
+                                        <option value="other">Other</option>
+                                    </select>
+                                    <span class="material-icons-round select-chevron">expand_more</span>
+                                </div>
+                            </div>
+
+                            <div class="setting-item">
+                                <label class="setting-label">What <span>personal preferences</span> should Kautilya consider in responses?</label>
+                                <p class="setting-description">Your preferences will apply to all conversations, within Kautilya's guidelines.</p>
+                                <textarea class="setting-textarea sleek" id="settingPreferences" placeholder="e.g. when learning new concepts, I find analogies particularly helpful" rows="4"></textarea>
+                            </div>
+                        </div>
+
+                        <div class="settings-divider"></div>
+
+                        <div class="settings-group">
+                            <h3>Notifications</h3>
+                            <div class="setting-item toggle-row">
+                                <div class="toggle-info">
+                                    <div class="toggle-title">Response completions</div>
+                                    <div class="toggle-desc">Get notified when Kautilya has finished a response. Most useful for long-running tasks like tool calls and Research.</div>
+                                </div>
+                                <label class="toggle-switch sleek-switch">
+                                    <input type="checkbox" id="settingNotifyResponse">
+                                    <span class="slider round"></span>
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <div class="settings-footer">
+                            <button class="settings-save-btn" id="saveSettingsBtn">Save Changes</button>
+                        </div>
+                    </div>
+
+                    <!-- Memory Sync Settings -->
+                    <div class="settings-section" id="settings-memory">
+                        <div class="settings-group">
+                            <div class="memory-sync-header">
+                                <span class="material-icons-round memory-header-icon">auto_awesome</span>
+                                <div>
+                                    <h3>Sync External AI Memory</h3>
+                                    <p class="setting-description">Consolidate knowledge from ChatGPT, Claude, and others into Kautilya.</p>
+                                </div>
+                            </div>
+                            
+                            <div class="memory-step-card">
+                                <div class="step-badge">1</div>
+                                <div class="step-content">
+                                    <h4 class="step-title">Get the Extraction Prompt</h4>
+                                    <p class="setting-description">Copy this prompt and paste it into your other AI assistant to extract your shared memory.</p>
+                                    <div class="prompt-box-wrapper">
+                                        <textarea class="setting-textarea sleek prompt-textarea" id="externalAiPrompt" readonly rows="2"></textarea>
+                                        <button class="icon-btn-sleek" id="copyMemoryPromptBtn" title="Copy Prompt">
+                                            <span class="material-icons-round">content_copy</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="memory-step-card">
+                                <div class="step-badge">2</div>
+                                <div class="step-content">
+                                    <h4 class="step-title">Paste & Sync Output</h4>
+                                    <p class="setting-description">Paste the response from the other AI here. Kautilya will analyze and merge it.</p>
+                                    <textarea class="setting-textarea sleek sync-textarea" id="externalAiData" placeholder="Paste text here..." rows="4"></textarea>
+                                    
+                                    <div class="sync-action-row">
+                                        <button class="sync-btn-premium" id="syncMemoryBtn">
+                                            <span class="material-icons-round">sync</span>
+                                            Sync Memories
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Voice Settings -->
+                    <div class="settings-section" id="settings-voice">
+                        <div class="settings-group">
+                            <h3>Voice Configuration</h3>
+                            <div class="setting-item toggle-row">
+                                <div class="toggle-info">
+                                    <div class="toggle-title">Web Output Voice</div>
+                                    <div class="toggle-desc">Enable spoken text returns for conversational flow.</div>
+                                </div>
+                                <label class="toggle-switch sleek-switch">
+                                    <input type="checkbox" id="settingTTS" checked>
+                                    <span class="slider round"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Appearance Settings -->
+                    <div class="settings-section" id="settings-appearance">
+                        <div class="settings-group">
+                            <h3>Theme</h3>
+                            <div class="setting-item">
+                                <label class="setting-label">Interface Theme</label>
+                                <div class="select-wrapper">
+                                    <select class="setting-select sleek" id="settingTheme">
+                                        <option value="dark">Dark (Default)</option>
+                                        <option value="light">Light</option>
+                                    </select>
+                                    <span class="material-icons-round select-chevron">expand_more</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Account Settings -->
+                    <div class="settings-section" id="settings-account">
+                        <div class="settings-group">
+                            <h3>Account Information</h3>
+                            <div class="account-details">
+                                <div class="account-row">
+                                    <span class="account-label">Email</span>
+                                    <span class="account-value" id="accountEmail">Loading...</span>
+                                </div>
+                                <div class="account-row">
+                                    <span class="account-label">Login Provider</span>
+                                    <span class="account-value" id="accountProvider">Loading...</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="settings-divider"></div>
+
+                        <div class="settings-group">
+                            <h3>Active Sessions & Devices</h3>
+                            <p class="setting-description">Devices currently logged into your Kautilya AI account.</p>
+                            <div class="session-list" id="sessionList">
+                                <div class="loading-spinner-small"></div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="settings-section" id="settings-system">
+                        <div class="settings-group">
+                            <h3>System Connections</h3>
+                            <p class="setting-description" style="margin-top: 20px;">Manage connected models and extensions.</p>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden audio element for TTS -->
+    <audio id="audioPlayer" hidden></audio>
+
+    <!-- Firebase SDK (compat mode) -->
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+    <script>
+        // Initialize Firebase
+        const firebaseConfig = {
+            apiKey: "AIzaSyA5GIkQSRq2Kdcn0SVsWDNgokA1IgL3k2c",
+            authDomain: "ai.revealiq.in",
+            projectId: "jarvis-a6e18",
+            storageBucket: "jarvis-a6e18.firebasestorage.app",
+            messagingSenderId: "872168972424",
+            appId: "1:872168972424:web:2b0b9b82922860a52c3f3d",
+            measurementId: "G-H2FB26YQ9R"
+        };
+        firebase.initializeApp(firebaseConfig);
+    </script>
+
+    <!-- Image Viewer Modal -->
+    <div class="image-modal-overlay" id="imageViewerModal">
+        <div class="image-modal-content">
+            <button class="image-modal-close" id="closeImageViewer">
+                <span class="material-icons-round">close</span>
+            </button>
+            <img src="" alt="Fullscreen Image" class="image-modal-img" id="fullscreenImage">
+            <div class="image-modal-actions" id="imageModalActions">
+                <button class="image-action-btn" id="imgDownloadBtn" title="Download">
+                    <span class="material-icons-round">download</span>
+                    <span class="action-label">Download</span>
+                </button>
+                <button class="image-action-btn" id="imgShareBtn" title="Share">
+                    <span class="material-icons-round">share</span>
+                    <span class="action-label">Share</span>
+                </button>
+                <button class="image-action-btn" id="imgCopyBtn" title="Copy to Clipboard">
+                    <span class="material-icons-round">content_copy</span>
+                    <span class="action-label">Copy</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/static/sw.js')
+                    .then(registration => {
+                        console.log('ServiceWorker registration successful with scope: ', registration.scope);
+                    })
+                    .catch(err => {
+                        console.log('ServiceWorker registration failed: ', err);
+                    });
+            });
+        }
+    </script>
+</body>
+
+</html>
