@@ -194,7 +194,17 @@ def trigger_vobiz_call(config, to_number, agent_id):
         import requests
         resp = requests.post(url, headers=headers, json=payload, timeout=15)
         if resp.status_code in (200, 201):
-            return jsonify({"status": "ok", "call_id": resp.json().get('api_id'), "room_name": room_name})
+            resp_data = resp.json()
+            vobiz_call_id = resp_data.get('api_id')
+            if vobiz_call_id and db:
+                try:
+                    db.collection('call_mappings').document(vobiz_call_id).set({
+                        "agent_id": agent_id,
+                        "created_at": firestore.SERVER_TIMESTAMP
+                    })
+                    print(f"[Telephony] 🎯 Mapped Vobiz Call ID: {vobiz_call_id} -> {agent_id}")
+                except: pass
+            return jsonify({"status": "ok", "call_id": vobiz_call_id, "room_name": room_name})
         return jsonify({"error": f"Vobiz API Error: {resp.text}"}), resp.status_code
     except Exception as e:
         return jsonify({"error": f"Request failed: {e}"}), 500
