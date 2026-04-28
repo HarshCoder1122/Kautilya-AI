@@ -16,6 +16,33 @@ import services.nim_service as nim_service
 from firebase_admin import firestore
 import services.nim_service as nim_service
 
+# ============== Firebase Initialization for Webhooks ==============
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+    if not firebase_admin._apps:
+        # Try to use default or service account from env
+        import os
+        sa_json = os.environ.get('FIREBASE_SERVICE_ACCOUNT')
+        if sa_json:
+            import json
+            try:
+                info = json.loads(sa_json)
+                cred = credentials.Certificate(info)
+                firebase_admin.initialize_app(cred)
+            except:
+                if os.path.exists(sa_json):
+                    cred = credentials.Certificate(sa_json)
+                    firebase_admin.initialize_app(cred)
+        if not firebase_admin._apps:
+            try: firebase_admin.initialize_app()
+            except: pass
+    db = firestore.client()
+    print("[Firebase-Webhooks] Connected and Ready")
+except Exception as e:
+    print(f"[Firebase-Webhooks Error] {e}")
+    db = None
+
 # Strip sip: prefix if present — we add it ourselves in the URI
 SIP_DOMAIN = LIVEKIT_SIP_URI.replace("sip:", "").strip()
 

@@ -9,7 +9,7 @@ import traceback
 # You can use the standard OpenAI library to interact with NVIDIA NIM
 def get_nim_client():
     # Primary: NVIDIA NIM
-    api_key = os.environ.get("NVIDIA_NIM_API_KEY")
+    api_key = os.environ.get("NVIDIA_API_KEY")
     if api_key:
         print("[NIM] Using NVIDIA NIM for analytics.")
         return OpenAI(
@@ -20,7 +20,7 @@ def get_nim_client():
     # Fallback: Groq (OpenAI Compatible)
     groq_key = os.environ.get("GROQ_API_KEY")
     if groq_key:
-        print("[NIM] Warning: NVIDIA_NIM_API_KEY missing. Falling back to Groq.")
+        print("[NIM] Warning: NVIDIA_API_KEY missing. Falling back to Groq.")
         return OpenAI(
             base_url="https://api.groq.com/openai/v1",
             api_key=groq_key
