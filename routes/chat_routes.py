@@ -75,11 +75,17 @@ def jarvis_stream():
     """Main streaming chat endpoint."""
     from extensions import limit_manager, vector_store, db
 
-    data = request.get_json() or {}
-    message = data.get('message', '')
-    session_id = data.get('session_id', str(uuid.uuid4()))
-    model = data.get('model', 'daily')
-    files = request.files.getlist('files') if request.content_type and 'multipart' in request.content_type else []
+    data = request.get_json(silent=True) or {}
+    form = request.form or {}
+    args = request.args or {}
+    
+    # Debug incoming payload
+    # print(f"[DEBUG] JSON: {data}, FORM: {form}, ARGS: {args}")
+    
+    message = data.get('message') or data.get('text') or form.get('text') or form.get('message') or args.get('text') or args.get('message', '')
+    session_id = data.get('session_id') or form.get('session_id') or args.get('session_id', str(uuid.uuid4()))
+    model = data.get('model') or form.get('model') or args.get('model', 'daily')
+    files = request.files.getlist('files') if request.files else []
 
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
