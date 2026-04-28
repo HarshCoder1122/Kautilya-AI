@@ -1,10 +1,7 @@
 import os
 import json
 import asyncio
-import time
-import glob
 import re
-from datetime import datetime
 from dotenv import load_dotenv
 
 from livekit import rtc, api
@@ -57,7 +54,7 @@ class KautilyaAgent(Agent):
         super().__init__(**kwargs)
 
 async def entrypoint(ctx: JobContext):
-    # Immediate connection
+    # Start connecting immediately (parallel)
     connect_task = asyncio.create_task(ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY))
     
     print(f"[Agent] Rapid Startup for room: {ctx.room.name}")
@@ -67,13 +64,20 @@ async def entrypoint(ctx: JobContext):
     welcome_message = "Hello, I am Kautilya."
     agent_id = None
     agent_language = "hi-IN"
-    # HARDCODED GEMINI 2.5 FLASH
-    agent_model = "gemini-2.5-flash"
+    # HARDCODED: gemini-3.1-flash-live-preview
+    agent_model = "gemini-3.1-flash-live-preview"
     
-    # Quick Identity Resolution
+    # Extract agent ID from room name
+    # Room name formats:
+    #   SIP call:  "agentId--uuid"       (from SIP trunk)
+    #   Web call:  "voice-agentId--uuid"  (from frontend)
     r_name = ctx.room.name
     if "--" in r_name:
-        agent_id = r_name.split("--")[0].replace("voice-", "").replace("phone-", "")
+        prefix = r_name.split("--")[0]
+        # Strip known prefixes
+        agent_id = prefix.replace("voice-", "").replace("phone-", "")
+    
+    print(f"[Config] Resolved agent_id: {agent_id}")
 
     if agent_id and FIREBASE_AVAILABLE and db:
         try:
@@ -85,13 +89,16 @@ async def entrypoint(ctx: JobContext):
                 agent_language = data.get("language", agent_language)
                 db_model = data.get("model", "").lower()
                 
-                # If Gemini is selected in Dashboard, use the specific gemini-2.5-flash model
+                # If Gemini is selected, use hardcoded gemini-3.1 model
                 if "gemini" in db_model:
-                    agent_model = "gemini-2.5-flash"
+                    agent_model = "gemini-3.1-flash-live-preview"
                 else:
                     agent_model = db_model
-        except: pass
+                print(f"[Config] Loaded for agent: {agent_id} | Model: {agent_model}")
+        except Exception as e:
+            print(f"[Config] Error loading agent config: {e}")
 
+    # Wait for room connection
     await connect_task
 
     is_gemini_live = "gemini" in agent_model.lower()
@@ -109,17 +116,23 @@ async def entrypoint(ctx: JobContext):
         session = AgentSession(llm=llm_plugin)
         agent = KautilyaAgent(instructions=gemini_instructions)
         await session.start(room=ctx.room, agent=agent)
+        # Gemini 3.1 handles greeting via instructions (say() not supported)
     else:
         vad = silero.VAD.load()
         stt = sarvam.STT(language=agent_language)
         tts = sarvam.TTS(target_language_code=agent_language, model="bulbul:v3")
-        llm_plugin = openai.LLM(base_url="https://api.groq.com/openai/v1", api_key=os.environ.get("GROQ_API_KEY"), model="llama-3.3-70b-versatile")
+        llm_plugin = openai.LLM(
+            base_url="https://api.groq.com/openai/v1",
+            api_key=os.environ.get("GROQ_API_KEY"),
+            model="llama-3.3-70b-versatile"
+        )
 
         session = AgentSession(vad=vad, stt=stt, llm=llm_plugin, tts=tts)
         agent = KautilyaAgent(instructions=system_prompt)
         await session.start(room=ctx.room, agent=agent)
         await session.say(welcome_message)
 
+    # Keep alive while connected
     while ctx.room.connection_state == rtc.ConnectionState.CONN_CONNECTED:
         await asyncio.sleep(1)
 

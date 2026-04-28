@@ -1,64 +1,34 @@
 """
-Kautilya AI — Telephony Webhooks (Stability Version)
-Uses caller phone number for stable room naming to prevent duplicate spawns.
+Kautilya AI — Telephony Webhooks (SIP-Fix Version)
+NO room pre-creation. Let LiveKit SIP Trunk handle room creation natively.
+The XML just tells Vobiz where to dial — the SIP trunk creates/joins the room automatically.
 """
 import os
 import json
 import uuid
-import asyncio
-import threading
 from flask import Blueprint, request, Response
-from livekit.api import LiveKitAPI, CreateRoomRequest
-from extensions import db
-from config import LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL, LIVEKIT_SIP_URI
+from config import LIVEKIT_SIP_URI
 
 webhooks_bp = Blueprint('webhooks', __name__)
 
-def create_room_background(room_name, agent_id):
-    def _task():
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            async def _do():
-                if not db: return
-                agent_doc = db.collection('agents').document(agent_id).get()
-                agent_data = agent_doc.to_dict() if agent_doc.exists else {}
-                room_metadata = {
-                    "source": "telephony_bridge",
-                    "agent_id": agent_id,
-                    "welcome_message": agent_data.get("welcome_message", "")
-                }
-                lk_url = LIVEKIT_URL.replace("wss://", "https://").replace("ws://", "http://")
-                lkapi = LiveKitAPI(url=lk_url, api_key=LIVEKIT_API_KEY, api_secret=LIVEKIT_API_SECRET)
-                try:
-                    await lkapi.room.create_room(CreateRoomRequest(
-                        name=room_name, empty_timeout=300, metadata=json.dumps(room_metadata)
-                    ))
-                    print(f"[Bridge] ✅ Stable Room {room_name} ready.")
-                finally: await lkapi.aclose()
-            loop.run_until_complete(_do())
-            loop.close()
-        except Exception as e: print(f"[Bridge] ❌ Background Error: {e}")
-    threading.Thread(target=_task, daemon=True).start()
-
 @webhooks_bp.route('/api/webhooks/vobiz/answer/<agent_id>', methods=['POST', 'GET'])
 def vobiz_answer(agent_id):
-    # Log all incoming parameters to debug Vobiz
-    print(f"[Vobiz] Incoming Request: {request.values.to_dict()}")
+    # Log incoming params for debugging
+    print(f"[Vobiz] Incoming: {dict(request.values)}")
     
-    # Use From number or CallSid for stable room name
-    caller_num = request.values.get('From') or request.values.get('from') or request.values.get('callid') or uuid.uuid4().hex[:8]
-    # Clean caller_num (remove +, etc)
-    caller_num = str(caller_num).replace("+", "").strip()
+    # Short unique suffix for this call
+    call_uid = uuid.uuid4().hex[:4]
     
-    room_name = f"voice-{agent_id}--{caller_num}"
+    # Room name format: agentId--uid
+    # The SIP trunk will create this room when the call connects
+    room_name = f"{agent_id}--{call_uid}"
     sip_uri = f"sip:{room_name}@{LIVEKIT_SIP_URI}"
     
-    create_room_background(room_name, agent_id)
+    print(f"[Vobiz] Dialing SIP: {sip_uri}")
     
+    # Return XML immediately — NO room pre-creation, NO blocking
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Connecting to Kautilya.</Say>
     <Dial timeout="30">
         <Sip>{sip_uri}</Sip>
     </Dial>
@@ -67,9 +37,10 @@ def vobiz_answer(agent_id):
 
 @webhooks_bp.route('/api/webhooks/exotel/answer/<agent_id>', methods=['POST', 'GET'])
 def exotel_answer(agent_id):
-    room_name = f"voice-{agent_id}--{uuid.uuid4().hex[:8]}"
+    call_uid = uuid.uuid4().hex[:4]
+    room_name = f"{agent_id}--{call_uid}"
     sip_uri = f"sip:{room_name}@{LIVEKIT_SIP_URI}"
-    xml = f'<?xml version="1.0" encoding="UTF-8"?><Response><Say>Connecting...</Say><Dial><Sip>{sip_uri}</Sip></Dial></Response>'
+    xml = f'<?xml version="1.0" encoding="UTF-8"?><Response><Dial><Sip>{sip_uri}</Sip></Dial></Response>'
     return Response(xml, mimetype='text/xml')
 
 @webhooks_bp.route('/api/webhooks/vobiz/events', methods=['POST'])
