@@ -132,4 +132,5 @@ def get_user_transactions():
 
 @billing_bp.route('/api/billing/config', methods=['GET'])
 def billing_config():
-    return jsonify({"razorpay_key_id": os.environ.get('RAZORPAY_KEY_ID', '')})
+    from config import RAZORPAY_KEY_ID
+    return jsonify({"razorpay_key_id": RAZORPAY_KEY_ID or os.environ.get('RAZORPAY_KEY_ID', '')})

@@ -64,9 +64,9 @@ class LiveKitVoiceClient {
                 throw new Error(data.error || 'Failed to get LiveKit token');
             }
             
-            const wsUrl = data.wsUrl;
-            if (!wsUrl || wsUrl === 'wss://your-project.livekit.cloud') {
-                console.warn('[LiveKit] Using placeholder LiveKit URL. Set LIVEKIT_URL env var.');
+            const wsUrl = data.wsUrl || 'wss://your-project.livekit.cloud';
+            if (!data.wsUrl || wsUrl === 'wss://your-project.livekit.cloud') {
+                console.warn('[LiveKit] Using placeholder or missing LiveKit URL. Please ensure LIVEKIT_URL is set in backend.');
             }
 
             // 2. Ensure SDK is loaded
