@@ -75,7 +75,10 @@ async def entrypoint(ctx: JobContext):
     clean_name = r_name.replace("sip:", "").replace("sip-", "")
     
     if "voice-" in clean_name:
-        agent_id = clean_name.split("voice-")[-1].split("--")[0]
+        # Extract everything between 'voice-' and '--' or '_'
+        agent_id = clean_name.split("voice-")[-1].split("--")[0].split("_")[0]
+        # Special case for the odd _+91... format
+        if agent_id.startswith("_"): agent_id = agent_id[1:]
     elif "--" in clean_name:
         agent_id = clean_name.split("--")[0]
     else:
@@ -88,6 +91,9 @@ async def entrypoint(ctx: JobContext):
             doc = db.collection('agents').document(agent_id).get()
             if doc.exists:
                 data = doc.to_dict()
+                print(f"[Config] Firestore Data Keys: {list(data.keys())}")
+                print(f"[Config] Prompt Snippet: {str(data.get('system_prompt', ''))[:100]}...")
+                
                 system_prompt = data.get("system_prompt", system_prompt)
                 welcome_message = data.get("welcome_message", welcome_message)
                 agent_language = data.get("language", agent_language)
@@ -123,8 +129,8 @@ async def entrypoint(ctx: JobContext):
         
         # Trigger Gemini to speak first by simulating a user message or system prompt
         try:
-            from livekit.agents.llm import ChatMessage
-            msg = ChatMessage(role="user", content="I have just joined the call. Please introduce yourself exactly as instructed.")
+            from livekit.agents.llm import ChatMessage, ChatContent
+            msg = ChatMessage(role="user", content=[ChatContent(text="I have just joined the call. Please introduce yourself exactly as instructed.")])
             if hasattr(session, 'chat_ctx'):
                 session.chat_ctx.messages.append(msg)
         except Exception as e:
