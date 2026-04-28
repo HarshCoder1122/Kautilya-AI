@@ -57,8 +57,8 @@ def load_system_prompt():
     return "You are Kautilya AI assistant."
 
 class KautilyaAgent(Agent):
-    def __init__(self):
-        super().__init__(instructions="")
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
     def set_config(self, system_prompt, call_objective):
         self._instructions = f"OBJECTIVE: {call_objective}\n\n{system_prompt}"
 
@@ -111,15 +111,16 @@ async def entrypoint(ctx: JobContext):
     is_gemini_live = "gemini" in agent_model.lower()
 
     if is_gemini_live:
-        print(f"[Gemini] Using RealtimeModel (Unified API)...")
-        # Official Docs Pattern: use google.realtime.RealtimeModel inside AgentSession
+        print(f"[Gemini] Initializing RealtimeModel...")
         llm_plugin = google.realtime.RealtimeModel(
             voice="Puck",
             instructions=system_prompt,
             temperature=0.8
         )
-        session = AgentSession(llm=llm_plugin)
-        await session.start(room=ctx.room)
+        # Create an Agent with the Gemini LLM
+        agent = KautilyaAgent(llm=llm_plugin)
+        session = AgentSession()
+        await session.start(room=ctx.room, agent=agent)
         await session.say(welcome_message)
     else:
         # Standard Pattern
@@ -128,10 +129,10 @@ async def entrypoint(ctx: JobContext):
         tts = sarvam.TTS(target_language_code=agent_language, model="bulbul:v3")
         llm_plugin = openai.LLM(base_url="https://api.groq.com/openai/v1", api_key=os.environ.get("GROQ_API_KEY"), model="llama-3.3-70b-versatile")
 
-        agent = KautilyaAgent()
+        agent = KautilyaAgent(vad=vad, stt=stt, llm=llm_plugin, tts=tts)
         agent.set_config(system_prompt, call_objective)
 
-        session = AgentSession(vad=vad, stt=stt, llm=llm_plugin, tts=tts)
+        session = AgentSession()
         await session.start(room=ctx.room, agent=agent)
         await session.say(welcome_message)
 
