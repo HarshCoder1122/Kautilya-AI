@@ -1,6 +1,7 @@
 """
-Kautilya AI — Telephony Webhooks (Timing-Fixed Version)
-Fire-and-forget room creation + long audio buffer for Gemini 3.1 initialization.
+Kautilya AI — Telephony Webhooks (Vobiz-Compatible)
+Vobiz uses Plivo XML — <Say> and <Pause> are INVALID.
+Only <Dial><Sip> is supported for SIP bridging.
 """
 import os
 import json
@@ -44,7 +45,6 @@ def create_room_fire_and_forget(room_name, agent_id):
             loop.close()
         except Exception as e:
             print(f"[Bridge] ❌ Error: {e}")
-    # Start in background — does NOT block the webhook response
     threading.Thread(target=_task, daemon=True).start()
 
 @webhooks_bp.route('/api/webhooks/vobiz/answer/<agent_id>', methods=['POST', 'GET'])
@@ -55,24 +55,18 @@ def vobiz_answer(agent_id):
     room_name = f"voice-{agent_id}--{call_uid}"
     sip_uri = f"sip:{room_name}@{LIVEKIT_SIP_URI}"
     
-    # 1. Fire-and-forget: room creation starts NOW, XML returns INSTANTLY
+    # Fire-and-forget room creation
     create_room_fire_and_forget(room_name, agent_id)
     
-    # 2. Long audio buffer (~10 seconds) gives agent time to:
-    #    - Get dispatched by LiveKit
-    #    - Initialize Firebase
-    #    - Connect to Gemini 3.1 RealtimeModel
-    #    - Be fully ready in the room
-    # 3. By the time <Dial> runs, agent is waiting
+    # Vobiz uses Plivo XML — only <Dial><Sip> is valid
+    # NO <Say>, NO <Pause> — those cause "Invalid Answer XML" error
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Welcome to Kautilya AI. Please hold while we connect you to your AI assistant.</Say>
-    <Pause length="5"/>
-    <Say>Connecting now.</Say>
     <Dial timeout="60">
         <Sip>{sip_uri}</Sip>
     </Dial>
 </Response>"""
+    print(f"[Vobiz] Returning XML with SIP URI: {sip_uri}")
     return Response(xml, mimetype='text/xml')
 
 @webhooks_bp.route('/api/webhooks/exotel/answer/<agent_id>', methods=['POST', 'GET'])
@@ -83,9 +77,6 @@ def exotel_answer(agent_id):
     create_room_fire_and_forget(room_name, agent_id)
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Welcome to Kautilya AI. Please hold while we connect you.</Say>
-    <Pause length="5"/>
-    <Say>Connecting now.</Say>
     <Dial timeout="60">
         <Sip>{sip_uri}</Sip>
     </Dial>
