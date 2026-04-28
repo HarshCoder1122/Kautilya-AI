@@ -58,9 +58,6 @@ def load_system_prompt():
 
 class KautilyaAgent(Agent):
     def __init__(self, **kwargs):
-        # instructions is required in base Agent class
-        if 'instructions' not in kwargs:
-            kwargs['instructions'] = "You are Kautilya AI assistant."
         super().__init__(**kwargs)
 
 async def entrypoint(ctx: JobContext):
@@ -73,7 +70,6 @@ async def entrypoint(ctx: JobContext):
     agent_id = None
     agent_language = "hi-IN"
     agent_model = "kautilya-daily"
-    call_objective = "Assist caller."
     
     # SIP / Room Identity
     r_name = ctx.room.name
@@ -105,11 +101,10 @@ async def entrypoint(ctx: JobContext):
                 welcome_message = data.get("welcome_message", welcome_message)
                 agent_language = data.get("language", agent_language)
                 agent_model = data.get("model", agent_model)
-                call_objective = data.get("call_objective", call_objective)
         except: pass
 
-    # Combine objective into prompt
-    full_instructions = f"OBJECTIVE: {call_objective}\n\n{system_prompt}"
+    # Dashboard set instructions only (to avoid model confusion)
+    final_instructions = system_prompt
 
     # --- Start Agent Mode ---
     is_gemini_live = "gemini" in agent_model.lower()
@@ -118,11 +113,13 @@ async def entrypoint(ctx: JobContext):
         print(f"[Gemini] Initializing RealtimeModel...")
         llm_plugin = google.realtime.RealtimeModel(
             voice="Puck",
-            instructions=full_instructions,
+            instructions=final_instructions,
             temperature=0.8
         )
-        agent = KautilyaAgent(llm=llm_plugin, instructions=full_instructions)
-        session = AgentSession()
+        # For Gemini Live, pass LLM directly to AgentSession for say() support
+        session = AgentSession(llm=llm_plugin)
+        # Still need an agent object for start()
+        agent = KautilyaAgent(instructions=final_instructions)
         await session.start(room=ctx.room, agent=agent)
         await session.say(welcome_message)
     else:
@@ -132,9 +129,8 @@ async def entrypoint(ctx: JobContext):
         tts = sarvam.TTS(target_language_code=agent_language, model="bulbul:v3")
         llm_plugin = openai.LLM(base_url="https://api.groq.com/openai/v1", api_key=os.environ.get("GROQ_API_KEY"), model="llama-3.3-70b-versatile")
 
-        agent = KautilyaAgent(vad=vad, stt=stt, llm=llm_plugin, tts=tts, instructions=full_instructions)
-
-        session = AgentSession()
+        session = AgentSession(vad=vad, stt=stt, llm=llm_plugin, tts=tts)
+        agent = KautilyaAgent(instructions=final_instructions)
         await session.start(room=ctx.room, agent=agent)
         await session.say(welcome_message)
 
