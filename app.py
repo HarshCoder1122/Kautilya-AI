@@ -30,6 +30,8 @@ from routes.agents_routes import agents_bp
 from routes.campaigns_routes import campaigns_bp
 from routes.export_routes import export_bp
 from routes.static_routes import static_bp
+from routes.telephony_routes import telephony_bp
+from routes.webhooks_routes import webhooks_bp
 
 app = Flask(__name__, static_folder=STATIC_FOLDER)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24).hex())
@@ -46,6 +48,8 @@ app.register_blueprint(keys_bp)
 app.register_blueprint(agents_bp)
 app.register_blueprint(campaigns_bp)
 app.register_blueprint(export_bp)
+app.register_blueprint(telephony_bp)
+app.register_blueprint(webhooks_bp)
 
 # Global Security Headers
 @app.after_request
