@@ -61,12 +61,11 @@ def vobiz_answer(agent_id):
     # Fire-and-forget room creation
     create_room_fire_and_forget(room_name, agent_id)
     
-    # Vobiz uses Plivo XML — only <Dial><Sip> is valid
-    # NO <Say>, NO <Pause> — those cause "Invalid Answer XML" error
+    # Vobiz uses Plivo XML — <User> for SIP (NOT <Sip> which is Twilio)
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Dial timeout="60">
-        <Sip>{sip_uri}</Sip>
+    <Dial>
+        <User>{sip_uri}</User>
     </Dial>
 </Response>"""
     print(f"[Vobiz] Returning XML with SIP URI: {sip_uri}")
@@ -80,8 +79,8 @@ def exotel_answer(agent_id):
     create_room_fire_and_forget(room_name, agent_id)
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Dial timeout="60">
-        <Sip>{sip_uri}</Sip>
+    <Dial>
+        <User>{sip_uri}</User>
     </Dial>
 </Response>"""
     return Response(xml, mimetype='text/xml')
