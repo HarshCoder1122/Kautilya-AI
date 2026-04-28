@@ -112,7 +112,10 @@ def generate_livekit_token():
     participant_name = data.get("participantName", "RevealIQ User")
     agent_id = data.get("agentId", "")
     
-    room_name = f"room-{uuid.uuid4().hex[:8]}"
+    if agent_id:
+        room_name = f"voice-{agent_id}--{uuid.uuid4().hex[:4]}"
+    else:
+        room_name = f"room-{uuid.uuid4().hex[:8]}"
     identity = f"user-{uuid.uuid4().hex[:8]}"
     
     token = api.AccessToken(lk_api_key, lk_api_secret) \
