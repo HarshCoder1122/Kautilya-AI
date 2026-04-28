@@ -379,8 +379,8 @@ async def entrypoint(ctx: JobContext):
     if is_gemini_live:
         print(f"[LLM Config] Using Gemini Multimodal Live API (Native Audio) | Voice: {raw_voice or 'Aoede'}")
         llm_plugin = google.realtime.RealtimeModel(
-            model="gemini-2.0-flash-exp",
-            voice=raw_voice or "Aoede",
+            model="gemini-3.1-flash-live-preview",
+            voice=raw_voice or "Puck",
             temperature=0.7,
             instructions=system_prompt
         )
