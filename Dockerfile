@@ -21,8 +21,9 @@ ENV OMP_NUM_THREADS=1
 ENV MKL_NUM_THREADS=1
 ENV PYTHONUNBUFFERED=1
 
-# Expose the port (Koyeb/Cloud providers usually provide PORT env var)
+# Expose ports for HF (7860) and Koyeb (8000)
+EXPOSE 7860
 EXPOSE 8000
 
-# Start via start.sh which handles gunicorn and background workers
+# Universal start command
 CMD ["sh", "start.sh"]
