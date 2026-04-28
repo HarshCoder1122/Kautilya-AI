@@ -105,6 +105,8 @@ async def entrypoint(ctx: JobContext):
                     mapping_doc = db.collection('call_mappings').document(call_uuid).get()
                     if mapping_doc.exists:
                         agent_id = mapping_doc.to_dict().get('agent_id')
+                        # STORE the resolved Call ID for transcript saving
+                        ctx.room.metadata = json.dumps({"resolved_call_id": call_uuid})
                         print(f"[Config] 🎯 Attempt {attempt+1}: Mapped CallUUID to Agent ID: {agent_id}")
                         break
                     if attempt < 4:
@@ -243,13 +245,21 @@ async def entrypoint(ctx: JobContext):
                     transcript_text += f"{role}: {content}\n"
             
             if transcript_text.strip():
+                # Use the resolved call ID if we found one, otherwise fallback to room name parts
+                final_call_id = call_id
+                try:
+                    if ctx.room.metadata:
+                        room_meta = json.loads(ctx.room.metadata)
+                        final_call_id = room_meta.get("resolved_call_id", call_id)
+                except: pass
+
                 db.collection('agents').document(agent_id).collection('transcripts').add({
-                    "call_id": call_id or ctx.room.name,
+                    "call_id": final_call_id,
                     "agent_id": agent_id,
                     "transcript": transcript_text,
                     "created_at": firestore.SERVER_TIMESTAMP
                 })
-                print(f"[Agent] ✅ Transcript saved for call: {call_id}")
+                print(f"[Agent] ✅ Transcript saved for call: {final_call_id}")
             else:
                 print("[Agent] ⚠️ No transcript content to save.")
     except Exception as e:
