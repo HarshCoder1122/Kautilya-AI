@@ -140,7 +140,11 @@ def generate_livekit_token():
         except Exception as e:
             print(f"[LiveKit] Metadata error: {e}")
 
-    return jsonify({"token": token.to_jwt(), "roomName": room_name})
+    return jsonify({
+        "token": token.to_jwt(), 
+        "roomName": room_name,
+        "wsUrl": LIVEKIT_URL or "wss://your-project.livekit.cloud"
+    })
 
 
 @voice_bp.route('/api/v1/audio/voices', methods=['GET'])
