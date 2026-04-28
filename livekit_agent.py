@@ -6,6 +6,8 @@ import glob
 import re
 from datetime import datetime
 from dotenv import load_dotenv
+
+# Heavy imports at top level to avoid delay during job start
 from livekit import rtc, api
 from livekit.agents import (
     AutoSubscribe,
@@ -19,7 +21,7 @@ from livekit.plugins import sarvam, openai, silero, cartesia, google
 
 load_dotenv()
 
-# ============== Firebase Admin Initialization ==============
+# ============== Firebase Admin Initialization (Pre-warmed) ==============
 db = None
 FIREBASE_AVAILABLE = False
 def initialize_firebase():
@@ -44,54 +46,36 @@ def initialize_firebase():
         if firebase_admin._apps:
             db = firestore.client()
             FIREBASE_AVAILABLE = True
-            print("[Firebase] Connected")
+            print("[Firebase] Connected and Ready")
     except Exception as e: print(f"[Firebase Error] {e}")
 
 initialize_firebase()
 
-def load_system_prompt():
-    prompt_path = os.path.join(os.path.dirname(__file__), "system_prompt_cloud.txt")
-    if os.path.exists(prompt_path):
-        with open(prompt_path, "r", encoding="utf-8") as f:
-            return f.read().strip()
-    return "You are Kautilya AI assistant."
-
 class KautilyaAgent(Agent):
     def __init__(self, **kwargs):
+        if 'instructions' not in kwargs:
+            kwargs['instructions'] = "You are Kautilya AI assistant."
         super().__init__(**kwargs)
 
 async def entrypoint(ctx: JobContext):
-    print(f"[Agent] Starting room: {ctx.room.name}")
-    await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
+    # START CONNECTING IMMEDIATELY
+    connect_task = asyncio.create_task(ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY))
+    
+    print(f"[Agent] Rapid Startup for room: {ctx.room.name}")
 
     # Defaults
-    system_prompt = load_system_prompt()
+    system_prompt = "You are Kautilya AI assistant."
     welcome_message = "Hello, I am Kautilya."
     agent_id = None
     agent_language = "hi-IN"
     agent_model = "kautilya-daily"
     
-    # SIP / Room Identity
+    # Quick Identity Resolution
     r_name = ctx.room.name
-    sip_resolved = False
-    for p in ctx.room.remote_participants.values():
-        if p.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP:
-            did = (p.attributes or {}).get("sip.trunkPhoneNumber")
-            if did and FIREBASE_AVAILABLE and db:
-                try:
-                    q = db.collection('agents').where('linked_numbers', 'array_contains', did).limit(1).stream()
-                    for doc in q:
-                        agent_data = doc.to_dict()
-                        agent_id = doc.id
-                        agent_model = agent_data.get("model", agent_model)
-                        sip_resolved = True
-                        break
-                except: pass
-            break
-
-    if not sip_resolved and "--" in r_name:
+    if "--" in r_name:
         agent_id = r_name.split("--")[0].replace("voice-", "").replace("phone-", "")
 
+    # PARALLEL CONFIG FETCH
     if agent_id and FIREBASE_AVAILABLE and db:
         try:
             doc = db.collection('agents').document(agent_id).get()
@@ -103,14 +87,14 @@ async def entrypoint(ctx: JobContext):
                 agent_model = data.get("model", agent_model)
         except: pass
 
-    # --- Start Agent Mode ---
+    # Wait for connection to finish
+    await connect_task
+
+    # --- Mode Selection ---
     is_gemini_live = "gemini" in agent_model.lower()
 
     if is_gemini_live:
-        print(f"[Gemini] Using RealtimeModel with instruction-based greeting...")
-        # For Gemini Live, include the greeting in instructions
         gemini_instructions = f"{system_prompt}\n\nIMPORTANT: Start the conversation by saying exactly: '{welcome_message}'"
-        
         llm_plugin = google.realtime.RealtimeModel(
             voice="Puck",
             instructions=gemini_instructions,
@@ -119,9 +103,9 @@ async def entrypoint(ctx: JobContext):
         session = AgentSession(llm=llm_plugin)
         agent = KautilyaAgent(instructions=gemini_instructions)
         await session.start(room=ctx.room, agent=agent)
-        # We DON'T call session.say() because Gemini handles it via instructions
+        # Gemini handles greeting via instructions
     else:
-        # Standard Pattern
+        # Optimized Standard Pipeline
         vad = silero.VAD.load()
         stt = sarvam.STT(language=agent_language)
         tts = sarvam.TTS(target_language_code=agent_language, model="bulbul:v3")
