@@ -76,13 +76,19 @@ async def entrypoint(ctx: JobContext):
     
     if "voice-" in clean_name:
         # Extract everything between 'voice-' and '--' or '_'
-        agent_id = clean_name.split("voice-")[-1].split("--")[0].split("_")[0]
-        # Special case for the odd _+91... format
-        if agent_id.startswith("_"): agent_id = agent_id[1:]
+        # Room names like voice-_+91... or voice-agentid--uuid
+        parts = clean_name.split("voice-")[-1]
+        # Split by '--' first, then by '_'
+        agent_id = parts.split("--")[0]
+        if "_" in agent_id and not agent_id.startswith("_"):
+             agent_id = agent_id.split("_")[0]
+        
+        # Strip leading underscores if any (common in some SIP room names)
+        agent_id = agent_id.lstrip("_")
     elif "--" in clean_name:
         agent_id = clean_name.split("--")[0]
     else:
-        agent_id = clean_name
+        agent_id = clean_name.lstrip("_")
         
     print(f"[Config] Resolved agent_id: {agent_id}")
 
@@ -115,6 +121,7 @@ async def entrypoint(ctx: JobContext):
 
     if is_gemini_live:
         print(f"[Gemini] Initializing RealtimeModel ({agent_model})...")
+        print(f"[Gemini] Instructions Length: {len(system_prompt)} characters")
         gemini_instructions = f"{system_prompt}\n\nIMPORTANT: Start the conversation by saying exactly: '{welcome_message}'"
         
         llm_plugin = google.realtime.RealtimeModel(
@@ -129,10 +136,11 @@ async def entrypoint(ctx: JobContext):
         
         # Trigger Gemini to speak first by simulating a user message or system prompt
         try:
-            from livekit.agents.llm import ChatMessage, ChatContent
-            msg = ChatMessage(role="user", content=[ChatContent(text="I have just joined the call. Please introduce yourself exactly as instructed.")])
+            # Using a list of strings for content to satisfy pydantic while avoiding 'types.UnionType' errors
+            msg = ChatMessage(role="user", content=["I have just joined the call. Please introduce yourself exactly as instructed."])
             if hasattr(session, 'chat_ctx'):
                 session.chat_ctx.messages.append(msg)
+                print("[Gemini] ✅ Greeting trigger injected.")
         except Exception as e:
             print(f"[Gemini] Greeting trigger warning: {e}")
     else:
