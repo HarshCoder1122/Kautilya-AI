@@ -3,7 +3,6 @@ import json
 import asyncio
 import time
 import glob
-import aiohttp
 import re
 from datetime import datetime
 from dotenv import load_dotenv
@@ -16,7 +15,6 @@ from livekit.agents import (
     Agent,
     AgentSession,
 )
-from livekit.agents.llm import ChatContext, ChatMessage
 from livekit.plugins import sarvam, openai, silero, cartesia, google
 
 load_dotenv()
@@ -61,9 +59,7 @@ def load_system_prompt():
 class KautilyaAgent(Agent):
     def __init__(self):
         super().__init__(instructions="")
-        self._agent_kb = []
-    def set_config(self, system_prompt, call_objective, agent_kb):
-        self._agent_kb = agent_kb
+    def set_config(self, system_prompt, call_objective):
         self._instructions = f"OBJECTIVE: {call_objective}\n\n{system_prompt}"
 
 async def entrypoint(ctx: JobContext):
@@ -77,9 +73,8 @@ async def entrypoint(ctx: JobContext):
     agent_language = "hi-IN"
     agent_model = "kautilya-daily"
     call_objective = "Assist caller."
-    agent_kb = []
     
-    # SIP / Room Identity (Legacy Logic)
+    # SIP / Room Identity
     r_name = ctx.room.name
     sip_resolved = False
     for p in ctx.room.remote_participants.values():
@@ -90,11 +85,8 @@ async def entrypoint(ctx: JobContext):
                     q = db.collection('agents').where('linked_numbers', 'array_contains', did).limit(1).stream()
                     for doc in q:
                         agent_data = doc.to_dict()
-                        system_prompt = agent_data.get("system_prompt", system_prompt)
-                        welcome_message = agent_data.get("welcome_message", welcome_message)
-                        agent_language = agent_data.get("language", agent_language)
-                        agent_model = agent_data.get("model", agent_model)
                         agent_id = doc.id
+                        agent_model = agent_data.get("model", agent_model)
                         sip_resolved = True
                         break
                 except: pass
@@ -113,35 +105,34 @@ async def entrypoint(ctx: JobContext):
                 agent_language = data.get("language", agent_language)
                 agent_model = data.get("model", agent_model)
                 call_objective = data.get("call_objective", call_objective)
-                agent_kb = data.get("knowledge_base", [])
-                print(f"[Config] Loaded for agent: {agent_id} | Model: {agent_model}")
         except: pass
 
-    # --- Start Agent ---
+    # --- Start Agent Mode ---
     is_gemini_live = "gemini" in agent_model.lower()
 
     if is_gemini_live:
-        print(f"[LLM] Using Gemini Multimodal Live API...")
-        agent = google.MultimodalAgent(
-            model=google.GenerativeModel("gemini-2.0-flash-exp"),
+        print(f"[Gemini] Using RealtimeModel (Unified API)...")
+        # Official Docs Pattern: use google.realtime.RealtimeModel inside AgentSession
+        llm_plugin = google.realtime.RealtimeModel(
+            voice="Puck",
             instructions=system_prompt,
-            voice="puck"
+            temperature=0.8
         )
-        await agent.start(ctx.room)
-        # Gemini handles welcome via instructions usually, but we can say it
-        await agent.say(welcome_message)
+        session = AgentSession(llm=llm_plugin)
+        await session.start(room=ctx.room)
+        await session.say(welcome_message)
     else:
-        # Standard AgentSession Pattern
+        # Standard Pattern
         vad = silero.VAD.load()
         stt = sarvam.STT(language=agent_language)
         tts = sarvam.TTS(target_language_code=agent_language, model="bulbul:v3")
         llm_plugin = openai.LLM(base_url="https://api.groq.com/openai/v1", api_key=os.environ.get("GROQ_API_KEY"), model="llama-3.3-70b-versatile")
 
-        k_agent = KautilyaAgent()
-        k_agent.set_config(system_prompt, call_objective, agent_kb)
+        agent = KautilyaAgent()
+        agent.set_config(system_prompt, call_objective)
 
         session = AgentSession(vad=vad, stt=stt, llm=llm_plugin, tts=tts)
-        await session.start(room=ctx.room, agent=k_agent)
+        await session.start(room=ctx.room, agent=agent)
         await session.say(welcome_message)
 
     while ctx.room.connection_state == rtc.ConnectionState.CONN_CONNECTED:
