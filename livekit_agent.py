@@ -95,18 +95,16 @@ async def entrypoint(ctx: JobContext):
 
     if agent_id and FIREBASE_AVAILABLE and db:
         try:
-            # If the resolved ID looks like a phone number (starts with + or digits)
-            # we try to find the agent mapped to this number
-            if agent_id.startswith("+") or (len(agent_id) > 5 and agent_id.isdigit()):
-                print(f"[Config] Candidate looks like a phone number. Searching for mapped agent...")
-                # Search by vobiz_number or exotel_number
-                agents_ref = db.collection('agents').where('vobiz_number', '==', agent_id).limit(1).get()
-                if not agents_ref:
-                    agents_ref = db.collection('agents').where('exotel_number', '==', agent_id).limit(1).get()
-                
-                if agents_ref:
-                    agent_id = agents_ref[0].id
-                    print(f"[Config] 🎯 Mapped phone number to Agent ID: {agent_id}")
+            # FALLBACK 1: If it looks like a phone number, it might be a SIP room mangled by the trunk
+            # We check if it's a CallUUID from our mapping
+            if "_" in agent_id or len(agent_id) < 20:
+                # Try to extract the last part which is likely the CallUUID
+                call_uuid = agent_id.split("_")[-1]
+                print(f"[Config] Searching mapping for CallUUID: {call_uuid}")
+                mapping_doc = db.collection('call_mappings').document(call_uuid).get()
+                if mapping_doc.exists:
+                    agent_id = mapping_doc.to_dict().get('agent_id')
+                    print(f"[Config] 🎯 Mapped CallUUID to Agent ID: {agent_id}")
 
             doc = db.collection('agents').document(agent_id).get()
             if doc.exists:
