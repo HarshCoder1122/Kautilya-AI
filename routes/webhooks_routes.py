@@ -1,7 +1,7 @@
 """
-Kautilya AI — Telephony Webhooks (Restored Pre-Creation)
-Pre-creates room SYNCHRONOUSLY so agent gets dispatched BEFORE the caller connects.
-Room name matches exactly what SIP trunk expects (no voice- prefix).
+Kautilya AI — Telephony Webhooks (Exact 090e518 Flow Restored)
+Room name uses voice- prefix (matches SIP trunk config).
+Room pre-created SYNCHRONOUSLY so agent is dispatched BEFORE caller connects.
 """
 import os
 import json
@@ -42,6 +42,9 @@ async def pre_create_room(room_name, agent_id):
                 if agent_doc.exists:
                     agent_data = agent_doc.to_dict()
                     metadata["welcome_message"] = agent_data.get("welcome_message", "")
+                    metadata["system_prompt"] = agent_data.get("system_prompt", "")
+                    metadata["language"] = agent_data.get("language", "hi-IN")
+                    metadata["voice"] = agent_data.get("voice", "Puck")
             except:
                 pass
         
@@ -53,7 +56,7 @@ async def pre_create_room(room_name, agent_id):
                 empty_timeout=300,
                 metadata=json.dumps(metadata)
             ))
-            print(f"[Bridge] ✅ Room {room_name} pre-created. Agent dispatched.")
+            print(f"[Bridge] ✅ Room {room_name} pre-created. Agent dispatching now.")
         finally:
             await lkapi.aclose()
     except Exception as e:
@@ -64,19 +67,19 @@ def vobiz_answer(agent_id):
     print(f"[Vobiz] Incoming: {dict(request.values)}")
     
     call_uid = uuid.uuid4().hex[:4]
-    # Room name WITHOUT voice- prefix (matches what SIP trunk expects)
-    room_name = f"{agent_id}--{call_uid}"
+    # CRITICAL: voice- prefix matches SIP trunk dispatch rule
+    room_name = f"voice-{agent_id}--{call_uid}"
     sip_uri = f"sip:{room_name}@{LIVEKIT_SIP_URI}"
     
-    # 1. Pre-create room SYNCHRONOUSLY — agent gets dispatched NOW
+    # 1. Pre-create room SYNCHRONOUSLY — agent dispatched NOW
     _run_async(pre_create_room(room_name, agent_id))
     
-    # 2. <Say> gives agent 2-3 seconds to fully initialize
-    # 3. <Dial> connects caller to room where agent is already waiting
+    # 2. Long <Say> gives agent ~5 seconds to fully initialize Gemini 3.1
+    # 3. By the time <Dial> runs, agent is ready in the room
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Connecting your call to Kautilya AI assistant. Please wait.</Say>
-    <Dial timeout="30">
+    <Say>Please hold while we connect you to Kautilya AI. This will take just a moment.</Say>
+    <Dial timeout="60">
         <Sip>{sip_uri}</Sip>
     </Dial>
 </Response>"""
@@ -85,13 +88,13 @@ def vobiz_answer(agent_id):
 @webhooks_bp.route('/api/webhooks/exotel/answer/<agent_id>', methods=['POST', 'GET'])
 def exotel_answer(agent_id):
     call_uid = uuid.uuid4().hex[:4]
-    room_name = f"{agent_id}--{call_uid}"
+    room_name = f"voice-{agent_id}--{call_uid}"
     sip_uri = f"sip:{room_name}@{LIVEKIT_SIP_URI}"
     _run_async(pre_create_room(room_name, agent_id))
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Connecting...</Say>
-    <Dial timeout="30">
+    <Say>Please hold while we connect you to Kautilya AI.</Say>
+    <Dial timeout="60">
         <Sip>{sip_uri}</Sip>
     </Dial>
 </Response>"""
