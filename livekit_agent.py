@@ -201,7 +201,7 @@ async def entrypoint(ctx: JobContext):
     agent.set_config(system_prompt, call_objective, agent_kb)
     agent.room = ctx.room
     
-    session = AgentSession(agent, vad=vad, stt=stt, llm=llm, tts=tts)
+    session = AgentSession(agent=agent, vad=vad, stt=stt, llm=llm, tts=tts)
     agent._session = session
     
     async def terminate():
