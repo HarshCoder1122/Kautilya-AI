@@ -21,6 +21,8 @@ from livekit.agents import (
 from livekit.agents.llm import ChatContext, ChatMessage
 from livekit.agents.voice import room_io
 
+from services.tts_service import clean_text_for_tts
+
 load_dotenv()
 
 # ============== Firebase Admin Initialization ==============
@@ -128,35 +130,13 @@ def clean_prompt(text: str) -> str:
     cleaned = cleaned.replace('NAME', 'there').replace('{NAME}', 'there')
     return cleaned.strip()
 
-# ============== Fallback TTS Wrapper ==============
-
-class FallbackTTS:
-    """Wraps multiple TTS plugins to provide automatic fallback if the primary fails."""
-    def __init__(self, primary, fallback):
-        self.primary = primary
-        self.fallback = fallback
-        self._current = primary
-
-    def synthesize(self, text, *args, **kwargs):
-        try:
-            return self.primary.synthesize(text, *args, **kwargs)
-        except Exception as e:
-            print(f"[FallbackTTS] Primary failed: {e}. Switching to fallback.")
-            return self.fallback.synthesize(text, *args, **kwargs)
-
-    @property
-    def capabilities(self):
-        return self.primary.capabilities
-
-    # Forward other necessary attributes/methods
-    def __getattr__(self, name):
-        return getattr(self.primary, name)
-
 def clean_text_for_tts(text: str) -> str:
     """Removes special characters that TTS might read literally (like <=, >=, etc.)"""
     if not text: return ""
     # Replace math symbols and markdown with space
+    # Matches: <=, >=, ==, !=, <, >, =, *, _, #, `, ~
     text = re.sub(r'[<>!=]=?|[=*_#`~]', ' ', text)
+    # Collapse multiple spaces
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -192,7 +172,6 @@ class KautilyaAgent(Agent):
             "4. NEVER call end_call due to silence or pauses — the system handles this.\n"
             "5. Keep responses SHORT (1-2 sentences max).\n"
             "6. NO SPECIAL CHARACTERS: NEVER use symbols like <=, >=, =, <, >, *, _, or # in your speech. Use plain words instead.\n"
-            "7. TOOL CALLING: When using search_knowledge_base, pass a simple string as the query. Do not add extra parameters. If a tool fails, continue the conversation naturally.\n"
         )
 
     # ---------- Tools ----------
@@ -389,75 +368,76 @@ async def entrypoint(ctx: JobContext):
     from livekit.plugins import cartesia, openai, silero, deepgram, sarvam, google
 
     # Hardened VAD for lightning-fast, noise-resistant speech detection
-    # activation_threshold=0.3 Catch even soft speech to prevent false silence timeouts
-    # activation_threshold=0.15 Catch even a whisper to prevent false silence timeouts
     vad = silero.VAD.load(
         min_speech_duration=0.1,
         min_silence_duration=0.5,
         activation_threshold=0.15
     )
 
-    # STT
-    if stt_provider == "openai":
-        stt = openai.STT()
-    elif stt_provider == "deepgram":
-        stt = deepgram.STT()
-    else:
-        stt = sarvam.STT(language=agent_language, model="saaras:v3")
+    is_gemini_live = "gemini" in agent_model.lower()
 
-    # LLM (Primary: Groq, Fallback: Sarvam-105b)
-    groq_keys_raw = [
-        os.environ.get("GROQ_API_KEY", ""),
-        os.environ.get("GROQ_API_KEY_BACKUP", ""),
-        os.environ.get("GROQ_API_KEY_3", ""),
-        os.environ.get("GROQ_API_KEY_4", ""),
-        os.environ.get("GROQ_API_KEY_5", ""),
-    ]
-    groq_keys = [k for k in groq_keys_raw if k]
-    sarvam_key = os.environ.get("SARVAM_API_KEY")
-
-    if groq_keys:
-        # Time-based round-robin selection to ensure even distribution across workers
-        key_index = int(time.time()) % len(groq_keys)
-        chosen_key = groq_keys[key_index]
-        masked_key = f"{chosen_key[:6]}...{chosen_key[-4:]}" if len(chosen_key) > 10 else "***"
-        
-        # Use Llama-3.3-70b-versatile for maximum intelligence
-        # Optimized with lower max_tokens (150) and temperature (0.5) for factual voice responses
-        model_name = os.environ.get("GROQ_VOICE_MODEL", "llama-3.3-70b-versatile")
-        print(f"[LLM Config] Key Rotation (Index {key_index}/{len(groq_keys)}). Using: {masked_key} | Model: {model_name}")
-        
-        llm_plugin = openai.LLM(
-            base_url="https://api.groq.com/openai/v1",
-            api_key=chosen_key,
-            model=model_name,
-            temperature=0.5
+    if is_gemini_live:
+        print(f"[LLM Config] Using Gemini Multimodal Live API (Native Audio) | Voice: {raw_voice or 'Aoede'}")
+        llm_plugin = google.realtime.RealtimeModel(
+            model="gemini-2.0-flash-exp",
+            voice=raw_voice or "Aoede",
+            temperature=0.7,
+            instructions=system_prompt
         )
-
-
-    elif sarvam_key:
-        print(f"[LLM Config] Groq unavailable. Using Sarvam LLM (sarvam-105b) - Fallback")
-        llm_plugin = sarvam.LLM(model="sarvam-105b", api_key=sarvam_key, temperature=0.7)
+        stt = None
+        tts = None
     else:
-        print(f"[LLM Config] WARNING: No reliable LLM key found. Defaulting to OpenAI.")
-        llm_plugin = openai.LLM()
+        # STT
+        if stt_provider == "openai":
+            stt = openai.STT()
+        elif stt_provider == "deepgram":
+            stt = deepgram.STT()
+        else:
+            stt = sarvam.STT(language=agent_language)
 
-    # TTS
-    # TTS with Automatic Fallback
-    v_id = get_cartesia_voice_id(raw_voice)
-    tts_model = "sonic-multilingual" if "en" not in agent_language.lower() else "sonic-english"
-    cartesia_tts = cartesia.TTS(model=tts_model, voice=v_id)
+        # LLM (Primary: Groq, Fallback: Sarvam-105b)
+        groq_keys_raw = [
+            os.environ.get("GROQ_API_KEY", ""),
+            os.environ.get("GROQ_API_KEY_BACKUP", ""),
+            os.environ.get("GROQ_API_KEY_3", ""),
+            os.environ.get("GROQ_API_KEY_4", ""),
+            os.environ.get("GROQ_API_KEY_5", ""),
+        ]
+        groq_keys = [k for k in groq_keys_raw if k]
+        sarvam_key = os.environ.get("SARVAM_API_KEY")
 
-    if tts_provider == "openai":
-        tts = openai.TTS()
-    elif tts_provider == "sarvam":
-        speaker = raw_voice if raw_voice and '-' not in str(raw_voice) else "aditya"
-        print(f"[TTS Config] Primary: Sarvam v3 ({speaker}) | Fallback: Cartesia ({v_id})")
-        sarvam_tts = sarvam.TTS(target_language_code=agent_language, speaker=speaker, model="bulbul:v3")
-        tts = FallbackTTS(primary=sarvam_tts, fallback=cartesia_tts)
-    else:
-        print(f"[TTS Config] Cartesia {tts_model} | Voice: {v_id}")
-        tts = cartesia_tts
+        if groq_keys:
+            key_index = int(time.time()) % len(groq_keys)
+            chosen_key = groq_keys[key_index]
+            masked_key = f"{chosen_key[:6]}...{chosen_key[-4:]}" if len(chosen_key) > 10 else "***"
+            print(f"[LLM Config] Multi-key rotation (Index {key_index}/{len(groq_keys)}). Using: {masked_key}")
+            
+            llm_plugin = openai.LLM(
+                base_url="https://api.groq.com/openai/v1",
+                api_key=chosen_key,
+                model="llama-3.3-70b-versatile",
+                temperature=0.7
+            )
+
+        elif sarvam_key:
+            print(f"[LLM Config] Groq unavailable. Using Sarvam LLM (sarvam-105b) - Fallback")
+            llm_plugin = sarvam.LLM(model="sarvam-105b", api_key=sarvam_key, temperature=0.7)
+        else:
+            print(f"[LLM Config] WARNING: No reliable LLM key found. Defaulting to OpenAI.")
+            llm_plugin = openai.LLM()
+
+        # TTS
+        if tts_provider == "openai":
+            tts = openai.TTS()
+        elif tts_provider == "sarvam":
+            speaker = raw_voice if raw_voice and '-' not in str(raw_voice) else "aditya"
+            print(f"[TTS Config] Sarvam Bulbul:v3 | Speaker: {speaker}")
+            tts = sarvam.TTS(target_language_code=agent_language, speaker=speaker, model="bulbul:v3")
+        else:
+            v_id = get_cartesia_voice_id(raw_voice)
+            tts_model = "sonic-multilingual" if "en" not in agent_language.lower() else "sonic-english"
+            print(f"[TTS Config] Cartesia {tts_model} | Voice: {v_id}")
+            tts = cartesia.TTS(model=tts_model, voice=v_id)
 
     # --- Build Agent ---
     agent = KautilyaAgent()
@@ -466,7 +446,7 @@ async def entrypoint(ctx: JobContext):
 
     # --- Build Session ---
     session = AgentSession(
-        vad=vad,
+        vad=vad if stt else None, # VAD not needed if using native audio
         stt=stt,
         llm=llm_plugin,
         tts=tts,
@@ -474,10 +454,11 @@ async def entrypoint(ctx: JobContext):
 
     # --- TTS Cleaning Wrapper ---
     # Since before_tts_cb might not be supported in all versions, we wrap the synthesize method
-    original_synthesize = tts.synthesize
-    def clean_synthesize(text: str, *args, **kwargs):
-        return original_synthesize(clean_text_for_tts(text), *args, **kwargs)
-    tts.synthesize = clean_synthesize
+    if tts:
+        original_synthesize = tts.synthesize
+        def clean_synthesize(text: str, *args, **kwargs):
+            return original_synthesize(clean_text_for_tts(text), *args, **kwargs)
+        tts.synthesize = clean_synthesize
 
     agent._session = session  # Back-reference so tools can call session.say()
 
@@ -601,6 +582,49 @@ async def entrypoint(ctx: JobContext):
     print(f"[Real-time Agent] AgentSession started.")
 
     start_time = time.time()
+    
+    # --- Start Call Recording (Egress) ---
+    async def trigger_recording():
+        try:
+            lk_url = os.environ.get("LIVEKIT_URL")
+            lk_key = os.environ.get("LIVEKIT_API_KEY")
+            lk_secret = os.environ.get("LIVEKIT_API_SECRET")
+            bucket = os.environ.get("FIREBASE_STORAGE_BUCKET")
+            
+            # Find GCP credentials
+            creds_str = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "")
+            if creds_str and not creds_str.startswith("{"):
+                if os.path.exists(creds_str):
+                    with open(creds_str, "r") as f:
+                        creds_str = f.read()
+            
+            if not all([lk_url, lk_key, lk_secret, bucket, creds_str]):
+                print("[Egress] Skipping recording: Missing FIREBASE_STORAGE_BUCKET or credentials.")
+                return
+
+            lk_api = api.LiveKitAPI(lk_url, lk_key, lk_secret)
+            try:
+                # Use LiveKit Cloud default storage (no GCP/S3 needed)
+                from livekit.api import RoomCompositeEgressRequest, EncodedFileOutput
+                
+                req = RoomCompositeEgressRequest(
+                    room_name=ctx.room.name,
+                    layout="speaker", 
+                    audio_only=True,
+                    file=EncodedFileOutput(
+                        filepath=f"recordings/{ctx.room.name}_{int(start_time)}.mp3"
+                    )
+                )
+                info = await lk_api.egress.start_room_composite_egress(req)
+                print(f"[Egress] 🔴 Started internal recording {info.egress_id} for room {ctx.room.name}")
+            except Exception as e:
+                print(f"[Egress] Failed to start recording: {e}")
+            finally:
+                await lk_api.aclose()
+        except Exception as e:
+            print(f"[Egress] Setup error: {e}")
+            
+    asyncio.create_task(trigger_recording())
 
     # --- Silence Monitor (separate task, safe) ---
     async def silence_monitor():
@@ -682,36 +706,112 @@ async def entrypoint(ctx: JobContext):
 Analyze the following phone conversation transcript.
 Objective was: {call_objective}
 
-Return a JSON object with:
+Return a STRICT JSON object with exactly these keys:
 1. "summary": A 2-sentence summary of the call.
 2. "sentiment": One of "positive", "neutral", "negative".
-3. "outcome": Whether the objective was achieved (true/false).
-4. "extracted_data": Any lead info found (name, email, etc).
+3. "outcome": true or false, based on if the objective was achieved.
+4. "extracted_data": A dictionary containing any lead info found (e.g., name, email, phone). If none found, return an empty dictionary.
+
+Output ONLY valid JSON. No markdown wrappers. No explanations.
 
 TRANSCRIPT:
 {full_transcript}
 """
         try:
-            resp = await llm_plugin.chat(messages=[{"role": "user", "content": analysis_prompt}])
-            analysis_text = resp.choices[0].message.content
+            analysis_text = ""
+            nvidia_key = os.environ.get("NVIDIA_API_KEY")
+            if nvidia_key:
+                print(f"[Intelligence] Using NVIDIA NIM (nvidia/nemotron-3-super-120b-a12b) for structured JSON analysis...")
+                try:
+                    from openai import AsyncOpenAI
+                    nim_client = AsyncOpenAI(
+                        base_url="https://integrate.api.nvidia.com/v1",
+                        api_key=nvidia_key
+                    )
+                    completion = await nim_client.chat.completions.create(
+                        model="nvidia/nemotron-3-super-120b-a12b",
+                        messages=[{"role":"user","content":analysis_prompt}],
+                        temperature=1,
+                        top_p=0.95,
+                        max_tokens=16384,
+                        extra_body={"chat_template_kwargs":{"enable_thinking":True},"reasoning_budget":16384},
+                        stream=True
+                    )
+                    
+                    async for chunk in completion:
+                        if not chunk.choices:
+                            continue
+                        reasoning = getattr(chunk.choices[0].delta, "reasoning_content", None)
+                        if reasoning:
+                            print(reasoning, end="")
+                        if chunk.choices[0].delta.content is not None:
+                            content_piece = chunk.choices[0].delta.content
+                            analysis_text += content_piece
+                            print(content_piece, end="")
+                    print("\n")
+                except ImportError:
+                    print("[Intelligence] 'openai' package not found. Please install it. Falling back...")
+                except Exception as nim_e:
+                    print(f"[Intelligence] NVIDIA NIM failed: {nim_e}. Falling back to default LLM...")
+                    analysis_text = ""
+            
+            # Fallback if NVIDIA fails or key missing
+            if not analysis_text:
+                from livekit.agents.llm import ChatContext
+                if is_gemini_live:
+                    # For Gemini Live, we use a separate Google LLM instance for analysis
+                    analysis_llm = google.LLM(model="gemini-2.0-flash")
+                    resp = await analysis_llm.chat(chat_ctx=ChatContext().append(role="user", text=analysis_prompt))
+                    analysis_text = resp.choices[0].message.content
+                else:
+                    resp = await llm_plugin.chat(chat_ctx=ChatContext().append(role="user", text=analysis_prompt))
+                    analysis_text = resp.choices[0].message.content
+
+            # Aggressive cleanup for JSON formatting
+            if "```" in analysis_text:
+                parts = analysis_text.split("```")
+                for p in parts:
+                    p_strip = p.strip()
+                    if p_strip.startswith("{") or p_strip.startswith("json"):
+                        analysis_text = p_strip
+                        if analysis_text.startswith("json"): analysis_text = analysis_text[4:].strip()
+                        break
+            analysis_text = analysis_text.strip()
+            
+            # Flatten analysis into payload
+            try:
+                analysis_json = json.loads(analysis_text)
+                summary = analysis_json.get("summary", "")
+                sentiment = analysis_json.get("sentiment", "neutral")
+                outcome = analysis_json.get("outcome", False)
+            except:
+                summary = analysis_text[:200]
+                sentiment = "neutral"
+                outcome = False
 
             flask_url = os.environ.get("FLASK_URL") or f"http://127.0.0.1:{os.environ.get('PORT', '5000')}"
             payload = {
                 "agent_id": agent_id,
+                "room_name": ctx.room.name,
                 "duration": duration,
                 "transcript": full_transcript,
                 "analysis": analysis_text,
+                "summary": summary,
+                "sentiment": sentiment,
+                "outcome": outcome,
                 "usage": {
                     "llm_tokens": int(len(full_transcript) / 4),
                     "tts_chars": total_tts_chars,
                     "stt_seconds": duration
                 },
+                "status": "completed",
                 "timestamp": datetime.now().isoformat(),
             }
 
             async with aiohttp.ClientSession() as http_sess:
-                post_resp = await http_sess.post(f"{flask_url}/api/agents/{agent_id}/calls", json=payload, timeout=10)
-                print(f"[Intelligence] Post-call data sent to /api/agents/{agent_id}/calls -> Status: {post_resp.status}")
+                # Corrected endpoint to /logs as per agents_routes.py
+                post_resp = await http_sess.post(f"{flask_url}/api/agents/{agent_id}/logs", json=payload, timeout=10)
+                print(f"[Intelligence] Post-call data sent to /api/agents/{agent_id}/logs -> Status: {post_resp.status}")
                 if webhook_url:
                     await http_sess.post(webhook_url, json=payload, timeout=5)
                     print(f"[Intelligence] ✅ Dispatched to webhook: {webhook_url}")
