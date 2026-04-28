@@ -103,25 +103,23 @@ async def entrypoint(ctx: JobContext):
                 agent_model = data.get("model", agent_model)
         except: pass
 
-    # Dashboard set instructions only (to avoid model confusion)
-    final_instructions = system_prompt
-
     # --- Start Agent Mode ---
     is_gemini_live = "gemini" in agent_model.lower()
 
     if is_gemini_live:
-        print(f"[Gemini] Initializing RealtimeModel...")
+        print(f"[Gemini] Using RealtimeModel with instruction-based greeting...")
+        # For Gemini Live, include the greeting in instructions
+        gemini_instructions = f"{system_prompt}\n\nIMPORTANT: Start the conversation by saying exactly: '{welcome_message}'"
+        
         llm_plugin = google.realtime.RealtimeModel(
             voice="Puck",
-            instructions=final_instructions,
+            instructions=gemini_instructions,
             temperature=0.8
         )
-        # For Gemini Live, pass LLM directly to AgentSession for say() support
         session = AgentSession(llm=llm_plugin)
-        # Still need an agent object for start()
-        agent = KautilyaAgent(instructions=final_instructions)
+        agent = KautilyaAgent(instructions=gemini_instructions)
         await session.start(room=ctx.room, agent=agent)
-        await session.say(welcome_message)
+        # We DON'T call session.say() because Gemini handles it via instructions
     else:
         # Standard Pattern
         vad = silero.VAD.load()
@@ -130,7 +128,7 @@ async def entrypoint(ctx: JobContext):
         llm_plugin = openai.LLM(base_url="https://api.groq.com/openai/v1", api_key=os.environ.get("GROQ_API_KEY"), model="llama-3.3-70b-versatile")
 
         session = AgentSession(vad=vad, stt=stt, llm=llm_plugin, tts=tts)
-        agent = KautilyaAgent(instructions=final_instructions)
+        agent = KautilyaAgent(instructions=system_prompt)
         await session.start(room=ctx.room, agent=agent)
         await session.say(welcome_message)
 
