@@ -61,11 +61,12 @@ def vobiz_answer(agent_id):
     # Fire-and-forget room creation
     create_room_fire_and_forget(room_name, agent_id)
     
-    # Vobiz uses Plivo XML — <User> for SIP (NOT <Sip> which is Twilio)
+    # Using <Sip> since it was working before for LiveKit SIP Trunk routing.
+    # The 8011 Invalid XML error was solely due to the <Say> tag (Vobiz expects <Speak>).
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Dial>
-        <User>{sip_uri}</User>
+    <Dial timeout="60">
+        <Sip>{sip_uri}</Sip>
     </Dial>
 </Response>"""
     print(f"[Vobiz] Returning XML with SIP URI: {sip_uri}")
@@ -80,7 +81,7 @@ def exotel_answer(agent_id):
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Dial>
-        <User>{sip_uri}</User>
+        <Sip>{sip_uri}</Sip>
     </Dial>
 </Response>"""
     return Response(xml, mimetype='text/xml')
