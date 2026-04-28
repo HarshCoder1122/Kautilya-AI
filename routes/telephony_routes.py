@@ -143,37 +143,74 @@ def trigger_exotel_call(config, to_number, agent_id):
 
 
 def trigger_vobiz_call(config, to_number, agent_id):
-    auth_id = config.get('auth_id')
-    auth_token = config.get('auth_token')
-    virtual_number = config.get('number')
+    import asyncio
+    import uuid
+    import json
+    import threading
+    from livekit import api
+    from config import LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET
+
+    # Ensure phone number is E.164 formatted for SIP routing
+    if not to_number.startswith('+'):
+        to_number = f"+{to_number}"
+        
+    room_name = f"voice-{agent_id}--{uuid.uuid4().hex[:8]}"
     
-    if not all([auth_id, auth_token, virtual_number]):
-        return jsonify({"error": "Vobiz credentials incomplete"}), 400
-    url = f"https://api.vobiz.ai/api/v1/Account/{auth_id}/Call/"
-    
-    # Force HTTPS for callbacks (Cloud providers like Koyeb/ngrok require it for telephony)
-    base_url = request.host_url.rstrip('/').replace('http://', 'https://')
-    answer_url = f"{base_url}/api/webhooks/vobiz/answer/{agent_id}"
-    status_url = f"{base_url}/api/webhooks/vobiz/events"
-    
-    headers = {
-        "X-Auth-ID": auth_id,
-        "X-Auth-Token": auth_token,
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "from": virtual_number,
-        "to": to_number,
-        "answer_url": answer_url,
-        "answer_method": "POST",
-        "status_url": status_url
-    }
-    
+    async def _make_call():
+        lk_url = LIVEKIT_URL.replace("wss://", "https://").replace("ws://", "http://")
+        lkapi = api.LiveKitAPI(url=lk_url, api_key=LIVEKIT_API_KEY, api_secret=LIVEKIT_API_SECRET)
+        
+        try:
+            # Pre-create the room with metadata so the agent knows how to start
+            await lkapi.room.create_room(
+                api.CreateRoomRequest(
+                    name=room_name,
+                    empty_timeout=300,
+                    metadata=json.dumps({"agent_id": agent_id, "source": "telephony_bridge"})
+                )
+            )
+            
+            # Use the LiveKit SIP Plugin to trigger the outbound call
+            # LiveKit automatically routes this using the SIP Trunk configured in your dashboard
+            req = api.CreateSIPParticipantRequest(
+                room_name=room_name,
+                sip_call_to=to_number,
+                participant_identity=f"sip-{to_number.replace('+', '')}",
+                wait_until_answered=False  # Return quickly, agent joins in background
+            )
+            
+            # If the config explicitly has an outbound trunk ID, we could use it:
+            # sip_trunk_id = config.get('sip_trunk_id')
+            # if sip_trunk_id: req.sip_trunk_id = sip_trunk_id
+            
+            sip_participant = await lkapi.sip.create_sip_participant(req)
+            return sip_participant.participant_id
+            
+        finally:
+            await lkapi.aclose()
+
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=15)
-        if resp.status_code in (200, 201):
-            return jsonify({"status": "ok", "call_id": resp.json().get('api_id')})
-        return jsonify({"error": f"Vobiz API Error: {resp.text}"}), resp.status_code
+        result = [None]
+        error = [None]
+        
+        def _run():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                result[0] = loop.run_until_complete(_make_call())
+                loop.close()
+            except Exception as e:
+                error[0] = e
+
+        t = threading.Thread(target=_run)
+        t.start()
+        t.join(timeout=15)
+        
+        if error[0]:
+            raise error[0]
+            
+        return jsonify({"status": "ok", "call_id": result[0], "room_name": room_name})
+        
     except Exception as e:
-        return jsonify({"error": f"Request failed: {e}"}), 500
+        print(f"[LiveKit SIP Plugin] Error: {e}")
+        return jsonify({"error": f"LiveKit SIP Error: {str(e)}"}), 500
