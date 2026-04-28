@@ -13,6 +13,8 @@ from livekit.api import LiveKitAPI, CreateRoomRequest
 from extensions import db
 from config import LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL, LIVEKIT_SIP_URI
 import services.nim_service as nim_service
+from firebase_admin import firestore
+import services.nim_service as nim_service
 
 # Strip sip: prefix if present — we add it ourselves in the URI
 SIP_DOMAIN = LIVEKIT_SIP_URI.replace("sip:", "").strip()
@@ -58,26 +60,33 @@ def vobiz_answer(agent_id):
     event = request.values.get('Event')
     call_uuid = request.values.get('CallUUID', uuid.uuid4().hex[:8])
     
-    # Extract the original room_name from the SIP URI if provided, or generate a new one
-    # Vobiz doesn't send the original SIP URI in the Hangup event directly,
-    # but we can reconstruct the expected room name since we know the logic.
-    # Wait, the room name was generated with a random uuid in the original webhook!
-    # If the user's call dropped, we need the EXACT room name.
-    # Actually, Vobiz doesn't give us the generated call_uid back easily unless we pass it.
-    # Let's pass the call_uuid in the answer_url in telephony_routes!
-    # For now, we will search Firestore for the latest transcript for this agent_id.
-    
     if event == 'Hangup':
         # Trigger NIM post-call analytics in background
         threading.Thread(target=_process_post_call, args=(agent_id, dict(request.values), call_uuid), daemon=True).start()
         return "OK", 200
 
-    call_uid = uuid.uuid4().hex[:4]
-    room_name = f"voice-{agent_id}--{call_uid}"
-    sip_uri = f"sip:{room_name}@{SIP_DOMAIN}"
+    # SAVE MAPPING for Agent to find its ID later if room name is mangled by SIP Trunk
+    try:
+        if db:
+            db.collection('call_mappings').document(call_uuid).set({
+                "agent_id": agent_id,
+                "created_at": firestore.SERVER_TIMESTAMP
+            })
+            print(f"[Bridge] Saved call mapping: {call_uuid} -> {agent_id}")
+    except Exception as e:
+        print(f"[Bridge] Mapping error: {e}")
+
+    # Use pre-warmed room if provided, otherwise create a new one
+    room_name = request.args.get('room')
+    if room_name:
+        print(f"[Vobiz] Using pre-warmed room: {room_name}")
+    else:
+        call_uid = uuid.uuid4().hex[:4]
+        room_name = f"voice-{agent_id}--{call_uid}"
+        # Fire-and-forget room creation
+        create_room_fire_and_forget(room_name, agent_id)
     
-    # Fire-and-forget room creation
-    create_room_fire_and_forget(room_name, agent_id)
+    sip_uri = f"sip:{room_name}@{SIP_DOMAIN}"
     
     # Vobiz requires <User> for SIP routing. 
     # Adding callerId to ensure LiveKit's Inbound Trunk doesn't reject the call as anonymous.
