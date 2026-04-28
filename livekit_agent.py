@@ -13,6 +13,7 @@ from livekit.agents import (
     Agent,
     AgentSession,
 )
+from livekit.agents.llm import ChatMessage, ChatContent
 from livekit.plugins import sarvam, openai, silero, cartesia, google
 
 load_dotenv()
@@ -88,6 +89,9 @@ async def entrypoint(ctx: JobContext):
             doc = db.collection('agents').document(agent_id).get()
             if doc.exists:
                 data = doc.to_dict()
+                print(f"[Config] Firestore Data Keys: {list(data.keys())}")
+                print(f"[Config] Prompt Snippet: {str(data.get('system_prompt', ''))[:50]}...")
+                
                 system_prompt = data.get("system_prompt", system_prompt)
                 welcome_message = data.get("welcome_message", welcome_message)
                 agent_language = data.get("language", agent_language)
@@ -123,8 +127,8 @@ async def entrypoint(ctx: JobContext):
         
         # Trigger Gemini to speak first by simulating a user message or system prompt
         try:
-            from livekit.agents.llm import ChatMessage
-            msg = ChatMessage(role="user", content="I have just joined the call. Please introduce yourself exactly as instructed.")
+            # Fixing Pydantic validation: content must be a list of ChatContent
+            msg = ChatMessage(role="user", content=[ChatContent(text="I have just joined the call. Please introduce yourself exactly as instructed.")])
             if hasattr(session, 'chat_ctx'):
                 session.chat_ctx.messages.append(msg)
         except Exception as e:
@@ -147,6 +151,34 @@ async def entrypoint(ctx: JobContext):
     # Keep alive while connected
     while ctx.room.connection_state == rtc.ConnectionState.CONN_CONNECTED:
         await asyncio.sleep(1)
+
+    print(f"[Agent] Room {ctx.room.name} disconnected. Saving transcript...")
+    
+    # Save transcript for post-call analytics
+    try:
+        if FIREBASE_AVAILABLE and db and hasattr(session, 'chat_ctx'):
+            transcript = ""
+            for msg in session.chat_ctx.messages:
+                if msg.role in ['user', 'assistant'] and msg.content:
+                    # Don't save our artificial trigger message
+                    if "I have just joined the call" in msg.content:
+                        continue
+                    transcript += f"[{msg.role.upper()}]: {msg.content}\n"
+            
+            if transcript:
+                from firebase_admin import firestore
+                db.collection('transcripts').document(ctx.room.name).set({
+                    "transcript": transcript,
+                    "agent_id": agent_id,
+                    "created_at": firestore.SERVER_TIMESTAMP
+                })
+                print(f"[Agent] ✅ Saved transcript for {ctx.room.name}")
+            else:
+                print(f"[Agent] No transcript generated for {ctx.room.name}")
+    except Exception as e:
+        import traceback
+        print(f"[Agent] ❌ Failed to save transcript: {e}")
+        traceback.print_exc()
 
 if __name__ == "__main__":
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
