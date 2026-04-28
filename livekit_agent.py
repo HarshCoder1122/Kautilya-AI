@@ -114,6 +114,29 @@ async def entrypoint(ctx: JobContext):
                 else:
                     print(f"[Config] ❌ Mapping not found after 5 attempts for {call_uuid}")
 
+            # FINAL FALLBACK: Search by Customer Number (if mapping by UUID failed)
+            doc = db.collection('agents').document(agent_id).get()
+            if not doc.exists:
+                print(f"[Config] UUID mapping failed. Searching for active call by customer number...")
+                # We try to find any active call mapping for the participant in the room
+                # Wait for at least one participant to join if it's a SIP call
+                for attempt in range(3):
+                    participants = ctx.room.participants
+                    if participants:
+                        for p_sid, p in participants.items():
+                            identity = p.identity
+                            if "sip-" in identity or identity.startswith("+"):
+                                clean_id = identity.replace("sip-", "").lstrip("+")
+                                print(f"[Config] Found SIP participant: {clean_id}. Checking active_calls...")
+                                call_doc = db.collection('active_calls').document(clean_id).get()
+                                if call_doc.exists:
+                                    agent_id = call_doc.to_dict().get('agent_id')
+                                    print(f"[Config] 🎯 Found Agent ID via Customer Number: {agent_id}")
+                                    break
+                        if agent_id: break
+                    import time
+                    time.sleep(1)
+
             # Also extract call_id for transcript saving
             call_id = clean_name.split("--")[-1]
             if "_" in call_id: call_id = call_id.split("_")[-1]

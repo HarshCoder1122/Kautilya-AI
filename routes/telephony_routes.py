@@ -179,6 +179,19 @@ def trigger_vobiz_call(config, to_number, agent_id):
     }
     
     try:
+        # BULLETPROOF MAPPING: Save customer number to agent_id mapping
+        from extensions import db
+        from firebase_admin import firestore
+        clean_to = to_number.lstrip('+')
+        try:
+            db.collection('active_calls').document(clean_to).set({
+                "agent_id": agent_id,
+                "created_at": firestore.SERVER_TIMESTAMP
+            })
+            print(f"[Telephony] Saved customer mapping: {clean_to} -> {agent_id}")
+        except: pass
+        
+        import requests
         resp = requests.post(url, headers=headers, json=payload, timeout=15)
         if resp.status_code in (200, 201):
             return jsonify({"status": "ok", "call_id": resp.json().get('api_id'), "room_name": room_name})

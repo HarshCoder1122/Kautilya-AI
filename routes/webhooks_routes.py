@@ -92,13 +92,24 @@ def vobiz_answer(agent_id):
         threading.Thread(target=_process_post_call, args=(agent_id, dict(request.values), call_uuid), daemon=True).start()
         return "OK", 200
 
-    # SAVE MAPPING for Agent to find its ID later if room name is mangled by SIP Trunk
+    # SAVE MAPPING for Agent to find its ID later
     try:
         if db:
+            # Map by CallUUID
             db.collection('call_mappings').document(call_uuid).set({
                 "agent_id": agent_id,
                 "created_at": firestore.SERVER_TIMESTAMP
             })
+            
+            # Map by Customer Number (The most reliable way!)
+            from_number = request.values.get('From', '').lstrip('+')
+            if from_number:
+                db.collection('active_calls').document(from_number).set({
+                    "agent_id": agent_id,
+                    "created_at": firestore.SERVER_TIMESTAMP
+                })
+                print(f"[Bridge] Saved customer mapping: {from_number} -> {agent_id}")
+            
             print(f"[Bridge] Saved call mapping: {call_uuid} -> {agent_id}")
     except Exception as e:
         print(f"[Bridge] Mapping error: {e}")
