@@ -72,12 +72,17 @@ def vobiz_answer(agent_id):
         threading.Thread(target=_process_post_call, args=(agent_id, dict(request.values), call_uuid), daemon=True).start()
         return "OK", 200
 
-    call_uid = uuid.uuid4().hex[:4]
-    room_name = f"voice-{agent_id}--{call_uid}"
-    sip_uri = f"sip:{room_name}@{SIP_DOMAIN}"
+    # Use pre-warmed room if provided, otherwise create a new one
+    room_name = request.args.get('room')
+    if room_name:
+        print(f"[Vobiz] Using pre-warmed room: {room_name}")
+    else:
+        call_uid = uuid.uuid4().hex[:4]
+        room_name = f"voice-{agent_id}--{call_uid}"
+        # Fire-and-forget room creation
+        create_room_fire_and_forget(room_name, agent_id)
     
-    # Fire-and-forget room creation
-    create_room_fire_and_forget(room_name, agent_id)
+    sip_uri = f"sip:{room_name}@{SIP_DOMAIN}"
     
     # Vobiz requires <User> for SIP routing. 
     # Adding callerId to ensure LiveKit's Inbound Trunk doesn't reject the call as anonymous.
@@ -93,10 +98,16 @@ def vobiz_answer(agent_id):
 
 @webhooks_bp.route('/api/webhooks/exotel/answer/<agent_id>', methods=['POST', 'GET'])
 def exotel_answer(agent_id):
-    call_uid = uuid.uuid4().hex[:4]
-    room_name = f"voice-{agent_id}--{call_uid}"
+    # Use pre-warmed room if provided
+    room_name = request.args.get('room')
+    if room_name:
+        print(f"[Exotel] Using pre-warmed room: {room_name}")
+    else:
+        call_uid = request.values.get('CallSid', uuid.uuid4().hex[:8])
+        room_name = f"voice-{agent_id}--{call_uid}"
+        create_room_fire_and_forget(room_name, agent_id)
+        
     sip_uri = f"sip:{room_name}@{SIP_DOMAIN}"
-    create_room_fire_and_forget(room_name, agent_id)
     caller_id = request.values.get('From', '')
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>

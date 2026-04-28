@@ -151,9 +151,16 @@ def trigger_vobiz_call(config, to_number, agent_id):
         return jsonify({"error": "Vobiz credentials incomplete"}), 400
     url = f"https://api.vobiz.ai/api/v1/Account/{auth_id}/Call/"
     
+    # PRE-WARMING: Create room and dispatch agent IMMEDIATELY while phone is ringing
+    import uuid
+    from routes.webhooks_routes import create_room_fire_and_forget
+    room_name = f"voice-{agent_id}--{uuid.uuid4().hex[:4]}"
+    create_room_fire_and_forget(room_name, agent_id)
+    print(f"[Pre-Warming] Started Agent in room: {room_name}")
+
     # Force HTTPS for callbacks (Cloud providers like Koyeb/ngrok require it for telephony)
     base_url = request.host_url.rstrip('/').replace('http://', 'https://')
-    answer_url = f"{base_url}/api/webhooks/vobiz/answer/{agent_id}"
+    answer_url = f"{base_url}/api/webhooks/vobiz/answer/{agent_id}?room={room_name}"
     status_url = f"{base_url}/api/webhooks/vobiz/events"
     
     headers = {
