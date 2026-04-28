@@ -172,16 +172,20 @@ def trigger_vobiz_call(config, to_number, agent_id):
             
             # Use the LiveKit SIP Plugin to trigger the outbound call
             # LiveKit automatically routes this using the SIP Trunk configured in your dashboard
+            # LiveKit requires the specific Trunk ID to route the outbound call
+            # We first check if the user saved it in their dashboard config, then fallback to .env
+            sip_trunk_id = config.get('sip_trunk_id') or config.get('trunk_id') or config.get('livekit_trunk_id') or os.environ.get('LIVEKIT_SIP_TRUNK_ID')
+            
+            if not sip_trunk_id:
+                raise Exception("LiveKit SIP Trunk ID missing. Please save it in your dashboard or add LIVEKIT_SIP_TRUNK_ID to .env (Format: ST_...)")
+
             req = api.CreateSIPParticipantRequest(
+                sip_trunk_id=sip_trunk_id,
                 room_name=room_name,
                 sip_call_to=to_number,
                 participant_identity=f"sip-{to_number.replace('+', '')}",
                 wait_until_answered=False  # Return quickly, agent joins in background
             )
-            
-            # If the config explicitly has an outbound trunk ID, we could use it:
-            # sip_trunk_id = config.get('sip_trunk_id')
-            # if sip_trunk_id: req.sip_trunk_id = sip_trunk_id
             
             sip_participant = await lkapi.sip.create_sip_participant(req)
             return sip_participant.participant_id
