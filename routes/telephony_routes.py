@@ -149,7 +149,8 @@ def trigger_vobiz_call(config, to_number, agent_id):
     
     if not all([auth_id, auth_token, virtual_number]):
         return jsonify({"error": "Vobiz credentials incomplete"}), 400
-        
+    url = f"https://api.vobiz.ai/api/v1/Account/{auth_id}/Call/"
+    
     # Force HTTPS for callbacks (Cloud providers like Koyeb/ngrok require it for telephony)
     base_url = request.host_url.rstrip('/').replace('http://', 'https://')
     answer_url = f"{base_url}/api/webhooks/vobiz/answer/{agent_id}"
