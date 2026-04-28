@@ -12,8 +12,10 @@ from livekit.agents import (
     JobContext,
     WorkerOptions,
     cli,
-    llm,
+    Agent,
+    AgentSession,
 )
+from livekit.agents.llm import ChatMessage
 from livekit.plugins import sarvam, openai, silero, cartesia
 
 load_dotenv()
@@ -48,6 +50,12 @@ def initialize_firebase():
 
 initialize_firebase()
 
+class KautilyaAgent(Agent):
+    def __init__(self):
+        super().__init__(instructions="")
+    def set_config(self, system_prompt, call_objective):
+        self._instructions = f"OBJECTIVE: {call_objective}\n\n{system_prompt}"
+
 async def entrypoint(ctx: JobContext):
     print(f"[Agent] Starting room: {ctx.room.name}")
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
@@ -57,12 +65,11 @@ async def entrypoint(ctx: JobContext):
     welcome_message = "Hello, I am Kautilya."
     agent_id = None
     agent_language = "hi-IN"
+    call_objective = "Assist caller."
     
-    # PRIORITY 1: Room Name (agentId--uuid)
+    # SIP / Room Identity
     r_name = ctx.room.name
     sip_resolved = False
-    
-    # SIP DID Lookup
     for p in ctx.room.remote_participants.values():
         if p.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP:
             did = (p.attributes or {}).get("sip.trunkPhoneNumber")
@@ -79,7 +86,6 @@ async def entrypoint(ctx: JobContext):
     if not sip_resolved and "--" in r_name:
         agent_id = r_name.split("--")[0].replace("voice-", "").replace("phone-", "")
 
-    # Fetch Config
     if agent_id and FIREBASE_AVAILABLE and db:
         try:
             doc = db.collection('agents').document(agent_id).get()
@@ -88,29 +94,28 @@ async def entrypoint(ctx: JobContext):
                 system_prompt = data.get("system_prompt", system_prompt)
                 welcome_message = data.get("welcome_message", welcome_message)
                 agent_language = data.get("language", agent_language)
-                print(f"[Config] Loaded for agent: {agent_id}")
+                call_objective = data.get("call_objective", call_objective)
         except: pass
 
-    # --- Setup Pipeline Agent ---
-    from livekit.agents.pipeline import VoicePipelineAgent
-    
+    # --- Setup Agent & Session (Legacy 090e518 Pattern) ---
     vad = silero.VAD.load()
     stt = sarvam.STT(language=agent_language)
     tts = sarvam.TTS(target_language_code=agent_language, model="bulbul:v3")
     llm_plugin = openai.LLM(base_url="https://api.groq.com/openai/v1", api_key=os.environ.get("GROQ_API_KEY"), model="llama-3.3-70b-versatile")
 
-    initial_ctx = llm.ChatContext().append(role="system", text=system_prompt)
+    agent = KautilyaAgent()
+    agent.set_config(system_prompt, call_objective)
 
-    agent = VoicePipelineAgent(
+    session = AgentSession(
         vad=vad,
         stt=stt,
         llm=llm_plugin,
         tts=tts,
-        chat_ctx=initial_ctx,
     )
 
-    agent.start(ctx.room)
-    await agent.say(welcome_message, allow_interruptions=True)
+    # In legacy AgentSession, we pass room and agent to start()
+    await session.start(room=ctx.room, agent=agent)
+    await session.say(welcome_message)
 
     while ctx.room.connection_state == rtc.ConnectionState.CONN_CONNECTED:
         await asyncio.sleep(1)
