@@ -3,7 +3,8 @@
         content="Kautilya Dashboard, RevealIQ Studio, API Dashboard, Kautilya API Keys, AI integration"><meta property="og:type" content="website"><meta property="og:url" content="https://ai.revealiq.in/dashboard"><meta property="og:title" content="Kautilya RevealIQ Studio - API Dashboard"><meta property="og:description"
         content="Manage your Kautilya AI API keys and monitor usage in the RevealIQ Studio."><meta property="og:image" content="https://ai.revealiq.in/static/kautilya_logo.png"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:url" content="https://ai.revealiq.in/dashboard"><meta name="twitter:title" content="Kautilya RevealIQ Studio Dashboard"><meta name="twitter:description" content="Manage Kautilya AI API keys and usage limits."><meta name="twitter:image" content="https://ai.revealiq.in/static/kautilya_logo.png"><link
         href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
-        rel="stylesheet"><link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet"><script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script><script src="/static/livekit-voice.js"></script><script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script><script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>
+        rel="stylesheet"><link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet"><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet"><link rel="manifest" href="/manifest.json"><link rel="stylesheet" href="/static/dashboard-immersive.css"><script src="https://checkout.razorpay.com/v1/checkout.js"></script><script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js');}</script>
+<script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script><script src="/static/livekit-voice.js"></script><script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script><script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>
         :root {
             --bg-primary: #0F0F10;
             --bg-secondary: #131415;
@@ -294,8 +295,9 @@
         .ds-content {
             flex: 1;
             padding: 28px 32px 60px;
-            max-width: 1100px;
-            width: 100%
+            max-width: none;
+            width: 100%;
+            margin: 0
         }
 
         /* Pages */
@@ -305,7 +307,8 @@
         }
 
         .ds-page.active {
-            display: block
+            display: block;
+            width: 100%
         }
 
         @keyframes dsFadeIn {
@@ -360,19 +363,45 @@
 
         .ds-stat-card {
             background: var(--bg-card);
+            backdrop-filter: blur(12px);
             border: 1px solid var(--border);
             border-radius: var(--radius);
             padding: 20px;
             display: flex;
             flex-direction: column;
             gap: 8px;
-            transition: all .3s
+            transition: all .3s;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .ds-stat-card::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: var(--gradient-primary);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .ds-stat-card:hover::before {
+            opacity: 1;
         }
 
         .ds-stat-card:hover {
             border-color: var(--accent);
             box-shadow: var(--shadow-glow);
-            transform: translateY(-2px)
+            transform: translateY(-2px);
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        @keyframes ds-pulse-glow {
+            0% { box-shadow: 0 0 0 0 rgba(168, 199, 250, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(168, 199, 250, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(168, 199, 250, 0); }
         }
 
         .ds-stat-icon {
@@ -382,7 +411,8 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 20px
+            font-size: 20px;
+            animation: ds-pulse-glow 2s infinite;
         }
 
         .ds-stat-icon.blue {
@@ -852,16 +882,25 @@
         .ds-studio-overlay {
             position: fixed;
             top: 0;
-            left: 0;
-            width: 100%;
+            left: var(--sidebar-w);
+            width: calc(100% - var(--sidebar-w));
             height: 100%;
             background: var(--bg-studio);
-            z-index: 1000;
+            z-index: 500;
             display: none;
             flex-direction: column;
             animation: slideUp 0.4s var(--transition);
+            transition: left 0.3s, width 0.3s;
         }
         .ds-studio-overlay.active { display: flex; }
+        
+        @media (max-width: 1024px) {
+            .ds-studio-overlay {
+                left: 0;
+                width: 100%;
+                z-index: 1001; /* Above sidebar on mobile */
+            }
+        }
         
         .ds-studio-header {
             height: 64px;
@@ -1005,13 +1044,13 @@
 
         /* Agent Cards (renderAgents) */
         .ds-agent-card {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-lg);
-            padding: 22px;
+            background: linear-gradient(160deg, rgba(28, 28, 30, 0.96), rgba(15, 15, 16, 0.98));
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            padding: 20px;
             display: flex;
             flex-direction: column;
-            gap: 14px;
+            gap: 16px;
             transition: all 0.3s var(--transition);
             position: relative;
             overflow: hidden;
@@ -1024,8 +1063,16 @@
             opacity: 0;
             transition: opacity 0.3s;
         }
+        .ds-agent-card::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            background: radial-gradient(circle at top right, rgba(168, 199, 250, 0.12), transparent 34%);
+            opacity: 0.75;
+        }
         .ds-agent-card:hover {
-            border-color: var(--accent-glow);
+            border-color: rgba(168, 199, 250, 0.35);
             transform: translateY(-3px);
             box-shadow: 0 16px 40px rgba(0,0,0,0.35);
         }
@@ -1033,12 +1080,48 @@
         .ds-agent-card-header {
             display: flex;
             justify-content: space-between;
-            align-items: center;
+            align-items: flex-start;
+            gap: 14px;
+            position: relative;
+            z-index: 1;
+        }
+        .ds-agent-title-stack {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
         }
         .ds-agent-card-title {
             font-size: 1.05rem;
             font-weight: 700;
-            letter-spacing: -0.3px;
+            letter-spacing: 0;
+            line-height: 1.25;
+            word-break: break-word;
+        }
+        .ds-agent-model-badge {
+            width: fit-content;
+            max-width: 100%;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 5px 9px;
+            border-radius: 8px;
+            background: rgba(168, 199, 250, 0.1);
+            border: 1px solid rgba(168, 199, 250, 0.18);
+            color: var(--accent-light);
+            font-size: 0.7rem;
+            font-weight: 700;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .ds-agent-model-badge .material-icons-round { font-size: 14px; }
+        .ds-agent-card-desc,
+        .ds-agent-card-meta,
+        .ds-agent-config-grid,
+        .ds-agent-card-actions {
+            position: relative;
+            z-index: 1;
         }
         .ds-agent-card-desc {
             font-size: 0.82rem;
@@ -1049,6 +1132,62 @@
             line-clamp: 2;
             -webkit-box-orient: vertical;
             overflow: hidden;
+        }
+        .ds-agent-config-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+        }
+        .ds-agent-config-chip {
+            min-height: 58px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 5px;
+            padding: 10px;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.035);
+            border: 1px solid rgba(255, 255, 255, 0.07);
+        }
+        .ds-agent-config-label {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            color: var(--text-muted);
+            font-size: 0.66rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+        .ds-agent-config-label .material-icons-round {
+            font-size: 13px;
+            color: var(--accent);
+        }
+        .ds-agent-config-value {
+            color: var(--text-primary);
+            font-size: 0.8rem;
+            font-weight: 700;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .ds-agent-temp-row {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+        }
+        .ds-agent-temp-meter {
+            flex: 1;
+            height: 4px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.08);
+            overflow: hidden;
+        }
+        .ds-agent-temp-meter span {
+            display: block;
+            height: 100%;
+            border-radius: inherit;
+            background: linear-gradient(90deg, #34C759, #A8C7FA, #FF9500);
         }
         .ds-agent-card-meta {
             display: flex;
@@ -1067,6 +1206,35 @@
             gap: 4px;
         }
         .ds-agent-tag .material-icons-round { font-size: 13px; color: var(--accent); }
+        .ds-agent-intel {
+            position: relative;
+            z-index: 1;
+            margin-top: 2px;
+            padding: 12px;
+            border-radius: 8px;
+            background: rgba(168,199,250,0.055);
+            border: 1px solid rgba(168,199,250,0.12);
+        }
+        .ds-agent-intel-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 7px;
+        }
+        .ds-agent-intel-label {
+            font-size: 0.68rem;
+            font-weight: 700;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .ds-agent-intel-summary {
+            font-size: 0.76rem;
+            color: var(--text-secondary);
+            line-height: 1.45;
+            font-style: italic;
+        }
         .ds-agent-card-actions {
             display: flex;
             gap: 8px;
@@ -1201,6 +1369,13 @@
         /* Auth gate */
         .ds-auth-gate {
             text-align: center;
+            width: 100%;
+            max-width: none;
+            min-height: min(68vh, 760px);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
             padding: 60px 24px;
             background: var(--bg-card);
             border: 1px dashed var(--border);
@@ -1901,7 +2076,7 @@
                 grid-template-columns: 1fr
             }
         }
-    </style></head><body><aside class="ds-sidebar" id="dsSidebar"><div class="ds-sidebar-header"><img src="/static/kautilya_logo.png" alt="KAUTILYA AI" class="ds-brand-logo"><div class="ds-sidebar-brand">RevealIQ Studio</div><span class="ds-sidebar-badge">Kautilya</span></div></div><nav class="ds-nav"><button class="ds-nav-item active" data-page="overview" onclick="switchPage('overview',this)"><span class="material-icons-round">dashboard</span> Overview
+    </style></head><body><div class="studio-backdrop" aria-hidden="true"><div class="studio-grid"></div><div class="studio-haze"></div><div class="studio-noise"></div><div class="studio-orb"></div><canvas class="studio-canvas" id="studioCanvas"></canvas></div><aside class="ds-sidebar" id="dsSidebar"><div class="ds-sidebar-header"><img src="/static/kautilya_logo.png" alt="KAUTILYA AI" class="ds-brand-logo"><div class="ds-sidebar-brand">RevealIQ Studio</div><span class="ds-sidebar-badge">Kautilya</span></div></div><nav class="ds-nav"><button class="ds-nav-item active" data-page="overview" onclick="switchPage('overview',this)"><span class="material-icons-round">dashboard</span> Overview
             </button><button class="ds-nav-item" data-page="keys" onclick="switchPage('keys',this)"><span class="material-icons-round">vpn_key</span> API Keys
             </button><button class="ds-nav-item" data-page="playground" onclick="switchPage('playground',this)"><span class="material-icons-round">play_circle</span> Playground
             </button><button class="ds-nav-item" data-page="usage" onclick="switchPage('usage',this)"><span class="material-icons-round">bar_chart</span> Usage & Analytics
@@ -1909,6 +2084,7 @@
             </button><button class="ds-nav-item" data-page="campaigns" onclick="switchPage('campaigns',this)"><span class="material-icons-round">campaign</span> Campaigns
             </button><button class="ds-nav-item" data-page="leads" onclick="switchPage('leads',this)"><span class="material-icons-round">contact_phone</span> Lead Intelligence
             </button><button class="ds-nav-item" data-page="telephony" onclick="switchPage('telephony',this)"><span class="material-icons-round">tty</span> Vobiz Setup
+            </button><button class="ds-nav-item" data-page="billing" onclick="switchPage('billing',this)"><span class="material-icons-round">account_balance_wallet</span> Billing & Plans
             </button><button class="ds-nav-item" data-page="docs" onclick="switchPage('docs',this)"><span class="material-icons-round">menu_book</span> Quick Start
             </button><div class="ds-nav-divider"></div><a class="ds-nav-item" href="/" style="text-decoration:none"><span class="material-icons-round">chat</span> Chat
             </a><a class="ds-nav-item" href="/apidocs" style="text-decoration:none"><span class="material-icons-round">description</span> API Docs
@@ -2148,7 +2324,7 @@
             </div>
             <div class="ag-form-group">
                 <label class="ag-form-label">Key Name</label>
-                <input type="text" id="keyNameInput" class="ds-input" style="width:100%" placeholder="e.g. My Production App" maxlength="50">
+                <input type="text" id="createKeyNameInput" class="ds-input" style="width:100%" placeholder="e.g. My Production App" maxlength="50">
             </div>
             <div class="ag-modal-actions" style="margin-top:20px;">
                 <button class="ds-btn ds-btn-ghost" onclick="closeCreateKeyModal()">Cancel</button>
@@ -2159,21 +2335,22 @@
             </div>
         </div>
     </div>
+           </div><!-- ds-main end -->
 
-    <!-- Omni Studio Builder Overlay (Full Screen) -->
-    <div id="studioOverlay" class="ds-studio-overlay">
-        <div class="ds-studio-header">
-            <div style="display: flex; align-items: center; gap: 16px; flex: 1;">
+    <!-- Omni Studio Builder Overlay (Content-Linked) -->
+    <div id="studioOverlay" class="ds-studio-overlay" style="background: rgba(5,5,5,0.98); backdrop-filter: blur(15px); overflow-y: auto; height: 100vh;">
+        <div class="ds-studio-header" style="height: auto; min-height: 64px; padding: 12px 24px; flex-wrap: wrap; gap: 12px;">
+            <div style="display: flex; align-items: center; gap: 16px; flex: 1 1 300px; flex-wrap: wrap;">
                 <button class="ds-btn ds-btn-ghost ds-btn-sm" onclick="closeAgentStudio()">
                     <span class="material-icons-round">arrow_back</span> Back
                 </button>
-                <div style="height: 24px; width: 1px; background: var(--omni-border);"></div>
-                <div style="display: flex; align-items: center; gap: 12px; flex: 1;">
+                <div style="height: 24px; width: 1px; background: var(--omni-border); display: none;"></div>
+                <div style="display: flex; align-items: center; gap: 12px; flex: 1; flex-wrap: wrap;">
                     <input type="text" id="studio-agent-name" 
-                           style="background: transparent; border: none; color: var(--omni-text); font-weight: 700; font-size: 1.1rem; outline: none; width: 240px; border-bottom: 2px solid transparent; transition: border-color 0.3s;" 
+                           style="background: transparent; border: none; color: var(--omni-text); font-weight: 700; font-size: 1.1rem; outline: none; width: 100%; max-width: 240px; border-bottom: 2px solid transparent; transition: border-color 0.3s;" 
                            placeholder="Enter Agent Name..." onfocus="this.style.borderBottomColor='var(--omni-accent)'" onblur="this.style.borderBottomColor='transparent'">
                     
-                    <div style="height: 20px; width: 1px; background: var(--omni-border);"></div>
+                    <div style="height: 20px; width: 1px; background: var(--omni-border); display: none;"></div>
                     
                     <div class="omni-input-mini">
                         <select id="studio-agent-type" style="background: rgba(255,255,255,0.05); border: 1px solid var(--omni-border); color: var(--omni-text-muted); border-radius: 6px; padding: 4px 10px; font-size: 0.75rem; outline: none; cursor: pointer;">
@@ -2182,20 +2359,20 @@
                         </select>
                     </div>
 
-                    <div id="studioStatusDisplay" style="font-size: 0.75rem; color: var(--omni-text-muted); display: flex; align-items: center; gap: 4px; margin-left: 10px;">
+                    <div id="studioStatusDisplay" style="font-size: 0.75rem; color: var(--omni-text-muted); display: flex; align-items: center; gap: 4px; margin-left: auto;">
                         <span class="material-icons-round" style="font-size: 10px; color: var(--omni-accent);">circle</span> <span id="studioStatusText">Draft Saved</span>
                     </div>
                 </div>
             </div>
-            <div style="display: flex; gap: 12px; align-items: center;">
-                <button class="ds-btn ds-btn-danger ds-btn-sm" style="border-radius: 6px; padding: 6px 10px;" onclick="deleteAgent(editingAgentId)">
+            <div style="display: flex; gap: 12px; align-items: center; flex: 1 1 100%; justify-content: flex-end; flex-wrap: wrap;">
+                <button class="ds-btn ds-btn-danger ds-btn-sm" style="border-radius: 6px; padding: 6px 10px; flex: 1; justify-content: center;" onclick="deleteAgent(editingAgentId)">
                     <span class="material-icons-round" style="font-size: 16px;">delete</span> Delete
                 </button>
-                <div style="width: 1px; height: 24px; background: var(--omni-border);"></div>
-                <button class="ds-btn ds-btn-ghost ds-btn-sm" onclick="openStudioTest()">
+                <div style="width: 1px; height: 24px; background: var(--omni-border); display: none;"></div>
+                <button class="ds-btn ds-btn-ghost ds-btn-sm" style="flex: 1; justify-content: center;" onclick="openStudioTest()">
                     <span class="material-icons-round" style="font-size: 18px;">play_arrow</span> Test Agent
                 </button>
-                <button id="studioSaveBtn" class="ds-btn ds-btn-primary" onclick="saveAgentStudio()">
+                <button id="studioSaveBtn" class="ds-btn ds-btn-primary" style="flex: 2; justify-content: center;" onclick="saveAgentStudio()">
                     <span class="material-icons-round" style="font-size: 18px;">save</span> Save Changes
                 </button>
             </div>
@@ -2204,35 +2381,63 @@
             /* OmniDim Enhanced UI Styles */
             :root {
                 --omni-bg: #050505;
-                --omni-card: #121212;
-                --omni-border: #1E1E1E;
+                --omni-card: #111216;
+                --omni-card-strong: #171922;
+                --omni-border: rgba(255, 255, 255, 0.08);
                 --omni-border-glow: rgba(168, 199, 250, 0.3);
                 --omni-accent: #A8C7FA;
+                --omni-accent-2: #6EE7B7;
+                --omni-warm: #FFB86B;
                 --omni-text: #F3F3F3;
-                --omni-text-muted: #888888;
-                --omni-glass: rgba(18, 18, 18, 0.6);
+                --omni-text-muted: #9AA0AA;
+                --omni-glass: rgba(17, 18, 22, 0.72);
             }
-            .ds-studio-body { flex-direction: column !important; background: var(--omni-bg); padding: 0 40px; }
-            .omni-tabs { display: flex; gap: 24px; border-bottom: 1px solid var(--omni-border); margin-bottom: 24px; padding-top: 10px; }
-            .omni-tab { color: var(--omni-text-muted); font-size: 0.9rem; font-weight: 500; padding: 12px 0; cursor: pointer; display: flex; align-items: center; gap: 8px; border-bottom: 2px solid transparent; transition: all 0.3s; }
+            .ds-studio-body { flex-direction: column !important; background: radial-gradient(circle at top left, rgba(168, 199, 250, 0.07), transparent 30%), var(--omni-bg); padding: 0 40px 36px; overflow: auto; flex: 1; }
+            .omni-tabs { display: flex; gap: 24px; border-bottom: 1px solid var(--omni-border); margin-bottom: 22px; padding-top: 10px; position: sticky; top: 0; z-index: 4; background: rgba(5, 5, 5, 0.92); backdrop-filter: blur(12px); overflow-x: auto; padding-bottom: 5px; }
+            .omni-tabs::-webkit-scrollbar { height: 4px; }
+            .omni-tabs::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
+            .omni-tab { color: var(--omni-text-muted); font-size: 0.9rem; font-weight: 500; padding: 12px 0; cursor: pointer; display: flex; align-items: center; gap: 8px; border-bottom: 2px solid transparent; transition: all 0.3s; white-space: nowrap; }
             .omni-tab:hover { color: var(--omni-text); }
             .omni-tab.active { color: var(--omni-text); border-bottom-color: var(--omni-accent); }
-            .omni-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
-            .omni-settings-card { background: var(--omni-card); border: 1px solid var(--omni-border); border-radius: 12px; padding: 16px; display: flex; align-items: flex-start; gap: 12px; transition: all 0.3s; }
-            .omni-settings-card:hover { border-color: var(--omni-border-glow); box-shadow: 0 4px 20px rgba(0, 230, 204, 0.05); transform: translateY(-2px); }
-            .omni-card-icon { width: 36px; height: 36px; border-radius: 8px; background: rgba(0, 230, 204, 0.1); color: var(--omni-accent); display: flex; justify-content: center; align-items: center; }
-            .omni-card-title { font-size: 0.85rem; font-weight: 600; color: var(--omni-text); margin-bottom: 4px; }
+            .omni-config-summary { display: flex; gap: 10px; margin-bottom: 20px; overflow-x: auto; padding-bottom: 8px; scroll-snap-type: x mandatory; }
+            .omni-config-summary::-webkit-scrollbar { height: 4px; }
+            .omni-config-summary::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+            .omni-summary-item { min-height: 64px; flex: 0 0 200px; padding: 12px 14px; border-radius: 8px; background: linear-gradient(145deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02)); border: 1px solid rgba(255,255,255,0.09); display: flex; align-items: center; gap: 12px; overflow: hidden; scroll-snap-align: start; }
+            .omni-summary-icon { width: 34px; height: 34px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; background: rgba(168, 199, 250, 0.12); color: var(--omni-accent); box-shadow: 0 0 18px rgba(168, 199, 250, 0.12); }
+            .omni-summary-icon.alt { background: rgba(110, 231, 183, 0.12); color: var(--omni-accent-2); box-shadow: 0 0 18px rgba(110, 231, 183, 0.12); }
+            .omni-summary-label { font-size: 0.66rem; color: var(--omni-text-muted); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; margin-bottom: 3px; }
+            .omni-summary-value { font-size: 0.86rem; color: var(--omni-text); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            #studio-tab-assistant { grid-template-columns: 1fr; gap: 22px; }
+            .omni-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; margin-bottom: 24px; }
+            .omni-settings-card { background: linear-gradient(150deg, rgba(23, 25, 34, 0.86), rgba(10, 10, 12, 0.9)); border: 1px solid var(--omni-border); border-radius: 8px; padding: 18px; display: flex; align-items: flex-start; gap: 12px; transition: all 0.3s; position: relative; overflow: hidden; }
+            .omni-settings-card::before { content: ''; position: absolute; inset: 0; border-top: 1px solid rgba(168, 199, 250, 0.22); pointer-events: none; opacity: 0.75; }
+            .omni-settings-card:hover { border-color: var(--omni-border-glow); box-shadow: 0 12px 36px rgba(0, 0, 0, 0.28); transform: translateY(-2px); }
+            .omni-card-icon { width: 40px; height: 40px; border-radius: 8px; background: rgba(168, 199, 250, 0.12); color: var(--omni-accent); display: flex; justify-content: center; align-items: center; box-shadow: 0 0 22px rgba(168, 199, 250, 0.14); }
+            .omni-card-icon.success { background: rgba(110, 231, 183, 0.12); color: var(--omni-accent-2); box-shadow: 0 0 22px rgba(110, 231, 183, 0.12); }
+            .omni-card-icon.warm { background: rgba(255, 184, 107, 0.13); color: var(--omni-warm); box-shadow: 0 0 22px rgba(255, 184, 107, 0.12); }
+            .omni-card-title { font-size: 0.9rem; font-weight: 700; color: var(--omni-text); margin-bottom: 4px; }
             .omni-card-value { font-size: 0.75rem; color: var(--omni-text-muted); }
-            .omni-input-group { background: var(--omni-card); border: 1px solid var(--omni-border); border-radius: 12px; padding: 20px; margin-bottom: 24px; }
+            .omni-input-group { background: linear-gradient(145deg, rgba(17, 18, 22, 0.92), rgba(9, 9, 11, 0.95)); border: 1px solid var(--omni-border); border-radius: 8px; padding: 20px; margin-bottom: 24px; }
             .omni-input-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
             .omni-label { font-size: 0.95rem; font-weight: 600; color: var(--omni-text); display: flex; align-items: center; gap: 8px; }
-            .omni-textarea { width: 100%; background: var(--omni-bg); border: 1px solid var(--omni-border); color: var(--omni-text); border-radius: 8px; padding: 16px; min-height: 120px; font-family: inherit; font-size: 0.9rem; resize: vertical; transition: border-color 0.3s; }
-            .omni-textarea:focus { outline: none; border-color: var(--omni-accent); }
+            .omni-textarea { width: 100%; background: rgba(0,0,0,0.28); border: 1px solid var(--omni-border); color: var(--omni-text); border-radius: 8px; padding: 16px; min-height: 120px; font-family: inherit; font-size: 0.9rem; resize: vertical; transition: border-color 0.3s, box-shadow 0.3s; }
+            .omni-textarea:focus { outline: none; border-color: var(--omni-accent); box-shadow: 0 0 0 2px rgba(168, 199, 250, 0.1); }
+            .omni-field-label { font-size: 0.68rem; color: var(--omni-text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px; display: block; font-weight: 700; }
+            .omni-editor-panel { position: relative; margin-bottom: 0; padding: 0; overflow: hidden; }
+            .omni-editor-header { min-height: 46px; display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--omni-border); background: rgba(255,255,255,0.035); }
+            .omni-editor-lines { position: absolute; top: 47px; left: 0; bottom: 0; width: 46px; padding-top: 16px; border-right: 1px solid rgba(255,255,255,0.055); color: rgba(255,255,255,0.22); font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; line-height: 1.7; text-align: center; pointer-events: none; }
+            .omni-editor-textarea { border: none; border-radius: 0; padding-left: 62px; min-height: 240px; font-family: 'JetBrains Mono', monospace; line-height: 1.7; }
+            .omni-temp-control { display: grid; grid-template-columns: 1fr auto; gap: 8px 12px; align-items: center; }
+            .omni-temp-value { min-width: 42px; height: 30px; border-radius: 8px; background: rgba(168, 199, 250, 0.12); border: 1px solid rgba(168, 199, 250, 0.22); display: inline-flex; align-items: center; justify-content: center; font-size: 0.82rem; font-weight: 800; color: var(--omni-accent); }
+            .omni-range { grid-column: 1 / -1; width: 100%; height: 6px; border-radius: 999px; outline: none; cursor: pointer; appearance: none; background: linear-gradient(90deg, #6EE7B7 0%, #A8C7FA var(--temp-progress, 35%), rgba(255,255,255,0.12) var(--temp-progress, 35%), rgba(255,255,255,0.12) 100%); }
+            .omni-range::-webkit-slider-thumb { appearance: none; width: 18px; height: 18px; border-radius: 50%; background: #F3F3F3; border: 3px solid var(--omni-accent); box-shadow: 0 0 18px rgba(168, 199, 250, 0.35); }
+            .omni-range::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: #F3F3F3; border: 3px solid var(--omni-accent); box-shadow: 0 0 18px rgba(168, 199, 250, 0.35); }
             .omni-flow-section { margin-bottom: 32px; }
-            .omni-flow-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-            .omni-row { background: var(--omni-card); border: 1px solid var(--omni-border); border-radius: 8px; padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; transition: border-color 0.3s; cursor: pointer; }
-            .omni-row:hover { border-color: var(--omni-border-glow); }
-            .omni-row-left { display: flex; align-items: center; gap: 16px; }
+            .omni-flow-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px; }
+            .omni-row { background: rgba(255,255,255,0.035); border: 1px solid var(--omni-border); border-radius: 8px; padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; transition: border-color 0.3s, transform 0.3s; cursor: pointer; flex-wrap: wrap; gap: 12px; }
+            .omni-row:hover { border-color: var(--omni-border-glow); transform: translateX(2px); }
+            .omni-row-left { display: flex; align-items: center; gap: 16px; flex: 1; min-width: 200px; }
+            .omni-drag-handle { color: rgba(255,255,255,0.22); font-size: 18px; }
             .omni-row-number { font-size: 1rem; color: var(--omni-text-muted); font-weight: 600; }
             .omni-row-title { font-size: 0.95rem; font-weight: 500; color: var(--omni-text); }
             .omni-row-actions { display: flex; align-items: center; gap: 16px; }
@@ -2248,21 +2453,21 @@
             /* Knowledge Base Styles */
             .omni-kb-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
             .omni-dropzone { border: 2px dashed var(--omni-border); border-radius: 12px; padding: 40px; text-align: center; cursor: pointer; transition: all 0.3s; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; }
-            .omni-dropzone:hover { border-color: var(--omni-accent); background: rgba(0, 230, 204, 0.02); }
+            .omni-dropzone:hover { border-color: var(--omni-accent); background: rgba(168, 199, 250, 0.03); }
             .omni-alert { background: rgba(255, 59, 48, 0.1); border: 1px solid rgba(255, 59, 48, 0.3); border-radius: 8px; padding: 16px; display: flex; justify-content: space-between; align-items: center; }
             .omni-alert-text { color: #FFB3B0; font-size: 0.85rem; font-weight: 500; display: flex; align-items: center; gap: 10px; }
-            .omni-btn-outline { background: transparent; border: 1px solid rgba(255, 255, 255, 0.2); color: white; padding: 8px 16px; border-radius: 6px; font-size: 0.85rem; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.3s; }
+            .omni-btn-outline { background: transparent; border: 1px solid rgba(255, 255, 255, 0.2); color: white; padding: 8px 16px; border-radius: 6px; font-size: 0.85rem; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.3s; justify-content: center; }
             .omni-btn-outline:hover { background: rgba(255, 255, 255, 0.05); border-color: var(--omni-border-glow); }
             .omni-tag { background: white; color: black; font-size: 0.75rem; padding: 4px 10px; border-radius: 20px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
             
             /* Premium Custom Select */
             .omni-custom-select { 
                 width: 100%; 
-                background: rgba(255,255,255,0.03); 
+                background-color: rgba(255,255,255,0.045);
                 border: 1px solid var(--omni-border); 
                 color: var(--omni-text); 
-                border-radius: 6px; 
-                padding: 8px 12px; 
+                border-radius: 8px;
+                padding: 10px 34px 10px 12px;
                 font-size: 0.8rem; 
                 outline: none; 
                 cursor: pointer;
@@ -2273,18 +2478,69 @@
                 background-position: right 8px center;
                 background-size: 14px;
             }
-            .omni-custom-select:focus { border-color: var(--omni-accent); box-shadow: 0 0 0 2px rgba(0, 230, 204, 0.1); }
+            .omni-custom-select:focus { border-color: var(--omni-accent); box-shadow: 0 0 0 2px rgba(168, 199, 250, 0.1); }
             .omni-custom-select option { background: #121212; color: #F3F3F3; }
+            .omni-compact-input {
+                width: 100%;
+                min-height: 40px;
+                background: rgba(255,255,255,0.045);
+                border: 1px solid var(--omni-border);
+                color: var(--omni-text);
+                border-radius: 8px;
+                padding: 10px 12px;
+                font-size: 0.8rem;
+                outline: none;
+                transition: all 0.3s;
+            }
+            .omni-compact-input:focus { border-color: var(--omni-accent); box-shadow: 0 0 0 2px rgba(168, 199, 250, 0.1); }
 
             /* Call Log Table */
-            .omni-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            .omni-call-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+            .omni-call-stat { min-height: 74px; border-radius: 8px; border: 1px solid var(--omni-border); background: rgba(255,255,255,0.035); padding: 14px; display: flex; flex-direction: column; justify-content: center; gap: 4px; }
+            .omni-call-stat-label { font-size: 0.68rem; color: var(--omni-text-muted); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; }
+            .omni-call-stat-value { font-size: 1.1rem; color: var(--omni-text); font-weight: 800; }
+            .omni-loading-cell, .omni-empty-cell { text-align: center; padding: 44px 20px !important; color: var(--omni-text-muted); }
+            .omni-loading-state, .omni-empty-state { display: inline-flex; align-items: center; justify-content: center; gap: 10px; font-size: 0.86rem; }
+            .omni-empty-state { flex-direction: column; gap: 8px; }
+            .omni-empty-state .material-icons-round { font-size: 34px; color: var(--omni-accent); opacity: 0.75; }
+            .omni-spinner { width: 18px; height: 18px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.14); border-top-color: var(--omni-accent); animation: omniSpin 0.8s linear infinite; }
+            @keyframes omniSpin { to { transform: rotate(360deg); } }
+            .omni-table-wrap { overflow-x: auto; }
+            .omni-table { width: 100%; border-collapse: collapse; margin-top: 0; min-width: 700px; }
             .omni-table th { text-align: left; padding: 12px 16px; font-size: 0.75rem; color: var(--omni-text-muted); text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid var(--omni-border); }
             .omni-table td { padding: 16px; font-size: 0.85rem; color: var(--omni-text); border-bottom: 1px solid rgba(255,255,255,0.03); }
             .omni-table tr:hover { background: rgba(255,255,255,0.02); }
             .sentiment-badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
-            .sentiment-pos { background: rgba(0, 230, 204, 0.1); color: var(--omni-accent); }
+            .sentiment-pos { background: rgba(52, 199, 89, 0.12); color: #34C759; }
             .sentiment-neu { background: rgba(136, 136, 136, 0.1); color: var(--omni-text-muted); }
             .sentiment-neg { background: rgba(255, 59, 48, 0.1); color: #FF3B30; }
+            
+            /* Responsive Overrides */
+            @media (max-width: 980px) {
+                .ds-studio-body { padding: 0 20px 28px; }
+                .omni-tabs { overflow-x: auto; gap: 18px; }
+                .omni-config-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+                .omni-kb-grid { grid-template-columns: 1fr; }
+            }
+            @media (max-width: 768px) {
+                .ds-studio-header { padding: 16px !important; flex-direction: column; align-items: flex-start; height: auto !important; gap: 16px; }
+                .ds-studio-header > div { width: 100%; flex-wrap: wrap; justify-content: flex-start; }
+                #studio-agent-name { max-width: 100% !important; }
+                #studioStatusDisplay { margin-left: 0 !important; width: 100%; }
+                
+                .omni-config-summary, .omni-call-stats { grid-template-columns: 1fr 1fr; }
+                .omni-card-grid { grid-template-columns: 1fr !important; }
+                .omni-prompt-layout { grid-template-columns: 1fr !important; }
+                .omni-editor-lines { display: none; }
+                .omni-editor-textarea { padding-left: 16px; }
+                
+                .studio-tab-content > div[style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
+            }
+            @media (max-width: 480px) {
+                .omni-config-summary, .omni-call-stats { grid-template-columns: 1fr; }
+                .ds-studio-body { padding: 0 12px 28px; }
+                .ds-studio-header button { width: 100%; justify-content: center; }
+            }
         </style>
 
         <div class="ds-studio-body" style="display: flex; flex-direction: column;">
@@ -2314,19 +2570,50 @@
                 
                 <!-- Assistant Details Tab -->
                 <div id="studio-tab-assistant" class="studio-tab-content active">
-                    
-                    <div class="omni-card-grid" style="grid-template-columns: repeat(3, 1fr); gap: 20px;">
-                        <!-- Voice & Language -->
+                    <div class="omni-config-summary" aria-live="polite">
+                        <div class="omni-summary-item">
+                            <div class="omni-summary-icon"><span class="material-icons-round">memory</span></div>
+                            <div>
+                                <div class="omni-summary-label">Model</div>
+                                <div class="omni-summary-value" id="studio-summary-model">Kautilya Daily</div>
+                            </div>
+                        </div>
+                        <div class="omni-summary-item">
+                            <div class="omni-summary-icon alt"><span class="material-icons-round">thermostat</span></div>
+                            <div>
+                                <div class="omni-summary-label">Temperature</div>
+                                <div class="omni-summary-value" id="studio-summary-temp">0.7</div>
+                            </div>
+                        </div>
+                        <div class="omni-summary-item">
+                            <div class="omni-summary-icon"><span class="material-icons-round">record_voice_over</span></div>
+                            <div>
+                                <div class="omni-summary-label">Voice</div>
+                                <div class="omni-summary-value" id="studio-summary-voice">Shubh</div>
+                            </div>
+                        </div>
+                        <div class="omni-summary-item">
+                            <div class="omni-summary-icon alt"><span class="material-icons-round">translate</span></div>
+                            <div>
+                                <div class="omni-summary-label">Language</div>
+                                <div class="omni-summary-value" id="studio-summary-lang">Hindi (India)</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="omni-card-grid" style="grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-bottom: 0;">
                         <div class="omni-settings-card" style="flex-direction: column; align-items: stretch; gap: 16px;">
                             <div style="display: flex; align-items: center; gap: 12px;">
-                                <div class="omni-card-icon"><span class="material-icons-round">record_voice_over</span></div>
-                                <div class="omni-card-title" style="margin-bottom: 0;">Voice & Language</div>
+                                <div class="omni-card-icon success"><span class="material-icons-round">record_voice_over</span></div>
+                                <div>
+                                    <div class="omni-card-title" style="margin-bottom: 2px;">Voice &amp; Language</div>
+                                    <div class="omni-card-value">Speech identity</div>
+                                </div>
                             </div>
-                            
                             <div style="display: flex; flex-direction: column; gap: 12px;">
                                 <div>
-                                    <label style="font-size: 0.7rem; color: var(--omni-text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; display: block;">Primary Language</label>
-                                    <select id="studio-agent-lang" class="omni-custom-select">
+                                    <label class="omni-field-label">Primary Language</label>
+                                    <select id="studio-agent-lang" class="omni-custom-select" onchange="updateStudioConfigSummary()">
                                         <option value="hi-IN">Hindi (India)</option>
                                         <option value="en-IN">English (India)</option>
                                         <option value="mr-IN">Marathi</option>
@@ -2338,102 +2625,106 @@
                                         <option value="gu-IN">Gujarati</option>
                                     </select>
                                 </div>
-                                
-                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                                <div style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px;">
                                     <div>
-                                        <label style="font-size: 0.7rem; color: var(--omni-text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; display: block;">Provider</label>
+                                        <label class="omni-field-label">Provider</label>
                                         <select id="studio-tts-provider" onchange="updateStudioVoices()" class="omni-custom-select">
                                             <option value="cartesia">Cartesia</option>
                                             <option value="sarvam">Sarvam</option>
                                             <option value="openai">OpenAI</option>
+                                            <option value="gemini">Gemini Live (Multimodal)</option>
                                         </select>
                                     </div>
                                     <div>
-                                        <label style="font-size: 0.7rem; color: var(--omni-text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; display: block;">Voice</label>
-                                        <div style="display: flex; gap: 6px;">
-                                            <select id="studio-agent-voice" class="omni-custom-select" style="flex: 1;">
+                                        <label class="omni-field-label">Voice</label>
+                                        <div style="display: flex; gap: 8px;">
+                                            <select id="studio-agent-voice" class="omni-custom-select" style="flex: 1; min-width: 0;" onchange="updateStudioConfigSummary()">
                                                 <option value="shubh">Shubh (Male)</option>
                                             </select>
-                                            <button onclick="previewVoiceStudio()" style="background: rgba(0, 230, 204, 0.1); border: 1px solid var(--omni-border); border-radius: 6px; padding: 0 8px; cursor: pointer; color: var(--omni-accent);"><span class="material-icons-round" style="font-size: 16px;">volume_up</span></button>
+                                            <button onclick="previewVoiceStudio()" title="Preview voice" style="width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center; background: rgba(168, 199, 250, 0.1); border: 1px solid var(--omni-border); border-radius: 8px; cursor: pointer; color: var(--omni-accent);"><span class="material-icons-round" style="font-size: 18px;">volume_up</span></button>
                                         </div>
                                     </div>
                                 </div>
                             </div>
                         </div>
 
-                        <!-- Brain & Logic -->
                         <div class="omni-settings-card" style="flex-direction: column; align-items: stretch; gap: 16px;">
                             <div style="display: flex; align-items: center; gap: 12px;">
                                 <div class="omni-card-icon"><span class="material-icons-round">psychology</span></div>
-                                <div class="omni-card-title" style="margin-bottom: 0;">Brain & Intelligence</div>
-                            </div>
-                            
-                            <div style="display: flex; flex-direction: column; gap: 12px;">
                                 <div>
-                                    <label style="font-size: 0.7rem; color: var(--omni-text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; display: block;">AI Model (LLM)</label>
-                                    <select id="studio-agent-model" class="omni-custom-select">
+                                    <div class="omni-card-title" style="margin-bottom: 2px;">Brain &amp; Intelligence</div>
+                                    <div class="omni-card-value">Reasoning profile</div>
+                                </div>
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 13px;">
+                                <div>
+                                    <label class="omni-field-label">AI Model</label>
+                                    <select id="studio-agent-model" class="omni-custom-select" onchange="updateStudioConfigSummary()">
                                         <option value="kautilya-daily">Kautilya Daily (Fast)</option>
                                         <option value="kautilya-pro">Kautilya Pro (Strategic)</option>
                                         <option value="llama-3.3-70b-versatile">Llama 3.3 70B (Groq)</option>
                                         <option value="gpt-4o-mini">GPT-4o Mini</option>
                                         <option value="gpt-4o">GPT-4o</option>
                                         <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                                        <option value="gemini-live">Gemini 2.0 Flash Live (Multimodal)</option>
                                     </select>
                                 </div>
-                                
+                                <div class="omni-temp-control">
+                                    <label class="omni-field-label" style="margin-bottom: 0;">Temperature</label>
+                                    <span id="studio-temp-val" class="omni-temp-value">0.7</span>
+                                    <input type="range" id="studio-agent-temp" class="omni-range" min="0" max="2" step="0.1" value="0.7" oninput="updateStudioTemp(this.value)">
+                                </div>
                                 <div>
-                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                                        <label style="font-size: 0.7rem; color: var(--omni-text-muted); text-transform: uppercase; letter-spacing: 0.5px;">Temperature</label>
-                                        <span id="studio-temp-val" style="font-size: 0.8rem; font-weight: 700; color: var(--omni-accent);">0.7</span>
-                                    </div>
-                                    <input type="range" id="studio-agent-temp" min="0" max="2" step="0.1" value="0.7" oninput="document.getElementById('studio-temp-val').textContent=this.value" style="width: 100%; height: 4px; accent-color: var(--omni-accent); cursor: pointer;">
+                                    <label class="omni-field-label">Max Tokens</label>
+                                    <input type="number" id="studio-agent-max-tokens" class="omni-compact-input" min="512" max="16384" step="512" value="4096">
                                 </div>
                             </div>
                         </div>
 
-                        <!-- Connectivity -->
                         <div class="omni-settings-card" style="flex-direction: column; align-items: stretch; gap: 16px;">
                             <div style="display: flex; align-items: center; gap: 12px;">
-                                <div class="omni-card-icon"><span class="material-icons-round">hub</span></div>
-                                <div class="omni-card-title" style="margin-bottom: 0;">Connectivity</div>
+                                <div class="omni-card-icon warm"><span class="material-icons-round">hub</span></div>
+                                <div>
+                                    <div class="omni-card-title" style="margin-bottom: 2px;">Connectivity</div>
+                                    <div class="omni-card-value">Calling and CRM</div>
+                                </div>
                             </div>
-                            
                             <div style="display: flex; flex-direction: column; gap: 12px;">
                                 <div>
-                                    <label style="font-size: 0.7rem; color: var(--omni-text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; display: block;">Telephony Provider</label>
+                                    <label class="omni-field-label">Telephony Provider</label>
                                     <select id="studio-agent-telephony" class="omni-custom-select">
                                         <option value="exotel">Exotel (Cloud)</option>
                                         <option value="vobiz">Vobiz AI (SIP)</option>
                                     </select>
                                 </div>
-                                <button class="ds-btn ds-btn-ghost ds-btn-sm" style="background: rgba(255,255,255,0.03); border: 1px dashed var(--omni-border); width: 100%; font-size: 0.75rem; color: var(--omni-text-muted);" onclick="switchStudioTab('integrations', document.querySelector('[data-studio-tab=integrations]'))">
-                                    <span class="material-icons-round" style="font-size: 14px;">add_link</span> Setup CRM Integration
+                                <button class="ds-btn ds-btn-ghost ds-btn-sm" style="background: rgba(255,255,255,0.035); border: 1px dashed var(--omni-border); width: 100%; font-size: 0.75rem; color: var(--omni-text-muted);" onclick="switchStudioTab('integrations', document.querySelector('[data-studio-tab=integrations]'))">
+                                    <span class="material-icons-round" style="font-size: 14px;">add_link</span> CRM Integration
                                 </button>
                             </div>
                         </div>
                     </div>
 
-                    <!-- System Prompt & Objective -->
-                    <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 20px;">
-                        <div class="omni-input-group">
-                            <div class="omni-input-header">
-                                <div class="omni-label"><span class="material-icons-round" style="color: var(--omni-accent); font-size: 20px;">terminal</span> System Prompt (The Brain)</div>
-                                <button class="omni-btn-outline ai-assist-btn" onclick="generateAIPrompt()" style="padding: 4px 12px; font-size: 0.75rem; border-color: rgba(0, 230, 204, 0.3); color: var(--omni-accent);">
+                    <div class="omni-prompt-layout" style="display: grid; grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr); gap: 20px;">
+                        <div class="omni-input-group omni-editor-panel">
+                            <div class="omni-editor-header">
+                                <div class="omni-label"><span class="material-icons-round" style="color: var(--omni-accent); font-size: 20px;">terminal</span> System Prompt</div>
+                                <button class="omni-btn-outline ai-assist-btn" onclick="generateAIPrompt()" style="padding: 5px 12px; font-size: 0.75rem; border-color: rgba(168, 199, 250, 0.3); color: var(--omni-accent);">
                                     <span class="material-icons-round" style="font-size: 14px;">magic_button</span> Build with AI
                                 </button>
                             </div>
-                            <textarea id="studio-agent-prompt" class="omni-textarea" style="min-height: 220px;" placeholder="You are a professional AI assistant... Describe your persona, knowledge, and style in detail."></textarea>
+                            <div class="omni-editor-lines">1<br>2<br>3<br>4<br>5<br>6<br>7<br>8</div>
+                            <textarea id="studio-agent-prompt" class="omni-textarea omni-editor-textarea" placeholder="You are a professional AI assistant... Describe your persona, knowledge, and style in detail."></textarea>
                         </div>
                         
                         <div style="display: flex; flex-direction: column; gap: 20px;">
-                            <div class="omni-input-group" style="padding: 16px;">
+                            <div class="omni-input-group" style="padding: 16px; margin-bottom: 0;">
                                 <div class="omni-label" style="font-size: 0.85rem; margin-bottom: 12px;"><span class="material-icons-round" style="color: var(--omni-accent); font-size: 18px;">flag</span> Call Objective</div>
-                                <textarea id="studio-agent-objective" class="omni-textarea" style="min-height: 100px; padding: 12px; font-size: 0.85rem;" placeholder="e.g. Confirm the lead's budget and schedule a meeting."></textarea>
+                                <textarea id="studio-agent-objective" class="omni-textarea" style="min-height: 110px; padding: 12px; font-size: 0.85rem;" placeholder="e.g. Confirm the lead's budget and schedule a meeting."></textarea>
                             </div>
 
-                            <div class="omni-input-group" style="padding: 16px;">
+                            <div class="omni-input-group" style="padding: 16px; margin-bottom: 0;">
                                 <div class="omni-label" style="font-size: 0.85rem; margin-bottom: 12px;"><span class="material-icons-round" style="color: var(--omni-accent); font-size: 18px;">chat_bubble_outline</span> Welcome Message</div>
-                                <textarea id="studio-agent-welcome" class="omni-textarea" style="min-height: 80px; padding: 12px; font-size: 0.85rem;" placeholder="Hi, am I speaking with [user_name]?"></textarea>
+                                <textarea id="studio-agent-welcome" class="omni-textarea" style="min-height: 86px; padding: 12px; font-size: 0.85rem;" placeholder="Hi, am I speaking with [user_name]?"></textarea>
                                 
                                 <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--omni-border);">
                                     <span style="font-size: 0.75rem; color: var(--omni-text-muted);">Interruptible</span>
@@ -2443,17 +2734,17 @@
                         </div>
                     </div>
 
-                    <!-- Conversational Flow (Advanced) -->
                     <div class="omni-flow-section">
                         <div class="omni-flow-header">
-                            <div class="omni-label" style="font-size: 0.9rem; opacity: 0.7;"><span class="material-icons-round" style="font-size: 18px;">format_list_bulleted</span> Strategic Conversational Flow</div>
-                            <button class="omni-btn-outline" style="padding: 4px 12px;"><span class="material-icons-round">add</span> Add Stage</button>
+                            <div class="omni-label" style="font-size: 0.9rem;"><span class="material-icons-round" style="font-size: 18px;">format_list_bulleted</span> Strategic Conversational Flow</div>
+                            <button class="omni-btn-outline" style="padding: 5px 12px;"><span class="material-icons-round">add</span> Add Stage</button>
                         </div>
                         
                         <div class="omni-row">
                             <div class="omni-row-left">
+                                <span class="material-icons-round omni-drag-handle">drag_indicator</span>
                                 <span class="material-icons-round" style="color: var(--omni-accent); font-size: 18px;">check_circle</span>
-                                <span class="omni-row-title">1. Introduction & Verification</span>
+                                <span class="omni-row-title">Introduction &amp; Verification</span>
                             </div>
                             <div class="omni-row-actions">
                                 <label class="omni-toggle"><input type="checkbox" checked><span class="omni-slider"></span></label>
@@ -2461,17 +2752,19 @@
                         </div>
                         <div class="omni-row">
                             <div class="omni-row-left">
+                                <span class="material-icons-round omni-drag-handle">drag_indicator</span>
                                 <span class="material-icons-round" style="color: var(--omni-accent); font-size: 18px;">check_circle</span>
-                                <span class="omni-row-title">2. Needs Discovery</span>
+                                <span class="omni-row-title">Needs Discovery</span>
                             </div>
                             <div class="omni-row-actions">
                                 <label class="omni-toggle"><input type="checkbox" checked><span class="omni-slider"></span></label>
                             </div>
                         </div>
-                        <div class="omni-row" style="opacity: 0.5;">
+                        <div class="omni-row" style="opacity: 0.66;">
                             <div class="omni-row-left">
+                                <span class="material-icons-round omni-drag-handle">drag_indicator</span>
                                 <span class="material-icons-round" style="color: var(--omni-text-muted); font-size: 18px;">circle</span>
-                                <span class="omni-row-title">3. Objection Handling & Closing</span>
+                                <span class="omni-row-title">Objection Handling &amp; Closing</span>
                             </div>
                             <div class="omni-row-actions">
                                 <label class="omni-toggle"><input type="checkbox"><span class="omni-slider"></span></label>
@@ -2547,7 +2840,21 @@
 
                 <!-- Recent Tab (Call History) -->
                 <div id="studio-tab-recent" class="studio-tab-content" style="display: none;">
-                    <div class="omni-input-group" style="padding: 0; overflow: hidden;">
+                    <div id="studio-call-log-stats" class="omni-call-stats">
+                        <div class="omni-call-stat">
+                            <div class="omni-call-stat-label">Total Calls</div>
+                            <div class="omni-call-stat-value">-</div>
+                        </div>
+                        <div class="omni-call-stat">
+                            <div class="omni-call-stat-label">Avg Duration</div>
+                            <div class="omni-call-stat-value">-</div>
+                        </div>
+                        <div class="omni-call-stat">
+                            <div class="omni-call-stat-label">Success Rate</div>
+                            <div class="omni-call-stat-value">-</div>
+                        </div>
+                    </div>
+                    <div class="omni-input-group omni-table-wrap" style="padding: 0;">
                         <table class="omni-table" id="studio-call-log-table">
                             <thead>
                                 <tr>
@@ -2559,19 +2866,10 @@
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr style="cursor: pointer;">
-                                    <td>Today, 10:20 AM</td>
-                                    <td>04:12</td>
-                                    <td><span class="sentiment-badge sentiment-pos">😊 POSITIVE</span></td>
-                                    <td style="color: var(--omni-text-muted);">Lead is excited about the demo, scheduled for Monday...</td>
-                                    <td style="text-align: right;"><button class="omni-btn-outline" style="padding: 4px 8px; font-size: 0.75rem;">View Transcript</button></td>
-                                </tr>
-                                <tr style="cursor: pointer;">
-                                    <td>Yesterday, 4:45 PM</td>
-                                    <td>01:30</td>
-                                    <td><span class="sentiment-badge sentiment-neu">😐 NEUTRAL</span></td>
-                                    <td style="color: var(--omni-text-muted);">Wrong number, but person was polite.</td>
-                                    <td style="text-align: right;"><button class="omni-btn-outline" style="padding: 4px 8px; font-size: 0.75rem;">View Transcript</button></td>
+                                <tr>
+                                    <td colspan="5" class="omni-loading-cell">
+                                        <div class="omni-loading-state"><span class="omni-spinner"></span> Loading recent calls...</div>
+                                    </td>
                                 </tr>
                             </tbody>
                         </table>
@@ -2677,7 +2975,6 @@
             </main>
         </div>
     </div>
-
     <!-- Telephony Provider Config Modal -->
     <div id="providerModal" class="ag-modal-overlay" onclick="if(event.target===this)closeProviderModal()">
         <div class="ag-modal glass-card" style="max-width: 500px; width: 95%;">
@@ -2834,7 +3131,116 @@ curl -X POST https://ai.revealiq.in/api/agents/AGENT_ID/chat \
                                     Time-wise Usage (Hourly Today)
                                 </div></div><div class="ds-chart-container"><canvas id="hourlyUsageChart"></canvas></div></div><div class="ds-chart-card"><div class="ds-chart-header"><div class="ds-chart-title"><span class="material-icons-round" style="color:var(--purple)">pie_chart</span>
                                     Model Distribution (7 Days)
-                                </div></div><div class="ds-chart-container" style="height: 300px;"><canvas id="modelUsageChart"></canvas></div></div></div></div><div class="ds-page" id="page-docs"><div class="ds-section"><div class="ds-section-title"><span class="material-icons-round">menu_book</span> Quick Start
+                                </div></div><div class="ds-chart-container" style="height: 300px;"><canvas id="modelUsageChart"></canvas></div></div></div></div><div class="ds-page" id="page-billing">
+    <div class="ds-section">
+        <div class="ds-section-title"><span class="material-icons-round">account_balance_wallet</span> Billing & Plans</div>
+        
+        <div class="ds-stats-grid" style="margin-bottom: 24px;">
+            <div class="ds-stat-card">
+                <div class="ds-stat-icon blue"><span class="material-icons-round">account_circle</span></div>
+                <div class="ds-stat-value" id="billingCurrentTier">—</div>
+                <div class="ds-stat-label">Current Tier</div>
+            </div>
+            <div class="ds-stat-card">
+                <div class="ds-stat-icon green"><span class="material-icons-round">payments</span></div>
+                <div class="ds-stat-value" id="billingCurrentBalance">—</div>
+                <div class="ds-stat-label">Current Balance (Credits)</div>
+            </div>
+        </div>
+
+        <div class="ds-usage-grid" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));">
+            <!-- Free Plan -->
+            <div class="ds-card" style="display: flex; flex-direction: column; gap: 16px; border-top: 4px solid var(--text-muted);">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                    <div>
+                        <h3 style="font-size: 1.25rem; font-weight: 700;">Free Tier</h3>
+                        <p style="font-size: 0.88rem; color: var(--text-secondary);">Basic access for testing</p>
+                    </div>
+                    <div style="font-size: 1.5rem; font-weight: 800;">₹0<span style="font-size: 0.8rem; font-weight: 500; color: var(--text-muted);">/mo</span></div>
+                </div>
+                <ul style="list-style: none; padding: 0; display: flex; flex-direction: column; gap: 8px;">
+                    <li style="display: flex; align-items: center; gap: 8px; font-size: 0.88rem;"><span class="material-icons-round" style="color: var(--success); font-size: 18px;">check_circle</span> 30,000 LLM Tokens/day</li>
+                    <li style="display: flex; align-items: center; gap: 8px; font-size: 0.88rem;"><span class="material-icons-round" style="color: var(--success); font-size: 18px;">check_circle</span> 3 AI Image Gens/day</li>
+                    <li style="display: flex; align-items: center; gap: 8px; font-size: 0.88rem;"><span class="material-icons-round" style="color: var(--success); font-size: 18px;">check_circle</span> Community Support</li>
+                </ul>
+                <button class="ds-btn ds-btn-ghost" disabled style="width: 100%; margin-top: auto;">Current Plan</button>
+            </div>
+
+            <!-- Pro Plan -->
+            <div class="ds-card" style="display: flex; flex-direction: column; gap: 16px; border-top: 4px solid var(--accent); position: relative; overflow: hidden;">
+                <div style="position: absolute; top: 12px; right: -30px; background: var(--gradient-primary); color: white; padding: 4px 40px; transform: rotate(45deg); font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">Popular</div>
+                <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                    <div>
+                        <h3 style="font-size: 1.25rem; font-weight: 700;">Pro Tier</h3>
+                        <p style="font-size: 0.88rem; color: var(--text-secondary);">For heavy workloads</p>
+                    </div>
+                    <div style="font-size: 1.5rem; font-weight: 800;">₹599<span style="font-size: 0.8rem; font-weight: 500; color: var(--text-muted);">/mo</span></div>
+                </div>
+                <ul style="list-style: none; padding: 0; display: flex; flex-direction: column; gap: 8px;">
+                    <li style="display: flex; align-items: center; gap: 8px; font-size: 0.88rem;"><span class="material-icons-round" style="color: var(--success); font-size: 18px;">check_circle</span> 1M LLM Tokens / mo</li>
+                    <li style="display: flex; align-items: center; gap: 8px; font-size: 0.88rem;"><span class="material-icons-round" style="color: var(--success); font-size: 18px;">check_circle</span> Unlimited Messages</li>
+                    <li style="display: flex; align-items: center; gap: 8px; font-size: 0.88rem;"><span class="material-icons-round" style="color: var(--success); font-size: 18px;">check_circle</span> 20 AI Image Gens/day</li>
+                    <li style="display: flex; align-items: center; gap: 8px; font-size: 0.88rem;"><span class="material-icons-round" style="color: var(--success); font-size: 18px;">check_circle</span> Priority Support</li>
+                </ul>
+                <button class="ds-btn ds-btn-primary" style="width: 100%; margin-top: auto;" id="proUpgradeBtn" onclick="initiatePayment('pro', 599)">Upgrade to Pro</button>
+            </div>
+
+            <!-- Pay As You Go -->
+            <div class="ds-card" style="display: flex; flex-direction: column; gap: 16px; border-top: 4px solid var(--purple);">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                    <div>
+                        <h3 style="font-size: 1.25rem; font-weight: 700;">Pay As You Go</h3>
+                        <p style="font-size: 0.88rem; color: var(--text-secondary);">Only pay for what you use</p>
+                    </div>
+                    <div style="font-size: 1.5rem; font-weight: 800;">Custom</div>
+                </div>
+                <div style="background: var(--bg-input); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border);">
+                    <label style="font-size: 0.72rem; color: var(--text-muted); display: block; margin-bottom: 4px;">Recharge Amount (INR)</label>
+                    <input type="number" id="paygoAmount" class="ds-input" style="width: 100%; border: none; background: transparent; font-size: 1.1rem; padding: 0;" placeholder="Enter amount (min ₹100)" min="100" value="500">
+                </div>
+                <p style="font-size: 0.76rem; color: var(--text-muted);">₹1 = 1 Credit. Credits never expire.</p>
+                <button class="ds-btn ds-btn-primary" style="width: 100%; margin-top: auto; background: var(--purple); box-shadow: 0 4px 12px rgba(155, 114, 203, 0.3);" onclick="initiatePayment('pay_as_you_go', document.getElementById('paygoAmount').value)">Add Credits</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Transactions Section -->
+    <div class="ds-section" style="margin-top: 40px;">
+        <div class="ds-section-title" style="justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <span class="material-icons-round">history</span>
+                Recent Transactions
+            </div>
+            <button class="ds-btn ds-btn-ghost ds-btn-sm" onclick="raiseIssue()">
+                <span class="material-icons-round">support_agent</span> Raise a Issue
+            </button>
+        </div>
+        
+        <div class="ds-card" style="padding: 0; overflow: hidden;">
+            <div style="overflow-x: auto;">
+                <table class="omni-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Plan / Type</th>
+                            <th>Amount</th>
+                            <th>Order ID</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="transactions-tbody">
+                        <tr>
+                            <td colspan="5" style="text-align: center; padding: 40px; color: var(--text-muted);">
+                                <span class="material-icons-round" style="font-size: 48px; opacity: 0.3; display: block; margin-bottom: 10px;">receipt_long</span>
+                                No transactions found.
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div><div class="ds-page" id="page-docs"><div class="ds-section"><div class="ds-section-title"><span class="material-icons-round">menu_book</span> Quick Start
                         </div><div class="ds-card" style="margin-bottom:20px"><h3 style="font-size:1rem;margin-bottom:16px">Endpoints</h3><div style="display:flex;flex-direction:column;gap:12px"><div><span class="ds-ep-tag post">POST</span><span
                                         class="ds-ep-path">/api/v1/chat/completions</span><span
                                         style="color:var(--text-muted);font-size:.78rem;margin-left:8px">— Chat
@@ -2928,7 +3334,6 @@ document.addEventListener('DOMContentLoaded', function() {
     const allPages = document.querySelectorAll('.ds-page');
     allPages.forEach(function(page) {
         if (page.parentElement !== authContent) {
-            console.log('[DOM Fix] Reparenting:', page.id, 'from', page.parentElement?.id || page.parentElement?.className);
             authContent.appendChild(page);
         }
     });
@@ -2937,13 +3342,9 @@ document.addEventListener('DOMContentLoaded', function() {
     ['studioOverlay', 'providerModal', 'agentChatOverlay', 'campaignModal', 'callIntelligenceModal', 'deployModal'].forEach(function(id) {
         const el = document.getElementById(id);
         if (el) {
-            console.log('[DOM Fix] Force moving overlay to authContent:', id);
             authContent.appendChild(el);
         }
     });
-    
-    console.log('[DOM Fix] Page structure verified. Pages:', 
-        Array.from(authContent.querySelectorAll(':scope > .ds-page')).map(p => p.id));
 });
 </script>
 
@@ -2957,6 +3358,11 @@ document.addEventListener('DOMContentLoaded', function() {
         let chatMessages = [];
         let editingAgentId = null;
         let usageChart, modelChart, hourlyUsageChart, modelUsageChart;
+        const dashboardWarm = {
+            cache: {},
+            pending: {},
+            ttl: { keys: 10000, analytics: 15000, agents: 15000, telephony: 15000, campaigns: 12000, leads: 12000, voices: 86400000 }
+        };
 
         try { 
             app = firebase.initializeApp(firebaseConfig); 
@@ -2995,7 +3401,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (greetEl) greetEl.textContent = `Welcome, ${(user.displayName || '').split(' ')[0] || 'Developer'}`;
                     const topAuth = document.getElementById('topAuth');
                     if (topAuth) topAuth.innerHTML = `<div class="ds-user-chip" style="border:1px solid var(--border);padding:4px 12px 4px 4px;border-radius:24px;background:var(--bg-card)"><div class="ds-user-avatar">${user.photoURL ? `<img src="${user.photoURL}" referrerpolicy="no-referrer">` : `${init}`}</div><span style="font-size:.8rem;font-weight:500">${user.displayName || 'User'}</span></div>`;
-                    loadData();
+                    eagerLoadDashboard();
                 } else {
                     if (gate) gate.style.display = 'block'; 
                     if (content) content.style.display = 'none';
@@ -3012,15 +3418,40 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         // Fetch Edge TTS voices for playground
-        async function fetchPlaygroundVoices() {
+        async function getWarmData(key, loader, force = false) {
+            const now = Date.now();
+            const ttl = dashboardWarm.ttl[key] || 10000;
+            const cached = dashboardWarm.cache[key];
+            if (!force && cached && (now - cached.time) < ttl) return cached.value;
+            if (!force && dashboardWarm.pending[key]) return dashboardWarm.pending[key];
+            dashboardWarm.pending[key] = Promise.resolve().then(loader).then(value => {
+                dashboardWarm.cache[key] = { value, time: Date.now() };
+                delete dashboardWarm.pending[key];
+                return value;
+            }).catch(err => {
+                delete dashboardWarm.pending[key];
+                throw err;
+            });
+            return dashboardWarm.pending[key];
+        }
+
+        function invalidateWarmData(keys) {
+            keys.forEach(key => {
+                delete dashboardWarm.cache[key];
+                delete dashboardWarm.pending[key];
+            });
+        }
+
+        async function fetchPlaygroundVoices(force = false) {
             try {
-                const resp = await fetch('/api/v1/audio/voices');
-                const data = await resp.json();
+                const data = await getWarmData('voices', async () => {
+                    const resp = await fetch('/api/v1/audio/voices');
+                    return await resp.json();
+                }, force);
                 if (data.voices) {
                     const voiceSelect = document.getElementById('ttsVoice');
                     if (voiceSelect) {
                         voiceSelect.innerHTML = data.voices.map(v => `<option value="${v.shortName}">${v.name} (${v.locale})</option>`).join('');
-                        // Set a default
                         voiceSelect.value = 'en-US-AriaNeural';
                     }
                 }
@@ -3030,7 +3461,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
         async function getToken() { if (!currentUser) return null; return await currentUser.getIdToken() }
 
-        // Navigation
+        window.getToken = getToken;
+
         function switchPage(page, btn) {
             document.querySelectorAll('.ds-page').forEach(p => p.classList.remove('active'));
             document.querySelectorAll('.ds-nav-item').forEach(n => n.classList.remove('active'));
@@ -3038,8 +3470,13 @@ document.addEventListener('DOMContentLoaded', function() {
             if (btn) btn.classList.add('active');
             else { document.querySelectorAll('.ds-nav-item').forEach(n => { if (n.dataset.page === page) n.classList.add('active') }) }
             
-            const icons = { overview: 'dashboard', keys: 'vpn_key', playground: 'play_circle', usage: 'bar_chart', agents: 'support_agent', campaigns: 'campaign', leads: 'contact_phone', telephony: 'tty', docs: 'menu_book' };
-            const labels = { overview: 'Overview', keys: 'API Keys', playground: 'Playground', usage: 'Usage & Analytics', agents: 'Omni Studio', campaigns: 'Campaign Manager', leads: 'Lead Intelligence', telephony: 'Vobiz Setup', docs: 'Quick Start' };
+            if (window.studio) {
+                window.studio.updateHeader(page);
+                if (page === 'billing') window.studio.refreshBillingStats();
+            }
+
+            const icons = { overview: 'dashboard', keys: 'vpn_key', playground: 'play_circle', usage: 'bar_chart', agents: 'support_agent', campaigns: 'campaign', leads: 'contact_phone', telephony: 'tty', billing: 'account_balance_wallet', docs: 'menu_book' };
+            const labels = { overview: 'Overview', keys: 'API Keys', playground: 'Playground', usage: 'Usage & Analytics', agents: 'Omni Studio', campaigns: 'Campaign Manager', leads: 'Lead Intelligence', telephony: 'Vobiz Setup', billing: 'Billing & Plans', docs: 'Quick Start' };
             
             const titleEl = document.getElementById('topbarTitle');
             if (titleEl) titleEl.innerHTML = `<span class="material-icons-round" style="color:var(--accent)">${icons[page] || 'dashboard'}</span> ${labels[page] || 'Overview'}`;
@@ -3053,6 +3490,12 @@ document.addEventListener('DOMContentLoaded', function() {
             if (page === 'leads') loadLeads();
             if (page === 'usage') loadAnalytics();
             if (page === 'overview') loadData();
+        }
+
+        function eagerLoadDashboard() {
+            loadData(true);
+            fetchPlaygroundVoices();
+            Promise.allSettled([loadAgents(), loadTelephonySettings(), loadCampaigns(), loadLeads()]);
         }
 
         // Omni Studio Navigation
@@ -3105,11 +3548,13 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         // Data Loading
-        async function loadData() {
+        async function loadData(force = false) {
             const token = await getToken(); if (!token) return;
             try {
-                const resp = await fetch('/api/keys/list', { headers: { 'Authorization': `Bearer ${token}` } });
-                const data = await resp.json();
+                const data = await getWarmData('keys', async () => {
+                    const resp = await fetch('/api/keys/list', { headers: { 'Authorization': `Bearer ${token}` } });
+                    return await resp.json();
+                }, force);
 
                 // Auto-load API key from cross-device sync if missing locally
                 if (data.active_key && (!activeApiKey || activeApiKey !== data.active_key)) {
@@ -3138,7 +3583,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 renderKeys(data.keys || []);
                 
                 // Analytics Charts
-                loadAnalytics();
+                loadAnalytics(force);
                 // CRM Sync Settings
                 loadSyncSettings();
             } catch (e) { console.error('Load failed:', e) }
@@ -3146,11 +3591,13 @@ document.addEventListener('DOMContentLoaded', function() {
 
 
 
-        async function loadAnalytics() {
+        async function loadAnalytics(force = false) {
             const token = await getToken(); if (!token) return;
             try {
-                const resp = await fetch('/api/analytics/usage', { headers: { 'Authorization': `Bearer ${token}` } });
-                const data = await resp.json();
+                const data = await getWarmData('analytics', async () => {
+                    const resp = await fetch('/api/analytics/usage', { headers: { 'Authorization': `Bearer ${token}` } });
+                    return await resp.json();
+                }, force);
                 
                 if (data.error) {
                     if (data.is_index_error) {
@@ -3232,16 +3679,153 @@ document.addEventListener('DOMContentLoaded', function() {
             }).join('');
         }
 
+        function getSelectedOptionText(id) {
+            const el = document.getElementById(id);
+            if (!el || !el.options || el.selectedIndex < 0) return '';
+            return el.options[el.selectedIndex].textContent.trim();
+        }
+
+        function updateStudioConfigSummary() {
+            const modelEl = document.getElementById('studio-summary-model');
+            const tempEl = document.getElementById('studio-summary-temp');
+            const voiceEl = document.getElementById('studio-summary-voice');
+            const langEl = document.getElementById('studio-summary-lang');
+            const tempInput = document.getElementById('studio-agent-temp');
+
+            if (modelEl) modelEl.textContent = getSelectedOptionText('studio-agent-model') || 'Kautilya Daily';
+            if (tempEl) tempEl.textContent = Number(tempInput?.value ?? 0.7).toFixed(1);
+            if (voiceEl) voiceEl.textContent = getSelectedOptionText('studio-agent-voice') || 'Shubh';
+            if (langEl) langEl.textContent = getSelectedOptionText('studio-agent-lang') || 'Hindi (India)';
+        }
+
+        function updateStudioTemp(value) {
+            const slider = document.getElementById('studio-agent-temp');
+            const display = document.getElementById('studio-temp-val');
+            const raw = value ?? slider?.value ?? 0.7;
+            const parsed = Number(raw);
+            const temp = Math.max(0, Math.min(2, Number.isFinite(parsed) ? parsed : 0.7));
+            const formatted = temp.toFixed(1);
+            if (slider) {
+                slider.value = formatted;
+                slider.style.setProperty('--temp-progress', `${(temp / 2) * 100}%`);
+            }
+            if (display) display.textContent = formatted;
+            updateStudioConfigSummary();
+        }
+
+        function formatStudioDuration(seconds) {
+            const total = Math.max(0, Math.round(Number(seconds) || 0));
+            const mins = Math.floor(total / 60);
+            const secs = total % 60;
+            if (mins === 0) return `${secs}s`;
+            return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+        }
+
+        function getStudioLogDate(log) {
+            let raw = log.created_timestamp ?? log.timestamp ?? log.created_at;
+            if (raw && typeof raw === 'object' && typeof raw.seconds === 'number') raw = raw.seconds;
+            if (typeof raw === 'number') return new Date(raw > 1e12 ? raw : raw * 1000);
+            if (typeof raw === 'string') {
+                const numeric = Number(raw);
+                if (!Number.isNaN(numeric)) return new Date(numeric > 1e12 ? numeric : numeric * 1000);
+                const parsed = new Date(raw);
+                if (!Number.isNaN(parsed.getTime())) return parsed;
+            }
+            return new Date();
+        }
+
+        function getStudioSentiment(log) {
+            const raw = log.sentiment_score ?? log.sentiment ?? 'neutral';
+            if (typeof raw === 'number') {
+                if (raw > 0.2) return { label: 'Positive', className: 'sentiment-pos' };
+                if (raw < -0.2) return { label: 'Negative', className: 'sentiment-neg' };
+                return { label: 'Neutral', className: 'sentiment-neu' };
+            }
+            const text = String(raw || 'neutral').toLowerCase();
+            if (text.includes('positive')) return { label: 'Positive', className: 'sentiment-pos' };
+            if (text.includes('negative')) return { label: 'Negative', className: 'sentiment-neg' };
+            return { label: 'Neutral', className: 'sentiment-neu' };
+        }
+
+        function studioLogSucceeded(log) {
+            if (typeof log.success === 'boolean') return log.success;
+            const status = String(log.status || 'completed').toLowerCase();
+            return !['failed', 'error', 'missed', 'cancelled', 'canceled'].some(term => status.includes(term));
+        }
+
+        function renderStudioLogStats(logs) {
+            const stats = document.getElementById('studio-call-log-stats');
+            if (!stats) return;
+            const total = logs.length;
+            const totalDuration = logs.reduce((sum, log) => sum + (Number(log.duration) || 0), 0);
+            const avgDuration = total ? Math.round(totalDuration / total) : 0;
+            const successRate = total ? Math.round((logs.filter(studioLogSucceeded).length / total) * 100) : 0;
+            stats.innerHTML = `
+                <div class="omni-call-stat">
+                    <div class="omni-call-stat-label">Total Calls</div>
+                    <div class="omni-call-stat-value">${total}</div>
+                </div>
+                <div class="omni-call-stat">
+                    <div class="omni-call-stat-label">Avg Duration</div>
+                    <div class="omni-call-stat-value">${formatStudioDuration(avgDuration)}</div>
+                </div>
+                <div class="omni-call-stat">
+                    <div class="omni-call-stat-label">Success Rate</div>
+                    <div class="omni-call-stat-value">${successRate}%</div>
+                </div>
+            `;
+        }
+
+        function setStudioLogsLoading(message = 'Loading recent calls...') {
+            const tbody = document.querySelector('#studio-call-log-table tbody');
+            if (!tbody) return;
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="5" class="omni-loading-cell">
+                        <div class="omni-loading-state"><span class="omni-spinner"></span> ${esc(message)}</div>
+                    </td>
+                </tr>
+            `;
+        }
+
+        function setStudioLogsEmpty(message) {
+            const tbody = document.querySelector('#studio-call-log-table tbody');
+            if (!tbody) return;
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="5" class="omni-empty-cell">
+                        <div class="omni-empty-state">
+                            <span class="material-icons-round">history</span>
+                            <div>${esc(message)}</div>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }
+
 
         function openCreateAgentStudio() {
             editingAgentId = null;
             document.getElementById('studioStatusText').textContent = "New AI Agent";
             document.getElementById('studio-agent-name').value = "";
             document.getElementById('studio-agent-prompt').value = "";
+            document.getElementById('studio-agent-objective').value = "";
             document.getElementById('studio-agent-welcome').value = "";
-            document.getElementById('studio-agent-voice').value = "shubh";
             document.getElementById('studio-agent-lang').value = "hi-IN";
+            document.getElementById('studio-tts-provider').value = "cartesia";
+            updateStudioVoices();
+            document.getElementById('studio-agent-voice').value = "shubh";
+            document.getElementById('studio-agent-model').value = "kautilya-daily";
+            document.getElementById('studio-agent-max-tokens').value = 4096;
             document.getElementById('studio-agent-telephony').value = "exotel";
+            document.getElementById('studio-agent-webhook').value = "";
+            document.getElementById('studio-agent-silence').value = 1.5;
+            document.getElementById('studio-agent-duration').value = 300;
+            document.getElementById('studio-agent-transfer').value = "";
+            document.getElementById('studio-agent-end-silence').checked = false;
+            updateStudioTemp(0.7);
+            renderStudioLogStats([]);
+            setStudioLogsEmpty('Save this agent to start collecting recent calls.');
             document.getElementById('studioOverlay').classList.add('active');
             switchStudioTab('assistant', document.querySelector('.omni-tab[data-studio-tab="assistant"]'));
         }
@@ -3273,8 +3857,8 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('studio-agent-voice').value = a.voice || 'shubh';
             
             document.getElementById('studio-agent-model').value = a.model || 'kautilya-daily';
-            document.getElementById('studio-agent-temp').value = a.temperature || 0.7;
-            document.getElementById('studio-temp-val').textContent = a.temperature || 0.7;
+            document.getElementById('studio-agent-max-tokens').value = a.max_tokens ?? 4096;
+            updateStudioTemp(a.temperature ?? 0.7);
             
             // Call Configuration Sync
             document.getElementById('studio-agent-silence').value = a.silence_timeout || 1.5;
@@ -3283,6 +3867,7 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('studio-agent-end-silence').checked = a.end_on_silence === true;
             
             document.getElementById('studioOverlay').classList.add('active');
+            updateStudioConfigSummary();
             switchStudioTab('assistant', document.querySelector('.omni-tab[data-studio-tab="assistant"]'));
             
             // Load logs in background if needed
@@ -3291,48 +3876,54 @@ document.addEventListener('DOMContentLoaded', function() {
 
         let currentStudioLogs = [];
         async function loadStudioLogs(agentId) {
-            if (!agentId) return;
+            if (!agentId) {
+                currentStudioLogs = [];
+                renderStudioLogStats([]);
+                setStudioLogsEmpty('Save this agent to start collecting recent calls.');
+                return;
+            }
             const tbody = document.querySelector('#studio-call-log-table tbody');
             if (!tbody) return;
+            setStudioLogsLoading();
             
             try {
                 const token = await getToken();
                 const resp = await fetch(`/api/agents/${agentId}/logs`, {
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
                 const logs = data.logs || [];
                 currentStudioLogs = logs;
+                renderStudioLogStats(logs);
                 
                 if (!logs || logs.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding: 40px; color: var(--omni-text-muted);">No calls found for this agent.</td></tr>';
+                    setStudioLogsEmpty('No calls found for this agent.');
                     return;
                 }
                 
                 tbody.innerHTML = logs.map((l, idx) => {
-                    const ts = l.created_timestamp || (l.created_at ? l.created_at : Date.now()/1000);
-                    const date = new Date(ts * 1000).toLocaleString();
-                    const sentiment = l.sentiment_score || l.sentiment || 'neutral';
-                    const sentColor = sentiment === 'positive' ? '#34C759' : (sentiment === 'negative' ? '#FF3B30' : 'var(--accent)');
+                    const date = getStudioLogDate(l).toLocaleString();
+                    const sentiment = getStudioSentiment(l);
                     const dur = l.duration || 0;
+                    const summary = l.summary || l.analysis || 'Completed';
                     
                     return `
                         <tr>
                             <td>${date}</td>
-                            <td>${dur}s</td>
+                            <td>${formatStudioDuration(dur)}</td>
                             <td>
-                                <span style="font-size:0.75rem; padding:2px 8px; border-radius:4px; background:${sentColor}15; color:${sentColor}; border:1px solid ${sentColor}30; font-weight:600;">
-                                    ${sentiment.toUpperCase()}
-                                </span>
+                                <span class="sentiment-badge ${sentiment.className}">${sentiment.label.toUpperCase()}</span>
                             </td>
-                            <td style="color: var(--omni-text-muted); max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${l.summary || l.analysis || 'Completed'}</td>
+                            <td style="color: var(--omni-text-muted); max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(summary)}</td>
                             <td style="text-align: right;"><button class="omni-btn-outline" onclick="viewCallIntelligence(${idx})" style="padding: 4px 10px; font-size: 0.75rem;">View</button></td>
                         </tr>
                     `;
                 }).join('');
             } catch (e) {
                 console.error('Failed to load logs', e);
-                tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color: #ff3b30;">History unavailable.</td></tr>';
+                renderStudioLogStats([]);
+                setStudioLogsEmpty('History unavailable.');
             }
         }
 
@@ -3360,15 +3951,26 @@ document.addEventListener('DOMContentLoaded', function() {
                 { id: 'onyx', name: 'Onyx (Deep)' },
                 { id: 'nova', name: 'Nova (Energetic)' },
                 { id: 'shimmer', name: 'Shimmer (Soft)' }
+            ],
+            gemini: [
+                { id: 'Aoede', name: 'Aoede (Classic)' },
+                { id: 'Charon', name: 'Charon (Deep)' },
+                { id: 'Fenrir', name: 'Fenrir (Powerful)' },
+                { id: 'Kore', name: 'Kore (Clear)' },
+                { id: 'Puck', name: 'Puck (Playful)' }
             ]
         };
 
         function updateStudioVoices() {
-            const provider = document.getElementById('studio-tts-provider').value;
+            const provider = document.getElementById('studio-tts-provider')?.value;
             const voiceSelect = document.getElementById('studio-agent-voice');
+            if (!voiceSelect) return;
             const voices = VOICE_DATA[provider] || [];
+            const currentVoice = voiceSelect.value;
             
             voiceSelect.innerHTML = voices.map(v => `<option value="${v.id}">${v.name}</option>`).join('');
+            if (currentVoice && voices.some(v => v.id === currentVoice)) voiceSelect.value = currentVoice;
+            updateStudioConfigSummary();
         }
 
         async function generateAIPrompt() {
@@ -3418,6 +4020,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 tts_provider: document.getElementById('studio-tts-provider').value,
                 model: document.getElementById('studio-agent-model').value,
                 temperature: parseFloat(document.getElementById('studio-agent-temp').value),
+                max_tokens: parseInt(document.getElementById('studio-agent-max-tokens').value) || 4096,
                 telephony_provider: document.getElementById('studio-agent-telephony').value,
                 post_call_webhook: document.getElementById('studio-agent-webhook').value.trim(),
                 silence_timeout: parseFloat(document.getElementById('studio-agent-silence').value),
@@ -3451,7 +4054,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 else {
                     if (data.agent_id) editingAgentId = data.agent_id;
                     closeAgentStudio();
-                    loadAgents();
+                    invalidateWarmData(['agents']);
+                    loadAgents(true);
                 }
             } catch (e) { alert('Save failed: ' + e.message); }
             finally { btn.innerHTML = originalText; btn.disabled = false; }
@@ -3491,15 +4095,17 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
-        async function loadTelephonySettings() {
+        async function loadTelephonySettings(force = false) {
             const token = await getToken();
             if (!token) return;
             
             try {
-                const resp = await fetch('/api/telephony/config', {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                const data = await resp.json();
+                const data = await getWarmData('telephony', async () => {
+                    const resp = await fetch('/api/telephony/config', {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    return await resp.json();
+                }, force);
                 const providers = data.providers || [];
                 
                 // Exotel UI Handling
@@ -3590,7 +4196,8 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         function syncProviderStats() {
-            loadTelephonySettings();
+            invalidateWarmData(['telephony']);
+            loadTelephonySettings(true);
             alert("Provider status synced successfully.");
         }
 
@@ -3767,7 +4374,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         // Key Management
         function openCreateKeyModal() {
-            document.getElementById('keyNameInput').value = '';
+            document.getElementById('createKeyNameInput').value = '';
             document.getElementById('createKeyModal').classList.add('show');
         }
 
@@ -3777,20 +4384,25 @@ document.addEventListener('DOMContentLoaded', function() {
 
         async function createApiKey() {
             const btn = document.getElementById('confirmCreateKeyBtn'); 
-            const name = document.getElementById('keyNameInput').value.trim() || 'Default Key';
+            const modalInput = document.getElementById('createKeyNameInput');
+            const inlineInput = document.getElementById('keyNameInput');
+            const name = (modalInput && modalInput.value.trim()) || (inlineInput && inlineInput.value.trim()) || 'Default Key';
             if (btn) btn.classList.add('loading');
             const token = await getToken();
             try {
                 const resp = await fetch('/api/keys/create', { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
                 const data = await resp.json();
                 if (data.error) { alert(data.error) } else {
+                    invalidateWarmData(['keys', 'analytics']);
                     closeCreateKeyModal();
                     document.getElementById('newKeyValue').textContent = data.key;
                     const nameDisp = document.getElementById('newKeyNameDisplay');
                     if (nameDisp) nameDisp.textContent = name;
                     document.getElementById('newKeyAlert').classList.add('show');
                     activeApiKey = data.key; localStorage.setItem('kautilya_api_key', data.key);
-                    loadData();
+                    if (modalInput) modalInput.value = '';
+                    if (inlineInput) inlineInput.value = '';
+                    loadData(true);
                 }
             } catch (e) { alert('Failed: ' + e.message) }
             if (btn) btn.classList.remove('loading');
@@ -3804,7 +4416,7 @@ document.addEventListener('DOMContentLoaded', function() {
         async function revokeKey(keyHash) {
             if (!confirm('Revoke this API key? This cannot be undone.')) return;
             const token = await getToken();
-            try { await fetch('/api/keys/revoke', { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ key_hash: keyHash }) }); localStorage.removeItem('kautilya_api_key'); activeApiKey = ''; loadData() } catch (e) { alert('Revoke failed: ' + e.message) }
+            try { await fetch('/api/keys/revoke', { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ key_hash: keyHash }) }); invalidateWarmData(['keys', 'analytics']); localStorage.removeItem('kautilya_api_key'); activeApiKey = ''; loadData(true) } catch (e) { alert('Revoke failed: ' + e.message) }
         }
 
         // Playground
@@ -3820,7 +4432,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 const data = await resp.json(); document.getElementById('chatLatency').textContent = `${Date.now() - start}ms`;
                 document.getElementById('chatResponse').textContent = JSON.stringify(data, null, 2);
             } catch (e) { document.getElementById('chatResponse').textContent = 'Error: ' + e.message }
-            btn.classList.remove('loading'); loadData();
+            invalidateWarmData(['keys', 'analytics']);
+            btn.classList.remove('loading'); loadData(true);
         }
 
         async function runTTS() {
@@ -3838,7 +4451,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     document.getElementById('ttsResponse').innerHTML = `<span class="material-icons-round" style="font-size:48px;color:var(--success)">check_circle</span><span style="color:var(--success)">Audio generated!</span><audio controls autoplay src="${url}" style="width:100%;margin-top:12px"></audio>`
                 } else { const data = await resp.json(); document.getElementById('ttsResponse').innerHTML = `<span style="color:var(--error)">${JSON.stringify(data, null, 2)}</span>` }
             } catch (e) { document.getElementById('ttsResponse').innerHTML = `<span style="color:var(--error)">Error: ${e.message}</span>` }
-            btn.classList.remove('loading'); loadData();
+            invalidateWarmData(['keys', 'analytics']);
+            btn.classList.remove('loading'); loadData(true);
         }
 
 
@@ -3856,7 +4470,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 const data = await resp.json(); document.getElementById('sttLatency').textContent = `${Date.now() - start}ms`;
                 document.getElementById('sttResponse').textContent = JSON.stringify(data, null, 2);
             } catch (e) { document.getElementById('sttResponse').textContent = 'Error: ' + e.message }
-            btn.classList.remove('loading'); loadData();
+            invalidateWarmData(['keys', 'analytics']);
+            btn.classList.remove('loading'); loadData(true);
         }
 
         // Utils
@@ -3897,13 +4512,15 @@ document.addEventListener('DOMContentLoaded', function() {
         // ===================== AGENTS =====================
         let mediaRecorder = null, audioStream = null;
 
-        async function loadAgents() {
+        async function loadAgents(force = false) {
             const grid = document.getElementById('agentsGridNew');
             if (!grid) return;
             const token = await getToken();
             try {
-                const resp = await fetch('/api/agents/list', { headers: { 'Authorization': `Bearer ${token}` } });
-                const data = await resp.json();
+                const data = await getWarmData('agents', async () => {
+                    const resp = await fetch('/api/agents/list', { headers: { 'Authorization': `Bearer ${token}` } });
+                    return await resp.json();
+                }, force);
                 agentsList = data.agents || [];
                 renderAgents(data.max_agents || 10);
             } catch (e) { console.error('Load agents failed:', e); }
@@ -3920,7 +4537,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 const data = await resp.json();
                 if (data.status === 'ok') {
                     closeAgentStudio();
-                    loadAgents();
+                    invalidateWarmData(['agents']);
+                    loadAgents(true);
                 }
                 else alert(data.error || "Delete failed");
             } catch (e) { alert("Error deleting agent: " + e.message); }
@@ -4024,38 +4642,73 @@ document.addEventListener('DOMContentLoaded', function() {
                 const promptSnippet = a.system_prompt ? a.system_prompt.substring(0, 120) : 'No instructions defined.';
                 const voice = a.voice || 'shubh';
                 const lang = a.language || 'hi-IN';
+                const model = a.model || 'kautilya-daily';
+                const tempNumber = Number(a.temperature ?? 0.7);
+                const temperature = Number.isFinite(tempNumber) ? tempNumber : 0.7;
+                const tempDisplay = temperature.toFixed(1);
+                const tempWidth = Math.max(0, Math.min(100, (temperature / 2) * 100));
+                const maxTokens = a.max_tokens || 4096;
+                const maxDuration = a.max_call_duration || 300;
+                const callCount = a.call_count || 0;
                 
                 const intel = a.latest_intelligence;
-                const sentimentColor = intel && intel.sentiment === 'positive' ? '#34C759' : (intel && intel.sentiment === 'negative' ? '#FF3B30' : 'var(--accent)');
+                const intelSentiment = String(intel?.sentiment || 'neutral').toLowerCase();
+                const sentimentColor = intelSentiment === 'positive' ? '#34C759' : (intelSentiment === 'negative' ? '#FF3B30' : 'var(--accent)');
+                const intelSummary = intel?.summary || 'Completed call logged.';
                 
                 return `
                 <div class="ds-agent-card">
                     <div class="ds-agent-card-header">
-                        <div class="ds-agent-card-title">${esc(name)}</div>
+                        <div class="ds-agent-title-stack">
+                            <div class="ds-agent-card-title">${esc(name)}</div>
+                            <div class="ds-agent-model-badge"><span class="material-icons-round">memory</span> ${esc(model)}</div>
+                        </div>
                         <div class="ag-status-pill ${status === 'active' ? 'active' : 'inactive'}">
                             ${status.charAt(0).toUpperCase() + status.slice(1)}
                         </div>
                     </div>
                     
                     <div class="ds-agent-card-desc">${esc(promptSnippet)}${a.system_prompt && a.system_prompt.length > 120 ? '...' : ''}</div>
+
+                    <div class="ds-agent-config-grid">
+                        <div class="ds-agent-config-chip">
+                            <div class="ds-agent-config-label"><span class="material-icons-round">thermostat</span> Temp</div>
+                            <div class="ds-agent-temp-row">
+                                <span class="ds-agent-config-value">${tempDisplay}</span>
+                                <span class="ds-agent-temp-meter"><span style="width:${tempWidth}%"></span></span>
+                            </div>
+                        </div>
+                        <div class="ds-agent-config-chip">
+                            <div class="ds-agent-config-label"><span class="material-icons-round">token</span> Tokens</div>
+                            <div class="ds-agent-config-value">${fmt(maxTokens)}</div>
+                        </div>
+                        <div class="ds-agent-config-chip">
+                            <div class="ds-agent-config-label"><span class="material-icons-round">timer</span> Max Call</div>
+                            <div class="ds-agent-config-value">${formatStudioDuration(maxDuration)}</div>
+                        </div>
+                        <div class="ds-agent-config-chip">
+                            <div class="ds-agent-config-label"><span class="material-icons-round">analytics</span> Calls</div>
+                            <div class="ds-agent-config-value">${fmt(callCount)}</div>
+                        </div>
+                    </div>
                     
                     ${intel ? `
-                    <div style="margin-top: 12px; padding: 10px; border-radius: 8px; background: rgba(168,199,250,0.05); border: 1px solid rgba(168,199,250,0.1);">
-                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                            <span style="font-size:0.7rem; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">Latest Intelligence</span>
+                    <div class="ds-agent-intel">
+                        <div class="ds-agent-intel-head">
+                            <span class="ds-agent-intel-label">Latest Intelligence</span>
                             <span style="font-size:0.65rem; padding:2px 6px; border-radius:4px; background:${sentimentColor}20; color:${sentimentColor}; border:1px solid ${sentimentColor}40; font-weight:600;">
-                                ${intel.sentiment.toUpperCase()}
+                                ${intelSentiment.toUpperCase()}
                             </span>
                         </div>
-                        <div style="font-size:0.75rem; color:var(--text-secondary); line-height:1.4; font-style:italic;">
-                            "${esc(intel.summary.length > 90 ? intel.summary.substring(0, 87) + '...' : intel.summary)}"
+                        <div class="ds-agent-intel-summary">
+                            "${esc(intelSummary.length > 90 ? intelSummary.substring(0, 87) + '...' : intelSummary)}"
                         </div>
                     </div>
                     ` : ''}
 
                     <div class="ds-agent-card-meta">
                         <span class="ds-agent-tag"><span class="material-icons-round">record_voice_over</span> ${esc(voice)}</span>
-                        <span class="ds-agent-tag"><span class="material-icons-round">analytics</span> ${a.call_count || 0} calls</span>
+                        <span class="ds-agent-tag"><span class="material-icons-round">translate</span> ${esc(lang)}</span>
                     </div>
                     
                     <div class="ds-agent-card-actions">
@@ -4103,7 +4756,8 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!agent) {
                 console.error("[UI] Agent not found in agentsList. ID:", agentId);
                 showToast("Agent not found. Refreshing...", "error");
-                loadAgents();
+                invalidateWarmData(['agents']);
+                loadAgents(true);
                 return;
             }
             
@@ -4355,7 +5009,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 else {
                     alert('Provider saved successfully!');
                     closeProviderModal();
-                    loadTelephonySettings();
+                    invalidateWarmData(['telephony']);
+                    loadTelephonySettings(true);
                 }
             } catch (e) { alert('Save failed: ' + e.message); }
         }
@@ -4564,6 +5219,18 @@ document.addEventListener('DOMContentLoaded', function() {
             sentEl.style.background = sentColor + '15';
             sentEl.style.border = '1px solid ' + sentColor + '40';
 
+            const audioContainer = document.getElementById('intel-modal-audio-container');
+            const audioEl = document.getElementById('intel-modal-audio');
+            if (audioContainer && audioEl) {
+                if (data.recording_url) {
+                    audioEl.src = data.recording_url;
+                    audioContainer.style.display = 'block';
+                } else {
+                    audioEl.src = '';
+                    audioContainer.style.display = 'none';
+                }
+            }
+
             document.getElementById('intel-modal-transcript').textContent = data.transcript || 'No transcript available.';
             
             const modal = document.getElementById('callIntelligenceModal');
@@ -4638,7 +5305,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 });
                 if (resp.ok) {
                     showToast("Campaign paused", "warning");
-                    loadCampaigns();
+                    invalidateWarmData(['campaigns']);
+                    loadCampaigns(true);
                 }
             } catch (e) { console.error("Pause Campaign Error:", e); }
         }
@@ -4652,7 +5320,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 });
                 if (resp.ok) {
                     showToast("Campaign resumed", "success");
-                    loadCampaigns();
+                    invalidateWarmData(['campaigns']);
+                    loadCampaigns(true);
                 }
             } catch (e) { console.error("Resume Campaign Error:", e); }
         }
@@ -4666,7 +5335,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 });
                 if (resp.ok) {
                     showToast("Campaign started!", "success");
-                    loadCampaigns();
+                    invalidateWarmData(['campaigns']);
+                    loadCampaigns(true);
                 }
             } catch (err) { console.error('Start Error:', err); }
         }
@@ -4682,7 +5352,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 });
                 if (resp.ok) {
                     showToast("Campaign deleted", "success");
-                    loadCampaigns();
+                    invalidateWarmData(['campaigns']);
+                    loadCampaigns(true);
                 } else {
                     const data = await resp.json();
                     showToast(data.error || "Failed to delete campaign", "error");
@@ -4690,13 +5361,15 @@ document.addEventListener('DOMContentLoaded', function() {
             } catch (err) { console.error('Delete Error:', err); }
         }
 
-        async function loadCampaigns() {
+        async function loadCampaigns(force = false) {
             const token = await getToken();
             try {
-                const resp = await fetch('/api/campaigns', {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                const data = await resp.json();
+                const data = await getWarmData('campaigns', async () => {
+                    const resp = await fetch('/api/campaigns', {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    return await resp.json();
+                }, force);
                 const list = document.getElementById('campaigns-list');
                 if (!list) return;
                 
@@ -4742,13 +5415,15 @@ document.addEventListener('DOMContentLoaded', function() {
             } catch (e) { console.error("Load Campaigns Error:", e); }
         }
 
-        async function loadLeads() {
+        async function loadLeads(force = false) {
             const token = await getToken();
             try {
-                const resp = await fetch('/api/analytics/trends', {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                const data = await resp.json();
+                const data = await getWarmData('leads', async () => {
+                    const resp = await fetch('/api/analytics/trends', {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    return await resp.json();
+                }, force);
                 const tbody = document.getElementById('leads-tbody');
                 if (!tbody) return;
                 
@@ -4881,7 +5556,8 @@ document.addEventListener('DOMContentLoaded', function() {
                         if (data.status === 'ok') {
                             showToast(`Campaign '${name}' launched with ${numbers.length} contacts!`, 'success');
                             hideCampaignCreation();
-                            loadCampaigns();
+                            invalidateWarmData(['campaigns']);
+                            loadCampaigns(true);
                             switchPage('campaigns', null);
                         } else throw new Error(data.error || 'Server error');
                     } catch (err) { showToast("Campaign Error: " + err.message, "error"); }
@@ -4902,7 +5578,8 @@ document.addEventListener('DOMContentLoaded', function() {
         setInterval(() => {
             if (document.getElementById('page-campaigns').classList.contains('active')) {
                 // Periodically refresh campaigns
-                loadCampaigns();
+                invalidateWarmData(['campaigns']);
+                loadCampaigns(true);
             }
         }, 15000);
 
@@ -4920,6 +5597,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; padding-bottom:15px; border-bottom:1px solid var(--border);">
                     <div style="color: var(--text-muted); font-size: 0.85rem;">Date: <span id="intel-modal-date" style="color:var(--text); font-weight:500;">-</span></div>
                     <div id="intel-modal-sentiment" style="font-size:0.75rem; padding:4px 10px; border-radius:6px; font-weight:700; background: rgba(168,199,250,0.1); color: var(--text);">NEUTRAL</div>
+                </div>
+                
+                <div id="intel-modal-audio-container" style="display:none; margin-bottom:24px; width:100%;">
+                    <div style="font-size: 0.75rem; font-weight: 700; color: var(--accent); text-transform: uppercase; margin-bottom: 8px; letter-spacing: 0.5px;">Call Recording</div>
+                    <audio id="intel-modal-audio" controls style="width:100%; height:40px; border-radius:8px; outline:none;"></audio>
                 </div>
 
                 <div style="margin-bottom: 24px;">
@@ -4969,5 +5651,5 @@ document.addEventListener('DOMContentLoaded', function() {
             </div>
         </div>
     </div>
-</body></html>
+<script src="/static/dashboard-studio.js"></script></body></html>
 
