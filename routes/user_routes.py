@@ -124,27 +124,7 @@ def get_user_account():
     return jsonify(account_info)
 
 
-@user_bp.route('/api/telephony/config', methods=['GET'])
-def api_telephony_config():
-    """Return configured telephony providers for the user from Firestore."""
-    from extensions import db
-    token_data = verify_firebase_token()
-    uid = token_data.get('uid') if token_data else None
-    if not uid:
-        return jsonify({"error": "Authentication required"}), 401
-    try:
-        config_ref = db.collection('users').document(uid).collection('config').document('telephony')
-        doc = config_ref.get()
-        if doc.exists:
-            return jsonify(doc.to_dict())
-        return jsonify({
-            "providers": [
-                {"type": "exotel", "name": "Exotel Cloud", "active": True},
-                {"type": "vobiz", "name": "Vobiz AI", "active": False}
-            ]
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+
 
 
 @user_bp.route('/api/analytics/usage', methods=['GET'])
