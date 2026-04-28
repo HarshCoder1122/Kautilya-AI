@@ -75,17 +75,28 @@ def jarvis_stream():
     """Main streaming chat endpoint."""
     from extensions import limit_manager, vector_store, db
 
+    # NEW: Even more robust extraction
     data = request.get_json(silent=True) or {}
     form = request.form or {}
     args = request.args or {}
     
-    # Debug incoming payload
-    # print(f"[DEBUG] JSON: {data}, FORM: {form}, ARGS: {args}")
-    
-    message = data.get('message') or data.get('text') or form.get('text') or form.get('message') or args.get('text') or args.get('message', '')
+    # Extract message from any possible field
+    message = (data.get('message') or data.get('text') or 
+               form.get('text') or form.get('message') or 
+               args.get('text') or args.get('message') or '').strip()
+               
     session_id = data.get('session_id') or form.get('session_id') or args.get('session_id', str(uuid.uuid4()))
     model = data.get('model') or form.get('model') or args.get('model', 'daily')
-    files = request.files.getlist('files') if request.files else []
+    
+    # Correctly handle files list
+    files = []
+    if request.files:
+        try:
+            files = request.files.getlist('files')
+        except:
+            pass
+            
+    print(f"[DEBUG] jarvis_stream: msg_len={len(message)}, files_count={len(files)}, session={session_id}, model={model}")
 
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
@@ -218,6 +229,9 @@ def jarvis_stream():
 
     return Response(stream(), mimetype='text/event-stream', headers={
         'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'
+    })
+
+
     })
 
 
