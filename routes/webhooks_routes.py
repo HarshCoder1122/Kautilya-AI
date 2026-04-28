@@ -38,10 +38,12 @@ def vobiz_answer(agent_id):
     """
     Vobiz calls this URL when the customer picks up.
     """
-    import uuid
-    room_name = f"voice{agent_id.replace('-', '')}{uuid.uuid4().hex[:4]}"
+    # Revert to a cleaner version of the proven format
+    # Ensure agent_id is clean but keep the '--' delimiter for robust worker extraction
+    clean_id = agent_id.replace('-', '')
+    room_name = f"voice-{clean_id}--{uuid.uuid4().hex[:4]}"
     sip_uri = f"sip:{room_name}@{LIVEKIT_SIP_URI}"
-    print(f"[Vobiz Webhook] Bridging agent {agent_id} to {sip_uri}")
+    print(f"[Vobiz Webhook] Bridging agent {agent_id} -> {sip_uri}")
     
     vxml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
