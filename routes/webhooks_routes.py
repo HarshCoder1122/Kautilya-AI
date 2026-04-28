@@ -39,7 +39,7 @@ def vobiz_answer(agent_id):
     Vobiz calls this URL when the customer picks up.
     """
     import uuid
-    room_name = f"voice-{agent_id}--{uuid.uuid4().hex[:4]}"
+    room_name = f"voice{agent_id.replace('-', '')}{uuid.uuid4().hex[:4]}"
     sip_uri = f"sip:{room_name}@{LIVEKIT_SIP_URI}"
     print(f"[Vobiz Webhook] Bridging agent {agent_id} to {sip_uri}")
     
