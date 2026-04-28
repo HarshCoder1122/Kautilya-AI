@@ -61,10 +61,12 @@ def vobiz_answer(agent_id):
     # Fire-and-forget room creation
     create_room_fire_and_forget(room_name, agent_id)
     
-    # Vobiz requires <User> for SIP routing, <Sip> is Twilio/Exotel specific.
+    # Vobiz requires <User> for SIP routing. 
+    # Adding callerId to ensure LiveKit's Inbound Trunk doesn't reject the call as anonymous.
+    caller_id = request.values.get('From', '') # The Vobiz virtual number
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Dial timeout="60">
+    <Dial timeout="60" callerId="{caller_id}">
         <User>{sip_uri}</User>
     </Dial>
 </Response>"""
@@ -77,9 +79,10 @@ def exotel_answer(agent_id):
     room_name = f"voice-{agent_id}--{call_uid}"
     sip_uri = f"sip:{room_name}@{SIP_DOMAIN}"
     create_room_fire_and_forget(room_name, agent_id)
+    caller_id = request.values.get('From', '')
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Dial>
+    <Dial callerId="{caller_id}">
         <User>{sip_uri}</User>
     </Dial>
 </Response>"""
