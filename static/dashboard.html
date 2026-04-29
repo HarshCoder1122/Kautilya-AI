@@ -2514,6 +2514,68 @@
             .sentiment-pos { background: rgba(52, 199, 89, 0.12); color: #34C759; }
             .sentiment-neu { background: rgba(136, 136, 136, 0.1); color: var(--omni-text-muted); }
             .sentiment-neg { background: rgba(255, 59, 48, 0.1); color: #FF3B30; }
+
+            /* ===== Enterprise Recent Calls — Vapi/Retell-style ===== */
+            .kt-calls-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+            .kt-stat-card { position: relative; min-height: 86px; border-radius: 12px; border: 1px solid var(--omni-border); background: linear-gradient(135deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015)); padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; transition: all .2s; }
+            .kt-stat-card:hover { border-color: rgba(0,230,204,0.25); transform: translateY(-1px); }
+            .kt-stat-icon { position: absolute; top: 12px; right: 12px; width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 18px; }
+            .kt-stat-icon.blue { background: rgba(168,199,250,0.12); color: #A8C7FA; }
+            .kt-stat-icon.green { background: rgba(52,199,89,0.12); color: #34C759; }
+            .kt-stat-icon.purple { background: rgba(155,114,203,0.14); color: #9B72CB; }
+            .kt-stat-icon.orange { background: rgba(255,149,0,0.14); color: #FF9500; }
+            .kt-stat-label { font-size: 0.66rem; color: var(--omni-text-muted); text-transform: uppercase; letter-spacing: 0.7px; font-weight: 700; }
+            .kt-stat-value { font-size: 1.4rem; color: var(--omni-text); font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; }
+            .kt-stat-sub { font-size: 0.7rem; color: var(--omni-text-muted); font-weight: 500; }
+
+            .kt-calls-toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; padding: 12px 14px; border: 1px solid var(--omni-border); border-radius: 12px 12px 0 0; background: rgba(255,255,255,0.02); border-bottom: 0; }
+            .kt-calls-search { flex: 1; min-width: 200px; display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: rgba(0,0,0,0.25); border: 1px solid var(--omni-border); border-radius: 8px; }
+            .kt-calls-search input { flex: 1; background: transparent; border: 0; outline: 0; color: var(--omni-text); font-size: 0.85rem; }
+            .kt-calls-search .material-icons-round { color: var(--omni-text-muted); font-size: 18px; }
+            .kt-filter-pill { padding: 6px 12px; border-radius: 999px; font-size: 0.72rem; font-weight: 600; background: rgba(255,255,255,0.04); color: var(--omni-text-muted); border: 1px solid var(--omni-border); cursor: pointer; transition: all .15s; user-select: none; }
+            .kt-filter-pill:hover { color: var(--omni-text); border-color: rgba(0,230,204,0.3); }
+            .kt-filter-pill.active { background: rgba(0,230,204,0.12); color: var(--omni-accent); border-color: rgba(0,230,204,0.4); }
+
+            .kt-calls-list { border: 1px solid var(--omni-border); border-radius: 0 0 12px 12px; background: rgba(0,0,0,0.15); overflow: hidden; }
+            .kt-call-row { display: grid; grid-template-columns: 44px 1fr auto auto auto auto; gap: 14px; align-items: center; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.04); transition: background .15s; cursor: pointer; }
+            .kt-call-row:last-child { border-bottom: 0; }
+            .kt-call-row:hover { background: rgba(255,255,255,0.03); }
+            .kt-call-avatar { width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0; }
+            .kt-call-avatar.web { background: rgba(168,199,250,0.12); color: #A8C7FA; }
+            .kt-call-avatar.phone { background: rgba(0,230,204,0.12); color: var(--omni-accent); }
+            .kt-call-avatar.chat { background: rgba(155,114,203,0.14); color: #9B72CB; }
+            .kt-call-meta { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+            .kt-call-id { font-size: 0.72rem; color: var(--omni-text-muted); font-family: 'DM Mono', monospace; letter-spacing: 0.3px; }
+            .kt-call-summary { font-size: 0.9rem; color: var(--omni-text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 480px; }
+            .kt-call-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+            .kt-pill { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 999px; font-size: 0.68rem; font-weight: 600; line-height: 1.2; }
+            .kt-pill .material-icons-round { font-size: 12px; }
+            .kt-pill-pos { background: rgba(52,199,89,0.13); color: #34C759; border: 1px solid rgba(52,199,89,0.25); }
+            .kt-pill-neg { background: rgba(255,59,48,0.13); color: #FF3B30; border: 1px solid rgba(255,59,48,0.25); }
+            .kt-pill-neu { background: rgba(255,255,255,0.05); color: var(--omni-text-muted); border: 1px solid var(--omni-border); }
+            .kt-pill-status-ok { background: rgba(52,199,89,0.10); color: #34C759; }
+            .kt-pill-status-fail { background: rgba(255,59,48,0.10); color: #FF3B30; }
+            .kt-pill-model { background: rgba(168,199,250,0.10); color: #A8C7FA; font-family: 'DM Mono', monospace; font-size: 0.65rem; }
+            .kt-call-duration { font-family: 'DM Mono', monospace; font-size: 0.85rem; color: var(--omni-text); font-weight: 600; min-width: 56px; text-align: right; }
+            .kt-call-time { font-size: 0.75rem; color: var(--omni-text-muted); min-width: 90px; text-align: right; }
+            .kt-call-actions { display: flex; gap: 6px; }
+            .kt-icon-btn { width: 32px; height: 32px; border-radius: 8px; background: rgba(255,255,255,0.04); border: 1px solid var(--omni-border); color: var(--omni-text-muted); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all .15s; }
+            .kt-icon-btn:hover { background: rgba(0,230,204,0.1); color: var(--omni-accent); border-color: rgba(0,230,204,0.3); }
+            .kt-icon-btn .material-icons-round { font-size: 16px; }
+
+            /* Transcript chat bubbles inside the modal */
+            .kt-transcript-chat { padding: 12px; background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 12px; max-height: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+            .kt-bubble { padding: 10px 14px; border-radius: 14px; font-size: 0.85rem; line-height: 1.5; max-width: 80%; word-wrap: break-word; }
+            .kt-bubble.user { background: rgba(168,199,250,0.12); color: var(--text); border: 1px solid rgba(168,199,250,0.18); align-self: flex-end; border-bottom-right-radius: 4px; }
+            .kt-bubble.assistant { background: rgba(0,230,204,0.10); color: var(--text); border: 1px solid rgba(0,230,204,0.20); align-self: flex-start; border-bottom-left-radius: 4px; }
+            .kt-bubble.system { background: rgba(255,255,255,0.04); color: var(--text-muted); align-self: center; font-size: 0.75rem; font-style: italic; }
+            .kt-bubble-role { font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.65; margin-bottom: 4px; }
+
+            @media (max-width: 980px) {
+                .kt-calls-stats { grid-template-columns: repeat(2, 1fr); }
+                .kt-call-row { grid-template-columns: 40px 1fr auto; row-gap: 8px; }
+                .kt-call-time, .kt-call-pills { display: none; }
+            }
             
             /* Responsive Overrides */
             @media (max-width: 980px) {
@@ -2840,40 +2902,56 @@
 
                 <!-- Recent Tab (Call History) -->
                 <div id="studio-tab-recent" class="studio-tab-content" style="display: none;">
-                    <div id="studio-call-log-stats" class="omni-call-stats">
-                        <div class="omni-call-stat">
-                            <div class="omni-call-stat-label">Total Calls</div>
-                            <div class="omni-call-stat-value">-</div>
+                    <div id="studio-call-log-stats" class="kt-calls-stats">
+                        <div class="kt-stat-card">
+                            <div class="kt-stat-icon blue"><span class="material-icons-round">phone_in_talk</span></div>
+                            <div class="kt-stat-label">Total Calls</div>
+                            <div class="kt-stat-value">—</div>
+                            <div class="kt-stat-sub">All time</div>
                         </div>
-                        <div class="omni-call-stat">
-                            <div class="omni-call-stat-label">Avg Duration</div>
-                            <div class="omni-call-stat-value">-</div>
+                        <div class="kt-stat-card">
+                            <div class="kt-stat-icon purple"><span class="material-icons-round">timer</span></div>
+                            <div class="kt-stat-label">Avg Duration</div>
+                            <div class="kt-stat-value">—</div>
+                            <div class="kt-stat-sub">Per call</div>
                         </div>
-                        <div class="omni-call-stat">
-                            <div class="omni-call-stat-label">Success Rate</div>
-                            <div class="omni-call-stat-value">-</div>
+                        <div class="kt-stat-card">
+                            <div class="kt-stat-icon green"><span class="material-icons-round">verified</span></div>
+                            <div class="kt-stat-label">Success Rate</div>
+                            <div class="kt-stat-value">—</div>
+                            <div class="kt-stat-sub">Connected calls</div>
+                        </div>
+                        <div class="kt-stat-card">
+                            <div class="kt-stat-icon orange"><span class="material-icons-round">graphic_eq</span></div>
+                            <div class="kt-stat-label">Total Talk Time</div>
+                            <div class="kt-stat-value">—</div>
+                            <div class="kt-stat-sub">Sum of durations</div>
                         </div>
                     </div>
-                    <div class="omni-input-group omni-table-wrap" style="padding: 0;">
-                        <table class="omni-table" id="studio-call-log-table">
-                            <thead>
-                                <tr>
-                                    <th>Date &amp; Time</th>
-                                    <th>Duration</th>
-                                    <th>Sentiment</th>
-                                    <th>Summary Preview</th>
-                                    <th style="text-align: right;">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr>
-                                    <td colspan="5" class="omni-loading-cell">
-                                        <div class="omni-loading-state"><span class="omni-spinner"></span> Loading recent calls...</div>
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
+
+                    <div class="kt-calls-toolbar">
+                        <div class="kt-calls-search">
+                            <span class="material-icons-round">search</span>
+                            <input type="text" id="studio-call-search" placeholder="Search by caller, transcript, summary..." oninput="filterStudioLogs()">
+                        </div>
+                        <div id="studio-call-filters" style="display:flex; gap:6px; flex-wrap:wrap;">
+                            <span class="kt-filter-pill active" data-filter="all" onclick="setStudioLogFilter(this,'all')">All</span>
+                            <span class="kt-filter-pill" data-filter="positive" onclick="setStudioLogFilter(this,'positive')">Positive</span>
+                            <span class="kt-filter-pill" data-filter="negative" onclick="setStudioLogFilter(this,'negative')">Negative</span>
+                            <span class="kt-filter-pill" data-filter="failed" onclick="setStudioLogFilter(this,'failed')">Failed</span>
+                            <span class="kt-filter-pill" data-filter="chat" onclick="setStudioLogFilter(this,'chat')">Chat</span>
+                            <span class="kt-filter-pill" data-filter="voice" onclick="setStudioLogFilter(this,'voice')">Voice</span>
+                        </div>
+                        <button class="kt-icon-btn" onclick="exportStudioLogsCsv()" title="Export to CSV"><span class="material-icons-round">download</span></button>
+                        <button class="kt-icon-btn" onclick="loadStudioLogs(editingAgentId, true)" title="Refresh"><span class="material-icons-round">refresh</span></button>
                     </div>
+                    <div id="studio-call-log-list" class="kt-calls-list">
+                        <div style="text-align:center; padding:44px 20px; color:var(--omni-text-muted); display:flex; align-items:center; justify-content:center; gap:10px;">
+                            <span class="omni-spinner"></span> Loading recent calls...
+                        </div>
+                    </div>
+                    <!-- Hidden compatibility table (legacy code refs may still query it) -->
+                    <table id="studio-call-log-table" style="display:none;"><tbody></tbody></table>
                 </div>
 
                 <!-- Knowledge Base Tab -->
