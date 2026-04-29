@@ -149,19 +149,21 @@ def trigger_vobiz_call(config, to_number, agent_id):
     
     if not all([auth_id, auth_token, virtual_number]):
         return jsonify({"error": "Vobiz credentials incomplete"}), 400
-        
-    # PRE-WARMING: Create room and dispatch agent IMMEDIATELY while phone is ringing
-    import uuid
-    from routes.webhooks_routes import create_room_fire_and_forget
-    room_name = f"voice-{agent_id}--{uuid.uuid4().hex[:4]}"
-    create_room_fire_and_forget(room_name, agent_id)
-    print(f"[Pre-Warming] Started Agent in room: {room_name}")
+
+    # NOTE: We intentionally do NOT pre-warm a `voice-<agent>--<hex>` room here.
+    # LiveKit's SIP inbound trunk creates its own room of the form
+    # `voice-_+<phone>_<call_id>` when the SIP leg lands. Pre-warming a
+    # web-format room caused the agent worker to spawn TWICE per call (one in
+    # the empty pre-warm room, one in the real SIP room) — wasting compute and
+    # producing the "received server content but no active generation"
+    # warning. The real-time agent dispatch happens via `active_calls/<phone>`
+    # mapping (written below) which `_resolve_agent_doc` consults.
 
     url = f"https://api.vobiz.ai/api/v1/Account/{auth_id}/Call/"
-    
+
     # Force HTTPS for callbacks
     base_url = request.host_url.rstrip('/').replace('http://', 'https://')
-    answer_url = f"{base_url}/api/webhooks/vobiz/answer/{agent_id}?room={room_name}"
+    answer_url = f"{base_url}/api/webhooks/vobiz/answer/{agent_id}"
     status_url = f"{base_url}/api/webhooks/vobiz/events"
     
     headers = {
@@ -204,7 +206,7 @@ def trigger_vobiz_call(config, to_number, agent_id):
                     })
                     print(f"[Telephony] 🎯 Mapped Vobiz Call ID: {vobiz_call_id} -> {agent_id}")
                 except: pass
-            return jsonify({"status": "ok", "call_id": vobiz_call_id, "room_name": room_name})
+            return jsonify({"status": "ok", "call_id": vobiz_call_id})
         return jsonify({"error": f"Vobiz API Error: {resp.text}"}), resp.status_code
     except Exception as e:
         return jsonify({"error": f"Request failed: {e}"}), 500

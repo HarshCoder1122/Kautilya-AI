@@ -405,6 +405,68 @@ async def entrypoint(ctx: JobContext):
     session = None
     agent_obj = None
 
+    # ========== Transcript collection (events from AgentSession) ==========
+    # Both Sarvam-pipeline and Gemini-Live sessions fire conversation events;
+    # subscribing here gives us a single, ordered list of turns regardless of
+    # which path is active.
+    transcript_turns = []  # list of {"role": "...", "content": "...", "ts": float}
+
+    def _record_turn(role, content):
+        if not content:
+            return
+        try:
+            text = content
+            if isinstance(content, (list, tuple)):
+                parts = []
+                for p in content:
+                    if hasattr(p, 'text'):
+                        parts.append(p.text)
+                    elif isinstance(p, str):
+                        parts.append(p)
+                text = " ".join(parts)
+            text = str(text or "").strip()
+            if not text:
+                return
+            # De-dupe last entry (Gemini sometimes emits partial+final)
+            if transcript_turns and transcript_turns[-1].get('role') == role:
+                last = transcript_turns[-1].get('content', '')
+                if text == last or text in last or last in text:
+                    transcript_turns[-1] = {"role": role, "content": text, "ts": _time.time()}
+                    return
+            transcript_turns.append({"role": role, "content": text, "ts": _time.time()})
+        except Exception as e:
+            print(f"[Transcript] record warning: {e}")
+
+    def _attach_session_events(sess):
+        if sess is None:
+            return
+        # 1. The canonical livekit-agents 1.x event
+        try:
+            @sess.on("conversation_item_added")
+            def _on_item(ev):
+                item = getattr(ev, 'item', None) or ev
+                role = getattr(item, 'role', None) or 'unknown'
+                content = getattr(item, 'text_content', None)
+                if content is None:
+                    content = getattr(item, 'content', '')
+                _record_turn(str(role).lower(), content)
+        except Exception as e:
+            print(f"[Transcript] conversation_item_added hook failed: {e}")
+
+        # 2. Fallback events (older API versions)
+        for evname, role in (("user_input_transcribed", "user"),
+                             ("agent_speech_committed", "assistant"),
+                             ("agent_response_committed", "assistant")):
+            try:
+                @sess.on(evname)
+                def _on_evt(ev, _role=role):
+                    text = getattr(ev, 'transcript', None) or getattr(ev, 'text', None) or getattr(ev, 'content', None)
+                    if text is None and hasattr(ev, 'message'):
+                        text = getattr(ev.message, 'content', None)
+                    _record_turn(_role, text)
+            except Exception:
+                pass
+
     try:
         if is_gemini_live:
             api_model = _resolve_gemini_model(selected_model)
@@ -428,15 +490,41 @@ async def entrypoint(ctx: JobContext):
 
             session = AgentSession(llm=llm_plugin)
             agent_obj = KautilyaAgent(instructions=gemini_instructions)
+            _attach_session_events(session)
             await session.start(room=ctx.room, agent=agent_obj)
 
+            # Kick off the first turn so Gemini actually speaks the welcome
+            # line. Without this the realtime session sits idle and we see
+            # "received server content but no active generation" warnings.
+            greet_prompt = (
+                f"I have just joined the call. Greet me warmly in {agent_language} with: \"{welcome_message}\""
+                if welcome_message else
+                "I have just joined the call. Please introduce yourself exactly as instructed."
+            )
+            triggered = False
             try:
-                msg = ChatMessage(role="user", content=["I have just joined the call. Please introduce yourself exactly as instructed."])
-                if hasattr(session, 'chat_ctx'):
-                    session.chat_ctx.messages.append(msg)
-                    print("[Gemini] ✅ Greeting trigger injected.")
+                if hasattr(session, 'generate_reply'):
+                    await session.generate_reply(instructions=greet_prompt)
+                    triggered = True
+                    print("[Gemini] ✅ generate_reply() kicked off welcome turn.")
             except Exception as e:
-                print(f"[Gemini] Greeting trigger warning: {e}")
+                print(f"[Gemini] generate_reply failed: {e}")
+            if not triggered:
+                try:
+                    if hasattr(session, 'say'):
+                        await session.say(welcome_message or "Hello, I am here to help you.")
+                        triggered = True
+                        print("[Gemini] ✅ session.say() fallback used.")
+                except Exception as e:
+                    print(f"[Gemini] say fallback failed: {e}")
+            if not triggered:
+                try:
+                    msg = ChatMessage(role="user", content=[greet_prompt])
+                    if hasattr(session, 'chat_ctx'):
+                        session.chat_ctx.messages.append(msg)
+                        print("[Gemini] ⚠️ Only chat_ctx injected (no generate_reply support).")
+                except Exception as e:
+                    print(f"[Gemini] chat_ctx fallback failed: {e}")
         else:
             print(f"[Pipeline] Using STT/LLM/TTS path — model={selected_model} lang={agent_language}")
             vad = silero.VAD.load()
@@ -450,6 +538,7 @@ async def entrypoint(ctx: JobContext):
 
             session = AgentSession(vad=vad, stt=stt, llm=llm_plugin, tts=tts)
             agent_obj = KautilyaAgent(instructions=system_prompt)
+            _attach_session_events(session)
             await session.start(room=ctx.room, agent=agent_obj)
             await session.say(welcome_message)
     except Exception as e:
@@ -462,25 +551,81 @@ async def entrypoint(ctx: JobContext):
     # ========== SESSION ENDED — Persist transcript & call log ==========
     duration_seconds = int(_time.time() - started_at)
     print(f"[Agent] Session ended for {ctx.room.name} (duration {duration_seconds}s). Saving log...")
+
+    # 1. Backfill from chat_ctx if event hooks didn't catch anything (covers
+    #    older livekit-agents versions and Sarvam pipeline edge cases).
+    if not transcript_turns and session is not None and hasattr(session, 'chat_ctx'):
+        try:
+            for m in getattr(session.chat_ctx, 'messages', []) or []:
+                role = (getattr(m, 'role', '') or 'unknown').lower()
+                content = getattr(m, 'content', '')
+                _record_turn(role, content)
+        except Exception as e:
+            print(f"[Transcript] chat_ctx backfill warning: {e}")
+
+    # 2. Build a clean ordered transcript (drop the system role)
+    convo_turns = [t for t in transcript_turns if t.get('role') in ('user', 'assistant')]
+    transcript_text = "\n".join(f"{t['role'].upper()}: {t['content']}" for t in convo_turns).strip()
+    msg_count = len(convo_turns)
+
+    # 3. Post-call analysis via NVIDIA NIM (Coder/Nemotron). Best-effort —
+    #    if it fails or has no transcript, fall back to neutral defaults.
+    summary = ""
+    sentiment = "neutral"
+    key_topics: list = []
+    outcome_label = "completed" if transcript_text else "no_audio"
+    try:
+        if transcript_text and msg_count >= 2:
+            from services.llm_service import call_nvidia
+            analysis_prompt = (
+                "You are a call-quality analyst. Read the call transcript below "
+                "(roles: USER = customer, ASSISTANT = AI agent). Reply with STRICT JSON only:\n"
+                '{"summary": "<1-2 sentence summary>",'
+                ' "sentiment": "positive|neutral|negative",'
+                ' "outcome": "successful|partial|failed",'
+                ' "topics": ["topic1", "topic2"]}\n\n'
+                f"TRANSCRIPT:\n{transcript_text[:6000]}"
+            )
+            print(f"[Analysis] Calling NVIDIA NIM (Coder) for {msg_count}-turn transcript...")
+            result = call_nvidia(
+                [{"role": "user", "content": analysis_prompt}],
+                stream=False,
+                max_tokens=600,
+                model='nvidia/nemotron-3-super-120b-a12b',
+            )
+            if isinstance(result, str) and result.strip():
+                # Extract the first JSON object out of the response (Nemotron
+                # sometimes wraps reasoning in <thinking> tags).
+                cleaned = re.sub(r"<thinking>.*?</thinking>", "", result, flags=re.DOTALL).strip()
+                m = re.search(r"\{[\s\S]*\}", cleaned)
+                if m:
+                    try:
+                        parsed = json.loads(m.group(0))
+                        summary = (parsed.get('summary') or '').strip()
+                        sentiment = (parsed.get('sentiment') or 'neutral').lower()
+                        if sentiment not in ('positive', 'neutral', 'negative'):
+                            sentiment = 'neutral'
+                        outcome_label = (parsed.get('outcome') or outcome_label).lower()
+                        topics = parsed.get('topics') or []
+                        if isinstance(topics, list):
+                            key_topics = [str(t).strip() for t in topics if str(t).strip()][:5]
+                        print(f"[Analysis] ✅ summary='{summary[:80]}' sentiment={sentiment} outcome={outcome_label}")
+                    except Exception as je:
+                        print(f"[Analysis] JSON parse failed: {je}")
+    except Exception as e:
+        print(f"[Analysis] NIM call failed: {e}")
+
+    if not summary:
+        # Fallback summary: first non-empty user turn or first line of transcript
+        if convo_turns:
+            first_user = next((t for t in convo_turns if t['role'] == 'user'), convo_turns[0])
+            summary = first_user['content'][:200]
+        else:
+            summary = "Call ended without conversation."
+
+    # 4. Persist
     try:
         if FIREBASE_AVAILABLE and db and agent_id:
-            transcript_text = ""
-            msg_count = 0
-            if session is not None and hasattr(session, 'chat_ctx'):
-                for m in getattr(session.chat_ctx, 'messages', []) or []:
-                    role = (getattr(m, 'role', '') or '').upper()
-                    content = getattr(m, 'content', '')
-                    if isinstance(content, list):
-                        parts = []
-                        for p in content:
-                            if hasattr(p, 'text'): parts.append(p.text)
-                            elif isinstance(p, str): parts.append(p)
-                        content = " ".join(parts)
-                    if not str(content).strip():
-                        continue
-                    transcript_text += f"{role}: {content}\n"
-                    msg_count += 1
-
             final_call_id = call_id or ctx.room.name
             try:
                 if ctx.room.metadata:
@@ -491,17 +636,21 @@ async def entrypoint(ctx: JobContext):
             log_payload = {
                 'agent_id': agent_id,
                 'call_id': final_call_id,
+                'channel': 'voice_sip' if is_sip else 'voice_web',
                 'duration': duration_seconds,
-                'status': 'completed' if transcript_text.strip() else 'no_audio',
+                'status': outcome_label,
                 'messages': msg_count,
-                'transcript': transcript_text.strip(),
-                'analysis': '',
-                'summary': (transcript_text.strip().splitlines()[0][:200] if transcript_text.strip() else 'Call ended'),
-                'sentiment': 'neutral',
-                'outcome': bool(transcript_text.strip()),
+                'transcript': transcript_text,
+                'turns': convo_turns,           # structured form for richer UI
+                'analysis': summary,            # backwards-compat alias
+                'summary': summary,
+                'sentiment': sentiment,
+                'topics': key_topics,
+                'outcome': outcome_label != 'no_audio',
                 'model': selected_model,
                 'language': agent_language,
                 'created_at': firestore.SERVER_TIMESTAMP,
+                'timestamp': int(_time.time()),
             }
 
             db.collection('agents').document(agent_id).collection('agent_logs').add(log_payload)
@@ -513,7 +662,7 @@ async def entrypoint(ctx: JobContext):
             except Exception as e:
                 print(f"[Agent] call_count update warning: {e}")
 
-            print(f"[Agent] ✅ agent_logs entry written for call {final_call_id} (msgs={msg_count})")
+            print(f"[Agent] ✅ agent_logs entry written for call {final_call_id} (msgs={msg_count}, sentiment={sentiment})")
     except Exception as e:
         print(f"[Agent] ❌ Error saving call log: {e}")
 
