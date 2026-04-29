@@ -76,6 +76,36 @@ def hash_api_key(key):
     return hashlib.sha256(key.encode()).hexdigest()
 
 
+def record_usage(uid, resource_type, amount, model=None):
+    """Best-effort, non-blocking usage recorder.
+    Increments api_usage/{uid}/daily/{today}.{resource_type} AND writes a
+    usage_logs row. Never raises — errors are logged so the caller path keeps
+    serving the user even if Firestore hiccups."""
+    from extensions import db
+    if not db or not uid:
+        return
+    try:
+        amount = int(amount or 0)
+    except Exception:
+        amount = 0
+    if amount <= 0:
+        return
+    try:
+        from datetime import datetime
+        from firebase_admin import firestore
+        today = datetime.now().strftime("%Y-%m-%d")
+        ref = db.collection('api_usage').document(uid).collection('daily').document(today)
+        try:
+            ref.set({resource_type: firestore.Increment(amount)}, merge=True)
+        except Exception:
+            doc = ref.get()
+            current = (doc.to_dict() or {}).get(resource_type, 0) if doc.exists else 0
+            ref.set({resource_type: int(current) + amount}, merge=True)
+        log_usage_event(uid, resource_type, amount, model)
+    except Exception as e:
+        print(f"[record_usage] {resource_type} error: {e}")
+
+
 def log_usage_event(uid, resource_type, amount, model=None):
     from extensions import db
     if not db or not uid:

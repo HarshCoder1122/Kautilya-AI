@@ -132,5 +132,31 @@ def get_user_transactions():
 
 @billing_bp.route('/api/billing/config', methods=['GET'])
 def billing_config():
+    """Return Razorpay public config plus the caller's tier & credits, so the
+    Billing page can render the correct Pro/Free badge and balance."""
     from config import RAZORPAY_KEY_ID
-    return jsonify({"razorpay_key_id": RAZORPAY_KEY_ID or os.environ.get('RAZORPAY_KEY_ID', '')})
+    from extensions import limit_manager
+
+    is_pro = False
+    credits = 0.0
+    try:
+        token_data = verify_firebase_token()
+        uid = token_data.get('uid') if token_data else None
+        if uid and limit_manager:
+            try:
+                is_pro = bool(limit_manager.is_pro_user(uid))
+            except Exception as e:
+                print(f"[Billing Config] is_pro_user failed: {e}")
+            try:
+                credits = float(limit_manager.get_credits(uid) or 0.0)
+            except Exception as e:
+                print(f"[Billing Config] get_credits failed: {e}")
+    except Exception as e:
+        print(f"[Billing Config] Auth lookup failed: {e}")
+
+    return jsonify({
+        "razorpay_key_id": RAZORPAY_KEY_ID or os.environ.get('RAZORPAY_KEY_ID', ''),
+        "is_pro": is_pro,
+        "tier": "pro" if is_pro else "free",
+        "credits": credits,
+    })

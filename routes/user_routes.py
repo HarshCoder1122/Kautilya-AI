@@ -129,29 +129,142 @@ def get_user_account():
 
 @user_bp.route('/api/analytics/usage', methods=['GET'])
 def get_usage_analytics():
-    """Return usage data for graphs and stats."""
-    from extensions import db
-    from firebase_admin import firestore
+    """Return full usage analytics for the dashboard (daily, hourly, models,
+    current_usage, limits, tier, recent_activity)."""
+    from extensions import db, limit_manager
+    from config import API_RATE_LIMITS
+    from services.auth_service import get_api_usage
+    from datetime import datetime, timedelta
+
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
     if not uid:
         return jsonify({"error": "Authentication required"}), 401
     if not db:
         return jsonify({"error": "Database not available"}), 503
+
     try:
-        from datetime import datetime, timedelta
-        now = datetime.now()
-        seven_days_ago = now - timedelta(days=7)
-        logs = db.collection('usage_logs').where(filter=firestore.FieldFilter('uid', '==', uid))\
-                 .where(filter=firestore.FieldFilter('timestamp', '>=', seven_days_ago))\
-                 .order_by('timestamp').stream()
-        daily_usage = {}
+        from firebase_admin import firestore
+    except Exception:
+        firestore = None
+
+    is_pro = False
+    try:
+        is_pro = bool(limit_manager.is_pro_user(uid)) if limit_manager else False
+    except Exception:
+        is_pro = False
+    tier = "pro" if is_pro else "free"
+    limits = API_RATE_LIMITS.get(tier, API_RATE_LIMITS["free"])
+
+    # Today's usage from api_usage/{uid}/daily/{today}
+    current_usage = {"llm_tokens": 0, "tts_chars": 0, "stt_seconds": 0}
+    try:
+        today_doc = get_api_usage(uid) or {}
+        for k in current_usage.keys():
+            v = today_doc.get(k, 0)
+            try:
+                current_usage[k] = int(v)
+            except Exception:
+                current_usage[k] = 0
+    except Exception:
+        pass
+
+    # Build daily / hourly / model aggregates from usage_logs (last 7 days)
+    daily = {}
+    hourly_today = {str(h): 0 for h in range(24)}
+    models = {}
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    is_index_error = False
+    error_details = None
+
+    # Pre-seed last 7 days so the chart isn't empty
+    for i in range(6, -1, -1):
+        d = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+        daily[d] = 0
+
+    try:
+        seven_days_ago = datetime.now() - timedelta(days=7)
+        query = db.collection('usage_logs').where(
+            filter=firestore.FieldFilter('uid', '==', uid)
+        ).where(
+            filter=firestore.FieldFilter('timestamp', '>=', seven_days_ago)
+        ).limit(2000)
+        try:
+            logs = list(query.order_by('timestamp').stream())
+        except Exception as inner:
+            # Composite index missing — fall back to unordered query
+            msg = str(inner)
+            if 'index' in msg.lower():
+                is_index_error = True
+                error_details = msg
+            logs = list(query.stream())
+
         for log in logs:
-            d = log.to_dict()
+            d = log.to_dict() or {}
             ts = d.get('timestamp')
-            if ts:
-                date_str = ts.strftime("%Y-%m-%d")
-                daily_usage[date_str] = daily_usage.get(date_str, 0) + 1
-        return jsonify({"daily_usage": daily_usage})
+            amount = d.get('amount', 1) or 0
+            try:
+                amount = int(amount)
+            except Exception:
+                amount = 1
+            r_type = d.get('type', 'llm_tokens')
+            model_name = d.get('model') or 'kautilya-daily'
+
+            day_str = None
+            hour = d.get('hour')
+            if ts and hasattr(ts, 'strftime'):
+                day_str = ts.strftime("%Y-%m-%d")
+                if hour is None:
+                    hour = ts.hour
+            else:
+                day_str = d.get('day')
+
+            if day_str:
+                daily[day_str] = daily.get(day_str, 0) + (amount if r_type == 'llm_tokens' else 0)
+
+            if day_str == today_str and hour is not None:
+                try:
+                    h = str(int(hour))
+                    hourly_today[h] = hourly_today.get(h, 0) + (amount if r_type == 'llm_tokens' else 0)
+                except Exception:
+                    pass
+
+            if r_type == 'llm_tokens':
+                models[model_name] = models.get(model_name, 0) + amount
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        msg = str(e)
+        if 'index' in msg.lower():
+            is_index_error = True
+        error_details = msg
+
+    # Recent activity: last 20 usage events
+    recent_activity = []
+    try:
+        recent_q = db.collection('usage_logs').where(
+            filter=firestore.FieldFilter('uid', '==', uid)
+        ).order_by('timestamp', direction=firestore.Query.DESCENDING).limit(20)
+        for r in recent_q.stream():
+            rd = r.to_dict() or {}
+            ts = rd.get('timestamp')
+            recent_activity.append({
+                "type": rd.get('type', 'llm_tokens'),
+                "amount": rd.get('amount', 0),
+                "model": rd.get('model') or 'kautilya-daily',
+                "timestamp": ts.isoformat() if hasattr(ts, 'isoformat') else None,
+            })
+    except Exception:
+        pass
+
+    response = {
+        "tier": tier,
+        "limits": limits,
+        "current_usage": current_usage,
+        "daily": daily,
+        "hourly_today": hourly_today,
+        "models": models,
+        "recent_activity": recent_activity,
+    }
+    if is_index_error:
+        response["index_warning"] = True
+        response["details"] = error_details
+    return jsonify(response)

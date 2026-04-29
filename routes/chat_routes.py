@@ -15,7 +15,7 @@ import requests
 from flask import Blueprint, request, jsonify, Response
 
 from config import SYSTEM_PROMPT, CODER_SYSTEM_PROMPT, GROQ_API_KEY, SARVAM_API_KEY
-from services.auth_service import verify_firebase_token
+from services.auth_service import verify_firebase_token, record_usage
 from services.memory_service import (
     get_user_chat_dir, get_user_memory, save_user_memory,
     extract_memories, build_personalized_prompt, build_cli_system_prompt,
@@ -211,6 +211,16 @@ def jarvis_stream():
 
             conv['messages'].append({"role": "assistant", "content": full_response})
             save_to_firestore(uid, session_id, "assistant", full_response)
+
+            # Usage tracking — rough token estimate (4 chars ≈ 1 token)
+            if uid:
+                try:
+                    in_chars = len(str(message or ''))
+                    out_chars = len(full_response)
+                    est_tokens = max(1, (in_chars + out_chars) // 4)
+                    record_usage(uid, 'llm_tokens', est_tokens, model=model)
+                except Exception as e:
+                    print(f"[Usage] llm_tokens record failed: {e}")
 
             # Background memory extraction
             if uid and message:
