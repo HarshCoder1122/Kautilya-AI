@@ -3,12 +3,13 @@ Kautilya AI — Agents Routes Blueprint
 Handles /api/agents/* endpoints (Voice & Chat Agent config).
 """
 import time
+import json
 import uuid
 import secrets
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, Response
 
 from config import MAX_AGENTS_FREE, MAX_AGENTS_PRO
-from services.auth_service import verify_firebase_token
+from services.auth_service import verify_firebase_token, record_usage
 from services.memory_service import process_uploaded_file, generate_semantic_chunks, read_website
 
 agents_bp = Blueprint('agents', __name__)
@@ -322,6 +323,155 @@ def api_agent_kb_content(agent_id, file_id):
         return jsonify({"name": target_file.get("name"), "content": target_file.get("content", ""), "chunks": target_file.get("chunks", []), "url": target_file.get("url")})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@agents_bp.route('/api/agents/<agent_id>/chat', methods=['POST'])
+def api_agent_chat(agent_id):
+    """Streaming chat with a configured agent.
+
+    The dashboard's "Test" panel and any external API consumer hit this. We
+    load the agent's saved system_prompt + (optional) knowledge-base context,
+    forward the conversation to the LLM, and stream the response as
+    Server-Sent Events: `data: {"content": "..."}` per chunk, `data: [DONE]`.
+    """
+    from extensions import db
+    from services.llm_service import call_groq
+
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Authentication required"}), 401
+    if not db:
+        return jsonify({"error": "Database not available"}), 503
+
+    body = request.get_json(silent=True) or {}
+    incoming = body.get('messages') or []
+    if not isinstance(incoming, list) or not incoming:
+        return jsonify({"error": "messages array required"}), 400
+
+    try:
+        doc = db.collection('agents').document(agent_id).get()
+        if not doc.exists:
+            return jsonify({"error": "Agent not found"}), 404
+        agent = doc.to_dict() or {}
+        # Allow either the owner OR any caller using a valid API key (the
+        # dashboard always passes a Firebase token for the owner; external
+        # consumers pass an API key whose uid matches the agent's owner).
+        if agent.get('uid') and agent.get('uid') != uid and not token_data.get('is_admin'):
+            return jsonify({"error": "Agent not found"}), 404
+    except Exception as e:
+        return jsonify({"error": f"Agent lookup failed: {e}"}), 500
+
+    system_prompt = (agent.get('system_prompt') or 'You are a helpful AI assistant.')
+    welcome = agent.get('welcome_message') or ''
+    model_name = (agent.get('model') or 'kautilya-daily').lower()
+    temperature = float(agent.get('temperature') or 0.7)
+    max_tokens = int(agent.get('max_tokens') or 4096)
+
+    # Lightweight KB injection: take the user's last message and pull the top
+    # matching chunks from the agent's stored knowledge base (if any).
+    kb_context = ""
+    try:
+        kb = agent.get('knowledge_base') or []
+        if kb and incoming:
+            last_user = next((m for m in reversed(incoming) if (m.get('role') == 'user')), None)
+            if last_user:
+                last_text = last_user.get('content') or ''
+                if isinstance(last_text, list):
+                    last_text = " ".join(p.get('text', '') for p in last_text if isinstance(p, dict))
+                if last_text:
+                    needle = last_text.lower()
+                    snippets = []
+                    for f in kb[:10]:
+                        for ch in (f.get('chunks') or [])[:50]:
+                            if not isinstance(ch, str):
+                                continue
+                            if any(w for w in needle.split() if len(w) > 3 and w in ch.lower()):
+                                snippets.append(ch)
+                                if len(snippets) >= 4:
+                                    break
+                        if len(snippets) >= 4:
+                            break
+                    if snippets:
+                        kb_context = "\n\nKNOWLEDGE BASE (use when relevant):\n" + "\n---\n".join(snippets[:4])
+    except Exception as e:
+        print(f"[Agent Chat] KB lookup warning: {e}")
+
+    full_system = system_prompt + kb_context
+    if welcome:
+        full_system += f"\n\nIf the conversation has just started, greet the user with: \"{welcome}\""
+
+    # Map dashboard model aliases to a real Groq model id
+    groq_model = "llama-3.3-70b-versatile"
+    if "pro" in model_name:
+        groq_model = "llama-3.3-70b-versatile"
+    elif "coder" in model_name:
+        groq_model = "llama-3.3-70b-versatile"
+    # Gemini Live is voice-only — fall through to Groq for chat.
+
+    chat_messages = [{"role": "system", "content": full_system}]
+    for m in incoming:
+        if isinstance(m, dict) and m.get('role') in ('user', 'assistant') and m.get('content'):
+            chat_messages.append({"role": m['role'], "content": m['content']})
+
+    def stream():
+        full_text = ""
+        try:
+            gen = call_groq(
+                chat_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+                model=groq_model,
+            )
+            if gen is None:
+                yield f"data: {json.dumps({'content': 'Service temporarily unavailable.'})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            for item in gen:
+                if isinstance(item, dict) and item.get('chunk'):
+                    chunk = item['chunk']
+                    full_text += chunk
+                    # Frontend reads `d.content`
+                    yield f"data: {json.dumps({'content': chunk})}\n\n"
+        except Exception as e:
+            print(f"[Agent Chat] Stream error: {e}")
+            yield f"data: {json.dumps({'content': f'[Error: {e}]'})}\n\n"
+
+        # Usage tracking — rough 4-chars-per-token estimate
+        try:
+            in_chars = sum(len(str(m.get('content') or '')) for m in chat_messages)
+            est_tokens = max(1, (in_chars + len(full_text)) // 4)
+            record_usage(uid, 'llm_tokens', est_tokens, model=groq_model)
+        except Exception as e:
+            print(f"[Agent Chat] usage record failed: {e}")
+
+        # Persist a lightweight log entry so Studio "Recent" shows test chats too
+        try:
+            from firebase_admin import firestore as _fs
+            db.collection('agents').document(agent_id).collection('agent_logs').add({
+                'agent_id': agent_id,
+                'channel': 'chat',
+                'duration': 0,
+                'status': 'completed',
+                'messages': len(incoming) + 1,
+                'transcript': "\n".join(
+                    f"{(m.get('role') or '').upper()}: {m.get('content')}" for m in incoming
+                ) + f"\nASSISTANT: {full_text}",
+                'summary': (full_text or '').strip().splitlines()[0][:200] if full_text else 'Test chat',
+                'sentiment': 'neutral',
+                'outcome': bool(full_text),
+                'model': groq_model,
+                'created_at': _fs.SERVER_TIMESTAMP,
+            })
+        except Exception as e:
+            print(f"[Agent Chat] log persist warning: {e}")
+
+        yield "data: [DONE]\n\n"
+
+    return Response(stream(), mimetype='text/event-stream', headers={
+        'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'
+    })
 
 
 @agents_bp.route('/api/agents/<agent_id>/kb/<file_id>', methods=['DELETE'])
