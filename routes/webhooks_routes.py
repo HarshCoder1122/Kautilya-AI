@@ -64,6 +64,8 @@ def create_room_fire_and_forget(room_name, agent_id):
                             metadata["system_prompt"] = d.get("system_prompt", "")
                             metadata["welcome_message"] = d.get("welcome_message", "")
                             metadata["language"] = d.get("language", "hi-IN")
+                            metadata["model"] = d.get("model", "kautilya-daily")
+                            metadata["voice"] = d.get("voice", "shubh")
                     except: pass
                 lk_url = LIVEKIT_URL.replace("wss://", "https://").replace("ws://", "http://")
                 lkapi = LiveKitAPI(url=lk_url, api_key=LIVEKIT_API_KEY, api_secret=LIVEKIT_API_SECRET)

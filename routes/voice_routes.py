@@ -12,6 +12,7 @@ from flask import Blueprint, request, jsonify, Response
 
 from config import GROQ_API_KEY, SARVAM_API_KEY, STATIC_FOLDER, LIVEKIT_URL
 from services.tts_service import clean_text_for_tts, detect_tts_voice
+from services.auth_service import verify_firebase_token, record_usage
 
 voice_bp = Blueprint('voice', __name__)
 
@@ -23,12 +24,20 @@ def voice_transcribe():
     audio_file = request.files['audio']
     if not audio_file.filename:
         return jsonify({"error": "No selected file"}), 400
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
     temp_path = os.path.join(os.getcwd(), f"temp_{uuid.uuid4()}.webm")
     try:
         audio_file.save(temp_path)
         if not GROQ_API_KEY:
             if os.path.exists(temp_path): os.remove(temp_path)
             return jsonify({"error": "Groq API Key missing"}), 500
+        # Estimate audio seconds from file size (webm @ ~16 kbps mono ≈ 2KB/s)
+        try:
+            size_bytes = os.path.getsize(temp_path)
+            est_seconds = max(1, int(size_bytes / 2048))
+        except Exception:
+            est_seconds = 1
         with open(temp_path, "rb") as file:
             resp = requests.post(
                 "https://api.groq.com/openai/v1/audio/transcriptions",
@@ -46,6 +55,8 @@ def voice_transcribe():
                               "please subscribe", "thank you.", "welcome.", "thanks.", "subtitles by", "amara.org"]
             if text.lower() in hallucinations or len(text) < 2:
                 text = ""
+            if uid:
+                record_usage(uid, 'stt_seconds', est_seconds, model='whisper-large-v3')
             return jsonify({"text": text})
         else:
             return jsonify({"error": f"Groq Error: {resp.text}"}), resp.status_code
@@ -64,9 +75,13 @@ def voice_speak():
         return jsonify({"error": "No text provided"}), 400
     if not SARVAM_API_KEY:
         return jsonify({"error": "Sarvam API Key missing"}), 500
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
     text = clean_text_for_tts(text)
     if not text:
         return jsonify({"error": "No speakable text"}), 400
+    if uid:
+        record_usage(uid, 'tts_chars', len(text), model='sarvam-bulbul-v3')
     voice_config = detect_tts_voice(text)
     try:
         payload = {
