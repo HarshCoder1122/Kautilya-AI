@@ -141,11 +141,20 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         try:
             for item in response_gen:
                 if isinstance(item, dict):
-                    chunk = item.get("chunk", "")
+                    # Pass-through events that the frontend handles directly:
+                    # thinking deltas (Gemini-style streaming reasoning),
+                    # thinking_done (collapse signal), tool_calls, usage.
+                    if "thinking" in item or "thinking_done" in item:
+                        yield json.dumps(item)
+                        continue
+                    if "tool_calls" in item:
+                        yield json.dumps(item)
+                        continue
                     usage = item.get("usage")
                     if usage:
                         yield json.dumps({"usage": usage})
                         continue
+                    chunk = item.get("chunk", "")
                 else:
                     chunk = item
                 if not chunk:

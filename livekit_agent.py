@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import asyncio
 import time as _time
@@ -173,11 +174,58 @@ def _looks_like_sip_room(room_name: str, room: rtc.Room) -> bool:
 
 
 async def _lookup_by_phone(phone_raw: str):
-    """Try every variant of a phone number against active_calls; return
-    (agent_doc, agent_id) or (None, None)."""
+    """Resolve (agent_doc, agent_id) for a phone number, race-safe.
+
+    Strategy:
+      1. **FIFO claim** — read `active_calls/<phone>/pending` ordered by
+         created_at ASC, transactionally mark the OLDEST unclaimed entry as
+         claimed and return its agent_id. This survives the case where two
+         simultaneous calls to the same phone wrote into `active_calls`
+         within milliseconds of each other (latest-wins would mis-route the
+         first call to the second call's agent).
+      2. **Top-level fallback** — if no pending docs exist (e.g. webhook
+         ran before this code shipped, or campaign worker only wrote the
+         legacy shape), fall back to the latest-wins `active_calls/<phone>`
+         document to remain backwards-compatible.
+    """
     if not (db and phone_raw):
         return None, None
+
     for v in _phone_variants(phone_raw):
+        # ---- 1. FIFO claim from pending subcollection ----
+        try:
+            pending_q = (db.collection('active_calls').document(v)
+                           .collection('pending')
+                           .where('claimed', '==', False)
+                           .order_by('created_at')
+                           .limit(1))
+            pending_docs = list(pending_q.stream())
+            if pending_docs:
+                claim_ref = pending_docs[0].reference
+
+                @firestore.transactional
+                def _claim(tx, ref):
+                    snap = ref.get(transaction=tx)
+                    if not snap.exists:
+                        return None
+                    data = snap.to_dict() or {}
+                    if data.get('claimed'):
+                        return None
+                    tx.update(ref, {"claimed": True,
+                                     "claimed_at": firestore.SERVER_TIMESTAMP})
+                    return data
+
+                tx_result = _claim(db.transaction(), claim_ref)
+                if tx_result and tx_result.get('agent_id'):
+                    mapped = tx_result['agent_id']
+                    agent_doc = db.collection('agents').document(mapped).get()
+                    if agent_doc.exists:
+                        print(f"[Config] 🎯 active_calls/{v}/pending → agent {mapped} (FIFO claim)")
+                        return agent_doc, mapped
+        except Exception as e:
+            print(f"[Config] FIFO claim error on {v}: {e}")
+
+        # ---- 2. Legacy top-level doc fallback ----
         try:
             call_doc = db.collection('active_calls').document(v).get()
             if call_doc.exists:
@@ -185,7 +233,7 @@ async def _lookup_by_phone(phone_raw: str):
                 if mapped:
                     doc = db.collection('agents').document(mapped).get()
                     if doc.exists:
-                        print(f"[Config] 🎯 active_calls/{v} → agent {mapped}")
+                        print(f"[Config] 🎯 active_calls/{v} → agent {mapped} (legacy)")
                         return doc, mapped
         except Exception as e:
             print(f"[Config] active_calls/{v} lookup error: {e}")
@@ -668,4 +716,34 @@ async def entrypoint(ctx: JobContext):
 
 
 if __name__ == "__main__":
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+    # ---- Warm-pool configuration ----
+    # `num_idle_processes` keeps N agent processes pre-spawned and pre-
+    # connected to LiveKit so the moment a job is dispatched there is no
+    # cold-start. Default 2 (one for the active call, one ready for the
+    # next). Override with env LIVEKIT_NUM_IDLE.
+    try:
+        num_idle = int(os.environ.get("LIVEKIT_NUM_IDLE", "2"))
+    except ValueError:
+        num_idle = 2
+
+    worker_kwargs = {"entrypoint_fnc": entrypoint}
+
+    # Optional explicit-dispatch mode. Set LIVEKIT_AGENT_NAME=kautilya-voice
+    # and LIVEKIT_SIP_DIRECT_DISPATCH=1 (with a Direct-mode SIP dispatch
+    # rule on the LiveKit dashboard) to enable zero-silence pre-dispatch
+    # in routes/webhooks_routes.py::vobiz_answer.
+    agent_name = os.environ.get("LIVEKIT_AGENT_NAME", "").strip()
+    if agent_name:
+        worker_kwargs["agent_name"] = agent_name
+        print(f"[Worker] Explicit-dispatch mode (agent_name={agent_name})")
+
+    # `num_idle_processes` was added in livekit-agents 1.x. Older versions
+    # silently ignore it; if the constructor rejects it, fall back.
+    try:
+        opts = WorkerOptions(num_idle_processes=num_idle, **worker_kwargs)
+        print(f"[Worker] Warm pool: {num_idle} idle process(es)")
+    except TypeError:
+        opts = WorkerOptions(**worker_kwargs)
+        print("[Worker] num_idle_processes not supported by this livekit-agents version — running without warm pool")
+
+    cli.run_app(opts)

@@ -147,8 +147,23 @@ def call_openrouter(messages, temperature=0.7, max_tokens=16384, stream=True, mo
 
 
 def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
-                model="nvidia/nemotron-3-super-120b-a12b", tools=None, tool_choice=None):
-    """Call NVIDIA NIM API with tool support."""
+                model="nvidia/nemotron-3-super-120b-a12b", tools=None, tool_choice=None,
+                expose_thinking=True):
+    """Call NVIDIA NIM API with tool support.
+
+    Streaming protocol:
+      • `{"thinking": "<token>"}` — a delta of the model's reasoning trace.
+        The frontend renders these into a Gemini-style collapsible
+        "Thinking…" bubble that updates live as tokens arrive.
+      • `{"chunk": "<token>"}`   — a delta of the final answer (content).
+      • `{"thinking_done": True}` — emitted once when reasoning ends and
+        the model starts emitting actual content. The UI uses this to
+        collapse the thinking bubble and switch focus to the answer.
+
+    Pass `expose_thinking=False` to silently drop reasoning deltas (useful
+    for non-chat call sites such as post-call NIM analysis where we just
+    want a final string).
+    """
     if not NVIDIA_API_KEY:
         return None
     try:
@@ -179,37 +194,44 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
             if stream:
                 def generate():
                     try:
-                        has_started_thinking = False
+                        thinking_active = False
                         for line in resp.iter_lines():
-                            if line:
-                                line = line.decode('utf-8')
-                                if line.startswith('data: '):
-                                    json_str = line[6:]
-                                    if json_str.strip() == '[DONE]':
-                                        if has_started_thinking:
-                                            yield {"chunk": "</thinking>"}
-                                        break
-                                    try:
-                                        data = json.loads(json_str)
-                                        delta = data["choices"][0].get("delta", {})
-                                        reasoning = delta.get("reasoning_content")
-                                        if reasoning:
-                                            if not has_started_thinking:
-                                                yield {"chunk": "<thinking>"}
-                                                has_started_thinking = True
-                                            yield {"chunk": reasoning}
-                                            continue
-                                        if "tool_calls" in delta:
-                                            yield {"tool_calls": delta["tool_calls"]}
-                                            continue
-                                        content = delta.get("content")
-                                        if content:
-                                            if has_started_thinking:
-                                                yield {"chunk": "</thinking>"}
-                                                has_started_thinking = False
-                                            yield {"chunk": content}
-                                    except:
-                                        continue
+                            if not line:
+                                continue
+                            line = line.decode('utf-8')
+                            if not line.startswith('data: '):
+                                continue
+                            json_str = line[6:]
+                            if json_str.strip() == '[DONE]':
+                                if thinking_active:
+                                    yield {"thinking_done": True}
+                                break
+                            try:
+                                data = json.loads(json_str)
+                                delta = data["choices"][0].get("delta", {})
+                            except Exception:
+                                continue
+
+                            reasoning = delta.get("reasoning_content")
+                            if reasoning:
+                                if expose_thinking:
+                                    thinking_active = True
+                                    yield {"thinking": reasoning}
+                                # Always 'continue' — never mix reasoning into chunks
+                                continue
+
+                            if "tool_calls" in delta:
+                                yield {"tool_calls": delta["tool_calls"]}
+                                continue
+
+                            content = delta.get("content")
+                            if content:
+                                if thinking_active:
+                                    # Reasoning is over — let the UI collapse the
+                                    # thinking bubble before content tokens start.
+                                    yield {"thinking_done": True}
+                                    thinking_active = False
+                                yield {"chunk": content}
                     finally:
                         resp.close()
                 return generate()

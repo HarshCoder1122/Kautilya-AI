@@ -8,6 +8,7 @@ import requests
 from flask import Blueprint, request, jsonify
 
 from services.auth_service import verify_firebase_token
+from services.telephony_dialer import dial_outbound, load_provider_config
 
 telephony_bp = Blueprint('telephony', __name__)
 
@@ -80,30 +81,21 @@ def api_agent_call_outbound(agent_id):
     if not to_number: return jsonify({"error": "Destination number required"}), 400
     
     try:
-        # 1. Fetch Agent Config
         agent_doc = db.collection('agents').document(agent_id).get()
         if not agent_doc.exists or agent_doc.to_dict().get('uid') != uid:
             return jsonify({"error": "Agent not found"}), 404
         agent = agent_doc.to_dict()
-        
-        # 2. Fetch Telephony Config
-        config_doc = db.collection('users').document(uid).collection('config').document('telephony').get()
-        if not config_doc.exists:
-            return jsonify({"error": "Telephony not configured"}), 400
-        
-        providers = config_doc.to_dict().get('providers', [])
-        provider_type = agent.get('telephony_provider', 'exotel')
-        config = next((p for p in providers if p['type'] == provider_type), None)
-        
+
+        provider_type = (agent.get('telephony_provider') or 'exotel').lower()
+        config = load_provider_config(db, uid, provider_type)
         if not config:
             return jsonify({"error": f"Provider {provider_type} not configured"}), 400
 
-        # 3. Trigger Call based on provider
-        if provider_type == 'vobiz':
-            return trigger_vobiz_call(config, to_number, agent_id)
-        else:
-            return trigger_exotel_call(config, to_number, agent_id)
-            
+        base_url = request.host_url.rstrip('/')
+        result = dial_outbound(uid, agent_id, agent, config, to_number, base_url, db=db)
+        if result.get('ok'):
+            return jsonify({"status": "ok", "call_id": result.get('call_id'), "provider": result.get('provider')})
+        return jsonify({"error": result.get('error') or "Dial failed"}), 500
     except Exception as e:
         print(f"[Outbound] Error: {e}")
         return jsonify({"error": str(e)}), 500

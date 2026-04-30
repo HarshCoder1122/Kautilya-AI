@@ -25,9 +25,28 @@ def serve_coder_auth():
     return send_from_directory(STATIC_FOLDER, 'coder_auth.html')
 
 
-@static_bp.route('/dashboard')
-def serve_dashboard():
-    """Serve the Kautilya RevealIQ Studio dashboard."""
+@static_bp.route('/dashboard-legacy')
+def serve_dashboard_legacy():
+    """Legacy single-file dashboard. Kept available during the v2 rollout."""
+    return send_from_directory(STATIC_FOLDER, 'dashboard.html')
+
+
+@static_bp.route('/dashboard', defaults={'subpath': ''})
+@static_bp.route('/dashboard/', defaults={'subpath': ''})
+@static_bp.route('/dashboard/<path:subpath>')
+def serve_dashboard(subpath):
+    """Serve the Vue 3 SPA. We do SPA history-fallback: any /dashboard/...
+    URL returns the same index.html so Vue Router can resolve client-side.
+
+    Build artifacts live in `static/dashboard-v2/` (run `npm run build` inside
+    `dashboard-app/`). If the SPA hasn't been built yet, we transparently
+    fall back to the legacy single-file dashboard so the app stays usable.
+    """
+    spa_dir = os.path.join(STATIC_FOLDER, 'dashboard-v2')
+    spa_index = os.path.join(spa_dir, 'index.html')
+    if os.path.exists(spa_index):
+        return send_from_directory(spa_dir, 'index.html')
+    # SPA not built yet — fall back to legacy
     return send_from_directory(STATIC_FOLDER, 'dashboard.html')
 
 
