@@ -1350,6 +1350,43 @@ class JarvisCloudApp {
             const decoder = new TextDecoder();
             let sseBuffer = '';
 
+            // --- Gemini-style streaming thinking bubble (lazy) ---
+            let thinkingBubble = null, thinkingBody = null, thinkingText = '';
+            let thinkingStartedAt = 0;
+            const ensureThinkingBubble = () => {
+                if (thinkingBubble) return thinkingBubble;
+                const bg = contentEl.parentElement;
+                thinkingBubble = document.createElement('div');
+                thinkingBubble.className = 'kt-thoughts streaming open';
+                thinkingBubble.innerHTML = `
+                    <button class="kt-thoughts-toggle" type="button" aria-expanded="true">
+                        <span class="kt-thoughts-spinner"></span>
+                        <span class="material-icons-round kt-thoughts-icon">psychology</span>
+                        <span class="kt-thoughts-label">Thinking…</span>
+                        <span class="material-icons-round kt-thoughts-chev">expand_more</span>
+                    </button>
+                    <div class="kt-thoughts-body"></div>`;
+                thinkingBody = thinkingBubble.querySelector('.kt-thoughts-body');
+                const toggle = thinkingBubble.querySelector('.kt-thoughts-toggle');
+                toggle.addEventListener('click', () => {
+                    const open = thinkingBubble.classList.toggle('open');
+                    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+                });
+                bg.insertBefore(thinkingBubble, contentEl);
+                return thinkingBubble;
+            };
+            const finalizeThinking = () => {
+                if (!thinkingBubble) return;
+                thinkingBubble.classList.remove('streaming', 'open');
+                const lbl = thinkingBubble.querySelector('.kt-thoughts-label');
+                if (lbl) {
+                    const sec = Math.max(1, Math.round((Date.now() - thinkingStartedAt) / 1000));
+                    lbl.textContent = `Thought for ${sec}s`;
+                }
+                const tog = thinkingBubble.querySelector('.kt-thoughts-toggle');
+                if (tog) tog.setAttribute('aria-expanded', 'false');
+            };
+
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
@@ -1383,7 +1420,22 @@ class JarvisCloudApp {
                                 continue;
                             }
 
+                            // ---- Streaming thinking deltas ----
+                            if (typeof data.thinking === 'string' && data.thinking) {
+                                if (!thinkingBubble) thinkingStartedAt = Date.now();
+                                ensureThinkingBubble();
+                                thinkingText += data.thinking;
+                                thinkingBody.textContent = thinkingText;
+                                thinkingBody.scrollTop = thinkingBody.scrollHeight;
+                                this.scrollToBottom();
+                                continue;
+                            }
+                            if (data.thinking_done) { finalizeThinking(); continue; }
+
                             if (data.chunk) {
+                                if (thinkingBubble && thinkingBubble.classList.contains('streaming')) {
+                                    finalizeThinking();
+                                }
                                 fullText += data.chunk;
 
                                 // Streaming TTS chunks based on punctuation

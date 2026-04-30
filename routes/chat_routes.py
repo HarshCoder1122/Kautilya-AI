@@ -22,7 +22,6 @@ from services.memory_service import (
     process_uploaded_file, record_user_session
 )
 from services.agent_loop_service import get_llm_response
-from services.command_service import execute_cloud_commands
 from services.tts_service import clean_text_for_tts, detect_tts_voice
 from middleware.rate_limiter import check_message_rate_limit
 from middleware.security import block_sensitive_query
@@ -202,13 +201,12 @@ def jarvis_stream():
 
         # Post-processing
         if full_response:
-            processed = execute_cloud_commands(full_response, uid=uid)
-            if processed != full_response:
-                extra = processed[len(full_response):]
-                if extra:
-                    yield f"data: {json.dumps({'chunk': extra})}\n\n"
-                full_response = processed
-
+            # Cloud chat is a pure-LLM endpoint — no bracket-command tool
+            # layer. The model is instructed (in CODER_SYSTEM_PROMPT) to
+            # answer from its own knowledge and emit code directly. If we
+            # ever bring tools back, do it via real `tool_calls` (see
+            # `call_nvidia` / `call_groq` `tools=` plumbing), not via text
+            # bracket parsing.
             conv['messages'].append({"role": "assistant", "content": full_response})
             save_to_firestore(uid, session_id, "assistant", full_response)
 

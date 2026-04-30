@@ -3855,30 +3855,44 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         function setStudioLogsLoading(message = 'Loading recent calls...') {
+            const list = document.getElementById('studio-call-log-list');
+            if (list) {
+                list.innerHTML = `
+                    <div style="text-align:center; padding:44px 20px; color:var(--omni-text-muted); display:flex; align-items:center; justify-content:center; gap:10px;">
+                        <span class="omni-spinner"></span> ${esc(message)}
+                    </div>`;
+            }
             const tbody = document.querySelector('#studio-call-log-table tbody');
-            if (!tbody) return;
-            tbody.innerHTML = `
-                <tr>
-                    <td colspan="5" class="omni-loading-cell">
-                        <div class="omni-loading-state"><span class="omni-spinner"></span> ${esc(message)}</div>
-                    </td>
-                </tr>
-            `;
+            if (tbody) tbody.innerHTML = '';
         }
 
         function setStudioLogsEmpty(message) {
+            const list = document.getElementById('studio-call-log-list');
+            if (list) {
+                list.innerHTML = `
+                    <div style="text-align:center; padding:48px 20px; color:var(--omni-text-muted); display:flex; flex-direction:column; align-items:center; gap:10px;">
+                        <span class="material-icons-round" style="font-size:42px; opacity:0.35;">history</span>
+                        <div>${esc(message)}</div>
+                    </div>`;
+            }
             const tbody = document.querySelector('#studio-call-log-table tbody');
-            if (!tbody) return;
-            tbody.innerHTML = `
-                <tr>
-                    <td colspan="5" class="omni-empty-cell">
-                        <div class="omni-empty-state">
-                            <span class="material-icons-round">history</span>
-                            <div>${esc(message)}</div>
-                        </div>
-                    </td>
-                </tr>
-            `;
+            if (tbody) tbody.innerHTML = '';
+        }
+
+        function _studioChannelMeta(log) {
+            const ch = String(log.channel || log.type || '').toLowerCase();
+            if (ch.includes('chat')) return { cls: 'chat', icon: 'chat' };
+            if (ch.includes('sip') || ch.includes('phone')) return { cls: 'phone', icon: 'phone_in_talk' };
+            return { cls: 'web', icon: 'language' };
+        }
+
+        function _studioRelativeTime(date) {
+            const diff = Math.max(0, (Date.now() - date.getTime()) / 1000);
+            if (diff < 60) return 'just now';
+            if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+            if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+            if (diff < 86400*7) return `${Math.floor(diff/86400)}d ago`;
+            return date.toLocaleDateString();
         }
 
 
@@ -3953,17 +3967,17 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         let currentStudioLogs = [];
-        async function loadStudioLogs(agentId) {
+        async function loadStudioLogs(agentId, force) {
             if (!agentId) {
                 currentStudioLogs = [];
                 renderStudioLogStats([]);
                 setStudioLogsEmpty('Save this agent to start collecting recent calls.');
                 return;
             }
-            const tbody = document.querySelector('#studio-call-log-table tbody');
-            if (!tbody) return;
+            const list = document.getElementById('studio-call-log-list');
+            if (!list) return;
             setStudioLogsLoading();
-            
+
             try {
                 const token = await getToken();
                 const resp = await fetch(`/api/agents/${agentId}/logs`, {
@@ -3974,34 +3988,51 @@ document.addEventListener('DOMContentLoaded', function() {
                 const logs = data.logs || [];
                 currentStudioLogs = logs;
                 renderStudioLogStats(logs);
-                
-                if (!logs || logs.length === 0) {
-                    setStudioLogsEmpty('No calls found for this agent.');
+
+                if (!logs.length) {
+                    setStudioLogsEmpty('No calls found for this agent yet. Place a test call to see it here.');
                     return;
                 }
-                
-                tbody.innerHTML = logs.map((l, idx) => {
-                    const date = getStudioLogDate(l).toLocaleString();
+
+                list.innerHTML = logs.map((l, idx) => {
+                    const dateObj = getStudioLogDate(l);
                     const sentiment = getStudioSentiment(l);
-                    const dur = l.duration || 0;
-                    const summary = l.summary || l.analysis || 'Completed';
-                    
+                    const dur = Number(l.duration) || 0;
+                    const summary = l.summary || l.analysis || 'Call completed.';
+                    const ok = studioLogSucceeded(l);
+                    const ch = _studioChannelMeta(l);
+                    const callId = (l.call_id || l.id || '').toString().slice(0, 12);
+                    const model = l.model || '';
+                    const sentClass = sentiment.className === 'sentiment-pos' ? 'kt-pill-pos'
+                                    : sentiment.className === 'sentiment-neg' ? 'kt-pill-neg' : 'kt-pill-neu';
+                    const sentIcon = sentiment.className === 'sentiment-pos' ? 'sentiment_satisfied'
+                                   : sentiment.className === 'sentiment-neg' ? 'sentiment_dissatisfied' : 'sentiment_neutral';
                     return `
-                        <tr>
-                            <td>${date}</td>
-                            <td>${formatStudioDuration(dur)}</td>
-                            <td>
-                                <span class="sentiment-badge ${sentiment.className}">${sentiment.label.toUpperCase()}</span>
-                            </td>
-                            <td style="color: var(--omni-text-muted); max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(summary)}</td>
-                            <td style="text-align: right;"><button class="omni-btn-outline" onclick="viewCallIntelligence(${idx})" style="padding: 4px 10px; font-size: 0.75rem;">View</button></td>
-                        </tr>
+                        <div class="kt-call-row" onclick="viewCallIntelligence(${idx})">
+                            <div class="kt-call-avatar ${ch.cls}"><span class="material-icons-round">${ch.icon}</span></div>
+                            <div class="kt-call-meta">
+                                <div class="kt-call-summary">${esc(summary)}</div>
+                                <div class="kt-call-pills">
+                                    <span class="kt-pill ${sentClass}"><span class="material-icons-round">${sentIcon}</span>${sentiment.label}</span>
+                                    <span class="kt-pill ${ok ? 'kt-pill-status-ok' : 'kt-pill-status-fail'}">${ok ? 'Completed' : (l.status || 'Failed')}</span>
+                                    ${model ? `<span class="kt-pill kt-pill-model">${esc(model)}</span>` : ''}
+                                    ${callId ? `<span class="kt-call-id">#${esc(callId)}</span>` : ''}
+                                </div>
+                            </div>
+                            <div class="kt-call-duration">${formatStudioDuration(dur)}</div>
+                            <div class="kt-call-time">${esc(_studioRelativeTime(dateObj))}</div>
+                            <div class="kt-call-actions">
+                                <button class="kt-icon-btn" title="View details" onclick="event.stopPropagation(); viewCallIntelligence(${idx})">
+                                    <span class="material-icons-round">visibility</span>
+                                </button>
+                            </div>
+                        </div>
                     `;
                 }).join('');
             } catch (e) {
                 console.error('Failed to load logs', e);
                 renderStudioLogStats([]);
-                setStudioLogsEmpty('History unavailable.');
+                setStudioLogsEmpty('History unavailable. Please retry.');
             }
         }
 

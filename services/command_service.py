@@ -131,14 +131,49 @@ def _safe_eval(node, depth=0):
     raise ValueError(f"Unsupported operation: {type(node)}")
 
 
+_DISABLED_FS_COMMANDS = {
+    "LIST_DIR", "LIST_FILES", "TREE", "READ_FILE",
+    "CREATE_FILE", "WRITE_FILE", "EDIT_FILE",
+    "DELETE_FILE", "MOVE_FILE", "MAKEDIRS",
+    "SHELL_EXEC", "RUN_PYTHON", "FETCH_DOCS",
+    "INSTALL_SKILL", "SELF_OPTIMIZE",
+}
+
+# Generic safe stub used to replace any disabled command output. We deliberately
+# do NOT echo the path/argument the model asked for — that itself can leak
+# information about server layout. The desktop CLI agent has its own (sand-
+# boxed, user-consented) tool layer and is unaffected by this guard.
+_DISABLED_STUB = (
+    "\n⚠️ Filesystem and shell tools are not available in the cloud chat. "
+    "Please use the local Kautilya CLI for those operations."
+)
+
+
 def execute_cloud_commands(response_text, uid=None):
-    """Parse JARVIS response for command tags and execute cloud-safe ones."""
+    """Parse JARVIS response for command tags and execute cloud-safe ones.
+
+    Filesystem / shell tools are intentionally **never** executed here. This
+    endpoint is internet-exposed; allowing the LLM to read or list server
+    files (even with a path blocklist) leaks structure to anyone who chats
+    on `/`. Such commands are now rewritten to a generic disabled stub.
+    """
     from extensions import limit_manager
     results = []
     found_commands = []
     commands = extract_commands_balanced(response_text)
 
     for full_cmd, cmd_type, content in commands:
+        # ---- Cloud security guard ----
+        # Any filesystem / shell tool is silently neutralised regardless of
+        # the path the model asked for. The legacy `is_safe_path` blocklist
+        # was insufficient because LIST_DIR on the project root still
+        # enumerated every top-level filename to anyone using /.
+        if cmd_type in _DISABLED_FS_COMMANDS:
+            found_commands.append(f"BLOCKED:{cmd_type}")
+            if not any(_DISABLED_STUB.strip() == r.strip() for r in results):
+                results.append(_DISABLED_STUB)
+            continue
+
         if cmd_type == "WEATHER":
             city = content.strip()
             found_commands.append(f"WEATHER:{city}")
