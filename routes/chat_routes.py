@@ -86,6 +86,9 @@ def jarvis_stream():
                
     session_id = data.get('session_id') or form.get('session_id') or args.get('session_id', str(uuid.uuid4()))
     model = data.get('model') or form.get('model') or args.get('model', 'daily')
+    # Max Thinking toggle — enables reasoning_content streaming on pro/coder models.
+    _mt_raw = data.get('max_thinking', form.get('max_thinking', args.get('max_thinking', False)))
+    max_thinking = str(_mt_raw).lower() in ('1', 'true', 'yes', 'on')
     
     # Correctly handle files list
     files = []
@@ -177,7 +180,7 @@ def jarvis_stream():
     def stream():
         full_response = ""
         try:
-            gen = get_llm_response(conv['messages'], uid=uid, model=model, user_ip=client_ip)
+            gen = get_llm_response(conv['messages'], uid=uid, model=model, user_ip=client_ip, max_thinking=max_thinking)
             if gen is None:
                 yield f"data: {json.dumps({'chunk': 'Service temporarily unavailable.'})}\n\n"
                 return
