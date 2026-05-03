@@ -32,6 +32,12 @@ from routes.export_routes import export_bp
 from routes.static_routes import static_bp
 from routes.telephony_routes import telephony_bp
 from routes.webhooks_routes import webhooks_bp
+from routes.openai_compat_routes import openai_compat_bp
+from routes.background_routes import background_bp
+from routes.code_routes import code_bp
+from routes.research_routes import research_bp
+from routes.integrations_routes import integrations_bp
+from routes.embed_routes import embed_bp
 
 app = Flask(__name__, static_folder=STATIC_FOLDER)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24).hex())
@@ -50,6 +56,17 @@ app.register_blueprint(campaigns_bp)
 app.register_blueprint(export_bp)
 app.register_blueprint(telephony_bp)
 app.register_blueprint(webhooks_bp)
+app.register_blueprint(openai_compat_bp)
+app.register_blueprint(background_bp)
+app.register_blueprint(code_bp)
+app.register_blueprint(research_bp)
+app.register_blueprint(integrations_bp)
+app.register_blueprint(embed_bp)
+
+# CORS for /v1/* OpenAI-compatible endpoints (Cline/Continue/etc.)
+CORS(app, resources={r"/v1/*": {"origins": "*"}})
+# CORS for /embed/* so customer websites can embed the widget
+CORS(app, resources={r"/embed/*": {"origins": "*"}, r"/embed.js": {"origins": "*"}})
 
 # Global Security Headers
 @app.after_request

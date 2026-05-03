@@ -11,7 +11,7 @@ from config import GROQ_API_KEY, SERPAPI_API_KEY
 from services.llm_service import call_groq, call_nvidia
 
 
-def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=None, tool_choice=None):
+def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=None, tool_choice=None, max_thinking=False):
     """
     Agentic Loop: Thoughts -> Actions -> Observations -> Final Answer.
     Yields chunks of text OR special status JSONs.
@@ -106,11 +106,16 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         print(f"[Agent] Smart tokens: {max_tokens} (msg length: {len(last_user_msg)}, mode: {model_choice})")
 
         if model_choice == 'coder':
+            # Coder = DeepSeek-v4-Pro via NVIDIA NIM. Thinking toggle via `max_thinking`.
             response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
-                                       model='nvidia/nemotron-3-super-120b-a12b', tools=tools, tool_choice=tool_choice)
+                                       model='deepseek-ai/deepseek-v4-pro', tools=tools, tool_choice=tool_choice,
+                                       temperature=1.0, top_p=0.95, max_thinking=max_thinking)
         elif model_choice == 'pro':
-            response_gen = call_groq(current_messages, stream=True, model='deepseek-r1-distill-llama-70b',
-                                     temperature=0.6, tools=tools, tool_choice=tool_choice)
+            # Pro = Nemotron-3-Super-120B via NVIDIA NIM. Thinking toggle via `max_thinking`.
+            response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
+                                       model='nvidia/nemotron-3-super-120b-a12b', tools=tools, tool_choice=tool_choice,
+                                       temperature=1.0, top_p=0.95, max_thinking=max_thinking,
+                                       reasoning_budget=16384 if max_thinking else 1024)
         else:
             response_gen = call_groq(current_messages, stream=True, model='llama-3.3-70b-versatile',
                                      temperature=0.6, tools=tools, tool_choice=tool_choice)
@@ -273,8 +278,12 @@ def _perform_search(query):
     return "Observation: Search engines returned no results. Please try a different query."
 
 
-def get_llm_response(messages, uid=None, model="daily", user_ip=None, tools=None, tool_choice=None):
-    """Entry point for chat. Routes to fast-path or agent_loop."""
+def get_llm_response(messages, uid=None, model="daily", user_ip=None, tools=None, tool_choice=None, max_thinking=False):
+    """Entry point for chat. Routes to fast-path, orchestrator, or agent_loop."""
+    # Multi-agent auto-routing
+    if model == "auto":
+        from services.orchestrator_service import run as orchestrator_run
+        return orchestrator_run(messages, uid=uid, user_ip=user_ip, max_thinking=max_thinking)
     user_input_text = ""
     if messages and messages[-1]["role"] == "user":
         luc = messages[-1]["content"]
@@ -305,4 +314,4 @@ def get_llm_response(messages, uid=None, model="daily", user_ip=None, tools=None
     if "create" in lower_text and ("image" in lower_text or "picture" in lower_text or "drawing" in lower_text):
         messages.append({"role": "system", "content": "The user is requesting an image. You MUST include the [IMAGE: prompt] command in your response."})
 
-    return agent_loop(messages, uid, model_choice=model, user_ip=user_ip, tools=tools, tool_choice=tool_choice)
+    return agent_loop(messages, uid, model_choice=model, user_ip=user_ip, tools=tools, tool_choice=tool_choice, max_thinking=max_thinking)

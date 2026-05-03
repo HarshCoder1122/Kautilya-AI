@@ -148,7 +148,8 @@ def call_openrouter(messages, temperature=0.7, max_tokens=16384, stream=True, mo
 
 def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                 model="nvidia/nemotron-3-super-120b-a12b", tools=None, tool_choice=None,
-                expose_thinking=True):
+                expose_thinking=True, max_thinking=False, top_p=0.9,
+                reasoning_budget=None):
     """Call NVIDIA NIM API with tool support.
 
     Streaming protocol:
@@ -175,14 +176,23 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                 content = "\n".join(text_parts)
             clean_messages.append({"role": m["role"], "content": str(content)})
         payload = {"model": model, "messages": clean_messages, "temperature": temperature,
-                   "max_tokens": max_tokens, "top_p": 0.9, "stream": stream}
+                   "max_tokens": max_tokens, "top_p": top_p, "stream": stream}
         if tools:
             payload["tools"] = tools
         if tool_choice:
             payload["tool_choice"] = tool_choice
-        if "nemotron" in model.lower():
-            payload["chat_template_kwargs"] = {"enable_thinking": True}
-            payload["reasoning_budget"] = 1024
+        model_lower = model.lower()
+        # Nemotron uses `enable_thinking`; DeepSeek-v4 uses `thinking`.
+        if "nemotron" in model_lower:
+            payload["chat_template_kwargs"] = {"enable_thinking": bool(max_thinking)}
+            if max_thinking:
+                payload["reasoning_budget"] = reasoning_budget or 16384
+            else:
+                payload["reasoning_budget"] = reasoning_budget or 1024
+        elif "deepseek" in model_lower:
+            payload["chat_template_kwargs"] = {"thinking": bool(max_thinking)}
+            if max_thinking and reasoning_budget:
+                payload["reasoning_budget"] = reasoning_budget
         resp = requests.post(
             "https://integrate.api.nvidia.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {NVIDIA_API_KEY}",

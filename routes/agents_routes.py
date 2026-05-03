@@ -130,6 +130,20 @@ def api_agent_list():
         return jsonify({"error": str(e)}), 500
 
 
+@agents_bp.route('/api/agents/<agent_id>/update', methods=['POST'])
+def api_agent_update_alias(agent_id):
+    """Dashboard-compat alias for PUT /api/agents/<id>."""
+    request.environ['REQUEST_METHOD'] = 'PUT'
+    return api_agent_detail(agent_id)
+
+
+@agents_bp.route('/api/agents/<agent_id>/delete', methods=['POST'])
+def api_agent_delete_alias(agent_id):
+    """Dashboard-compat alias for DELETE /api/agents/<id>."""
+    request.environ['REQUEST_METHOD'] = 'DELETE'
+    return api_agent_delete(agent_id)
+
+
 @agents_bp.route('/api/agents/<agent_id>', methods=['GET', 'PUT'])
 def api_agent_detail(agent_id):
     from extensions import db

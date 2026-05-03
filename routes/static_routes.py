@@ -56,6 +56,19 @@ def serve_playground():
     return send_from_directory(STATIC_FOLDER, 'playground.html')
 
 
+@static_bp.route('/docs')
+def serve_docs():
+    """Serve the developer docs page (with Copy-for-AI button)."""
+    return send_from_directory(STATIC_FOLDER, 'docs.html')
+
+
+@static_bp.route('/PROJECT_DOCUMENTATION.md')
+def serve_docs_md():
+    """Serve the raw markdown so the /docs page can render it."""
+    from config import BASE_DIR
+    return send_from_directory(BASE_DIR, 'PROJECT_DOCUMENTATION.md', mimetype='text/markdown')
+
+
 @static_bp.route('/favicon.ico')
 def favicon():
     """Serve favicon."""

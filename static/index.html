@@ -1,64 +1,405 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"><title>Kautilya AI - Advanced AI Assistant | RevealIQ</title><meta name="description"
-        content="Kautilya AI is a strategic, cloud-based AI assistant powered by advanced LLMs. Built by RevealIQ with an Indian Soul, it offers deep reasoning, web search, and intelligent chat."><meta name="keywords"
-        content="Kautilya AI, AI Assistant, Kautilya Chat, RevealIQ, ChatGPT alternative, Gemini alternative, Indian AI, smart chatbot, cloud AI"><meta property="og:type" content="website"><meta property="og:url" content="https://ai.revealiq.in/"><meta property="og:title" content="Kautilya AI - Advanced AI Assistant | RevealIQ"><meta property="og:description"
-        content="Strategic Intelligence, Indian Soul. A powerful cloud AI assistant by RevealIQ with real-time web search and logical reasoning."><meta property="og:image" content="https://ai.revealiq.in/static/kautilya_logo.png"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:url" content="https://ai.revealiq.in/"><meta name="twitter:title" content="Kautilya AI - Advanced AI Assistant"><meta name="twitter:description"
-        content="Strategic Intelligence, Indian Soul. Experience the new cloud AI assistant by RevealIQ."><meta name="twitter:image" content="https://ai.revealiq.in/static/kautilya_logo.png"><meta name="theme-color" content="#131314"><link rel="manifest" href="/static/manifest.json"><link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/thoughts.css"><link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet"><script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script><script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script><link rel="stylesheet"
-        href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"><script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"><script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script><script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script><script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script><script src="/static/livekit-voice.js"></script><script src="https://checkout.razorpay.com/v1/checkout.js"></script></head><body><div class="splash-screen" id="splashScreen"><div class="splash-logo-container"><div class="splash-ring"></div><div class="splash-ring splash-ring-2"></div><div class="splash-ring splash-ring-3"></div><img src="/static/kautilya_logo.png" alt="KAUTILYA AI" class="splash-logo"></div><div class="splash-text">K.A.U.T.I.L.Y.A.</div><div class="splash-subtitle">Knowledge-driven Autonomous Utility for Tactical Intelligence, Learning & Yield
-            Advancement</div></div><aside class="app-sidebar" id="appSidebar"><div class="sidebar-header"><div class="sidebar-logo-container" id="sidebarEmoji"><img src="/static/kautilya_logo.png" alt="KAUTILYA AI" class="sidebar-brand-logo"></div></div><button class="new-chat-btn" id="newChatBtn"><span class="material-icons-round">add</span>
-            New Chat
-        </button><div class="recent-chats-label">Recent</div><div class="recent-list" id="recentList"></div><div class="sidebar-footer"><button class="icon-btn" id="loginBtn" title="Sign In"><span class="material-icons-round">account_circle</span><span class="login-label">Sign In</span></button><div class="user-profile-section" id="sidebarProfile" style="display: none;"><img src="https://lh3.googleusercontent.com/a/default-user" alt="User" class="sidebar-avatar"
-                    id="sidebarAvatarImg"><div class="sidebar-user-info"><span class="sidebar-username" id="sidebarUsername">User</span><span class="sidebar-status">Free Plan</span></div><button class="sidebar-settings-btn" id="openSettingsBtn" title="Settings"><span class="material-icons-round">settings</span></button></div></div></aside><div class="main-layout"><header class="app-header"><button class="menu-btn" id="toggleSidebar"><span class="material-icons-round">menu</span></button><div class="brand"><div class="logo-anim-wrapper"><div class="logo-ring"></div><div class="logo-ring ring-2"></div><img src="/static/kautilya_logo.png" alt="KAUTILYA AI Logo" class="header-logo"></div>
-                KAUTILYA
-            </div><div class="header-actions"><div class="profile-dropdown-wrapper" id="profileWrapper"><div class="user-badge" id="userAvatar" style="display:none;"><span class="material-icons-round">account_circle</span></div><div class="profile-dropdown" id="profileDropdown"><div class="dropdown-user-info" id="dropdownUserInfo"><div class="dropdown-avatar" id="dropdownAvatar"><span class="material-icons-round">account_circle</span></div><div class="dropdown-user-details"><div class="dropdown-user-name" id="dropdownUserName">Guest</div><div class="dropdown-user-email" id="dropdownUserEmail"></div></div></div><div class="dropdown-divider"></div><button class="dropdown-item" id="dropdownMemory"><span class="material-icons-round">psychology</span><span>My Memory</span><span class="dropdown-badge" id="memoryCount">0</span></button><button class="dropdown-item" id="dropdownClearMemory"><span class="material-icons-round">delete_sweep</span><span>Clear Memory</span></button><div class="dropdown-divider"></div><button class="dropdown-item" id="dropdownFAQ"><span class="material-icons-round">help_outline</span><span>FAQs</span></button><button class="dropdown-item" id="dropdownTerms"><span class="material-icons-round">description</span><span>Terms & Conditions</span></button><button class="dropdown-item" id="dropdownPrivacy"><span class="material-icons-round">shield</span><span>Privacy Policy</span></button><div class="dropdown-divider"></div><div class="dropdown-app-info"><span class="material-icons-round">info</span>
-                            KAUTILYA AI v2.0 &middot; by RevealIQ
-                        </div><div class="dropdown-divider"></div><button class="dropdown-item dropdown-signout" id="dropdownSignOut"><span class="material-icons-round">logout</span><span>Sign Out</span></button></div></div></div></header><div class="info-modal-overlay" id="infoModalOverlay"><div class="info-modal"><div class="info-modal-header"><h2 id="infoModalTitle">Information</h2><button class="info-modal-close" id="infoModalClose"><span class="material-icons-round">close</span></button></div><div class="info-modal-body" id="infoModalBody"></div></div></div><main class="chat-container" id="chatHistory"><div class="welcome-screen" id="welcomeScreen"><div class="greeting-header"><span class="greeting-text">Hello there</span></div><h1 class="welcome-title">How can I help you today?</h1><div class="suggestion-chips"><button class="chip" data-prompt="Create an image of a cyberpunk city"><span class="material-icons-round chip-icon">image</span>
-                        Create image
-                    </button><button class="chip" data-prompt="What is the latest cricket score?"><span class="material-icons-round chip-icon">sports_cricket</span>
-                        Explore cricket
-                    </button><button class="chip" data-prompt="Write a poem about space"><span class="material-icons-round chip-icon">edit</span>
-                        Write anything
-                    </button><button class="chip" data-prompt="Tell me a fun fact to boost my day"><span class="material-icons-round chip-icon">sentiment_satisfied</span>
-                        Boost my day
-                    </button><button class="chip" data-prompt="Explain quantum physics like I'm 5"><span class="material-icons-round chip-icon">school</span>
-                        Help me learn
-                    </button></div></div></main><section class="input-area"><div class="input-wrapper"><input type="file" id="fileInput" multiple hidden accept="image/*,audio/*,.pdf,.doc,.docx,.txt"><div class="attach-menu" id="attachMenu" style="display: none;"><button class="attach-option" data-type="image"><span class="material-icons-round" style="color:#4caf50">image</span>
-                        Image
-                    </button><button class="attach-option" data-type="file"><span class="material-icons-round" style="color:#2196f3">description</span>
-                        File
-                    </button></div><div class="file-preview-area" id="filePreviewArea" style="display: none;"></div><div class="input-row"><button class="icon-btn-input" id="attachBtn" title="Add Attachment"><span class="material-icons-round">add</span></button><textarea class="text-input" id="commandInput" placeholder="Ask anything..." rows="1"
-                        autocomplete="off"></textarea><div class="input-actions"><select id="modelSelector" class="model-selector" title="Select Model"><option value="daily">Daily</option><option value="pro">Pro</option><option value="coder">Coder</option></select><button class="voice-mode-trigger" id="voiceModeTrigger" title="Start Live Voice"><span class="material-icons-round">mic</span></button><button class="send-btn" id="submitCommand"><span class="material-icons-round">send</span></button></div></div></div></section></div><aside class="artifact-panel" id="artifactPanel"><div class="artifact-header"><div class="artifact-title-area"><span class="material-icons-round artifact-type-icon">code</span><span class="artifact-title" id="artifactTitle">Preview</span></div><div class="artifact-actions"><button class="artifact-action-btn" id="artifactCopyBtn" title="Copy Code"><span class="material-icons-round">content_copy</span></button><button class="artifact-action-btn" id="artifactDownloadBtn" title="Download"><span class="material-icons-round">download</span></button><button class="artifact-action-btn artifact-close-btn" id="artifactCloseBtn" title="Close"><span class="material-icons-round">close</span></button></div></div><div class="artifact-tabs"><button class="artifact-tab active" data-tab="preview" id="artifactTabPreview"><span class="material-icons-round" style="font-size:16px;">visibility</span> Preview
-            </button><button class="artifact-tab" data-tab="code" id="artifactTabCode"><span class="material-icons-round" style="font-size:16px;">code</span> Code
-            </button></div><div class="artifact-body"><iframe id="artifactPreviewFrame" class="artifact-preview-frame"
-                sandbox="allow-scripts allow-same-origin allow-modals allow-popups" title="Artifact Preview"></iframe><div id="artifactCodeView" class="artifact-code-view" style="display:none;"><pre><code id="artifactCodeContent"></code></pre></div></div></aside><div class="login-modal-overlay" id="loginModal"><div class="login-modal"><button class="login-close" id="closeLoginModal"><span class="material-icons-round">close</span></button><div class="login-header"><img src="/static/kautilya_logo.png" alt="KAUTILYA AI" class="login-logo"><h2>Sign in to KAUTILYA AI</h2><p class="login-subtitle">Save your conversations across devices</p></div><div class="login-body"><button class="google-signin-btn" id="googleSignIn"><svg width="20" height="20" viewBox="0 0 48 48"><path fill="#EA4335"
-                            d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" /><path fill="#4285F4"
-                            d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" /><path fill="#FBBC05"
-                            d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" /><path fill="#34A853"
-                            d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" /></svg>
-                    Continue with Google
-                </button><div class="login-divider"><span>or</span></div><input type="email" class="login-input" id="loginEmail" placeholder="Email address"><input type="password" class="login-input" id="loginPassword" placeholder="Password"><button class="login-submit-btn" id="loginSubmit">Sign In</button><p class="login-toggle">Don't have an account? <a href="#" id="toggleSignUp">Sign Up</a></p></div><p class="login-optional">Sign-in is optional. You can use KAUTILYA AI without an account.</p></div></div><div class="voice-overlay" id="voiceOverlay"><div class="voice-status" id="voiceStatus">Listening...</div><div class="waveform" id="waveform"></div><div class="voice-controls"><button class="v-btn btn-mic-toggle" id="voiceMuteBtn"><span class="material-icons-round">mic</span></button><button class="v-btn btn-end" id="voiceEndBtn"><span class="material-icons-round">close</span></button></div></div><div class="settings-modal-overlay" id="settingsModal"><div class="settings-modal"><button class="settings-close" id="closeSettingsModal"><span class="material-icons-round">close</span></button><div class="settings-layout"><div class="settings-sidebar"><h2 class="settings-title">Settings</h2><nav class="settings-nav"><button class="settings-tab active" data-target="settings-general">General</button><button class="settings-tab" data-target="settings-memory">Memory</button><button class="settings-tab" data-target="settings-account">Account</button><button class="settings-tab" data-target="settings-appearance">Appearance</button><button class="settings-tab" data-target="settings-voice">Voice</button><button class="settings-tab" data-target="settings-system">System</button></nav></div><div class="settings-content-area"><div class="settings-section active" id="settings-general"><div class="settings-group"><h3>Profile</h3><div class="settings-row split"><div class="setting-item expanded"><label class="setting-label">Full name</label><div class="input-with-avatar"><div class="input-avatar-badge" id="settingsAvatarBadge">HV</div><input type="text" class="setting-input sleek" id="settingDisplayName" placeholder="e.g. Harsh Vardhan Sharma"></div></div><div class="setting-item expanded"><label class="setting-label">What should Kautilya call you?</label><input type="text" class="setting-input sleek" id="settingPreferredName" placeholder="e.g. Harsh"></div></div><div class="setting-item"><label class="setting-label">What best describes your work?</label><div class="select-wrapper"><select class="setting-select sleek" id="settingWorkFunction"><option value="" disabled selected>Select your work function</option><option value="engineering">Software Engineering</option><option value="data">Data Science & AI</option><option value="design">Design</option><option value="product">Product Management</option><option value="student">Student / Research</option><option value="other">Other</option></select><span class="material-icons-round select-chevron">expand_more</span></div></div><div class="setting-item"><label class="setting-label">What <span>personal preferences</span> should Kautilya consider in responses?</label><p class="setting-description">Your preferences will apply to all conversations, within Kautilya's guidelines.</p><textarea class="setting-textarea sleek" id="settingPreferences" placeholder="e.g. when learning new concepts, I find analogies particularly helpful" rows="4"></textarea></div></div><div class="settings-divider"></div><div class="settings-group"><h3>Notifications</h3><div class="setting-item toggle-row"><div class="toggle-info"><div class="toggle-title">Response completions</div><div class="toggle-desc">Get notified when Kautilya has finished a response. Most useful for long-running tasks like tool calls and Research.</div></div><label class="toggle-switch sleek-switch"><input type="checkbox" id="settingNotifyResponse"><span class="slider round"></span></label></div></div><div class="settings-footer"><button class="settings-save-btn" id="saveSettingsBtn">Save Changes</button></div></div><div class="settings-section" id="settings-memory"><div class="settings-group"><div class="memory-sync-header"><span class="material-icons-round memory-header-icon">auto_awesome</span><div><h3>Sync External AI Memory</h3><p class="setting-description">Consolidate knowledge from ChatGPT, Claude, and others into Kautilya.</p></div></div><div class="memory-step-card"><div class="step-badge">1</div><div class="step-content"><h4 class="step-title">Get the Extraction Prompt</h4><p class="setting-description">Copy this prompt and paste it into your other AI assistant to extract your shared memory.</p><div class="prompt-box-wrapper"><textarea class="setting-textarea sleek prompt-textarea" id="externalAiPrompt" readonly rows="2"></textarea><button class="icon-btn-sleek" id="copyMemoryPromptBtn" title="Copy Prompt"><span class="material-icons-round">content_copy</span></button></div></div></div><div class="memory-step-card"><div class="step-badge">2</div><div class="step-content"><h4 class="step-title">Paste & Sync Output</h4><p class="setting-description">Paste the response from the other AI here. Kautilya will analyze and merge it.</p><textarea class="setting-textarea sleek sync-textarea" id="externalAiData" placeholder="Paste text here..." rows="4"></textarea><div class="sync-action-row"><button class="sync-btn-premium" id="syncMemoryBtn"><span class="material-icons-round">sync</span>
-                                            Sync Memories
-                                        </button></div></div></div></div></div><div class="settings-section" id="settings-voice"><div class="settings-group"><h3>Voice Configuration</h3><div class="setting-item toggle-row"><div class="toggle-info"><div class="toggle-title">Web Output Voice</div><div class="toggle-desc">Enable spoken text returns for conversational flow.</div></div><label class="toggle-switch sleek-switch"><input type="checkbox" id="settingTTS" checked><span class="slider round"></span></label></div></div></div><div class="settings-section" id="settings-appearance"><div class="settings-group"><h3>Theme</h3><div class="setting-item"><label class="setting-label">Interface Theme</label><div class="select-wrapper"><select class="setting-select sleek" id="settingTheme"><option value="dark">Dark (Default)</option><option value="light">Light</option></select><span class="material-icons-round select-chevron">expand_more</span></div></div></div></div><div class="settings-section" id="settings-account"><div class="settings-group"><h3>Account Information</h3><div class="account-details"><div class="account-row"><span class="account-label">Email</span><span class="account-value" id="accountEmail">Loading...</span></div><div class="account-row"><span class="account-label">Login Provider</span><span class="account-value" id="accountProvider">Loading...</span></div></div></div><div class="settings-divider"></div><div class="settings-group" id="settings-pro-card" style="display: none;"><h3>Premium Access</h3><div class="pro-upgrade-card"><div class="pro-card-content"><h4><span class="material-icons-round">workspace_premium</span> Upgrade to PRO</h4><p>Get unlimited access to advanced models, image generation, and priority support.</p><ul class="pro-features"><li><span class="material-icons-round">check_circle</span> Unlimited Pro Models</li><li><span class="material-icons-round">check_circle</span> 50+ AI Images/day</li><li><span class="material-icons-round">check_circle</span> Early access to features</li></ul></div><button class="pro-upgrade-btn-sleek" id="upgradeToProBtn"><span class="material-icons-round">bolt</span> Upgrade for ₹599/mo</button></div></div><div class="settings-divider" id="settings-pro-divider" style="display: none;"></div><div class="settings-group"><h3>Active Sessions & Devices</h3><p class="setting-description">Devices currently logged into your Kautilya AI account.</p><div class="session-list" id="sessionList"><div class="loading-spinner-small"></div></div></div></div><div class="settings-section" id="settings-system"><div class="settings-group"><h3>System Connections</h3><p class="setting-description" style="margin-top: 20px;">Manage connected models and extensions.</p></div></div></div></div></div></div><audio id="audioPlayer" hidden></audio><script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script><script>
-        // Initialize Firebase
-        const firebaseConfig = {
-            apiKey: "REDACTED_FIREBASE_WEB_KEY",
-            authDomain: "ai.revealiq.in",
-            projectId: "jarvis-a6e18",
-            storageBucket: "jarvis-a6e18.firebasestorage.app",
-            messagingSenderId: "872168972424",
-            appId: "1:872168972424:web:2b0b9b82922860a52c3f3d",
-            measurementId: "G-H2FB26YQ9R"
-        };
-        firebase.initializeApp(firebaseConfig);
-    </script><div class="image-modal-overlay" id="imageViewerModal"><div class="image-modal-content"><button class="image-modal-close" id="closeImageViewer"><span class="material-icons-round">close</span></button><img src="" alt="Fullscreen Image" class="image-modal-img" id="fullscreenImage"><div class="image-modal-actions" id="imageModalActions"><button class="image-action-btn" id="imgDownloadBtn" title="Download"><span class="material-icons-round">download</span><span class="action-label">Download</span></button><button class="image-action-btn" id="imgShareBtn" title="Share"><span class="material-icons-round">share</span><span class="action-label">Share</span></button><button class="image-action-btn" id="imgCopyBtn" title="Copy to Clipboard"><span class="material-icons-round">content_copy</span><span class="action-label">Copy</span></button></div></div></div><script src="/static/script.js"></script><script>
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('/static/sw.js')
-                    .then(registration => {
-                        console.log('ServiceWorker registration successful with scope: ', registration.scope);
-                    })
-                    .catch(err => {
-                        console.log('ServiceWorker registration failed: ', err);
-                    });
-            });
-        }
-    </script></body></html>
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Kautilya AI — Strategic Intelligence</title>
+  <meta name="description" content="Kautilya AI — Frontier LLM with Indian soul. DeepSeek-V4 Coder, Nemotron-3 Pro, Claude-grade UX. Built by RevealIQ." />
+  <meta name="theme-color" content="#0B0B10" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <link rel="manifest" href="/static/manifest.json" />
+  <link rel="icon" href="/static/favicon.ico" />
+  <link rel="apple-touch-icon" href="/static/icon-192.png" />
+
+  <!-- Fonts + Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet" />
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="/static/style-premium.css?v=3" />
+
+  <!-- Markdown + Sanitize + Highlight + Math -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+</head>
+<body>
+
+  <!-- Splash -->
+  <div class="splash-screen" id="splashScreen">
+    <div class="splash-logo-container">
+      <div class="splash-ring"></div>
+      <div class="splash-ring splash-ring-2"></div>
+      <div class="splash-ring splash-ring-3"></div>
+      <img src="/static/kautilya_logo.png" alt="Kautilya" class="splash-logo" />
+    </div>
+    <div class="splash-text">KAUTILYA</div>
+    <div class="splash-subtitle">Strategic Intelligence · Cloud Edition</div>
+  </div>
+
+  <!-- App -->
+  <div class="app-container" id="appContainer">
+    <div class="sidebar-scrim" id="sidebarScrim"></div>
+
+    <!-- Sidebar -->
+    <aside class="app-sidebar" id="appSidebar">
+      <div class="sidebar-header">
+        <img src="/static/kautilya_logo.png" alt="" class="sidebar-logo" />
+        <span class="sidebar-brand">Kautilya</span>
+      </div>
+
+      <button class="new-chat-btn" id="newChatBtn">
+        <span class="material-icons-round">edit_square</span>
+        New chat
+      </button>
+
+      <div class="sidebar-section-label">Recent</div>
+      <div class="sidebar-scroll">
+        <div class="recent-list" id="recentList"></div>
+      </div>
+
+      <div class="sidebar-footer">
+        <!-- Logged in user menu -->
+        <div class="user-menu" id="userMenu" style="display:none;">
+          <div class="user-profile-section" id="sidebarProfile" title="Click for settings">
+            <img src="https://lh3.googleusercontent.com/a/default-user" alt="" class="sidebar-avatar" id="sidebarAvatarImg" />
+            <div class="sidebar-user-info">
+              <span class="sidebar-username" id="sidebarUsername">User</span>
+              <span class="sidebar-status" id="sidebarPlan">Free Plan</span>
+            </div>
+            <span class="material-icons-round" style="color: var(--text-tertiary); font-size: 18px;">expand_more</span>
+          </div>
+          <div class="user-dropdown" id="userDropdown">
+            <button class="dropdown-item" id="settingsBtn">
+              <span class="material-icons-round">settings</span> Settings
+            </button>
+            <button class="dropdown-item" id="logoutBtn">
+              <span class="material-icons-round">logout</span> Sign Out
+            </button>
+          </div>
+        </div>
+        <!-- Login button (shown when logged out) -->
+        <button class="sidebar-login-btn" id="loginBtn" style="display:flex;">
+          <span class="material-icons-round">login</span>
+          Sign In
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main-content">
+      <header class="app-header">
+        <button class="icon-btn" id="toggleSidebar" title="Toggle sidebar">
+          <span class="material-icons-round">menu</span>
+        </button>
+        <div class="brand-title">
+          <img src="/static/kautilya_logo.png" alt="" />
+          Kautilya
+        </div>
+
+        <div class="header-controls">
+          <select class="pill-select" id="modelSelector" title="Model">
+            <option value="auto">🪄 Auto (multi-agent)</option>
+            <option value="daily">⚡ Daily</option>
+            <option value="pro">💎 Pro</option>
+            <option value="coder">💻 Coder</option>
+          </select>
+          <button class="icon-btn" id="themeToggle" title="Toggle theme">
+            <span class="material-icons-round" id="themeIcon">light_mode</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- Chat -->
+      <div class="chat-container" id="chatContainer">
+        <div class="chat-content" id="chatContent">
+          <!-- Welcome screen (hidden once a message is sent) -->
+          <div class="welcome-screen" id="welcomeScreen">
+            <img src="/static/kautilya_logo.png" alt="" class="welcome-logo" />
+            <h1 class="welcome-title">Kautilya AI</h1>
+            <p class="welcome-subtitle">Your strategic copilot — code, research, reason, deliver.</p>
+
+            <div class="feature-grid" id="featureGrid">
+              <div class="feature-card" data-prompt="Do deep research on India's fintech sector in 2026. Cite sources.">
+                <div class="feature-icon"><span class="material-icons-round">travel_explore</span></div>
+                <div class="feature-title">Deep Research</div>
+                <div class="feature-desc">Perplexity-grade multi-source research with citations — tuned for Indian business context.</div>
+              </div>
+              <div class="feature-card" data-prompt="Build a production-ready Python FastAPI service for a to-do list with JWT auth.">
+                <div class="feature-icon"><span class="material-icons-round">terminal</span></div>
+                <div class="feature-title">Frontier Coder</div>
+                <div class="feature-desc">DeepSeek-V4 Pro for full-stack code. Compatible with Cline, Continue, Cursor.</div>
+              </div>
+              <div class="feature-card" data-prompt="Analyze this quarter's sales CSV and show monthly revenue trends.">
+                <div class="feature-icon"><span class="material-icons-round">auto_graph</span></div>
+                <div class="feature-title">Data Intelligence</div>
+                <div class="feature-desc">Upload CSV / PDF / image — get charts, insights, and executive summaries.</div>
+              </div>
+              <div class="feature-card" data-prompt="Give me a strategic 90-day go-to-market plan for an Indian SaaS startup targeting SMEs.">
+                <div class="feature-icon"><span class="material-icons-round">insights</span></div>
+                <div class="feature-title">Chanakya Strategy</div>
+                <div class="feature-desc">Frameworks, decision matrices, risk analysis — culturally-rooted, brutally honest.</div>
+              </div>
+              <div class="feature-card" data-prompt="Design a premium landing page for a B2B AI voice product. Single HTML file.">
+                <div class="feature-icon"><span class="material-icons-round">palette</span></div>
+                <div class="feature-title">Artifacts</div>
+                <div class="feature-desc">Generate HTML pages, SVG graphics, diagrams — previewed live in a side panel.</div>
+              </div>
+              <div class="feature-card" data-prompt="Run a 2000-word research report in the background on EV battery startups in India. Deliver when done.">
+                <div class="feature-icon"><span class="material-icons-round">rocket_launch</span></div>
+                <div class="feature-title">Background Mode</div>
+                <div class="feature-desc">Kick off a heavy task, close the tab — we'll finish it and keep the result for you.</div>
+              </div>
+            </div>
+
+            <div class="suggestion-row">
+              <button class="chip" data-prompt="Explain transformers like I'm a smart 12-year-old"><span class="material-icons-round">school</span>Teach me</button>
+              <button class="chip" data-prompt="Debug this Python error: "><span class="material-icons-round">bug_report</span>Debug</button>
+              <button class="chip" data-prompt="What's the latest in AI news today?"><span class="material-icons-round">newspaper</span>Today's AI</button>
+              <button class="chip" data-prompt="Write a sharp 3-tweet thread on Indian AI ecosystem"><span class="material-icons-round">edit</span>Write</button>
+            </div>
+          </div>
+
+          <!-- Messages appended here -->
+        </div>
+      </div>
+
+      <!-- Attached files preview -->
+      <div class="attached-files" id="attachedFiles"></div>
+
+      <!-- Input area -->
+      <div class="input-area">
+        <div class="input-toolbar">
+          <button class="toolbar-btn" id="maxThinkingBtn" title="Enable extended reasoning (Pro/Coder only)">
+            <span class="material-icons-round">psychology</span>Max Thinking
+          </button>
+          <button class="toolbar-btn" id="researchBtn" title="Perplexity-style multi-source research">
+            <span class="material-icons-round">travel_explore</span>Research
+          </button>
+          <button class="toolbar-btn" id="backgroundBtn" title="Run this task in the background">
+            <span class="material-icons-round">rocket_launch</span>Background
+          </button>
+          <button class="toolbar-btn" id="voiceBtn" title="Voice input (coming soon)">
+            <span class="material-icons-round">mic</span>Voice
+          </button>
+        </div>
+        <div class="input-wrapper" id="inputWrapper">
+          <button class="attach-btn" id="attachBtn" title="Attach">
+            <span class="material-icons-round">add</span>
+          </button>
+          <textarea id="messageInput" class="text-input" placeholder="Ask Kautilya anything…" rows="1" autocomplete="off"></textarea>
+          <button class="send-btn" id="sendBtn" title="Send" disabled>
+            <span class="material-icons-round" id="sendIcon">arrow_upward</span>
+          </button>
+        </div>
+      </div>
+    </main>
+
+    <!-- Artifact side panel -->
+    <aside class="artifact-panel" id="artifactPanel">
+      <div class="artifact-header">
+        <div class="artifact-title-area">
+          <span class="material-icons-round">code</span>
+          <span id="artifactTitle">Preview</span>
+        </div>
+        <button class="modal-close" id="artifactCloseBtn"><span class="material-icons-round">close</span></button>
+      </div>
+      <div class="artifact-tabs">
+        <button class="artifact-tab active" data-tab="preview">Preview</button>
+        <button class="artifact-tab" data-tab="code">Code</button>
+      </div>
+      <div class="artifact-body">
+        <iframe id="artifactPreviewFrame" class="artifact-preview-frame" sandbox="allow-scripts allow-same-origin"></iframe>
+        <div id="artifactCodeView" class="artifact-code-view hidden"><pre><code id="artifactCodeContent"></code></pre></div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Background tasks panel launcher -->
+  <button class="bg-panel-launcher hidden" id="bgLauncher" title="Background tasks">
+    <span class="material-icons-round" style="font-size: 18px;">rocket_launch</span>
+    Background
+    <span class="count-badge" id="bgLauncherCount">0</span>
+  </button>
+
+  <!-- Background tasks panel -->
+  <div class="bg-panel" id="bgPanel">
+    <div class="bg-panel-head">
+      <span class="material-icons-round" style="color: var(--brand-primary); font-size: 20px;">rocket_launch</span>
+      Background Tasks
+      <span class="count-badge" id="bgPanelCount">0</span>
+      <button class="close" id="bgPanelClose"><span class="material-icons-round">close</span></button>
+    </div>
+    <div class="bg-panel-body" id="bgPanelBody">
+      <div style="padding: 20px; text-align: center; color: var(--text-tertiary); font-size: 12.5px;">No background tasks yet.</div>
+    </div>
+  </div>
+
+  <!-- Login Modal -->
+  <div class="modal-overlay" id="loginModal">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">Sign in to Kautilya</div>
+        <button class="modal-close" id="closeLoginModal"><span class="material-icons-round">close</span></button>
+      </div>
+      <div class="modal-body">
+        <button class="btn btn-secondary" id="googleSignIn" style="width: 100%; margin-bottom: 14px;">
+          <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+            <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+            <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+          </svg>
+          Continue with Google
+        </button>
+        <div style="text-align: center; color: var(--text-tertiary); font-size: 12px; margin: 10px 0 12px;">or use email</div>
+        <input type="email" class="setting-input" id="loginEmail" placeholder="Email" style="margin-bottom: 10px;" />
+        <input type="password" class="setting-input" id="loginPassword" placeholder="Password" style="margin-bottom: 14px;" />
+        <button class="btn btn-primary" id="loginSubmitBtn" style="width: 100%;">Sign In</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div class="modal-overlay" id="settingsModal">
+    <div class="modal settings-modal">
+      <div class="modal-header">
+        <div class="modal-title">Settings</div>
+        <button class="modal-close" id="closeSettingsModal"><span class="material-icons-round">close</span></button>
+      </div>
+      <div class="settings-layout">
+        <div class="settings-sidebar">
+          <button class="settings-tab active" data-target="general">General</button>
+          <button class="settings-tab" data-target="profile">Profile</button>
+          <button class="settings-tab" data-target="memory">Memory</button>
+          <button class="settings-tab" data-target="keys">API Keys</button>
+        </div>
+        <div class="settings-content">
+          <div class="settings-section active" id="settings-general">
+            <div class="setting-item">
+              <label class="setting-label">Theme</label>
+              <p class="setting-description">Choose your preferred color scheme</p>
+              <select class="setting-input" id="themeSelect">
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+                <option value="system">System</option>
+              </select>
+            </div>
+            <div class="setting-item">
+              <label class="setting-label">Language</label>
+              <p class="setting-description">Preferred response language</p>
+              <select class="setting-input" id="languageSelect">
+                <option value="en">English</option>
+                <option value="hi">Hindi</option>
+                <option value="hinglish">Hinglish</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="settings-section" id="settings-profile">
+            <div class="setting-item">
+              <label class="setting-label">Display Name</label>
+              <p class="setting-description">How Kautilya addresses you</p>
+              <input type="text" class="setting-input" id="displayNameInput" placeholder="Your name" />
+            </div>
+            <div class="setting-item">
+              <label class="setting-label">Personal Preferences</label>
+              <p class="setting-description">Things Kautilya should consider in its responses</p>
+              <textarea class="setting-input" id="preferencesInput" rows="4" placeholder="e.g. I prefer concise answers, I'm a Python developer"></textarea>
+            </div>
+            <button class="btn btn-primary" id="saveProfileBtn">Save Profile</button>
+          </div>
+
+          <div class="settings-section" id="settings-memory">
+            <div class="setting-item">
+              <label class="setting-label">Conversation Memory</label>
+              <p class="setting-description">Clears all long-term memories Kautilya has learned about you.</p>
+              <button class="btn btn-secondary" id="clearMemoryBtn">Clear Memory</button>
+            </div>
+          </div>
+
+          <div class="settings-section" id="settings-keys">
+            <div class="setting-item">
+              <label class="setting-label">Kautilya API Key</label>
+              <p class="setting-description">Use Kautilya inside <strong>Cline</strong>, <strong>Continue</strong>, <strong>Cursor</strong>, or any OpenAI-compatible tool.
+                Base URL: <code>/v1</code> &middot; Model: <code>kautilya-coder</code> or <code>kautilya-pro</code>.</p>
+              <div id="apiKeysContainer" style="margin-bottom: 10px;"></div>
+              <button class="btn btn-primary" id="createApiKeyBtn">Generate New Key</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Voice Call Panel (LiveKit powered) -->
+  <div class="voice-panel hidden" id="voicePanel">
+    <div class="voice-panel-head">
+      <span class="material-icons-round" style="color: var(--brand-primary); font-size: 20px;">mic</span>
+      Voice Call
+      <span class="voice-status" id="voiceStatus">Disconnected</span>
+      <button class="close" id="voicePanelClose"><span class="material-icons-round">close</span></button>
+    </div>
+    <div class="voice-panel-body">
+      <div class="voice-avatar-ring" id="voiceAvatarRing">
+        <img src="/static/kautilya_logo.png" alt="Kautilya" class="voice-avatar" />
+      </div>
+      <div class="voice-controls">
+        <button class="voice-btn" id="voiceMuteBtn" title="Mute/Unmute">
+          <span class="material-icons-round" id="voiceMuteIcon">mic</span>
+        </button>
+        <button class="voice-btn voice-end" id="voiceEndBtn" title="End call">
+          <span class="material-icons-round">call_end</span>
+        </button>
+      </div>
+      <div class="voice-hint" id="voiceHint">Tap microphone to start speaking with Kautilya</div>
+    </div>
+  </div>
+
+  <!-- Background task result modal -->
+  <div class="modal-overlay bg-task-modal" id="bgTaskModal">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title" id="bgTaskModalTitle">Background Task</div>
+        <button class="modal-close" id="bgTaskModalClose"><span class="material-icons-round">close</span></button>
+      </div>
+      <div class="bg-task-result msg-content" id="bgTaskModalBody"></div>
+    </div>
+  </div>
+
+  <!-- Hidden inputs -->
+  <input type="file" id="fileInput" multiple hidden accept="image/*,.pdf,.txt,.csv,.json,.py,.js,.ts,.tsx,.jsx,.html,.css,.md,.yaml,.yml" />
+  <audio id="audioPlayer" hidden></audio>
+
+  <!-- Toast host -->
+  <div class="toast-host" id="toastHost"></div>
+
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+  <script>
+    const firebaseConfig = {
+      apiKey: "REDACTED_FIREBASE_WEB_KEY",
+      authDomain: "ai.revealiq.in",
+      projectId: "jarvis-a6e18",
+      storageBucket: "jarvis-a6e18.firebasestorage.app",
+      messagingSenderId: "872168972424",
+      appId: "1:872168972424:web:2b0b9b82922860a52c3f3d"
+    };
+    firebase.initializeApp(firebaseConfig);
+  </script>
+
+  <!-- LiveKit Voice -->
+  <script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"></script>
+  <script src="/static/livekit-voice.js?v=3"></script>
+  <script src="/static/script-premium.js?v=3"></script>
+</body>
+</html>
