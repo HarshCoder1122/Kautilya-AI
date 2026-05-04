@@ -38,6 +38,7 @@ from routes.code_routes import code_bp
 from routes.research_routes import research_bp
 from routes.integrations_routes import integrations_bp
 from routes.embed_routes import embed_bp
+from routes.artifact_routes import artifact_bp
 
 app = Flask(__name__, static_folder=STATIC_FOLDER)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24).hex())
@@ -62,6 +63,7 @@ app.register_blueprint(code_bp)
 app.register_blueprint(research_bp)
 app.register_blueprint(integrations_bp)
 app.register_blueprint(embed_bp)
+app.register_blueprint(artifact_bp)
 
 # CORS for /v1/* OpenAI-compatible endpoints (Cline/Continue/etc.)
 CORS(app, resources={r"/v1/*": {"origins": "*"}})

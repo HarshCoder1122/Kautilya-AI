@@ -1,8 +1,8 @@
-const CACHE_NAME = 'kautilya-cloud-v1';
+const CACHE_NAME = 'kautilya-cloud-v3-premium';
 const urlsToCache = [
 '/',
-'/static/style.css',
-'/static/script.js',
+'/static/style-premium.css',
+'/static/script-premium.js',
 '/static/manifest.json',
 '/static/kautilya_logo.png',
 '/static/icon-192.png',

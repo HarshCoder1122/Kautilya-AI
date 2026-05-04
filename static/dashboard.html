@@ -3905,8 +3905,6 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('studio-agent-welcome').value = "";
             document.getElementById('studio-agent-lang').value = "hi-IN";
             document.getElementById('studio-tts-provider').value = "cartesia";
-            updateStudioVoices();
-            document.getElementById('studio-agent-voice').value = "shubh";
             document.getElementById('studio-agent-model').value = "kautilya-daily";
             document.getElementById('studio-agent-max-tokens').value = 4096;
             document.getElementById('studio-agent-telephony').value = "exotel";
@@ -3918,6 +3916,19 @@ document.addEventListener('DOMContentLoaded', function() {
             updateStudioTemp(0.7);
             renderStudioLogStats([]);
             setStudioLogsEmpty('Save this agent to start collecting recent calls.');
+            
+            // Populate voices and set default
+            updateStudioVoices();
+            const voiceSelect = document.getElementById('studio-agent-voice');
+            if (voiceSelect) {
+                // Force set to shubh as default for new agents
+                voiceSelect.value = "shubh";
+                // If shubh doesn't exist in the list, select first available
+                if (!voiceSelect.value) {
+                    voiceSelect.selectedIndex = 0;
+                }
+            }
+            
             document.getElementById('studioOverlay').classList.add('active');
             switchStudioTab('assistant', document.querySelector('.omni-tab[data-studio-tab="assistant"]'));
         }
@@ -4448,10 +4459,23 @@ document.addEventListener('DOMContentLoaded', function() {
             });
         }
 
-        function openStudioTest() {
+        async function openStudioTest() {
+            // If agent not saved yet, save it first
             if (!editingAgentId) {
-                alert("Please save your agent changes before testing.");
-                return;
+                const confirmSave = confirm("Save this agent first to test it?");
+                if (!confirmSave) return;
+                
+                // Save the agent first
+                await saveAgentStudio();
+                
+                // If save failed or still no ID, abort
+                if (!editingAgentId) {
+                    alert("Failed to save agent. Please check required fields (Name, Instructions) and try again.");
+                    return;
+                }
+                
+                // Refresh agents list so the new agent is available
+                await loadAgents(true);
             }
             openAgentChat(editingAgentId);
         }
