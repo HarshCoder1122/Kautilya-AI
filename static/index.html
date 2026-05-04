@@ -20,7 +20,24 @@
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet" />
 
   <!-- Styles -->
-  <link rel="stylesheet" href="/static/style-premium.css?v=3" />
+  <link rel="stylesheet" href="/static/style-premium.css?v=5" />
+
+  <!-- Force clear old service workers -->
+  <script>
+    // Unregister old service workers to fix mobile caching issue
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(registrations => {
+        registrations.forEach(reg => {
+          if (reg.scope.includes('kautilya') || reg.scope.includes('jarvis')) {
+            console.log('[SW] Unregistering old service worker:', reg.scope);
+            reg.unregister();
+          }
+        });
+      });
+      // Register new service worker
+      navigator.serviceWorker.register('/sw.js?v=5');
+    }
+  </script>
 
   <!-- Markdown + Sanitize + Highlight + Math -->
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -184,41 +201,79 @@
           <button class="toolbar-btn" id="researchBtn" title="Perplexity-style multi-source research">
             <span class="material-icons-round">travel_explore</span>Research
           </button>
-          <button class="toolbar-btn" id="backgroundBtn" title="Run this task in the background">
+          <button class="toolbar-btn" id="backgroundBtn" title="Run async — close tab and come back">
             <span class="material-icons-round">rocket_launch</span>Background
           </button>
-          <button class="toolbar-btn" id="voiceBtn" title="Voice input (coming soon)">
+          <div class="toolbar-divider"></div>
+          <button class="toolbar-btn artifact-quick-btn" data-artifact="excel" title="Generate Excel">
+            <span class="material-icons-round" style="color:#10B981;">table_view</span>Excel
+          </button>
+          <button class="toolbar-btn artifact-quick-btn" data-artifact="pdf" title="Generate PDF">
+            <span class="material-icons-round" style="color:#EF4444;">picture_as_pdf</span>PDF
+          </button>
+          <button class="toolbar-btn artifact-quick-btn" data-artifact="docx" title="Generate Word document">
+            <span class="material-icons-round" style="color:#3B82F6;">description</span>Doc
+          </button>
+          <button class="toolbar-btn artifact-quick-btn" data-artifact="chart" title="Generate chart/diagram">
+            <span class="material-icons-round" style="color:#F59E0B;">insert_chart</span>Chart
+          </button>
+          <button class="toolbar-btn" id="voiceBtn" title="Voice input">
             <span class="material-icons-round">mic</span>Voice
           </button>
         </div>
+
+        <!-- Slash command palette -->
+        <div class="slash-palette hidden" id="slashPalette">
+          <div class="slash-palette-hint">Quick actions</div>
+          <div class="slash-palette-list" id="slashPaletteList"></div>
+        </div>
+
         <div class="input-wrapper" id="inputWrapper">
-          <button class="attach-btn" id="attachBtn" title="Attach">
+          <button class="attach-btn" id="attachBtn" title="Attach files / images">
             <span class="material-icons-round">add</span>
           </button>
-          <textarea id="messageInput" class="text-input" placeholder="Ask Kautilya anything…" rows="1" autocomplete="off"></textarea>
+          <textarea id="messageInput" class="text-input" placeholder="Ask Kautilya anything… (try /excel, /pdf, /chart)" rows="1" autocomplete="off"></textarea>
           <button class="send-btn" id="sendBtn" title="Send" disabled>
             <span class="material-icons-round" id="sendIcon">arrow_upward</span>
           </button>
         </div>
+        <div class="input-hint">
+          <span class="hint-key">/</span> for commands · <span class="hint-key">⇧↵</span> new line · <span class="hint-key">↵</span> send
+        </div>
       </div>
     </main>
 
-    <!-- Artifact side panel -->
+    <!-- Artifact side panel (Claude-style multi-type) -->
     <aside class="artifact-panel" id="artifactPanel">
       <div class="artifact-header">
         <div class="artifact-title-area">
-          <span class="material-icons-round">code</span>
-          <span id="artifactTitle">Preview</span>
+          <span class="material-icons-round" id="artifactTypeIcon">code</span>
+          <div class="artifact-title-stack">
+            <span id="artifactTitle">Artifact</span>
+            <span class="artifact-type-badge" id="artifactTypeBadge">html</span>
+          </div>
         </div>
-        <button class="modal-close" id="artifactCloseBtn"><span class="material-icons-round">close</span></button>
+        <div class="artifact-actions">
+          <button class="icon-btn artifact-action-btn" id="artifactDownloadBtn" title="Download">
+            <span class="material-icons-round">download</span>
+          </button>
+          <button class="icon-btn artifact-action-btn" id="artifactCopyBtn" title="Copy">
+            <span class="material-icons-round">content_copy</span>
+          </button>
+          <button class="icon-btn artifact-action-btn" id="artifactOpenBtn" title="Open in new tab">
+            <span class="material-icons-round">open_in_new</span>
+          </button>
+          <button class="modal-close" id="artifactCloseBtn"><span class="material-icons-round">close</span></button>
+        </div>
       </div>
       <div class="artifact-tabs">
         <button class="artifact-tab active" data-tab="preview">Preview</button>
-        <button class="artifact-tab" data-tab="code">Code</button>
+        <button class="artifact-tab" data-tab="code">Source</button>
       </div>
       <div class="artifact-body">
         <iframe id="artifactPreviewFrame" class="artifact-preview-frame" sandbox="allow-scripts allow-same-origin"></iframe>
         <div id="artifactCodeView" class="artifact-code-view hidden"><pre><code id="artifactCodeContent"></code></pre></div>
+        <div id="artifactDocView" class="artifact-doc-view hidden"></div>
       </div>
     </aside>
   </div>
@@ -400,6 +455,6 @@
   <!-- LiveKit Voice -->
   <script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"></script>
   <script src="/static/livekit-voice.js?v=3"></script>
-  <script src="/static/script-premium.js?v=3"></script>
+  <script src="/static/script-premium.js?v=5"></script>
 </body>
 </html>

@@ -124,6 +124,72 @@ def get_user_account():
     return jsonify(account_info)
 
 
+@user_bp.route('/api/memory/clear', methods=['POST'])
+def clear_user_memory():
+    """Clear all user memories from Firestore."""
+    from extensions import db
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
+    if not db:
+        return jsonify({"error": "Database not available"}), 503
+    try:
+        # Clear memory collection
+        mem_ref = db.collection('users').document(uid).collection('memories')
+        batch = db.batch()
+        count = 0
+        for doc in mem_ref.limit(200).stream():
+            batch.delete(doc.reference)
+            count += 1
+        if count > 0:
+            batch.commit()
+        # Also clear conversation context memory if it exists
+        ctx_ref = db.collection('users').document(uid).collection('context_memory')
+        batch2 = db.batch()
+        for doc in ctx_ref.limit(200).stream():
+            batch2.delete(doc.reference)
+        batch2.commit()
+        return jsonify({"status": "ok", "message": f"Memory cleared ({count} items removed)"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@user_bp.route('/api/user/profile', methods=['GET', 'POST'])
+def user_profile():
+    """Get or save user profile (display name, preferences)."""
+    from extensions import db
+    from firebase_admin import firestore
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
+    if not db:
+        return jsonify({"error": "Database not available"}), 503
+
+    profile_ref = db.collection('users').document(uid).collection('settings').document('profile')
+
+    if request.method == 'GET':
+        try:
+            doc = profile_ref.get()
+            return jsonify({"profile": doc.to_dict() if doc.exists else {}})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    # POST — save profile
+    data = request.get_json() or {}
+    try:
+        update = {
+            'updated_at': firestore.SERVER_TIMESTAMP,
+        }
+        if 'displayName' in data:
+            update['display_name'] = str(data['displayName'])[:100]
+        if 'preferences' in data:
+            update['personal_preferences'] = str(data['preferences'])[:2000]
+        profile_ref.set(update, merge=True)
+        return jsonify({"status": "ok", "message": "Profile saved"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 

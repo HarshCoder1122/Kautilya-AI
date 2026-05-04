@@ -214,16 +214,189 @@ class KautilyaApp {
     document.querySelectorAll('.artifact-tab').forEach(t => {
       t.addEventListener('click', () => this.switchArtifactTab(t.dataset.tab));
     });
+    // Artifact action buttons (download / copy / open)
+    const dlBtn = $('artifactDownloadBtn');
+    const cpBtn = $('artifactCopyBtn');
+    const opBtn = $('artifactOpenBtn');
+    if (dlBtn) dlBtn.addEventListener('click', () => this.downloadCurrentArtifact());
+    if (cpBtn) cpBtn.addEventListener('click', () => this.copyCurrentArtifact());
+    if (opBtn) opBtn.addEventListener('click', () => this.openCurrentArtifactInNewTab());
+
+    // Quick artifact toolbar buttons (Excel/PDF/Doc/Chart)
+    document.querySelectorAll('.artifact-quick-btn').forEach(btn => {
+      btn.addEventListener('click', () => this.injectArtifactPrompt(btn.dataset.artifact));
+    });
+
+    // Slash command palette
+    this.setupSlashPalette();
 
     // Click-outside modals
     document.querySelectorAll('.modal-overlay').forEach(ov => {
       ov.addEventListener('click', e => { if (e.target === ov) ov.classList.remove('open'); });
     });
 
+    // Image lightbox (delegated)
+    document.addEventListener('click', (e) => {
+      const img = e.target.closest('.attachment-grid img, .msg-content img');
+      if (img && img.dataset.zoomable !== '0') {
+        this.openImageLightbox(img.src);
+      }
+    });
+
     // Auto-collapse sidebar on mobile at load
     if (window.innerWidth <= 720) {
       document.getElementById('appContainer').classList.remove('sidebar-open');
     }
+  }
+
+  // ----------------------------------------------------------------------
+  // SLASH COMMAND PALETTE
+  // ----------------------------------------------------------------------
+  setupSlashPalette() {
+    const input = this.$('messageInput');
+    const palette = this.$('slashPalette');
+    const list = this.$('slashPaletteList');
+    if (!input || !palette || !list) return;
+
+    const COMMANDS = [
+      { cmd: '/excel',    icon: 'table_view',     iconColor: '#10B981', title: 'Excel Spreadsheet', desc: 'Create a downloadable .xlsx file with tables', prompt: 'Create an Excel spreadsheet with: ' },
+      { cmd: '/pdf',      icon: 'picture_as_pdf', iconColor: '#EF4444', title: 'PDF Document',      desc: 'Generate a structured PDF report',           prompt: 'Generate a PDF document about: ' },
+      { cmd: '/docx',     icon: 'description',    iconColor: '#3B82F6', title: 'Word Document',     desc: 'Create a formatted .docx file',              prompt: 'Write a Word document on: ' },
+      { cmd: '/csv',      icon: 'view_list',      iconColor: '#8B5CF6', title: 'CSV Data',          desc: 'Generate CSV data file',                     prompt: 'Generate CSV data for: ' },
+      { cmd: '/chart',    icon: 'insert_chart',   iconColor: '#F59E0B', title: 'Chart / Diagram',   desc: 'Create a Mermaid diagram or SVG chart',      prompt: 'Create a diagram showing: ' },
+      { cmd: '/code',     icon: 'code',           iconColor: '#06B6D4', title: 'Code Artifact',     desc: 'Generate a complete code file',              prompt: 'Write code for: ' },
+      { cmd: '/html',     icon: 'web',            iconColor: '#EC4899', title: 'HTML Page',         desc: 'Build a standalone HTML page',               prompt: 'Build an HTML page that: ' },
+      { cmd: '/research', icon: 'travel_explore', iconColor: '#8B5CF6', title: 'Deep Research',     desc: 'Multi-source research with citations',       prompt: '', toggle: 'research' },
+      { cmd: '/think',    icon: 'psychology',     iconColor: '#FF6D3F', title: 'Max Thinking',      desc: 'Enable extended reasoning',                  prompt: '', toggle: 'think' },
+      { cmd: '/bg',       icon: 'rocket_launch',  iconColor: '#22D3EE', title: 'Background Task',   desc: 'Run async, get notified when done',          prompt: '', toggle: 'bg' },
+    ];
+
+    const renderPalette = (filter = '') => {
+      const f = filter.toLowerCase();
+      const items = COMMANDS.filter(c => c.cmd.startsWith(f) || c.title.toLowerCase().includes(f.replace('/', '')));
+      if (!items.length) { palette.classList.add('hidden'); return; }
+      list.innerHTML = items.map((c, i) => `
+        <div class="slash-item ${i === 0 ? 'active' : ''}" data-cmd="${c.cmd}">
+          <div class="slash-item-icon"><span class="material-icons-round" style="color:${c.iconColor};font-size:18px;">${c.icon}</span></div>
+          <div class="slash-item-text">
+            <div class="slash-item-title">${c.title}</div>
+            <div class="slash-item-desc">${c.desc}</div>
+          </div>
+          <span class="slash-item-key">${c.cmd}</span>
+        </div>`).join('');
+      palette.classList.remove('hidden');
+      list.querySelectorAll('.slash-item').forEach(el => {
+        el.addEventListener('click', () => {
+          const cmd = COMMANDS.find(c => c.cmd === el.dataset.cmd);
+          this.applySlashCommand(cmd);
+        });
+      });
+    };
+
+    input.addEventListener('input', () => {
+      const v = input.value;
+      // Only show palette when message starts with `/` and has no spaces yet
+      if (v.startsWith('/') && !v.includes(' ')) {
+        renderPalette(v);
+      } else {
+        palette.classList.add('hidden');
+      }
+    });
+
+    input.addEventListener('keydown', (e) => {
+      if (palette.classList.contains('hidden')) return;
+      const items = list.querySelectorAll('.slash-item');
+      const active = list.querySelector('.slash-item.active');
+      const idx = Array.from(items).indexOf(active);
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        const next = items[(idx + 1) % items.length];
+        items.forEach(i => i.classList.remove('active'));
+        next.classList.add('active');
+        next.scrollIntoView({ block: 'nearest' });
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        const prev = items[(idx - 1 + items.length) % items.length];
+        items.forEach(i => i.classList.remove('active'));
+        prev.classList.add('active');
+        prev.scrollIntoView({ block: 'nearest' });
+      } else if (e.key === 'Tab' || (e.key === 'Enter' && active && !e.shiftKey)) {
+        // Only intercept Enter if there's no other text yet (so user can still send normal text)
+        if (e.key === 'Enter' && input.value.includes(' ')) return;
+        e.preventDefault();
+        const cmd = COMMANDS.find(c => c.cmd === active.dataset.cmd);
+        this.applySlashCommand(cmd);
+      } else if (e.key === 'Escape') {
+        palette.classList.add('hidden');
+      }
+    });
+
+    // Click outside to close
+    document.addEventListener('click', (e) => {
+      if (!palette.contains(e.target) && e.target !== input) {
+        palette.classList.add('hidden');
+      }
+    });
+  }
+
+  applySlashCommand(cmd) {
+    if (!cmd) return;
+    const input = this.$('messageInput');
+    if (cmd.toggle === 'research') {
+      this.toggleResearchMode();
+      input.value = '';
+    } else if (cmd.toggle === 'think') {
+      this.toggleMaxThinking();
+      input.value = '';
+    } else if (cmd.toggle === 'bg') {
+      this.toggleBgMode();
+      input.value = '';
+    } else if (cmd.prompt) {
+      input.value = cmd.prompt;
+    }
+    this.$('slashPalette').classList.add('hidden');
+    this.autoGrow(input);
+    input.focus();
+    // Move cursor to end
+    input.setSelectionRange(input.value.length, input.value.length);
+  }
+
+  // ----------------------------------------------------------------------
+  // QUICK ARTIFACT INJECT (toolbar buttons)
+  // ----------------------------------------------------------------------
+  injectArtifactPrompt(kind) {
+    const input = this.$('messageInput');
+    const prompts = {
+      excel: 'Create an Excel spreadsheet with: ',
+      pdf:   'Generate a PDF document about: ',
+      docx:  'Write a Word document on: ',
+      csv:   'Generate CSV data for: ',
+      chart: 'Create a Mermaid diagram for: ',
+      code:  'Write a complete code file for: ',
+      html:  'Build a standalone HTML page that: ',
+    };
+    const p = prompts[kind] || '';
+    if (input.value.trim() === '') {
+      input.value = p;
+    } else if (!input.value.startsWith(p)) {
+      input.value = p + input.value;
+    }
+    this.autoGrow(input);
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }
+
+  // ----------------------------------------------------------------------
+  // IMAGE LIGHTBOX
+  // ----------------------------------------------------------------------
+  openImageLightbox(src) {
+    const existing = document.querySelector('.image-lightbox');
+    if (existing) existing.remove();
+    const box = document.createElement('div');
+    box.className = 'image-lightbox';
+    box.innerHTML = `<img src="${src}" alt="" data-zoomable="0" />`;
+    box.addEventListener('click', () => box.remove());
+    document.body.appendChild(box);
   }
 
   autoGrow(el) {
@@ -314,9 +487,35 @@ class KautilyaApp {
     host.innerHTML = '';
     this.files.forEach((f, i) => {
       const chip = document.createElement('div');
-      chip.className = 'file-chip';
-      chip.innerHTML = `<span class="material-icons-round">description</span><span>${escapeHtml(f.name)}</span><button class="remove"><span class="material-icons-round">close</span></button>`;
-      chip.querySelector('.remove').addEventListener('click', () => {
+      chip.className = 'file-chip-rich';
+      const sizeStr = this._humanFileSize(f.size);
+      const isImage = f.type && f.type.startsWith('image/');
+      const ext = (f.name.split('.').pop() || '').toLowerCase();
+      const icon = ({
+        pdf: 'picture_as_pdf', csv: 'view_list', xlsx: 'table_view', xls: 'table_view',
+        doc: 'description', docx: 'description', txt: 'article', md: 'article',
+        json: 'data_object', py: 'code', js: 'code', ts: 'code', html: 'web',
+      })[ext] || 'description';
+
+      if (isImage) {
+        const url = URL.createObjectURL(f);
+        chip.innerHTML = `
+          <img class="thumb" src="${url}" alt="${escapeHtml(f.name)}" data-zoomable="1"/>
+          <div class="info">
+            <div class="name">${escapeHtml(f.name)}</div>
+            <div class="size">${sizeStr}</div>
+          </div>
+          <button class="remove-btn" title="Remove"><span class="material-icons-round">close</span></button>`;
+      } else {
+        chip.innerHTML = `
+          <div class="thumb-icon"><span class="material-icons-round">${icon}</span></div>
+          <div class="info">
+            <div class="name">${escapeHtml(f.name)}</div>
+            <div class="size">${ext.toUpperCase() || 'FILE'} · ${sizeStr}</div>
+          </div>
+          <button class="remove-btn" title="Remove"><span class="material-icons-round">close</span></button>`;
+      }
+      chip.querySelector('.remove-btn').addEventListener('click', () => {
         this.files.splice(i, 1);
         this.renderFileChips();
         this.$('sendBtn').disabled = !this.$('messageInput').value.trim() && this.files.length === 0;
@@ -324,6 +523,12 @@ class KautilyaApp {
       host.appendChild(chip);
     });
     this.$('inputWrapper').classList.toggle('has-files', this.files.length > 0);
+  }
+
+  _humanFileSize(b) {
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+    return `${(b / 1024 / 1024).toFixed(1)} MB`;
   }
 
   // ----------------------------------------------------------------------
@@ -365,6 +570,8 @@ class KautilyaApp {
   }
 
   async streamMessage(text, files) {
+    this.lastUserMessage = text;
+    this.lastUserFiles = files ? [...files] : [];
     this.isStreaming = true;
     this.setSendMode('stop');
 
@@ -491,9 +698,9 @@ class KautilyaApp {
 
   appendAssistantScaffold() {
     const row = document.createElement('div');
-    row.className = 'msg-row assistant';
+    row.className = 'msg-row assistant generating';
     row.innerHTML = `
-      <div class="msg-avatar"><img src="/static/kautilya_logo.png" alt=""/></div>
+      <div class="msg-avatar pulsing"><img src="/static/kautilya_logo.png" alt=""/></div>
       <div class="msg-body">
         <div class="thinking-block hidden" data-role="thinking">
           <div class="thinking-head">
@@ -504,11 +711,20 @@ class KautilyaApp {
           <div class="thinking-body"><div class="thinking-body-inner"></div></div>
         </div>
         <div class="tool-call-host"></div>
+        <div class="generating-indicator" data-role="genIndicator">
+          <span class="dot-wave"><span></span><span></span><span></span></span>
+          <span class="gen-text" data-role="genText">Connecting…</span>
+          <span class="gen-elapsed" data-role="genElapsed">0s</span>
+        </div>
         <div class="status-line" style="color: var(--text-tertiary); font-size: 12.5px; margin: 4px 0;"></div>
         <div class="msg-content" data-role="content"></div>
         <div class="msg-actions hidden">
           <button data-act="copy"><span class="material-icons-round">content_copy</span>Copy</button>
+          <button data-act="continue"><span class="material-icons-round">play_arrow</span>Continue</button>
+          <button data-act="shorter"><span class="material-icons-round">compress</span>Shorter</button>
+          <button data-act="longer"><span class="material-icons-round">expand</span>Longer</button>
           <button data-act="regen"><span class="material-icons-round">refresh</span>Regenerate</button>
+          <button data-act="download" class="hidden"><span class="material-icons-round">download</span>Download</button>
         </div>
       </div>`;
     // Expand/collapse thinking
@@ -516,7 +732,39 @@ class KautilyaApp {
       row.querySelector('.thinking-block').classList.toggle('open');
     });
     this.$('chatContent').appendChild(row);
+
+    // Start the elapsed timer — keeps UI feeling alive during NVIDIA/Coder waits
+    const startedAt = Date.now();
+    const elapsedEl = row.querySelector('[data-role="genElapsed"]');
+    const genText = row.querySelector('[data-role="genText"]');
+    const phases = [
+      { at: 0,    text: 'Connecting…' },
+      { at: 3,    text: 'Warming up the model…' },
+      { at: 8,    text: 'Reasoning through your request…' },
+      { at: 15,   text: 'Crafting a thoughtful response…' },
+      { at: 25,   text: 'Still working — high-quality answers take time…' },
+      { at: 45,   text: 'Almost there — finalizing the output…' },
+    ];
+    row._genTimer = setInterval(() => {
+      const sec = Math.floor((Date.now() - startedAt) / 1000);
+      if (elapsedEl) elapsedEl.textContent = sec < 60 ? `${sec}s` : `${Math.floor(sec/60)}m ${sec%60}s`;
+      // Update phase text only if user hasn't received custom status
+      if (genText && !row.dataset.statusOverride) {
+        const phase = phases.slice().reverse().find(p => sec >= p.at);
+        if (phase) genText.textContent = phase.text;
+      }
+    }, 1000);
     return row;
+  }
+
+  _stopGenIndicator(row) {
+    if (!row) return;
+    if (row._genTimer) { clearInterval(row._genTimer); row._genTimer = null; }
+    row.classList.remove('generating');
+    const ind = row.querySelector('[data-role="genIndicator"]');
+    if (ind) ind.classList.add('hidden');
+    const av = row.querySelector('.msg-avatar');
+    if (av) av.classList.remove('pulsing');
   }
 
   appendThinking(row, delta) {
@@ -524,8 +772,14 @@ class KautilyaApp {
     const inner = row.querySelector('.thinking-body-inner');
     block.classList.remove('hidden');
     block.classList.add('active');
+    // Auto-open so user sees the reasoning stream live (Claude-like)
+    if (!block.dataset.opened) {
+      block.classList.add('open');
+      block.dataset.opened = '1';
+      block.dataset.thinkStart = String(Date.now());
+    }
     inner.textContent = (inner.textContent || '') + delta;
-    // Claude-like: follow the latest words
+    // Follow the latest words
     const body = row.querySelector('.thinking-body');
     body.scrollTop = body.scrollHeight;
   }
@@ -534,16 +788,23 @@ class KautilyaApp {
     const block = row.querySelector('[data-role="thinking"]');
     if (!block) return;
     block.classList.remove('active');
-    // Change the label; briefly stay expanded if user opened it
+    // Show actual duration like Claude does
     const label = block.querySelector('.thinking-label');
     const wave = block.querySelector('.dot-wave');
-    if (label) label.textContent = 'Thought for a moment';
+    const elapsed = block.dataset.thinkStart
+      ? Math.round((Date.now() - parseInt(block.dataset.thinkStart)) / 1000)
+      : 0;
+    if (label) label.textContent = elapsed > 0
+      ? `Thought for ${elapsed} second${elapsed !== 1 ? 's' : ''}`
+      : 'Thought for a moment';
     if (wave) wave.style.display = 'none';
-    block.classList.remove('open');
+    // Keep open briefly so user sees the final reasoning, then auto-collapse
+    setTimeout(() => block.classList.remove('open'), 2000);
   }
 
   renderToolCalls(row, toolCalls) {
     const host = row.querySelector('.tool-call-host');
+    if (!host) return;
     toolCalls.forEach(tc => {
       const name = tc.function?.name || tc.name || 'tool';
       const args = tc.function?.arguments || '';
@@ -555,6 +816,12 @@ class KautilyaApp {
   }
 
   showStatus(row, msg) {
+    // Mirror backend status into the generating-indicator phase text so it stays prominent
+    const genText = row.querySelector('[data-role="genText"]');
+    if (genText && msg) {
+      genText.textContent = msg;
+      row.dataset.statusOverride = '1';
+    }
     const line = row.querySelector('.status-line');
     if (!line) return;
     if (!msg) { line.textContent = ''; return; }
@@ -564,6 +831,8 @@ class KautilyaApp {
   updateContent(row, full) {
     const el = row.querySelector('[data-role="content"]');
     if (!el) return;
+    // First chunk arrived — stop the "generating" indicator so users see real content
+    if (full && row.classList.contains('generating')) this._stopGenIndicator(row);
     el.innerHTML = mdRender(full);
     decorateCodeBlocks(el);
     this.detectArtifact(el, full);
@@ -574,6 +843,7 @@ class KautilyaApp {
   }
 
   finalizeAssistant(row, full) {
+    this._stopGenIndicator(row);
     const content = row.querySelector('[data-role="content"]');
     if (!content) return;
     content.innerHTML = mdRender(full);
@@ -587,48 +857,354 @@ class KautilyaApp {
       actions.querySelector('[data-act="copy"]').addEventListener('click', async () => {
         try { await navigator.clipboard.writeText(full); toast('Copied', 'success'); } catch { toast('Copy failed', 'error'); }
       });
-      actions.querySelector('[data-act="regen"]').addEventListener('click', () => toast('Regenerate — send the same message again'));
+      // Show download button only if this message produced an artifact
+      if (row.dataset.hasArtifact) {
+        actions.querySelector('[data-act="download"]').classList.remove('hidden');
+        actions.querySelector('[data-act="download"]').addEventListener('click', () => {
+          // Restore the artifact this row produced, then download it
+          if (row.dataset.artifactKind && row.dataset.artifactBody) {
+            this._currentArtifact = { kind: row.dataset.artifactKind, title: row.dataset.artifactTitle || 'Artifact', source: row.dataset.artifactBody };
+          }
+          this.downloadCurrentArtifact();
+        });
+      }
+      actions.querySelector('[data-act="continue"]').addEventListener('click', () => {
+        this.$('messageInput').value = 'Continue';
+        this.sendMessage();
+      });
+      actions.querySelector('[data-act="shorter"]').addEventListener('click', () => {
+        this.$('messageInput').value = 'Make this shorter';
+        this.sendMessage();
+      });
+      actions.querySelector('[data-act="longer"]').addEventListener('click', () => {
+        this.$('messageInput').value = 'Make this longer';
+        this.sendMessage();
+      });
+      actions.querySelector('[data-act="regen"]').addEventListener('click', () => {
+        if (this.lastUserMessage) {
+          this.$('messageInput').value = this.lastUserMessage;
+          this.sendMessage();
+        } else {
+          toast('No previous message to regenerate', 'error');
+        }
+      });
     }
     const statusLine = row.querySelector('.status-line');
     if (statusLine) statusLine.textContent = '';
   }
 
   // ----------------------------------------------------------------------
-  // ARTIFACT DETECTION (html / svg / mermaid)
+  // ARTIFACT DETECTION & RENDERING — Claude-style multi-type
   // ----------------------------------------------------------------------
+  // Parses ```artifact:<kind> title="<title>" ... ``` blocks AND falls back to
+  // traditional ```html|svg|mermaid``` for backward compatibility.
   detectArtifact(container, full) {
-    // Pick first <pre><code class="language-html|svg|mermaid">
+    const row = container.closest('.msg-row');
+    // 1) Find an explicit artifact block
+    const artifactRe = /```artifact:([a-z0-9:_-]+)(?:\s+title="([^"]*)")?\s*\n([\s\S]*?)```/gi;
+    let match = artifactRe.exec(full);
+    if (match) {
+      const kind  = match[1].toLowerCase();
+      const title = match[2] || this._defaultArtifactTitle(kind);
+      const body  = match[3].trim();
+      if (row) { row.dataset.hasArtifact = '1'; row.dataset.artifactKind = kind; row.dataset.artifactTitle = title; row.dataset.artifactBody = body; }
+      this._renderArtifactCard(container, kind, title, body);
+      this._openArtifact(body, kind, title);
+      return;
+    }
+    // 2) Legacy: html / svg / mermaid raw code blocks
     const code = container.querySelector('pre code.language-html, pre code.language-svg, pre code.language-mermaid');
     if (!code) return;
-    const raw = code.textContent;
-    this._openArtifact(raw, code.className.includes('html') ? 'html' : code.className.includes('svg') ? 'svg' : 'mermaid');
+    const raw  = code.textContent;
+    const kind = code.className.includes('html')   ? 'html'
+                : code.className.includes('svg')   ? 'svg'
+                : 'mermaid';
+    const title = this._defaultArtifactTitle(kind);
+    if (row) { row.dataset.hasArtifact = '1'; row.dataset.artifactKind = kind; row.dataset.artifactTitle = title; row.dataset.artifactBody = raw; }
+    this._openArtifact(raw, kind, title);
   }
-  _openArtifact(source, kind) {
-    const panel = this.$('artifactPanel');
-    const frame = this.$('artifactPreviewFrame');
-    const code  = this.$('artifactCodeContent');
+
+  _defaultArtifactTitle(kind) {
+    const map = {
+      html: 'HTML Page', svg: 'SVG Graphic', mermaid: 'Diagram',
+      excel: 'Spreadsheet', pdf: 'PDF Document', docx: 'Word Document',
+      csv: 'CSV Data', markdown: 'Markdown Doc', md: 'Markdown Doc',
+      react: 'React Component', json: 'JSON Data',
+    };
+    if (kind.startsWith('code:')) return `${kind.slice(5).toUpperCase()} Code`;
+    return map[kind] || 'Artifact';
+  }
+
+  _artifactIcon(kind) {
+    if (kind.startsWith('code:')) return 'code';
+    return ({
+      html: 'web', svg: 'image', mermaid: 'account_tree',
+      excel: 'table_view', xlsx: 'table_view',
+      pdf: 'picture_as_pdf',
+      docx: 'description', word: 'description',
+      csv: 'view_list',
+      markdown: 'article', md: 'article',
+      react: 'widgets', json: 'data_object',
+    }[kind] || 'description');
+  }
+
+  // Renders a clickable card INSIDE the chat content (so user has a clear handle to reopen)
+  _renderArtifactCard(container, kind, title, body) {
+    // Replace the artifact code-block with a card if not already present
+    const pre = container.querySelector(`pre code[class*="language-artifact:${kind}"], pre code.language-artifact`);
+    const meta = `${kind.toUpperCase()} · ${this._humanSize(body.length)}`;
+    const cardHtml = `
+      <div class="artifact-card" role="button" tabindex="0" data-art-kind="${kind}" data-art-title="${escapeHtml(title)}">
+        <div class="artifact-card-icon"><span class="material-icons-round">${this._artifactIcon(kind)}</span></div>
+        <div class="artifact-card-body">
+          <div class="artifact-card-title">${escapeHtml(title)}</div>
+          <div class="artifact-card-meta">${meta} — Click to view</div>
+        </div>
+        <span class="material-icons-round artifact-card-arrow">chevron_right</span>
+      </div>`;
+    // Try to swap the pre containing this artifact for a card; otherwise append
+    const allPre = container.querySelectorAll('pre');
+    let swapped = false;
+    for (const p of allPre) {
+      const c = p.querySelector('code');
+      if (c && c.textContent.trim().startsWith(body.trim().slice(0, 60))) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = cardHtml;
+        const card = wrap.firstElementChild;
+        card.dataset.artBody = body; // stash content
+        p.replaceWith(card);
+        card.addEventListener('click', () => this._openArtifact(body, kind, title));
+        card.addEventListener('keydown', e => { if (e.key === 'Enter') this._openArtifact(body, kind, title); });
+        swapped = true;
+        break;
+      }
+    }
+    if (!swapped) {
+      const wrap = document.createElement('div');
+      wrap.innerHTML = cardHtml;
+      const card = wrap.firstElementChild;
+      card.addEventListener('click', () => this._openArtifact(body, kind, title));
+      container.appendChild(card);
+    }
+  }
+
+  _humanSize(n) {
+    if (n < 1024) return `${n} chars`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  }
+
+  _openArtifact(source, kind, title = 'Artifact') {
+    const panel  = this.$('artifactPanel');
+    const frame  = this.$('artifactPreviewFrame');
+    const codeEl = this.$('artifactCodeContent');
+    const docEl  = this.$('artifactDocView');
+    const titleEl = this.$('artifactTitle');
+    const badgeEl = this.$('artifactTypeBadge');
+    const iconEl  = this.$('artifactTypeIcon');
+
+    // Stash for download/copy/open buttons
+    this._currentArtifact = { kind, title, source };
+
+    titleEl.textContent = title;
+    badgeEl.textContent = kind;
+    iconEl.textContent  = this._artifactIcon(kind);
     panel.classList.add('open');
-    code.textContent = source;
-    code.className = '';
-    try { hljs.highlightElement(code); } catch {}
+
+    // Load source into the source tab
+    codeEl.textContent = source;
+    codeEl.className = '';
+    try { hljs.highlightElement(codeEl); } catch {}
+
+    // Render preview based on kind
+    frame.classList.remove('hidden');
+    docEl.classList.add('hidden');
+
     if (kind === 'html') {
       frame.srcdoc = source;
     } else if (kind === 'svg') {
       frame.srcdoc = `<!doctype html><style>html,body{margin:0;background:#fff;display:grid;place-items:center;height:100%;}</style>${source}`;
     } else if (kind === 'mermaid') {
-      frame.srcdoc = `<!doctype html><script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"><\/script><style>body{margin:16px;font-family:Inter,sans-serif;}</style><div class="mermaid">${source}</div><script>mermaid.initialize({startOnLoad:true,theme:'dark'});<\/script>`;
+      frame.srcdoc = `<!doctype html><script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"><\/script><style>body{margin:16px;font-family:Inter,sans-serif;background:#fff;}</style><div class="mermaid">${source}</div><script>mermaid.initialize({startOnLoad:true,theme:'default'});<\/script>`;
+    } else if (kind === 'react') {
+      // Render React via Babel + CDN
+      const safeBody = source.replace(/<\/script>/g, '<\\/script>');
+      frame.srcdoc = `<!doctype html>
+<html><head><meta charset="utf-8"/>
+<script src="https://unpkg.com/react@18/umd/react.development.js"><\/script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"><\/script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"><\/script>
+<script src="https://cdn.tailwindcss.com"><\/script>
+<style>body{margin:0;font-family:Inter,sans-serif;}</style>
+</head><body><div id="root"></div>
+<script type="text/babel" data-presets="react,typescript">
+${safeBody}
+const __root = ReactDOM.createRoot(document.getElementById('root'));
+try {
+  const C = (typeof App !== 'undefined') ? App : (typeof Component !== 'undefined' ? Component : null);
+  if (C) __root.render(React.createElement(C));
+  else document.getElementById('root').innerText = 'Define a component named App or Component.';
+} catch (e) { document.getElementById('root').innerText = 'Error: '+ e.message; }
+<\/script></body></html>`;
+    } else if (kind === 'markdown' || kind === 'md') {
+      // Doc preview
+      frame.classList.add('hidden');
+      docEl.classList.remove('hidden');
+      docEl.innerHTML = mdRender(source);
+      decorateCodeBlocks(docEl);
+      try { renderMath(docEl); } catch {}
+    } else if (kind === 'csv' || kind === 'excel' || kind === 'xlsx') {
+      // Render markdown table preview if present, else show raw
+      frame.classList.add('hidden');
+      docEl.classList.remove('hidden');
+      // Try parse JSON first
+      let html = '';
+      try {
+        const data = JSON.parse(source);
+        if (data && Array.isArray(data.sheets)) {
+          html = data.sheets.map(s => this._tableHtml(s.name, s.header, s.rows)).join('');
+        } else if (data && data.header) {
+          html = this._tableHtml(title, data.header, data.rows);
+        } else if (Array.isArray(data) && data.length && typeof data[0] === 'object') {
+          const keys = Object.keys(data[0]);
+          html = this._tableHtml(title, keys, data.map(r => keys.map(k => r[k] ?? '')));
+        }
+      } catch {}
+      if (!html) html = mdRender(source); // fallback
+      docEl.innerHTML = html || `<pre>${escapeHtml(source)}</pre>`;
+    } else if (kind === 'pdf' || kind === 'docx' || kind === 'word') {
+      // Render markdown preview
+      frame.classList.add('hidden');
+      docEl.classList.remove('hidden');
+      docEl.innerHTML = `<h1>${escapeHtml(title)}</h1>` + mdRender(source);
+      decorateCodeBlocks(docEl);
+    } else if (kind.startsWith('code:') || kind === 'code' || kind === 'json') {
+      // Code preview = show the source tab
+      frame.classList.add('hidden');
+      docEl.classList.remove('hidden');
+      const lang = kind.startsWith('code:') ? kind.slice(5) : (kind === 'json' ? 'json' : 'text');
+      docEl.innerHTML = `<pre><code class="language-${escapeHtml(lang)}"></code></pre>`;
+      const c = docEl.querySelector('code');
+      c.textContent = source;
+      try { hljs.highlightElement(c); } catch {}
+    } else {
+      // Fallback — try as HTML
+      frame.srcdoc = `<!doctype html><body style="margin:0;padding:16px;font-family:Inter;background:#fff;color:#111;">${escapeHtml(source).replace(/\n/g,'<br>')}</body>`;
     }
   }
+
+  _tableHtml(name, header, rows) {
+    const h = (header || []).map(c => `<th>${escapeHtml(String(c))}</th>`).join('');
+    const r = (rows || []).map(row => `<tr>${row.map(c => `<td>${escapeHtml(String(c))}</td>`).join('')}</tr>`).join('');
+    return `${name ? `<h2>${escapeHtml(name)}</h2>` : ''}<table>${h ? `<thead><tr>${h}</tr></thead>` : ''}<tbody>${r}</tbody></table>`;
+  }
+
   switchArtifactTab(tab) {
     document.querySelectorAll('.artifact-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
-    this.$('artifactPreviewFrame').classList.toggle('hidden', tab !== 'preview');
-    this.$('artifactCodeView').classList.toggle('hidden', tab !== 'code');
+    const a = this._currentArtifact || { kind: 'html' };
+    const isDocKind = ['markdown','md','pdf','docx','word','csv','excel','xlsx','code','json'].includes(a.kind) || a.kind.startsWith('code:');
+    if (tab === 'preview') {
+      this.$('artifactCodeView').classList.add('hidden');
+      if (isDocKind) {
+        this.$('artifactPreviewFrame').classList.add('hidden');
+        this.$('artifactDocView').classList.remove('hidden');
+      } else {
+        this.$('artifactPreviewFrame').classList.remove('hidden');
+        this.$('artifactDocView').classList.add('hidden');
+      }
+    } else {
+      this.$('artifactCodeView').classList.remove('hidden');
+      this.$('artifactPreviewFrame').classList.add('hidden');
+      this.$('artifactDocView').classList.add('hidden');
+    }
+  }
+
+  // Download current artifact as a real file
+  async downloadCurrentArtifact() {
+    const a = this._currentArtifact;
+    if (!a) { toast('No artifact open', 'error'); return; }
+    // For html/svg/mermaid/react/code: just save the source text
+    const SIMPLE = { html: 'html', svg: 'svg', mermaid: 'mmd', react: 'jsx', json: 'json' };
+    if (a.kind in SIMPLE) {
+      this._saveBlob(a.source, `${this._safeName(a.title)}.${SIMPLE[a.kind]}`, 'text/plain');
+      return;
+    }
+    if (a.kind.startsWith('code:')) {
+      const ext = a.kind.slice(5) || 'txt';
+      this._saveBlob(a.source, `${this._safeName(a.title)}.${ext}`, 'text/plain');
+      return;
+    }
+    // For excel/pdf/docx/csv/markdown — call backend
+    try {
+      toast('Generating file…');
+      const headers = { 'Content-Type': 'application/json' };
+      try { if (this.user) headers['Authorization'] = 'Bearer ' + await this.user.getIdToken(); } catch {}
+      const resp = await fetch('/api/artifact/create', {
+        method: 'POST', headers,
+        body: JSON.stringify({ kind: a.kind, content: a.source, title: a.title }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${resp.status}`);
+      }
+      const blob = await resp.blob();
+      const cd = resp.headers.get('Content-Disposition') || '';
+      const m = cd.match(/filename="?([^"]+)"?/);
+      const fn = m ? m[1] : `${this._safeName(a.title)}.bin`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url; link.download = fn; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast('Downloaded', 'success');
+    } catch (e) {
+      toast('Download failed: ' + e.message, 'error');
+    }
+  }
+
+  _saveBlob(text, filename, mime) {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('Downloaded', 'success');
+  }
+
+  _safeName(s) {
+    return (s || 'kautilya').replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '_').slice(0, 40) || 'kautilya';
+  }
+
+  copyCurrentArtifact() {
+    const a = this._currentArtifact;
+    if (!a) return;
+    navigator.clipboard.writeText(a.source).then(
+      () => toast('Source copied', 'success'),
+      () => toast('Copy failed', 'error')
+    );
+  }
+
+  openCurrentArtifactInNewTab() {
+    const a = this._currentArtifact;
+    if (!a) return;
+    let html = a.source;
+    if (a.kind === 'svg') {
+      html = `<!doctype html><style>body{margin:0;background:#fff;display:grid;place-items:center;height:100vh;}</style>${a.source}`;
+    } else if (a.kind === 'mermaid') {
+      html = `<!doctype html><script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"><\/script><div class="mermaid">${a.source}</div><script>mermaid.initialize({startOnLoad:true});<\/script>`;
+    } else if (a.kind !== 'html') {
+      html = `<!doctype html><body style="font-family:Inter;padding:24px;"><pre>${escapeHtml(a.source)}</pre></body>`;
+    }
+    const blob = new Blob([html], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
   }
 
   scrollToEnd() {
     const c = this.$('chatContainer');
-    // Don't hijack scroll if user is reading earlier messages
-    if (c.scrollTop + c.clientHeight > c.scrollHeight - 200) {
+    // Always follow during active streaming; respect manual scroll-up otherwise
+    const isNearBottom = c.scrollTop + c.clientHeight > c.scrollHeight - 400;
+    if (isNearBottom || this.isStreaming) {
       c.scrollTop = c.scrollHeight;
     }
   }

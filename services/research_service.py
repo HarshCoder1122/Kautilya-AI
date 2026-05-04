@@ -222,13 +222,14 @@ def deep_research_stream(question: str) -> Iterator[Dict[str, Any]]:
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
     try:
-        gen = call_groq(messages, stream=True, model="llama-3.3-70b-versatile",
-                        temperature=0.3, max_tokens=4096)
+        # Primary: NVIDIA Nemotron-3-Super-120B for deep research synthesis
+        gen = call_nvidia(messages, stream=True, max_tokens=4096,
+                          model="nvidia/nemotron-3-super-120b-a12b",
+                          temperature=0.3, expose_thinking=False)
         if gen is None:
-            # Fallback to NVIDIA
-            gen = call_nvidia(messages, stream=True, max_tokens=4096,
-                              model="nvidia/nemotron-3-super-120b-a12b",
-                              expose_thinking=False)
+            # Fallback to Groq only if NVIDIA unavailable
+            gen = call_groq(messages, stream=True, model="llama-3.3-70b-versatile",
+                            temperature=0.3, max_tokens=4096)
         if gen is None:
             yield {"event": "chunk", "chunk": "Research synthesis LLM unavailable."}
             yield {"event": "done"}

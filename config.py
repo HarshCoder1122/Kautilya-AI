@@ -24,6 +24,8 @@ SERPAPI_API_KEY = os.environ.get("SERPAPI_API_KEY", "")
 MAPPLS_API_KEY = os.environ.get("MAPPLS_API_KEY", "")
 SARVAM_API_KEY = os.environ.get("SARVAM_API_KEY", "")
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
+if not NVIDIA_API_KEY:
+    print("[CONFIG] WARNING: NVIDIA_API_KEY not set — Pro/Coder models will fall back to Groq Llama")
 
 # Startup warnings for missing critical keys
 if not OPENROUTER_API_KEY:

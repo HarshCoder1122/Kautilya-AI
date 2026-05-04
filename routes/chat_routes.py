@@ -4,17 +4,14 @@ Handles /api/chat, /api/jarvis/* endpoints.
 """
 import os
 import re
-import io
 import json
 import time
 import uuid
-import base64
 import threading
-import requests
 
 from flask import Blueprint, request, jsonify, Response
 
-from config import SYSTEM_PROMPT, CODER_SYSTEM_PROMPT, GROQ_API_KEY, SARVAM_API_KEY
+from config import SYSTEM_PROMPT, CODER_SYSTEM_PROMPT
 from services.auth_service import verify_firebase_token, record_usage
 from services.memory_service import (
     get_user_chat_dir, get_user_memory, save_user_memory,
@@ -22,26 +19,60 @@ from services.memory_service import (
     process_uploaded_file, record_user_session
 )
 from services.agent_loop_service import get_llm_response
-from services.tts_service import clean_text_for_tts, detect_tts_voice
 from middleware.rate_limiter import check_message_rate_limit
 from middleware.security import block_sensitive_query
 
 chat_bp = Blueprint('chat', __name__)
 
-# In-memory conversation store (to be replaced with Redis/Firestore later)
+# In-memory conversation store — user-scoped dict: conversations[uid][session_id] = conv
 conversations = {}
 CONVERSATION_TTL = 3600
 MAX_HISTORY = 20
+MAX_INMEM_CONVERSATIONS_PER_USER = 20
 
 
-def _get_conversation(session_id):
-    if session_id in conversations:
-        conv = conversations[session_id]
+def _get_conversation(uid, session_id):
+    user_id = uid or "guest"
+    sid = session_id
+    if user_id not in conversations:
+        return None
+    user_convs = conversations[user_id]
+    if sid in user_convs:
+        conv = user_convs[sid]
         if time.time() - conv.get('last_active', 0) > CONVERSATION_TTL:
-            del conversations[session_id]
+            del user_convs[sid]
+            return None
+        # User isolation: ensure the requesting uid matches stored uid
+        stored_uid = conv.get('uid')
+        if stored_uid and uid and stored_uid != uid:
             return None
         return conv
     return None
+
+
+def _cleanup_expired_conversations():
+    """Periodic cleanup of expired user conversations."""
+    now = time.time()
+    for user_id in list(conversations.keys()):
+        user_convs = conversations[user_id]
+        for sid in list(user_convs.keys()):
+            if now - user_convs[sid].get('last_active', 0) > CONVERSATION_TTL:
+                del user_convs[sid]
+        if not user_convs:
+            del conversations[user_id]
+
+
+def _enforce_user_limit(uid):
+    """Keep only the most recent MAX_INMEM_CONVERSATIONS_PER_USER per user."""
+    user_id = uid or "guest"
+    if user_id not in conversations:
+        return
+    user_convs = conversations[user_id]
+    if len(user_convs) <= MAX_INMEM_CONVERSATIONS_PER_USER:
+        return
+    sorted_sids = sorted(user_convs.keys(), key=lambda s: user_convs[s].get('last_active', 0), reverse=True)
+    for sid in sorted_sids[MAX_INMEM_CONVERSATIONS_PER_USER:]:
+        del user_convs[sid]
 
 
 def save_to_firestore(uid, session_id, role, content):
@@ -127,9 +158,10 @@ def jarvis_stream():
             yield f"data: {json.dumps({'chunk': err_msg})}\n\n"
         return Response(rate_err(), mimetype='text/event-stream')
 
-    # Build conversation
-    conv = _get_conversation(session_id)
+    # Build conversation (user-scoped)
+    conv = _get_conversation(uid, session_id)
     if not conv:
+        _cleanup_expired_conversations()
         user_memories = get_user_memory(uid) if uid else []
         settings = {}
         if uid and db:
@@ -145,12 +177,20 @@ def jarvis_stream():
         else:
             sys_prompt = build_personalized_prompt(SYSTEM_PROMPT, user_email, user_memories, user_email, settings)
 
+        user_id = uid or "guest"
+        if user_id not in conversations:
+            conversations[user_id] = {}
         conv = {
             'messages': [{"role": "system", "content": sys_prompt}],
             'last_active': time.time(),
-            'uid': uid
+            'uid': uid,
+            'created_at': time.time(),
+            'model': model,
+            'message_count': 0,
+            'title': None
         }
-        conversations[session_id] = conv
+        conversations[user_id][session_id] = conv
+        _enforce_user_limit(uid)
     else:
         conv['last_active'] = time.time()
 
@@ -204,13 +244,12 @@ def jarvis_stream():
 
         # Post-processing
         if full_response:
-            # Cloud chat is a pure-LLM endpoint — no bracket-command tool
-            # layer. The model is instructed (in CODER_SYSTEM_PROMPT) to
-            # answer from its own knowledge and emit code directly. If we
-            # ever bring tools back, do it via real `tool_calls` (see
-            # `call_nvidia` / `call_groq` `tools=` plumbing), not via text
-            # bracket parsing.
             conv['messages'].append({"role": "assistant", "content": full_response})
+            conv['message_count'] = len(conv['messages'])
+            # Auto-title first assistant response if not set
+            if not conv.get('title') and conv['message_count'] >= 2:
+                title = full_response.strip().split('\n')[0][:60]
+                conv['title'] = title if title else "New Chat"
             save_to_firestore(uid, session_id, "assistant", full_response)
 
             # Usage tracking — rough token estimate (4 chars ≈ 1 token)
@@ -352,8 +391,9 @@ def delete_chat_history(session_id):
         for m in msgs:
             m.reference.delete()
         doc_ref.delete()
-        if session_id in conversations:
-            del conversations[session_id]
+        user_id = uid or "guest"
+        if user_id in conversations and session_id in conversations[user_id]:
+            del conversations[user_id][session_id]
         return jsonify({"status": "ok", "session_id": session_id})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -373,10 +413,19 @@ def get_user_status():
     current_chats = user_record.get("chat_count", 0) if user_record.get("last_chat_date") == today else 0
     tier = "pro" if is_pro else "free"
     limit = _MESSAGE_RATE_LIMITS[tier]["per_day"]
+    # Active in-memory sessions for this user
+    active_sessions = []
+    user_id = uid or "guest"
+    if user_id in conversations:
+        active_sessions = [
+            {"session_id": sid, "title": c.get("title"), "model": c.get("model"), "message_count": c.get("message_count", 0)}
+            for sid, c in conversations[user_id].items()
+        ]
     return jsonify({
         "is_pro": is_pro, "role": "Pro Plan" if is_pro else "Free Plan",
         "usage": {"chats_today": current_chats, "daily_limit": limit,
-                  "remaining": (limit - current_chats) if limit is not None else "Unlimited"}
+                  "remaining": (limit - current_chats) if limit is not None else "Unlimited"},
+        "sessions": {"active_count": len(active_sessions), "active": active_sessions}
     })
 
 
