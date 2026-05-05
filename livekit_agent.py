@@ -457,10 +457,6 @@ async def entrypoint(ctx: JobContext):
                 welcome_message = data.get("welcome_message") or welcome_message
                 agent_language = data.get("language") or agent_language
                 selected_model = (data.get("model") or selected_model)
-    
-    # Final cleanup of any unresolved placeholders in the prompt or greeting
-    system_prompt = _clean_placeholders(system_prompt)
-    welcome_message = _clean_placeholders(welcome_message)
                 agent_voice = data.get("voice") or agent_voice
                 handoff_enabled = bool(data.get("handoff_enabled", False))
                 handoff_number = data.get("handoff_number", "")
@@ -470,6 +466,10 @@ async def entrypoint(ctx: JobContext):
                 print(f"[Config] Error reading agent doc: {e}")
         else:
             print(f"[Config] ⚠️ No agent doc resolved for {raw_agent_id} — using defaults")
+    
+    # Final cleanup of any unresolved placeholders in the prompt or greeting
+    system_prompt = _clean_placeholders(system_prompt)
+    welcome_message = _clean_placeholders(welcome_message)
 
     if handoff_enabled:
         hardcoded_instructions = f"""
