@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Knowledge Base Manager - Kautilya AI</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              "colors": {
+                      "surface-container-high": "#e2e8f8",
+                      "secondary-fixed": "#e1e0ff",
+                      "on-error-container": "#93000a",
+                      "primary": "#1f108e",
+                      "error-container": "#ffdad6",
+                      "surface-container-lowest": "#ffffff",
+                      "on-surface-variant": "#464553",
+                      "on-surface": "#151c27",
+                      "primary-container": "#3730a3",
+                      "on-tertiary": "#ffffff",
+                      "surface-container": "#e7eefe",
+                      "inverse-on-surface": "#ebf1ff",
+                      "surface-variant": "#dce2f3",
+                      "outline-variant": "#c8c4d5",
+                      "secondary-fixed-dim": "#c0c1ff",
+                      "on-tertiary-fixed-variant": "#7a3003",
+                      "tertiary-fixed": "#ffdbcc",
+                      "surface-dim": "#d3daea",
+                      "outline": "#777584",
+                      "on-primary-fixed-variant": "#3b35a7",
+                      "on-secondary": "#ffffff",
+                      "on-error": "#ffffff",
+                      "surface-container-highest": "#dce2f3",
+                      "on-secondary-fixed-variant": "#2f2ebe",
+                      "on-tertiary-fixed": "#351000",
+                      "primary-fixed-dim": "#c3c0ff",
+                      "on-primary-fixed": "#0f0069",
+                      "inverse-surface": "#2a313d",
+                      "on-primary-container": "#a9a7ff",
+                      "tertiary-container": "#752c00",
+                      "secondary-container": "#6063ee",
+                      "error": "#ba1a1a",
+                      "surface-tint": "#544fc0",
+                      "surface-bright": "#f9f9ff",
+                      "primary-fixed": "#e2dfff",
+                      "surface": "#f9f9ff",
+                      "on-tertiary-container": "#fe9562",
+                      "on-secondary-fixed": "#07006c",
+                      "tertiary": "#511c00",
+                      "surface-container-low": "#f0f3ff",
+                      "inverse-primary": "#c3c0ff",
+                      "on-secondary-container": "#fffbff",
+                      "secondary": "#4648d4",
+                      "on-primary": "#ffffff",
+                      "tertiary-fixed-dim": "#ffb694",
+                      "on-background": "#151c27",
+                      "background": "#f9f9ff"
+              },
+              "borderRadius": {
+                      "DEFAULT": "0.25rem",
+                      "lg": "0.5rem",
+                      "xl": "0.75rem",
+                      "full": "9999px"
+              },
+              "spacing": {
+                      "lg": "2.5rem",
+                      "base": "4px",
+                      "md": "1.5rem",
+                      "xs": "0.5rem",
+                      "container-max": "800px",
+                      "sm": "1rem",
+                      "xl": "4rem"
+              },
+              "fontFamily": {
+                      "code": [
+                              "monospace"
+                      ]
+              },
+              "fontSize": {
+                      "body-md": [
+                              "1rem",
+                              {
+                                      "lineHeight": "1.6",
+                                      "fontWeight": "400"
+                              }
+                      ],
+                      "h2": [
+                              "1.5rem",
+                              {
+                                      "lineHeight": "1.3",
+                                      "letterSpacing": "-0.01em",
+                                      "fontWeight": "600"
+                              }
+                      ],
+                      "body-lg": [
+                              "1.125rem",
+                              {
+                                      "lineHeight": "1.75",
+                                      "fontWeight": "400"
+                              }
+                      ],
+                      "code": [
+                              "0.875rem",
+                              {
+                                      "lineHeight": "1.5",
+                                      "fontWeight": "400"
+                              }
+                      ],
+                      "label-sm": [
+                              "0.75rem",
+                              {
+                                      "lineHeight": "1rem",
+                                      "letterSpacing": "0.05em",
+                                      "fontWeight": "500"
+                              }
+                      ],
+                      "h1": [
+                              "2.25rem",
+                              {
+                                      "lineHeight": "1.2",
+                                      "letterSpacing": "-0.02em",
+                                      "fontWeight": "700"
+                              }
+                      ]
+              }
+      },
+          },
+        }
+      </script>
+</head>
+<body class="bg-background text-on-background min-h-screen flex font-['Inter'] antialiased">
+<!-- SideNavBar -->
+<aside class="fixed left-0 top-0 h-full flex flex-col z-40 bg-white/70 backdrop-blur-xl h-screen w-72 border-r border-slate-200/60 shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
+<div class="p-md border-b border-slate-200/60">
+<div class="flex items-center gap-xs">
+<div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-on-primary font-bold text-lg">C</div>
+<div>
+<h2 class="text-lg font-bold tracking-tight text-slate-900">Cognitive Advisor</h2>
+<p class="text-xs text-outline">Pro Intelligence</p>
+</div>
+</div>
+</div>
+<nav class="flex-1 py-md px-sm space-y-2">
+<a class="flex items-center gap-3 px-4 py-3 text-slate-500 hover:text-slate-900 hover:bg-slate-50/80 transition-all duration-200 rounded-lg scale-95 active:scale-90 transition-transform" href="#">
+<span class="material-symbols-outlined" data-icon="add_comment">add_comment</span>
+<span class="text-sm leading-relaxed">New Chat</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-slate-500 hover:text-slate-900 hover:bg-slate-50/80 transition-all duration-200 rounded-lg scale-95 active:scale-90 transition-transform" href="#">
+<span class="material-symbols-outlined" data-icon="psychology">psychology</span>
+<span class="text-sm leading-relaxed">Personas</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-indigo-700 font-semibold bg-indigo-50/50 border-r-2 border-indigo-700 rounded-lg scale-95 active:scale-90 transition-transform" href="#">
+<span class="material-symbols-outlined" data-icon="database" data-weight="fill" style="font-variation-settings: 'FILL' 1;">database</span>
+<span class="text-sm leading-relaxed">Knowledge Base</span>
+</a>
+</nav>
+<div class="p-sm">
+<button class="w-full bg-surface-container-high text-primary py-2 px-4 rounded-lg text-sm font-medium hover:bg-surface-variant transition-colors flex justify-center items-center gap-2">
+<span class="material-symbols-outlined text-sm" data-icon="upgrade">upgrade</span>
+                Upgrade Storage
+            </button>
+</div>
+<div class="border-t border-slate-200/60 p-sm space-y-2">
+<a class="flex items-center gap-3 px-4 py-2 text-slate-500 hover:text-slate-900 hover:bg-slate-50/80 transition-all duration-200 rounded-lg scale-95 active:scale-90 transition-transform" href="#">
+<span class="material-symbols-outlined text-sm" data-icon="help">help</span>
+<span class="text-xs leading-relaxed">Help Center</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-2 text-slate-500 hover:text-slate-900 hover:bg-slate-50/80 transition-all duration-200 rounded-lg scale-95 active:scale-90 transition-transform" href="#">
+<span class="material-symbols-outlined text-sm" data-icon="settings">settings</span>
+<span class="text-xs leading-relaxed">Settings</span>
+</a>
+</div>
+</aside>
+<!-- Main Content Wrapper -->
+<div class="flex-1 ml-72 flex flex-col min-h-screen">
+<!-- TopAppBar -->
+<header class="sticky top-0 z-30 flex items-center justify-between px-8 h-16 w-full border-b border-slate-200/60 bg-white/70 backdrop-blur-lg">
+<div class="flex items-center gap-4">
+<h1 class="text-base font-semibold text-slate-800">Knowledge Base</h1>
+</div>
+<div class="flex items-center gap-6">
+<div class="relative">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-outline text-sm" data-icon="search">search</span>
+<input class="pl-9 pr-4 py-1.5 bg-surface-container-low border-none rounded-full text-sm w-64 focus:ring-2 focus:ring-primary/20 transition-all text-on-surface placeholder:text-outline" placeholder="Search Knowledge Base..." type="text"/>
+</div>
+<div class="flex items-center gap-3 text-indigo-700">
+<button class="opacity-80 hover:opacity-100 transition-opacity hover:text-indigo-600">
+<span class="material-symbols-outlined" data-icon="notifications">notifications</span>
+</button>
+<button class="opacity-80 hover:opacity-100 transition-opacity hover:text-indigo-600">
+<span class="material-symbols-outlined" data-icon="cloud_done">cloud_done</span>
+</button>
+<img alt="User Profile Avatar" class="w-8 h-8 rounded-full border border-surface-variant cursor-pointer" data-alt="A small circular avatar placeholder image showing a generic user profile picture for a web application dashboard. The image should be a professional headshot or abstract geometric pattern suitable for a user icon in a light-themed interface. Ensure it matches the clean, minimalist aesthetic of the Kautilya AI design." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDq5VpuBIrMSPtGM6wlt3HobMqkUxs9znzILOux3lKzkKctan0rUisVHD4JI60rsyOeGQFxWtMbPg2Jt2SytPpS5DMjSs-RN01z5gCf6vrzzakbOB4NYwg203ZQwKcel_ZEOV7N2mICOcjSdyCpqiY08d4p_ZVtPRBS9VbWfdZBiMLWTTHjtHe2D2KoAyrNae4rS1zgpvxlDaT2yYIZPsu0OK1b7CLIayxFA5UbBApW6eP_QXndbNScdfA0Gfcr7Ho7kmyBSSGHJnE"/>
+</div>
+</div>
+</header>
+<!-- Main Canvas -->
+<main class="flex-1 p-lg overflow-y-auto">
+<div class="max-w-container-max mx-auto space-y-md">
+<!-- Page Header -->
+<div>
+<h2 class="font-h1 text-h1 text-on-surface mb-xs">Knowledge Base Manager</h2>
+<p class="font-body-md text-body-md text-on-surface-variant">Upload and manage documents to enhance your AI's contextual understanding. These sources act as the core memory for your personas.</p>
+</div>
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-md">
+<!-- Left Column: Upload & Active Sources -->
+<div class="lg:col-span-2 space-y-md">
+<!-- Upload Card -->
+<div class="bg-surface-container-lowest rounded-xl p-md border border-outline-variant/30 shadow-[0_4px_24px_rgba(0,0,0,0.02)]">
+<h3 class="font-h2 text-h2 text-on-surface mb-sm">Upload Documents</h3>
+<div class="border-2 border-dashed border-outline-variant/50 rounded-lg p-lg text-center bg-surface-container-low/50 hover:bg-surface-container-low transition-colors group cursor-pointer flex flex-col items-center justify-center min-h-[200px]">
+<div class="w-16 h-16 rounded-full bg-primary-container/10 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+<span class="material-symbols-outlined text-primary text-3xl" data-icon="upload_file">upload_file</span>
+</div>
+<p class="font-body-lg text-body-lg text-on-surface mb-2">Drag &amp; drop files here</p>
+<p class="font-body-md text-body-md text-on-surface-variant mb-4">Support for PDF, TXT, CSV, and DOCX up to 50MB</p>
+<button class="bg-primary text-on-primary px-6 py-2 rounded-full font-medium text-sm hover:bg-primary/90 transition-colors shadow-md">
+                                    Browse Files
+                                </button>
+</div>
+</div>
+<!-- Active Sources -->
+<div class="bg-surface-container-lowest rounded-xl p-md border border-outline-variant/30 shadow-[0_4px_24px_rgba(0,0,0,0.02)]">
+<div class="flex justify-between items-center mb-sm">
+<h3 class="font-h2 text-h2 text-on-surface">Active Sources</h3>
+<div class="relative">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-outline text-sm" data-icon="filter_list">filter_list</span>
+<input class="pl-9 pr-4 py-1.5 bg-surface-container-low border border-outline-variant/30 rounded-lg text-sm w-48 focus:ring-2 focus:ring-primary/20 transition-all text-on-surface placeholder:text-outline" placeholder="Filter files..." type="text"/>
+</div>
+</div>
+<div class="space-y-3">
+<!-- Source Item 1 -->
+<div class="flex items-center justify-between p-3 rounded-lg border border-outline-variant/30 hover:bg-surface-container-low/50 transition-colors">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded bg-red-50 flex items-center justify-center text-red-500">
+<span class="material-symbols-outlined" data-icon="picture_as_pdf">picture_as_pdf</span>
+</div>
+<div>
+<p class="font-medium text-sm text-on-surface">Q3_Financial_Report.pdf</p>
+<p class="text-xs text-on-surface-variant">4.2 MB • Uploaded 2 days ago</p>
+</div>
+</div>
+<div class="flex items-center gap-4">
+<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+<span class="material-symbols-outlined text-[14px]" data-icon="check_circle">check_circle</span>
+                                            Indexed
+                                        </span>
+<button class="text-outline hover:text-error transition-colors">
+<span class="material-symbols-outlined" data-icon="delete">delete</span>
+</button>
+</div>
+</div>
+<!-- Source Item 2 -->
+<div class="flex items-center justify-between p-3 rounded-lg border border-outline-variant/30 hover:bg-surface-container-low/50 transition-colors">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded bg-blue-50 flex items-center justify-center text-blue-500">
+<span class="material-symbols-outlined" data-icon="csv">csv</span>
+</div>
+<div>
+<p class="font-medium text-sm text-on-surface">Customer_Feedback_2023.csv</p>
+<p class="text-xs text-on-surface-variant">12.8 MB • Uploaded 1 hr ago</p>
+</div>
+</div>
+<div class="flex items-center gap-4">
+<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 animate-pulse">
+<span class="material-symbols-outlined text-[14px] animate-spin" data-icon="sync">sync</span>
+                                            Processing
+                                        </span>
+<button class="text-outline hover:text-error transition-colors">
+<span class="material-symbols-outlined" data-icon="delete">delete</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Right Column: Storage & Stats -->
+<div class="space-y-md">
+<!-- Storage Quota Card -->
+<div class="bg-surface-container-highest/30 rounded-xl p-md border border-outline-variant/30 shadow-[0_4px_24px_rgba(0,0,0,0.02)] backdrop-blur-sm">
+<h3 class="font-h2 text-h2 text-on-surface mb-4">Storage Quota</h3>
+<div class="mb-6 flex justify-center">
+<!-- Simulated Donut Chart using borders -->
+<div class="relative w-32 h-32 rounded-full flex items-center justify-center" style="background: conic-gradient(#1f108e 0% 24%, #e2e8f8 24% 100%);">
+<div class="absolute inset-2 bg-surface-container-lowest rounded-full flex flex-col items-center justify-center">
+<span class="text-2xl font-bold text-primary">24%</span>
+<span class="text-xs text-on-surface-variant text-center px-2">Used</span>
+</div>
+</div>
+</div>
+<div class="space-y-4">
+<div>
+<div class="flex justify-between text-sm mb-1">
+<span class="text-on-surface font-medium">Total Usage</span>
+<span class="text-on-surface-variant">2.4 GB / 10 GB</span>
+</div>
+<div class="h-2 w-full bg-surface-variant rounded-full overflow-hidden">
+<div class="h-full bg-primary rounded-full" style="width: 24%"></div>
+</div>
+</div>
+<div class="pt-4 border-t border-outline-variant/30 space-y-3">
+<h4 class="font-label-sm text-label-sm text-outline uppercase tracking-wider">Breakdown</h4>
+<div class="flex items-center justify-between text-sm">
+<div class="flex items-center gap-2 text-on-surface">
+<div class="w-2 h-2 rounded-full bg-red-400"></div>
+                                            PDF Documents
+                                        </div>
+<span class="text-on-surface-variant">1.2 GB</span>
+</div>
+<div class="flex items-center justify-between text-sm">
+<div class="flex items-center gap-2 text-on-surface">
+<div class="w-2 h-2 rounded-full bg-blue-400"></div>
+                                            CSV / Datasets
+                                        </div>
+<span class="text-on-surface-variant">0.8 GB</span>
+</div>
+<div class="flex items-center justify-between text-sm">
+<div class="flex items-center gap-2 text-on-surface">
+<div class="w-2 h-2 rounded-full bg-gray-400"></div>
+                                            Text Files
+                                        </div>
+<span class="text-on-surface-variant">0.4 GB</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+</div>
+</body></html>

@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import { Crown, Zap, Sparkles, CreditCard, Download, Loader2, ArrowUpRight } from 'lucide-vue-next'
-import { Billing } from '@/lib/api'
+import { Billing, api } from '@/lib/api'
 
 const loading = ref(true)
 const config = ref(null)

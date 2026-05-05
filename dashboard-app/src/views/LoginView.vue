@@ -72,27 +72,35 @@ async function go() {
           </div>
         </div>
 
-        <div class="card p-7 sm:p-9">
+        <div class="card p-7 sm:p-9 shadow-2xl">
           <h2 class="text-xl font-semibold mb-1">Sign in to your studio</h2>
-          <p class="text-sm text-ink-muted mb-7">Continue with Google to access your agents, calls and analytics.</p>
+          <p class="text-sm text-ink-muted mb-7">Access your agents, calls and analytics in one place.</p>
 
-          <button class="btn btn-lg w-full bg-white text-black hover:brightness-95" :disabled="loading" @click="go">
-            <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+          <button class="btn btn-lg w-full bg-white text-black hover:brightness-95 flex items-center justify-center gap-3" :disabled="loading" @click="go">
+            <svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true">
               <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.4 29.3 35.5 24 35.5c-6.4 0-11.5-5.1-11.5-11.5S17.6 12.5 24 12.5c2.9 0 5.6 1.1 7.6 2.9l5.7-5.7C33.6 6.3 29 4.5 24 4.5 13.2 4.5 4.5 13.2 4.5 24S13.2 43.5 24 43.5c10.8 0 19.5-8.7 19.5-19.5 0-1.3-.1-2.3-.4-3.5z"/>
               <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.5 16 18.9 12.5 24 12.5c2.9 0 5.6 1.1 7.6 2.9l5.7-5.7C33.6 6.3 29 4.5 24 4.5 16.3 4.5 9.6 8.7 6.3 14.7z"/>
               <path fill="#4CAF50" d="M24 43.5c5 0 9.5-1.7 13-4.6l-6-5.1c-1.9 1.4-4.3 2.2-7 2.2-5.3 0-9.7-3.1-11.3-7.5l-6.5 5C9.4 39.4 16.1 43.5 24 43.5z"/>
               <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.7 2.2-2.1 4.1-3.9 5.4l6 5.1c-.4.4 6.6-4.8 6.6-14 0-1.3-.1-2.3-.4-4z"/>
             </svg>
-            <span>{{ loading ? 'Signing in…' : 'Continue with Google' }}</span>
+            <span class="font-semibold">{{ loading ? 'Signing in…' : 'Continue with Google' }}</span>
           </button>
 
-          <p v-if="err" class="mt-4 text-sm text-danger">{{ err }}</p>
+          <p v-if="err" class="mt-4 text-sm text-danger text-center">{{ err }}</p>
 
-          <div class="divider"></div>
-          <p class="text-xs text-ink-dim text-center">
-            By continuing you agree to our <a href="#" class="underline hover:text-ink">Terms</a> &
-            <a href="#" class="underline hover:text-ink">Privacy</a>.
-          </p>
+          <div class="divider my-8"></div>
+          
+          <div class="text-center space-y-4">
+            <p class="text-sm text-ink-muted">
+              Don't have an account? 
+              <button @click="go" class="text-accent hover:underline font-medium">Sign up for free</button>
+            </p>
+            
+            <p class="text-xs text-ink-dim">
+              By continuing you agree to our <a href="#" class="underline hover:text-ink">Terms</a> &
+              <a href="#" class="underline hover:text-ink">Privacy Policy</a>.
+            </p>
+          </div>
         </div>
       </div>
     </div>

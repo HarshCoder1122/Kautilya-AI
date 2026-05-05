@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Kautilya AI - Chat</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "secondary-fixed": "#e1e0ff",
+                        "surface-tint": "#544fc0",
+                        "surface-container-high": "#e2e8f8",
+                        "surface-bright": "#f9f9ff",
+                        "on-secondary-fixed": "#07006c",
+                        "on-error": "#ffffff",
+                        "surface-container-low": "#f0f3ff",
+                        "on-tertiary": "#ffffff",
+                        "surface-container-lowest": "#ffffff",
+                        "secondary-fixed-dim": "#c0c1ff",
+                        "primary-container": "#3730a3",
+                        "outline-variant": "#c8c4d5",
+                        "on-background": "#151c27",
+                        "primary-fixed-dim": "#c3c0ff",
+                        "on-primary-container": "#a9a7ff",
+                        "error": "#ba1a1a",
+                        "on-tertiary-container": "#fe9562",
+                        "primary": "#1f108e",
+                        "outline": "#777584",
+                        "tertiary-fixed-dim": "#ffb694",
+                        "on-secondary-fixed-variant": "#2f2ebe",
+                        "tertiary": "#511c00",
+                        "surface-container-highest": "#dce2f3",
+                        "on-tertiary-fixed-variant": "#7a3003",
+                        "background": "#f9f9ff",
+                        "error-container": "#ffdad6",
+                        "surface": "#f9f9ff",
+                        "on-secondary-container": "#fffbff",
+                        "surface-variant": "#dce2f3",
+                        "on-primary": "#ffffff",
+                        "surface-container": "#e7eefe",
+                        "on-surface": "#151c27",
+                        "primary-fixed": "#e2dfff",
+                        "on-surface-variant": "#464553",
+                        "on-primary-fixed": "#0f0069",
+                        "secondary-container": "#6063ee",
+                        "inverse-surface": "#2a313d",
+                        "secondary": "#4648d4",
+                        "on-secondary": "#ffffff",
+                        "on-error-container": "#93000a",
+                        "inverse-primary": "#c3c0ff",
+                        "inverse-on-surface": "#ebf1ff",
+                        "tertiary-fixed": "#ffdbcc",
+                        "on-tertiary-fixed": "#351000",
+                        "on-primary-fixed-variant": "#3b35a7",
+                        "surface-dim": "#d3daea",
+                        "tertiary-container": "#752c00"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "xl": "4rem",
+                        "container-max": "800px",
+                        "base": "4px",
+                        "md": "1.5rem",
+                        "sm": "1rem",
+                        "xs": "0.5rem",
+                        "lg": "2.5rem"
+                    },
+                    "fontFamily": {
+                        "code": [
+                            "monospace"
+                        ]
+                    },
+                    "fontSize": {
+                        "code": [
+                            "0.875rem",
+                            {
+                                "lineHeight": "1.5",
+                                "fontWeight": "400"
+                            }
+                        ],
+                        "label-sm": [
+                            "0.75rem",
+                            {
+                                "lineHeight": "1rem",
+                                "letterSpacing": "0.05em",
+                                "fontWeight": "500"
+                            }
+                        ],
+                        "h1": [
+                            "2.25rem",
+                            {
+                                "lineHeight": "1.2",
+                                "letterSpacing": "-0.02em",
+                                "fontWeight": "700"
+                            }
+                        ],
+                        "body-lg": [
+                            "1.125rem",
+                            {
+                                "lineHeight": "1.75",
+                                "fontWeight": "400"
+                            }
+                        ],
+                        "body-md": [
+                            "1rem",
+                            {
+                                "lineHeight": "1.6",
+                                "fontWeight": "400"
+                            }
+                        ],
+                        "h2": [
+                            "1.5rem",
+                            {
+                                "lineHeight": "1.3",
+                                "letterSpacing": "-0.01em",
+                                "fontWeight": "600"
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        /* Ambient shadow for interactive elements */
+        .ambient-shadow {
+            box-shadow: 0px 4px 20px rgba(84, 79, 192, 0.08);
+        }
+        /* Custom scrollbar for clean aesthetic */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background-color: theme('colors.outline-variant');
+            border-radius: theme('borderRadius.full');
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background font-body-md text-body-md h-screen overflow-hidden flex selection:bg-primary-fixed selection:text-on-primary-fixed">
+<!-- SideNavBar (Shared Component) -->
+<nav class="fixed left-0 top-0 h-full flex flex-col z-40 h-screen w-72 border-r border-slate-200/50 dark:border-white/10 bg-white/70 dark:bg-indigo-950/20 backdrop-blur-xl shadow-[4px_0_24px_rgba(55,48,163,0.05)] font-['Inter'] antialiased tracking-tight">
+<!-- Header -->
+<div class="px-6 py-5 flex items-center gap-3">
+<div class="w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-on-primary shadow-sm">
+<span class="material-symbols-outlined text-[18px]">psychology</span>
+</div>
+<div>
+<h2 class="text-xl font-bold text-indigo-900 dark:text-indigo-100 leading-tight">Kautilya AI</h2>
+<span class="text-xs text-slate-500 font-medium">Intellectual Advisor</span>
+</div>
+</div>
+<!-- CTA -->
+<div class="px-4 pb-4">
+<button class="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-on-surface font-body-md text-body-md font-medium transition-colors border border-outline-variant/30">
+<span class="material-symbols-outlined text-[18px]">edit_square</span>
+                New Conversation
+            </button>
+</div>
+<!-- Scrollable Tabs -->
+<div class="flex-1 overflow-y-auto px-2 space-y-1">
+<!-- Active Tab -->
+<a class="flex items-center gap-3 px-4 py-3 text-indigo-700 dark:text-indigo-300 bg-indigo-50/50 dark:bg-indigo-900/30 border-r-4 border-indigo-600 font-semibold active:scale-[0.98] transition-transform rounded-lg" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">add_comment</span>
+                New Chat
+            </a>
+<!-- Inactive Tabs -->
+<a class="flex items-center gap-3 px-4 py-3 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/5 transition-all hover:bg-indigo-50/80 dark:hover:bg-indigo-900/20 transition-colors duration-200 active:scale-[0.98] transition-transform rounded-lg" href="#">
+<span class="material-symbols-outlined">face</span>
+                Personas
+            </a>
+<a class="flex items-center gap-3 px-4 py-3 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/5 transition-all hover:bg-indigo-50/80 dark:hover:bg-indigo-900/20 transition-colors duration-200 active:scale-[0.98] transition-transform rounded-lg" href="#">
+<span class="material-symbols-outlined">database</span>
+                Knowledge Base
+            </a>
+<a class="flex items-center gap-3 px-4 py-3 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/5 transition-all hover:bg-indigo-50/80 dark:hover:bg-indigo-900/20 transition-colors duration-200 active:scale-[0.98] transition-transform rounded-lg" href="#">
+<span class="material-symbols-outlined">settings</span>
+                Settings
+            </a>
+</div>
+<!-- Footer Tabs -->
+<div class="p-2 border-t border-slate-200/50 space-y-1">
+<a class="flex items-center gap-3 px-4 py-2.5 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/5 transition-all hover:bg-indigo-50/80 dark:hover:bg-indigo-900/20 transition-colors duration-200 active:scale-[0.98] transition-transform rounded-lg" href="#">
+<span class="material-symbols-outlined text-[20px]">help_outline</span>
+<span class="text-sm">Help &amp; Support</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-2.5 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/5 transition-all hover:bg-indigo-50/80 dark:hover:bg-indigo-900/20 transition-colors duration-200 active:scale-[0.98] transition-transform rounded-lg" href="#">
+<span class="material-symbols-outlined text-[20px]">logout</span>
+<span class="text-sm">Log out</span>
+</a>
+</div>
+</nav>
+<!-- Main Viewport -->
+<main class="ml-72 flex-1 flex flex-col h-screen relative bg-surface">
+<!-- TopAppBar (Shared Component) -->
+<header class="sticky top-0 right-0 flex items-center justify-between px-6 z-30 w-full h-16 border-b border-slate-200/50 dark:border-white/10 bg-white/70 dark:bg-indigo-950/10 backdrop-blur-md shadow-sm dark:shadow-none font-['Inter'] text-sm font-medium">
+<!-- Navigation Links -->
+<div class="flex items-center gap-6 h-full pt-1">
+<button class="h-full flex items-center text-indigo-600 dark:text-indigo-300 border-b-2 border-indigo-600 pb-1 active:opacity-80 transition-opacity">
+                    GPT-4o
+                </button>
+<button class="h-full flex items-center text-slate-500 dark:text-slate-400 hover:text-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-300 transition-colors active:opacity-80 transition-opacity border-b-2 border-transparent pb-1">
+                    Claude 3.5
+                </button>
+<button class="h-full flex items-center text-slate-500 dark:text-slate-400 hover:text-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-300 transition-colors active:opacity-80 transition-opacity border-b-2 border-transparent pb-1">
+                    Gemini Pro
+                </button>
+</div>
+<!-- Trailing Icons -->
+<div class="flex items-center gap-4 text-indigo-700 dark:text-indigo-400">
+<button class="p-1.5 rounded-full hover:bg-indigo-50 dark:hover:bg-indigo-900/30 transition-colors hover:text-indigo-600 dark:hover:text-indigo-300 active:opacity-80">
+<span class="material-symbols-outlined text-[20px]">history</span>
+</button>
+<button class="p-1.5 rounded-full hover:bg-indigo-50 dark:hover:bg-indigo-900/30 transition-colors hover:text-indigo-600 dark:hover:text-indigo-300 active:opacity-80">
+<span class="material-symbols-outlined text-[20px]">notifications</span>
+</button>
+<button class="p-1.5 rounded-full hover:bg-indigo-50 dark:hover:bg-indigo-900/30 transition-colors hover:text-indigo-600 dark:hover:text-indigo-300 active:opacity-80">
+<span class="material-symbols-outlined text-[24px]">account_circle</span>
+</button>
+</div>
+</header>
+<!-- Chat Feed Area -->
+<div class="flex-1 overflow-y-auto w-full pb-32">
+<div class="max-w-container-max mx-auto px-6 py-10 flex flex-col gap-10">
+<!-- Initial State / Empty State Message (Optional, assuming mid-conversation for layout) -->
+<div class="flex flex-col items-center justify-center py-10 opacity-0 hidden">
+<div class="w-16 h-16 rounded-2xl bg-primary-fixed flex items-center justify-center text-on-primary-fixed mb-4">
+<span class="material-symbols-outlined text-3xl">psychology</span>
+</div>
+<h1 class="font-h1 text-h1 text-on-background mb-2">How can I help you today?</h1>
+</div>
+<!-- User Prompt Bubble -->
+<div class="flex flex-col items-end w-full group">
+<div class="max-w-[85%] bg-surface-container-high text-on-surface px-5 py-4 rounded-2xl rounded-tr-sm shadow-sm font-body-md text-body-md leading-relaxed">
+                        Could you analyze the core principles of glassmorphism in modern UI design and provide a brief functional component example utilizing Tailwind CSS to achieve this effect? I'm particularly interested in how backdrop filters interact with surface tones.
+                    </div>
+</div>
+<!-- AI Response Block (Document Style) -->
+<div class="flex flex-col items-start w-full group">
+<div class="flex items-center gap-3 mb-3 text-on-surface-variant font-medium">
+<div class="w-6 h-6 rounded-md bg-primary flex items-center justify-center text-on-primary">
+<span class="material-symbols-outlined text-[14px]">psychology</span>
+</div>
+<span class="text-sm">Kautilya AI</span>
+</div>
+<div class="w-full text-on-background font-body-lg text-body-lg leading-relaxed space-y-6">
+<p>
+                            Glassmorphism is a prominent design trend characterized by translucent, frosted-glass-like surfaces that appear to float over the background. It establishes visual hierarchy and depth without relying on opaque blocks of color or harsh drop shadows.
+                        </p>
+<div>
+<h3 class="font-h2 text-h2 text-on-surface mb-3">Core Principles</h3>
+<ul class="list-disc pl-5 space-y-2 text-on-surface-variant">
+<li><strong>Translucency:</strong> Utilizing a background color with significant transparency (e.g., `rgba(255,255,255, 0.7)`).</li>
+<li><strong>Background Blur:</strong> The defining feature; applying a backdrop filter blur to soften the content resting beneath the surface.</li>
+<li><strong>Subtle Borders:</strong> A very thin, low-opacity light border to define the edge of the "glass," simulating the physical edge of a glass pane catching light.</li>
+<li><strong>Vivid Backgrounds:</strong> Glassmorphism is most effective when placed over vibrant, complex, or tonal backgrounds, allowing the blur effect to be noticeable.</li>
+</ul>
+</div>
+<div>
+<h3 class="font-h2 text-h2 text-on-surface mb-3">Tailwind CSS Implementation</h3>
+<p class="mb-4 text-on-surface-variant">Here is a streamlined example of a glass card component using standard Tailwind utility classes:</p>
+<!-- Code Block styling matching design system -->
+<div class="rounded-xl overflow-hidden border border-outline-variant/30 bg-[#1e1e1e]">
+<div class="flex items-center justify-between px-4 py-2 bg-inverse-surface text-inverse-on-surface border-b border-white/10 font-code text-[12px]">
+<span>html</span>
+<button class="flex items-center gap-1 hover:text-white transition-colors">
+<span class="material-symbols-outlined text-[14px]">content_copy</span> Copy
+                                    </button>
+</div>
+<div class="p-4 overflow-x-auto">
+<pre class="font-code text-code text-[#d4d4d4]"><code><span class="text-[#569cd6]">&lt;div</span> <span class="text-[#9cdcfe]">class</span>=<span class="text-[#ce9178]">"relative p-8 overflow-hidden rounded-2xl bg-white/30 backdrop-blur-md border border-white/40 shadow-[0_4px_30px_rgba(0,0,0,0.1)]"</span><span class="text-[#569cd6]">&gt;</span>
+  <span class="text-[#569cd6]">&lt;h3</span> <span class="text-[#9cdcfe]">class</span>=<span class="text-[#ce9178]">"text-xl font-semibold text-gray-800"</span><span class="text-[#569cd6]">&gt;</span>Glass Card<span class="text-[#569cd6]">&lt;/h3&gt;</span>
+  <span class="text-[#569cd6]">&lt;p</span> <span class="text-[#9cdcfe]">class</span>=<span class="text-[#ce9178]">"mt-2 text-gray-600"</span><span class="text-[#569cd6]">&gt;</span>Floating surface effect.<span class="text-[#569cd6]">&lt;/p&gt;</span>
+<span class="text-[#569cd6]">&lt;/div&gt;</span></code></pre>
+</div>
+</div>
+</div>
+</div>
+<!-- Action Row for AI Response -->
+<div class="flex items-center gap-2 mt-4 opacity-0 group-hover:opacity-100 transition-opacity">
+<button class="p-1.5 rounded-md text-outline hover:bg-surface-container hover:text-on-surface transition-colors" title="Copy">
+<span class="material-symbols-outlined text-[18px]">content_copy</span>
+</button>
+<button class="p-1.5 rounded-md text-outline hover:bg-surface-container hover:text-on-surface transition-colors" title="Regenerate">
+<span class="material-symbols-outlined text-[18px]">refresh</span>
+</button>
+<button class="p-1.5 rounded-md text-outline hover:bg-surface-container hover:text-on-surface transition-colors" title="Good response">
+<span class="material-symbols-outlined text-[18px]">thumb_up</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+<!-- Input Area (Bottom Anchored) -->
+<div class="absolute bottom-0 left-0 w-full bg-gradient-to-t from-surface via-surface to-transparent pt-10 pb-6 px-6">
+<div class="max-w-container-max mx-auto w-full relative">
+<!-- AI Shortcuts / Chips -->
+<div class="flex items-center gap-2 mb-3 px-1 overflow-x-auto no-scrollbar">
+<button class="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-secondary-fixed text-on-secondary-fixed font-label-sm text-label-sm hover:bg-secondary-fixed-dim transition-colors border border-outline-variant/20 shadow-sm">
+<span class="material-symbols-outlined text-[14px]">format_align_left</span>
+                        Summarize
+                    </button>
+<button class="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-container-high text-on-surface font-label-sm text-label-sm hover:bg-surface-container-highest transition-colors border border-outline-variant/30 shadow-sm">
+<span class="material-symbols-outlined text-[14px]">code</span>
+                        Code
+                    </button>
+<button class="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-tertiary-fixed text-on-tertiary-fixed font-label-sm text-label-sm hover:bg-tertiary-fixed-dim transition-colors border border-outline-variant/20 shadow-sm">
+<span class="material-symbols-outlined text-[14px]">draw</span>
+                        Creative
+                    </button>
+</div>
+<!-- Main Input Field -->
+<div class="relative bg-surface-container-lowest border border-outline-variant/60 rounded-2xl ambient-shadow focus-within:border-primary focus-within:ring-2 focus-within:ring-primary-fixed-dim transition-all duration-300 flex flex-col">
+<textarea class="w-full bg-transparent border-none resize-none focus:ring-0 p-4 font-body-md text-body-md text-on-surface placeholder:text-outline max-h-48 min-h-[56px]" placeholder="Message Kautilya AI..." rows="1"></textarea>
+<div class="flex items-center justify-between px-3 pb-3">
+<div class="flex items-center gap-1">
+<button class="p-2 rounded-lg text-outline hover:bg-surface-container hover:text-on-surface transition-colors">
+<span class="material-symbols-outlined text-[20px]">attach_file</span>
+</button>
+<button class="p-2 rounded-lg text-outline hover:bg-surface-container hover:text-on-surface transition-colors">
+<span class="material-symbols-outlined text-[20px]">mic</span>
+</button>
+</div>
+<button class="flex items-center justify-center w-8 h-8 rounded-full bg-primary text-on-primary hover:bg-primary-container transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
+<span class="material-symbols-outlined text-[18px]">arrow_upward</span>
+</button>
+</div>
+</div>
+<div class="text-center mt-3">
+<span class="font-label-sm text-label-sm text-outline">Kautilya AI can make mistakes. Consider verifying critical information.</span>
+</div>
+</div>
+</div>
+</main>
+</body></html>

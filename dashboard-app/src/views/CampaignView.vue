@@ -162,7 +162,7 @@ async function remove(camp) {
             <label class="label">Select Agent</label>
             <select v-model="selectedAgentId" class="select">
               <option value="" disabled>Choose an agent...</option>
-              <option v-for="a in agents.items" :key="a.agent_id" :value="a.agent_id">{{ a.name }}</option>
+              <option v-for="a in agents.items" :key="a.id" :value="a.id">{{ a.name }}</option>
             </select>
           </div>
           
