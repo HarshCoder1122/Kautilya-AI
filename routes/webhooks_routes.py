@@ -229,8 +229,14 @@ def vobiz_answer(agent_id):
         log_suffix = "(direct dispatch, pre-warmed)"
     else:
         from_number = (request.values.get('From') or '').strip().lstrip('+') or 'caller'
+        # SOFT PRE-WARM: Even in safe mode, we can try to pre-create the 
+        # canonical room name that LiveKit is about to generate. This
+        # eliminates the 1-2s of silence without needing complex dispatch rules.
+        canonical_room = f"voice-_+{from_number}_{call_uuid}"
+        _predispatch_blocking(canonical_room, agent_id, None) 
+        
         sip_uri = f"sip:{from_number}@{SIP_DOMAIN}"
-        log_suffix = "(safe mode, trunk auto-creates room)"
+        log_suffix = "(safe mode, with soft pre-warm)"
 
     xml = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <Response>
