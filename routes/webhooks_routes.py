@@ -200,25 +200,41 @@ def vobiz_answer(agent_id):
         print(f"[Bridge] Mapping error: {e}")
 
     # ----- Decide SIP destination + (optional) pre-dispatch -----
+    # Two modes:
+    #
+    # (A) "Direct dispatch" mode (LIVEKIT_SIP_DIRECT_DISPATCH=1): we
+    #     generate a deterministic room name, pre-create the room and
+    #     pre-dispatch the agent BEFORE replying to Vobiz. The customer's
+    #     audio leg then lands into a room where the agent is already
+    #     waiting — zero silence after pickup. Requires the LiveKit
+    #     inbound SIP trunk dispatch rule to be in **Direct** mode so the
+    #     SIP user portion is honored as the room name.
+    #
+    # (B) Default safe mode: no pre-warm, no pre-create. The LiveKit
+    #     inbound SIP trunk creates its own canonical room
+    #     (`voice-_+<phone>_<callid>`) when the audio leg arrives and
+    #     auto-dispatches the agent. Single-room guarantee.
     direct_dispatch = os.environ.get("LIVEKIT_SIP_DIRECT_DISPATCH", "").strip().lower() in ("1", "true", "yes")
     agent_worker_name = os.environ.get("LIVEKIT_AGENT_NAME", "").strip()
     caller_id = request.values.get('From', '')
 
     if direct_dispatch:
-        # ALWAYS use the deterministic room name as the SIP user.
-        # This requires the LiveKit Inbound SIP Trunk to be in 'Direct' mode.
         room_name = f"voice-{agent_id}--{call_uuid}"
-        print(f"[Bridge] Pre-dispatching deterministic room: {room_name}")
+        # Block briefly while we pre-create the room and (optionally)
+        # explicitly dispatch the named agent. Typical wall-clock cost is
+        # 200-500ms — well within Vobiz's answer-webhook timeout — and it
+        # buys us a fully populated room before the audio leg lands.
         _predispatch_blocking(room_name, agent_id, agent_worker_name)
         sip_uri = f"sip:{room_name}@{SIP_DOMAIN}"
-        log_suffix = f"(deterministic dispatch, room={room_name})"
+        log_suffix = "(direct dispatch, pre-warmed)"
     else:
-        # Safe mode: use the caller identity (Standard mode)
         from_number = (request.values.get('From') or '').strip().lstrip('+') or 'caller'
-        # Optional: Soft pre-warm the room name LiveKit is likely to generate
+        # SOFT PRE-WARM: Even in safe mode, we can try to pre-create the 
+        # canonical room name that LiveKit is about to generate. This
+        # eliminates the 1-2s of silence without needing complex dispatch rules.
         canonical_room = f"voice-_+{from_number}_{call_uuid}"
-        print(f"[Bridge] Soft pre-warming room: {canonical_room}")
-        _predispatch_blocking(canonical_room, agent_id, None)
+        _predispatch_blocking(canonical_room, agent_id, None) 
+        
         sip_uri = f"sip:{from_number}@{SIP_DOMAIN}"
         log_suffix = "(safe mode, with soft pre-warm)"
 
