@@ -250,41 +250,40 @@ async def _lookup_by_phone(phone_raw: str, call_id: str = None):
             print(f"[Config] Deterministic claim error on {v}/{call_id}: {e}", flush=True)
 
         # ---- 2. FIFO claim fallback ----
-        # Only use FIFO when the room has no call token. If LiveKit gives us a
-        # call_id-like suffix, claiming a different pending doc can turn a
-        # duplicate/random SIP room into the active call.
-        if not call_id:
-            try:
-                pending_q = (db.collection('active_calls').document(v)
-                               .collection('pending')
-                               .where(filter=firestore.FieldFilter('claimed', '==', False))
-                               .order_by('created_at')
-                               .limit(1))
-                pending_docs = list(pending_q.stream())
-                if pending_docs:
-                    claim_ref = pending_docs[0].reference
+        # In standard SIP mode, LiveKit generates a random suffix (call_id)
+        # which won't match the Vobiz CallUUID. If the deterministic lookup
+        # above failed, we fall back to FIFO claim to catch the pending call.
+        try:
+            pending_q = (db.collection('active_calls').document(v)
+                           .collection('pending')
+                           .where(filter=firestore.FieldFilter('claimed', '==', False))
+                           .order_by('created_at')
+                           .limit(1))
+            pending_docs = list(pending_q.stream())
+            if pending_docs:
+                claim_ref = pending_docs[0].reference
 
-                    @firestore.transactional
-                    def _claim_fifo(tx, ref):
-                        snap = ref.get(transaction=tx)
-                        if not snap.exists:
-                            return None
-                        data = snap.to_dict() or {}
-                        if data.get('claimed'):
-                            return None
-                        tx.update(ref, {"claimed": True,
-                                         "claimed_at": firestore.SERVER_TIMESTAMP})
-                        return data
+                @firestore.transactional
+                def _claim_fifo(tx, ref):
+                    snap = ref.get(transaction=tx)
+                    if not snap.exists:
+                        return None
+                    data = snap.to_dict() or {}
+                    if data.get('claimed'):
+                        return None
+                    tx.update(ref, {"claimed": True,
+                                     "claimed_at": firestore.SERVER_TIMESTAMP})
+                    return data
 
-                    tx_result = _claim_fifo(db.transaction(), claim_ref)
-                    if tx_result and tx_result.get('agent_id'):
-                        mapped = tx_result['agent_id']
-                        agent_doc = db.collection('agents').document(mapped).get()
-                        if agent_doc.exists:
-                            print(f"[Config] 🎯 active_calls/{v}/pending → agent {mapped} (FIFO claim)", flush=True)
-                            return agent_doc, mapped
-            except Exception as e:
-                print(f"[Config] FIFO claim error on {v}: {e}", flush=True)
+                tx_result = _claim_fifo(db.transaction(), claim_ref)
+                if tx_result and tx_result.get('agent_id'):
+                    mapped = tx_result['agent_id']
+                    agent_doc = db.collection('agents').document(mapped).get()
+                    if agent_doc.exists:
+                        print(f"[Config] 🎯 active_calls/{v}/pending → agent {mapped} (FIFO claim)", flush=True)
+                        return agent_doc, mapped
+        except Exception as e:
+            print(f"[Config] FIFO claim error on {v}: {e}", flush=True)
 
         # ---- 3. Legacy top-level doc fallback ----
         try:
@@ -294,11 +293,11 @@ async def _lookup_by_phone(phone_raw: str, call_id: str = None):
             if call_doc.exists:
                 call_data = call_doc.to_dict() or {}
                 stored_call_id = call_data.get('call_uuid') or call_data.get('call_id')
-                if call_id and stored_call_id and not _ids_match(call_id, stored_call_id):
-                    print(f"[Config] Skipping active_calls/{v} legacy mapping: room_call_id={call_id} stored_call_id={stored_call_id}", flush=True)
-                    continue
-                if call_id and not stored_call_id:
-                    print(f"[Config] Skipping active_calls/{v} legacy mapping: missing stored call_id for room_call_id={call_id}", flush=True)
+                # Only skip if we have BOTH IDs and they strictly mismatch.
+                # If room_call_id is a random suffix, we ignore the mismatch.
+                is_real_uuid = len(str(call_id)) > 15 
+                if call_id and stored_call_id and is_real_uuid and not _ids_match(call_id, stored_call_id):
+                    print(f"[Config] Skipping active_calls/{v} legacy mapping: mismatch {call_id} vs {stored_call_id}", flush=True)
                     continue
                 mapped = call_data.get('agent_id')
                 if mapped:
