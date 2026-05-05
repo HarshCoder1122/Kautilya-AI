@@ -37,7 +37,11 @@ export async function api(path, opts = {}) {
     throw new ApiError(msg, resp.status, data)
   }
 
-  // Handle blob response if requested
+  // Handle stream or blob response if requested
+  if (opts.stream) {
+    return resp
+  }
+
   if (opts.responseType === 'blob') {
     return await resp.blob()
   }
