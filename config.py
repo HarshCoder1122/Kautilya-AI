@@ -130,6 +130,12 @@ LIVEKIT_SIP_URI = os.environ.get('LIVEKIT_SIP_URI', '4mu6v2usrj9.sip.livekit.clo
 ADMIN_SECRET_KEY = os.environ.get("ADMIN_SECRET_KEY", "")
 KAUTILYA_API_KEY = os.environ.get("KAUTILYA_API_KEY", "")
 
+# ============== Vobiz Master (for Studio Test Calls) ==============
+# Test calls from the Studio always use these master credentials
+VOBIZ_MASTER_USER = os.environ.get("VOBIZ_MASTER_USER", "")
+VOBIZ_MASTER_PASS = os.environ.get("VOBIZ_MASTER_PASS", "")
+VOBIZ_MASTER_NUMBER = os.environ.get("VOBIZ_MASTER_NUMBER", "")
+
 # ============== CSP Header ==============
 CSP_POLICY = (
     "default-src 'self'; "
@@ -145,6 +151,7 @@ CSP_POLICY = (
     "connect-src 'self' https: wss: https://api.razorpay.com https://lumberjack.razorpay.com; "
     "media-src 'self' blob: https:; "
     "frame-src 'self' https://accounts.google.com https://*.firebaseapp.com "
+        "https://*.kautilya.com "
         "https://api.razorpay.com https://lumberjack.razorpay.com https://checkout.razorpay.com; "
     "object-src 'none'; "
     "base-uri 'self'; "

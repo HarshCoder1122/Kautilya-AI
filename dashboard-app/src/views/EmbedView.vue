@@ -32,7 +32,7 @@ const snippetReact = computed(() => {
   return `import { LiveKitRoom } from '@livekit/components-react';
 
 // 1. Fetch token from RevealIQ using your API Key
-const response = await fetch('https://revealiq.example.com/api/agents/${aid}/livekit-token', {
+const response = await fetch('https://ai.revealiq.in/api/agents/${aid}/livekit-token', {
   method: 'POST',
   headers: {
     'Authorization': 'Bearer ${apiKey.value || 'YOUR_API_KEY'}',
@@ -61,7 +61,7 @@ const snippetJS = computed(() => {
   return `import { Room } from 'livekit-client';
 
 // 1. Fetch token
-const response = await fetch('https://revealiq.example.com/api/agents/${aid}/livekit-token', {
+const response = await fetch('https://ai.revealiq.in/api/agents/${aid}/livekit-token', {
   method: 'POST',
   headers: {
     'Authorization': 'Bearer ${apiKey.value || 'YOUR_API_KEY'}',

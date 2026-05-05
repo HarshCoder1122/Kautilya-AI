@@ -30,15 +30,21 @@ export async function api(path, opts = {}) {
     body = JSON.stringify(body)
   }
   const resp = await fetch(path, { ...opts, headers, body })
-  const ctype = resp.headers.get('content-type') || ''
-  let data = null
-  if (ctype.includes('application/json')) data = await resp.json().catch(() => null)
-  else data = await resp.text().catch(() => null)
+  
   if (!resp.ok) {
+    const data = await resp.json().catch(() => null)
     const msg = (data && (data.error || data.message)) || `${resp.status} ${resp.statusText}`
     throw new ApiError(msg, resp.status, data)
   }
-  return data
+
+  // Handle blob response if requested
+  if (opts.responseType === 'blob') {
+    return await resp.blob()
+  }
+
+  const ctype = resp.headers.get('content-type') || ''
+  if (ctype.includes('application/json')) return await resp.json().catch(() => null)
+  return await resp.text().catch(() => null)
 }
 
 // ----- Convenience endpoints -----
@@ -49,6 +55,12 @@ export const Agents = {
   remove: (id) => api(`/api/agents/${id}/delete`, { method: 'POST' }),
   logs: (id) => api(`/api/agents/${id}/logs`),
   callOutbound: (id, payload) => api(`/api/agents/${id}/call-outbound`, { method: 'POST', body: payload }),
+  kb: {
+    list: (agentId) => api(`/api/agents/${agentId}/kb`),
+    upload: (agentId, formData) => api(`/api/agents/${agentId}/kb`, { method: 'POST', body: formData }),
+    addUrl: (agentId, url) => api(`/api/agents/${agentId}/kb-url`, { method: 'POST', body: { url } }),
+    remove: (agentId, fileId) => api(`/api/agents/${agentId}/kb/${fileId}`, { method: 'DELETE' }),
+  }
 }
 
 export const Telephony = {
@@ -57,7 +69,7 @@ export const Telephony = {
 }
 
 export const Billing = {
-  status: () => api('/api/billing/status'),
+  status: () => api('/api/billing/config'),
 }
 
 export const Analytics = {
@@ -79,5 +91,5 @@ export const User = {
 }
 
 export const Voice = {
-  preview: (payload) => api('/api/voice/preview', { method: 'POST', body: payload }),
+  preview: (payload) => api('/api/voice/preview', { method: 'POST', body: payload, responseType: 'blob' }),
 }

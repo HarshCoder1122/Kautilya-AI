@@ -3,7 +3,7 @@ import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft, Save, Loader2, PhoneOutgoing, BookOpen, Settings as SettingsIcon,
-  History, Sparkles, Volume2, Globe, Bot, Trash2, Play, Pause
+  History, Sparkles, Volume2, Globe, Bot, Trash2, Play, Pause, Upload, FileText, Link, X
 } from 'lucide-vue-next'
 import { Agents, Voice } from '@/lib/api'
 import { useAgents } from '@/stores/agents'
@@ -45,6 +45,13 @@ watch(() => agent.value?.model, (newModel, oldModel) => {
 const previewing = ref(false)
 const previewAudio = ref(null)
 
+// KB state
+const kbFiles = ref([])
+const kbLoading = ref(false)
+const kbUploadErr = ref('')
+const kbUrlInput = ref('')
+const kbIndexingUrl = ref(false)
+
 async function load() {
   loading.value = true
   err.value = ''
@@ -71,7 +78,10 @@ async function loadLogs() {
 
 onMounted(load)
 watch(() => id.value, load)
-watch(tab, (t) => { if (t === 'calls' && !logs.value.length) loadLogs() })
+watch(tab, (t) => { 
+  if (t === 'calls' && !logs.value.length) loadLogs() 
+  if (t === 'knowledge') fetchKB()
+})
 
 async function save() {
   if (!agent.value) return
@@ -91,6 +101,48 @@ async function remove() {
     await agentsStore.remove(id.value)
     router.replace('/agents')
   } catch (e) { alert(e.message) }
+}
+
+async function fetchKB() {
+  kbLoading.value = true
+  try {
+    const res = await Agents.kb.list(id.value)
+    kbFiles.value = res.knowledge_base || []
+  } catch (e) { console.error(e) }
+  finally { kbLoading.value = false }
+}
+
+async function uploadKB(e) {
+  const files = e.target.files
+  if (!files.length) return
+  kbLoading.value = true
+  kbUploadErr.value = ''
+  const fd = new FormData()
+  for (let f of files) fd.append('files', f)
+  try {
+    await Agents.kb.upload(id.value, fd)
+    await fetchKB()
+  } catch (err) { kbUploadErr.value = err.message }
+  finally { kbLoading.value = false }
+}
+
+async function addKBUrl() {
+  if (!kbUrlInput.value) return
+  kbIndexingUrl.value = true
+  try {
+    await Agents.kb.addUrl(id.value, kbUrlInput.value)
+    kbUrlInput.value = ''
+    await fetchKB()
+  } catch (err) { alert(err.message) }
+  finally { kbIndexingUrl.value = false }
+}
+
+async function removeKBFile(fileId) {
+  if (!confirm('Delete this file?')) return
+  try {
+    await Agents.kb.remove(id.value, fileId)
+    kbFiles.value = kbFiles.value.filter(f => f.id !== fileId)
+  } catch (err) { alert(err.message) }
 }
 
 const TABS = [
@@ -123,7 +175,7 @@ async function playPreview() {
     })
     
     // Create a blob URL from the binary response
-    const blob = new Blob([audioData], { type: 'audio/mpeg' })
+    const blob = audioData
     const url = URL.createObjectURL(blob)
     previewAudio.value = new Audio(url)
     previewAudio.value.onended = () => { previewAudio.value = null }
@@ -156,8 +208,8 @@ async function startPhoneCall() {
   testDialError.value = ''
   testDialSuccess.value = false
   try {
-    const res = await Agents.callOutbound(id.value, { to: testPhoneNumber.value })
-    if (res?.ok) {
+    const res = await Agents.callOutbound(id.value, { to_number: testPhoneNumber.value })
+    if (res?.status === 'ok') {
       testDialSuccess.value = true
       setTimeout(() => {
         showTestCallModal.value = false
@@ -340,11 +392,73 @@ async function startPhoneCall() {
         </aside>
       </section>
 
-      <!-- ===== Knowledge tab placeholder ===== -->
-      <section v-else-if="tab === 'knowledge'" class="card empty">
-        <div class="empty-icon"><BookOpen :size="22"/></div>
-        <h3 class="text-base font-semibold text-ink">Knowledge Base — coming next</h3>
-        <p class="text-sm">Upload PDFs/URLs and link a vector store. This panel will land in the next migration step.</p>
+      <!-- ===== Knowledge tab ===== -->
+      <section v-else-if="tab === 'knowledge'" class="space-y-6">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <!-- Upload Box -->
+          <div class="card p-6 border-2 border-dashed border-line hover:border-accent/40 transition-colors relative group">
+            <input type="file" multiple accept=".pdf,.txt,.docx" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" @change="uploadKB" :disabled="kbLoading">
+            <div class="text-center">
+              <div class="h-12 w-12 bg-accent-soft text-accent rounded-xl flex items-center justify-center mx-auto mb-3 group-hover:scale-110 transition-transform">
+                <Upload :size="24"/>
+              </div>
+              <h3 class="font-semibold">Upload Documents</h3>
+              <p class="text-sm text-ink-muted mt-1">Drop PDFs or Text files here to train your agent.</p>
+              <div v-if="kbLoading" class="mt-4 flex items-center justify-center gap-2 text-accent text-sm">
+                <Loader2 class="animate-spin" :size="14"/> Processing...
+              </div>
+            </div>
+          </div>
+
+          <!-- URL Box -->
+          <div class="card p-6 flex flex-col justify-between">
+            <div>
+              <div class="h-10 w-10 bg-blue-500/10 text-blue-400 rounded-lg flex items-center justify-center mb-3">
+                <Link :size="20"/>
+              </div>
+              <h3 class="font-semibold">Index Website</h3>
+              <p class="text-sm text-ink-muted mt-1">Crawl a URL to add its content to the knowledge base.</p>
+            </div>
+            <div class="mt-4 flex gap-2">
+              <input v-model="kbUrlInput" class="input flex-1" placeholder="https://example.com/docs" @keyup.enter="addKBUrl">
+              <button class="btn btn-primary" @click="addKBUrl" :disabled="kbIndexingUrl || !kbUrlInput">
+                <Loader2 v-if="kbIndexingUrl" class="animate-spin" :size="14"/>
+                <span v-else>Add</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="kbUploadErr" class="p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-xs flex items-center justify-between">
+          <span>{{ kbUploadErr }}</span>
+          <button @click="kbUploadErr = ''"><X :size="14"/></button>
+        </div>
+
+        <!-- Files List -->
+        <div class="space-y-3">
+          <h4 class="text-xs uppercase tracking-widest text-ink-muted font-bold">Current Knowledge</h4>
+          
+          <div v-if="kbFiles.length === 0 && !kbLoading" class="card empty py-12">
+            <div class="empty-icon"><FileText :size="22"/></div>
+            <p class="text-sm">No documents added yet.</p>
+          </div>
+
+          <div v-else class="grid grid-cols-1 gap-2">
+            <div v-for="f in kbFiles" :key="f.id" class="card p-3 flex items-center gap-3 group">
+              <div class="h-8 w-8 rounded bg-white/5 flex items-center justify-center text-ink-dim">
+                <FileText v-if="f.type.includes('text') || f.type.includes('pdf')" :size="16"/>
+                <Globe v-else :size="16"/>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium truncate">{{ f.name }}</p>
+                <p class="text-[10px] text-ink-muted uppercase">{{ Math.round(f.size/1024) }} KB • {{ f.type }}</p>
+              </div>
+              <button class="btn btn-ghost btn-sm text-red-400 opacity-0 group-hover:opacity-100 transition-opacity" @click="removeKBFile(f.id)">
+                <Trash2 :size="14"/>
+              </button>
+            </div>
+          </div>
+        </div>
       </section>
 
       <!-- ===== Calls tab ===== -->

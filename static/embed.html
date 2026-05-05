@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RevealIQ | Live Voice Test</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+    <script src="/static/livekit-voice.js"></script>
+    <style>
+        :root {
+            --bg: #0A0A0B;
+            --card: #141416;
+            --accent: #A8C7FA;
+            --accent-glow: rgba(168, 199, 250, 0.15);
+            --text: #F8F9FA;
+            --text-muted: #8E918F;
+            --border: rgba(255, 255, 255, 0.08);
+            --success: #34C759;
+            --error: #FF3B30;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 400px;
+            padding: 32px;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 24px;
+        }
+
+        .visualizer {
+            width: 160px;
+            height: 160px;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .ring {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            border: 2px solid var(--accent);
+            opacity: 0.2;
+        }
+
+        .ring-animate {
+            animation: pulse 2s infinite ease-out;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 0.5; }
+            100% { transform: scale(1.6); opacity: 0; }
+        }
+
+        .avatar {
+            width: 100px;
+            height: 100px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2;
+            box-shadow: 0 0 30px var(--accent-glow);
+        }
+
+        .avatar i {
+            font-size: 40px;
+            color: var(--accent);
+        }
+
+        .status-badge {
+            padding: 6px 14px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-badge.active {
+            color: var(--accent);
+            border-color: var(--accent-glow);
+            background: rgba(168, 199, 250, 0.05);
+        }
+
+        .dot {
+            width: 6px;
+            height: 6px;
+            background: var(--text-muted);
+            border-radius: 50%;
+        }
+
+        .active .dot {
+            background: var(--accent);
+            box-shadow: 0 0 8px var(--accent);
+            animation: blink 1.5s infinite;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        h1 {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 20px;
+            font-weight: 700;
+        }
+
+        p {
+            font-size: 14px;
+            color: var(--text-muted);
+            line-height: 1.6;
+        }
+
+        .controls {
+            display: flex;
+            gap: 16px;
+            width: 100%;
+            margin-top: 12px;
+        }
+
+        .btn {
+            flex: 1;
+            height: 48px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            background: var(--card);
+            color: var(--text);
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: all 0.2s;
+        }
+
+        .btn:hover {
+            background: #1c1c1e;
+            border-color: var(--text-muted);
+        }
+
+        .btn-end {
+            background: rgba(255, 59, 48, 0.1);
+            border-color: rgba(255, 59, 48, 0.2);
+            color: var(--error);
+        }
+
+        .btn-end:hover {
+            background: rgba(255, 59, 48, 0.15);
+            border-color: var(--error);
+        }
+
+        .btn-mute.active {
+            background: var(--accent-glow);
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="visualizer" id="visualizer">
+            <div class="ring" id="ring1"></div>
+            <div class="ring" id="ring2"></div>
+            <div class="avatar">
+                <i class="material-icons-round">smart_toy</i>
+            </div>
+        </div>
+
+        <div id="statusBadge" class="status-badge">
+            <div class="dot"></div>
+            <span id="statusText">Initializing...</span>
+        </div>
+
+        <div>
+            <h1 id="agentName">AI Agent</h1>
+            <p id="agentSub">Voice Conversation</p>
+        </div>
+
+        <div class="controls">
+            <button id="muteBtn" class="btn btn-mute">
+                <i class="material-icons-round">mic</i>
+                Mute
+            </button>
+            <button id="endBtn" class="btn btn-end">
+                <i class="material-icons-round">call_end</i>
+                End
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const agentId = params.get('agent_id');
+        
+        const statusText = document.getElementById('statusText');
+        const statusBadge = document.getElementById('statusBadge');
+        const muteBtn = document.getElementById('muteBtn');
+        const endBtn = document.getElementById('endBtn');
+        const visualizer = document.getElementById('visualizer');
+        const rings = document.querySelectorAll('.ring');
+
+        if (!agentId) {
+            statusText.innerText = 'Error: No agent ID';
+            statusText.style.color = '#FF3B30';
+        } else {
+            const client = new LiveKitVoiceClient({
+                agentId: agentId,
+                participantName: 'Web Tester',
+                onStatusChange: (status) => {
+                    statusText.innerText = status;
+                    if (status.toLowerCase().includes('connected') || status.toLowerCase().includes('speaking')) {
+                        statusBadge.classList.add('active');
+                        rings.forEach(r => r.classList.add('ring-animate'));
+                    } else {
+                        statusBadge.classList.remove('active');
+                        rings.forEach(r => r.classList.remove('ring-animate'));
+                    }
+                },
+                onConnected: () => {
+                    console.log('Voice connected');
+                },
+                onDisconnected: () => {
+                    window.close();
+                },
+                onError: (err) => {
+                    statusText.innerText = 'Error: ' + err;
+                    statusText.style.color = '#FF3B30';
+                }
+            });
+
+            client.connect();
+
+            muteBtn.onclick = async () => {
+                const muted = await client.toggleMute();
+                muteBtn.classList.toggle('active', muted);
+                muteBtn.querySelector('i').innerText = muted ? 'mic_off' : 'mic';
+            };
+
+            endBtn.onclick = () => {
+                client.disconnect();
+            };
+        }
+    </script>
+</body>
+</html>
