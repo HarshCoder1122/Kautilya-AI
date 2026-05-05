@@ -24,7 +24,13 @@ const err = ref('')
 const logs = ref([])
 const logsLoading = ref(false)
 
-const sarvamVoices = ['shubh', 'meera', 'amartya', 'aatreyi']
+const sarvamVoices = [
+  'shubh', 'anushka', 'abhilash', 'manisha', 'vidya', 'arya', 'karun', 'hitesh', 'aditya', 
+  'ritu', 'priya', 'neha', 'rahul', 'pooja', 'rohan', 'simran', 'kavya', 'amit', 'dev', 
+  'ishita', 'shreya', 'ratan', 'varun', 'manan', 'sumit', 'roopa', 'kabir', 'aayan', 
+  'ashutosh', 'advait', 'anand', 'tanya', 'tarun', 'sunny', 'mani', 'gokul', 'vijay', 
+  'shruti', 'suhani', 'mohit', 'kavitha', 'rehan', 'soham', 'rupali'
+]
 const geminiVoices = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede']
 
 const availableVoices = computed(() => {
