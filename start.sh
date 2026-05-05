@@ -8,7 +8,7 @@ if [ -f "campaign_worker.py" ]; then
 fi
 
 # Detect Environment and Start Correct Service
-if [ -n "$HF_SPACE_ID" ]; then
+if [ -n "$HF_SPACE_ID" ] || [ -n "$SPACE_ID" ]; then
     echo "[DEPLOY] Detected Hugging Face Space. Starting LiveKit Agent Worker..."
     # HF Health Check on 7860
     python -m http.server 7860 &
