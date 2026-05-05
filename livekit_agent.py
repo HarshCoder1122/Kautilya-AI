@@ -160,9 +160,12 @@ def _looks_like_sip_room(room_name: str, room: rtc.Room) -> bool:
     if not room_name:
         return False
     rn = room_name.lower()
-    if "sip" in rn:
-        return True
-    # Vobiz pre-warmed rooms use voice-_+<phone>_<call> — the underscore/plus
+    # 1. Check identity of participants
+    for p in (room.remote_participants or {}).values():
+        if (p.identity or "").lower().startswith("sip"):
+            return True
+    # 2. Check room name patterns
+    return "sip" in rn or rn.startswith("voice-")
     # combo is a strong SIP signal.
     after = rn.split("voice-", 1)[-1]
     if after.startswith("_+") or after.startswith("+"):
@@ -611,6 +614,8 @@ If they agree to a callback, ask for their preferred time and note it down.
             agent_obj = KautilyaAgent(instructions=system_prompt)
             _attach_session_events(session)
             await session.start(room=ctx.room, agent=agent_obj)
+            # Small delay to allow SIP bridge to stabilize and avoid synchronizer race
+            await asyncio.sleep(0.8)
             await session.say(welcome_message)
     except Exception as e:
         print(f"[Agent] ❌ Session start failed: {e}")
