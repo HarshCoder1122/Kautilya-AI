@@ -107,3 +107,99 @@ def api_campaigns_delete(camp_id):
         return jsonify({"status": "ok", "message": "Campaign deleted"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@campaigns_bp.route('/api/campaigns/upload', methods=['POST'])
+def api_campaigns_upload():
+    """Upload a CSV/Excel file, parse phone numbers, and create a campaign."""
+    from extensions import db
+    from firebase_admin import firestore
+    import re
+    import csv
+    import io
+    
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid: return jsonify({"error": "Auth required"}), 401
+    
+    agent_id = request.form.get('agent_id')
+    name = request.form.get('name', 'CSV Campaign')
+    
+    if not agent_id:
+        return jsonify({"error": "agent_id is required"}), 400
+        
+    if 'file' not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+        
+    file = request.files['file']
+    if not file.filename:
+        return jsonify({"error": "Empty filename"}), 400
+        
+    try:
+        content = file.read().decode('utf-8')
+        numbers = []
+        
+        if file.filename.endswith('.csv'):
+            reader = csv.reader(io.StringIO(content))
+            for row in reader:
+                for col in row:
+                    clean = re.sub(r'[^\d+]', '', col)
+                    if len(clean) >= 10:
+                        numbers.append(clean)
+        else:
+            # Simple text parsing fallback
+            for line in content.splitlines():
+                clean = re.sub(r'[^\d+]', '', line)
+                if len(clean) >= 10:
+                    numbers.append(clean)
+                    
+        # Remove duplicates
+        numbers = list(set(numbers))
+        
+        if not numbers:
+            return jsonify({"error": "No valid phone numbers found in file"}), 400
+            
+        camp_data = {
+            "name": name, "agent_id": agent_id, "numbers": numbers,
+            "status": "pending", "progress": 0, "total": len(numbers),
+            "created_at": firestore.SERVER_TIMESTAMP, "uid": uid
+        }
+        doc_ref = db.collection('users').document(uid).collection('campaigns').add(camp_data)
+        
+        return jsonify({
+            "status": "ok", 
+            "campaign_id": doc_ref[1].id,
+            "message": f"Campaign created with {len(numbers)} numbers",
+            "numbers_count": len(numbers)
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to process file: {str(e)}"}), 500
+
+
+@campaigns_bp.route('/api/campaigns/<camp_id>/status', methods=['GET'])
+def api_campaigns_status(camp_id):
+    """Get the live status and dial results of a specific campaign."""
+    from extensions import db
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid: return jsonify({"error": "Auth required"}), 401
+    
+    try:
+        camp_ref = db.collection('users').document(uid).collection('campaigns').document(camp_id)
+        camp_doc = camp_ref.get()
+        if not camp_doc.exists:
+            return jsonify({"error": "Campaign not found"}), 404
+            
+        data = camp_doc.to_dict()
+        data['id'] = camp_id
+        
+        # Format timestamp
+        if 'created_at' in data and hasattr(data['created_at'], 'timestamp'):
+            data['created_timestamp'] = data['created_at'].timestamp()
+            del data['created_at']
+            
+        # Optional: could query campaign_logs subcollection here for per-number details
+        # For now just returning the main doc which campaign_worker updates with results
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500

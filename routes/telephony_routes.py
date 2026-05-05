@@ -23,14 +23,21 @@ def api_telephony_config():
     try:
         config_ref = db.collection('users').document(uid).collection('config').document('telephony')
         doc = config_ref.get()
-        if doc.exists:
-            return jsonify(doc.to_dict())
-        return jsonify({
-            "providers": [
-                {"type": "exotel", "name": "Exotel Cloud", "status": "available"},
-                {"type": "vobiz", "name": "Vobiz AI", "status": "available"}
-            ]
-        })
+        data = doc.to_dict() if doc.exists else {"providers": []}
+        
+        # If the frontend is expecting { exotel: {...}, vobiz: {...} }, we need to format it
+        formatted_providers = {
+            "exotel": {"status": "available", "name": "Exotel Cloud"},
+            "vobiz": {"status": "available", "name": "Vobiz AI"}
+        }
+        
+        for p in data.get('providers', []):
+            ptype = p.get('type')
+            if ptype in formatted_providers:
+                formatted_providers[ptype].update(p)
+                
+        # Send the formatted providers directly under the main object
+        return jsonify({"providers": formatted_providers})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -44,27 +51,46 @@ def api_telephony_save():
     if not uid: return jsonify({"error": "Unauthorized"}), 401
     
     data = request.get_json() or {}
-    provider_type = data.get('type')
-    if not provider_type: return jsonify({"error": "Provider type required"}), 400
+    
+    # Handle two possible structures:
+    # 1. Frontend sends flat object { exotel: {...}, vobiz: {...} } under 'providers'
+    # 2. Frontend sends single provider payload with 'type'
+    
+    updates_to_make = []
+    
+    if 'providers' in data and isinstance(data['providers'], dict):
+        for ptype, pdata in data['providers'].items():
+            if not pdata: continue
+            pdata_copy = pdata.copy()
+            pdata_copy['type'] = ptype
+            updates_to_make.append(pdata_copy)
+    elif 'type' in data:
+        updates_to_make.append(data)
+    else:
+        return jsonify({"error": "Invalid payload format"}), 400
     
     try:
         config_ref = db.collection('users').document(uid).collection('config').document('telephony')
         existing = config_ref.get().to_dict() or {"providers": []}
         
         # Update or add provider
-        found = False
-        for p in existing['providers']:
-            if p['type'] == provider_type:
-                p.update(data)
-                p['status'] = 'available'
-                found = True
-                break
-        if not found:
-            data['status'] = 'available'
-            existing['providers'].append(data)
+        for pdata in updates_to_make:
+            provider_type = pdata.get('type')
+            found = False
+            for p in existing.get('providers', []):
+                if p.get('type') == provider_type:
+                    p.update(pdata)
+                    p['status'] = 'available'
+                    found = True
+                    break
+            if not found:
+                pdata['status'] = 'available'
+                if 'providers' not in existing:
+                    existing['providers'] = []
+                existing['providers'].append(pdata)
             
         config_ref.set(existing, merge=True)
-        return jsonify({"status": "ok", "message": f"{provider_type.capitalize()} saved"})
+        return jsonify({"status": "ok", "message": "Telephony configuration saved"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

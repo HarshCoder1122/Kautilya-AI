@@ -59,3 +59,25 @@ export const Telephony = {
 export const Billing = {
   status: () => api('/api/billing/status'),
 }
+
+export const Analytics = {
+  callVolume: (range = '12h') => api(`/api/analytics/call-volume?range=${range}`),
+}
+
+export const Campaigns = {
+  list: () => api('/api/campaigns'),
+  upload: (formData) => api('/api/campaigns/upload', { method: 'POST', body: formData }),
+  status: (id) => api(`/api/campaigns/${id}/status`),
+  start: (id) => api(`/api/campaigns/${id}/start`, { method: 'POST' }),
+  pause: (id) => api(`/api/campaigns/${id}/pause`, { method: 'POST' }),
+  remove: (id) => api(`/api/campaigns/${id}`, { method: 'DELETE' }),
+}
+
+export const User = {
+  account: () => api('/api/user/account'),
+  generateApiKey: () => api('/api/user/api-key', { method: 'POST' }),
+}
+
+export const Voice = {
+  preview: (payload) => api('/api/voice/preview', { method: 'POST', body: payload }),
+}

@@ -170,7 +170,7 @@ def api_agent_detail(agent_id):
             'max_tokens', 'agent_type', 'stt_provider', 'tts_provider', 'interruption_mode', 'silence_timeout', 'max_call_duration', 
             'end_on_silence', 'exotel_sid', 'exotel_api_key', 'exotel_token', 'exotel_number', 'exotel_subdomain', 'telephony_provider', 
             'vobiz_auth_id', 'vobiz_auth_token', 'vobiz_number', 'conversational_flow', 'knowledge_base', 'status', 'linked_numbers', 
-            'call_objective', 'post_call_webhook'
+            'call_objective', 'post_call_webhook', 'handoff_enabled', 'handoff_number', 'handoff_callback_message', 'lead_webhook_url'
         ]
         for field in allowed:
             if field in data:
@@ -255,6 +255,79 @@ def api_agent_logs(agent_id):
         return jsonify({"logs": logs})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@agents_bp.route('/api/agents/<agent_id>/livekit-token', methods=['POST'])
+def generate_external_livekit_token(agent_id):
+    """External API endpoint to generate a LiveKit token using an API key."""
+    import os
+    from extensions import db
+    try:
+        from livekit import api
+    except ImportError:
+        return jsonify({"error": "LiveKit SDK not installed"}), 500
+
+    # 1. Validate API Key from header
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return jsonify({"error": "Missing or invalid Authorization header. Use Bearer <api_key>"}), 401
+    
+    api_key = auth_header.split('Bearer ')[1].strip()
+    
+    # 2. Check key in database
+    if not db:
+        return jsonify({"error": "Database unavailable"}), 503
+        
+    key_doc = db.collection('api_keys').document(api_key).get()
+    if not key_doc.exists:
+        return jsonify({"error": "Invalid API key"}), 401
+        
+    key_data = key_doc.to_dict()
+    uid = key_data.get('uid')
+    
+    # 3. Verify agent belongs to this user
+    agent_doc = db.collection('agents').document(agent_id).get()
+    if not agent_doc.exists or agent_doc.to_dict().get('uid') != uid:
+        return jsonify({"error": "Agent not found or access denied"}), 404
+        
+    agent_data = agent_doc.to_dict()
+
+    # 4. Generate LiveKit Token
+    lk_api_key = os.environ.get("LIVEKIT_API_KEY")
+    lk_api_secret = os.environ.get("LIVEKIT_API_SECRET")
+    if not lk_api_key or not lk_api_secret:
+        return jsonify({"error": "LiveKit configuration missing on server"}), 500
+
+    data = request.get_json(silent=True) or {}
+    participant_name = data.get("participantName", "Web User")
+    
+    room_name = f"voice-{agent_id}--{uuid.uuid4().hex[:4]}"
+    identity = f"user-{uuid.uuid4().hex[:8]}"
+    
+    token = api.AccessToken(lk_api_key, lk_api_secret) \
+        .with_identity(identity) \
+        .with_name(participant_name) \
+        .with_grants(api.VideoGrants(
+            room_join=True,
+            room=room_name,
+        ))
+    
+    # Add room metadata for worker routing
+    import json
+    token.with_metadata(json.dumps({
+        "agent_id": agent_id,
+        "system_prompt": agent_data.get("system_prompt", ""),
+        "voice": agent_data.get("voice", "shubh"),
+        "model": agent_data.get("model", "kautilya-daily"),
+        "welcome_message": agent_data.get("welcome_message", "")
+    }))
+
+    from config import LIVEKIT_URL
+    return jsonify({
+        "token": token.to_jwt(), 
+        "roomName": room_name,
+        "wsUrl": LIVEKIT_URL or "wss://your-project.livekit.cloud"
+    })
 
 
 @agents_bp.route('/api/agents/<agent_id>/kb', methods=['GET', 'POST'])

@@ -198,7 +198,7 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
             headers={"Authorization": f"Bearer {NVIDIA_API_KEY}",
                      "Accept": "text/event-stream" if stream else "application/json",
                      "Content-Type": "application/json"},
-            json=payload, timeout=300, stream=stream
+            json=payload, timeout=600, stream=stream
         )
         if resp.status_code == 200:
             if stream:

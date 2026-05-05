@@ -40,6 +40,12 @@ const routes = [
     meta: { auth: true, title: 'Leads' },
   },
   {
+    path: '/campaigns',
+    name: 'campaigns',
+    component: () => import('@/views/CampaignView.vue'),
+    meta: { auth: true, title: 'Campaigns' },
+  },
+  {
     path: '/embed',
     name: 'embed',
     component: () => import('@/views/EmbedView.vue'),
