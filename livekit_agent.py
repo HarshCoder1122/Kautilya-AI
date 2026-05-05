@@ -587,12 +587,19 @@ If they agree to a callback, ask for their preferred time and note it down.
             )
             triggered = False
             try:
-                if hasattr(session, 'generate_reply'):
+                # Multimodal models (Gemini Live) do not support generate_reply()
+                model_lower = (selected_model or "").lower()
+                is_multimodal = "flash" in model_lower or "live" in model_lower or "gemini" in model_lower
+                if hasattr(session, 'generate_reply') and not is_multimodal:
                     await session.generate_reply(instructions=greet_prompt)
                     triggered = True
                     print("[Gemini] ✅ generate_reply() kicked off welcome turn.")
+                elif hasattr(session, 'say'):
+                    await session.say(welcome_message)
+                    triggered = True
+                    print("[Gemini] ✅ session.say() kicked off welcome turn.")
             except Exception as e:
-                print(f"[Gemini] generate_reply failed: {e}")
+                print(f"[Gemini] welcome turn failed: {e}")
             if not triggered:
                 try:
                     if hasattr(session, 'say'):
@@ -677,7 +684,7 @@ If they agree to a callback, ask for their preferred time and note it down.
                 [{"role": "user", "content": analysis_prompt}],
                 stream=False,
                 max_tokens=600,
-                model='nvidia/llama-3.1-nemotron-70b-instruct',
+                model='meta/llama-3.1-405b-instruct',
             )
             if isinstance(result, str) and result.strip():
                 # Extract the first JSON object out of the response (Nemotron
