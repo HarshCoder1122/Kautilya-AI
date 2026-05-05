@@ -662,7 +662,7 @@ If they agree to a callback, ask for their preferred time and note it down.
                 [{"role": "user", "content": analysis_prompt}],
                 stream=False,
                 max_tokens=600,
-                model='nvidia/nemotron-3-super-120b-a12b',
+                model='nvidia/llama-3.1-nemotron-70b-instruct',
             )
             if isinstance(result, str) and result.strip():
                 # Extract the first JSON object out of the response (Nemotron
