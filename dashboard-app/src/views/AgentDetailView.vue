@@ -3,7 +3,8 @@ import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft, Save, Loader2, PhoneOutgoing, BookOpen, Settings as SettingsIcon,
-  History, Sparkles, Volume2, Globe, Bot, Trash2, Play, Pause, Upload, FileText, Link, X
+  History, Sparkles, Volume2, Globe, Bot, Trash2, Play, Pause, Upload, FileText, Link, X,
+  Send, MessageSquare, ChevronRight
 } from 'lucide-vue-next'
 import { Agents, Voice } from '@/lib/api'
 import { useAgents } from '@/stores/agents'
@@ -186,11 +187,65 @@ async function playPreview() {
     previewing.value = false
   }
 }
-const showTestCallModal = ref(false)
+const showTestModal = ref(false)
+const testTab = ref('voice') // 'voice' | 'chat'
 const testPhoneNumber = ref('')
 const testDialing = ref(false)
 const testDialError = ref('')
 const testDialSuccess = ref(false)
+
+const chatMessages = ref([])
+const chatInput = ref('')
+const chatSending = ref(false)
+
+async function sendChat() {
+  const text = chatInput.value.trim()
+  if (!text || chatSending.value) return
+  
+  chatMessages.value.push({ role: 'user', content: text })
+  chatInput.value = ''
+  chatSending.value = true
+  
+  const assistantMsg = { role: 'assistant', content: '' }
+  chatMessages.value.push(assistantMsg)
+  
+  try {
+    const response = await Agents.chat(id.value, { 
+      messages: chatMessages.value.filter(m => m.content).slice(-10) 
+    }, { stream: true })
+    
+    if (!response.body) throw new Error("No stream body")
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ""
+    
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      
+      const lines = buffer.split("\n")
+      buffer = lines.pop()
+      
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const payload = line.slice(6).trim()
+          if (payload === "[DONE]") continue
+          try {
+            const data = JSON.parse(payload)
+            if (data.content) {
+              assistantMsg.content += data.content
+            }
+          } catch (err) { /* ignore partial json */ }
+        }
+      }
+    }
+  } catch (e) {
+    assistantMsg.content = `Error: ${e.message}`
+  } finally {
+    chatSending.value = false
+  }
+}
 
 function openWebRTCChat() {
   // Opens the embedded livekit viewer in a new window/tab
@@ -198,7 +253,7 @@ function openWebRTCChat() {
 }
 
 function startWebCall() {
-  showTestCallModal.value = false
+  showTestModal.value = false
   openWebRTCChat()
 }
 
@@ -212,7 +267,7 @@ async function startPhoneCall() {
     if (res?.status === 'ok') {
       testDialSuccess.value = true
       setTimeout(() => {
-        showTestCallModal.value = false
+        showTestModal.value = false
         testDialSuccess.value = false
         testPhoneNumber.value = ''
       }, 3000)
@@ -256,40 +311,87 @@ async function startPhoneCall() {
     </div>
 
     <template v-else>
-      <!-- Test Call Modal -->
-      <div v-if="showTestCallModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fadein">
-        <div class="bg-surface border border-line rounded-xl w-full max-w-md shadow-2xl overflow-hidden">
-          <div class="p-5 border-b border-line flex items-center justify-between">
-            <h2 class="text-lg font-semibold">Test Agent</h2>
-            <button class="btn btn-ghost p-1" @click="showTestCallModal = false">✕</button>
+      <!-- Test Agent Modal -->
+      <div v-if="showTestModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fadein">
+        <div class="bg-surface border border-line rounded-xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+          <div class="p-4 border-b border-line flex items-center justify-between bg-bg-elev/50">
+            <div class="flex items-center gap-4">
+              <h2 class="text-lg font-semibold">Test Agent</h2>
+              <nav class="flex bg-white/5 rounded-lg p-0.5">
+                <button @click="testTab = 'voice'" class="px-3 py-1 text-xs rounded-md transition-colors" :class="testTab === 'voice' ? 'bg-accent text-bg font-bold' : 'text-ink-muted hover:text-ink'">Voice</button>
+                <button @click="testTab = 'chat'" class="px-3 py-1 text-xs rounded-md transition-colors" :class="testTab === 'chat' ? 'bg-accent text-bg font-bold' : 'text-ink-muted hover:text-ink'">Chat</button>
+              </nav>
+            </div>
+            <button class="btn btn-ghost p-1" @click="showTestModal = false">✕</button>
           </div>
-          <div class="p-5 space-y-4">
-            <p class="text-sm text-ink-muted">Choose how you want to test the agent:</p>
-            
-            <div class="space-y-3">
-              <button class="btn btn-subtle w-full flex flex-col items-center py-4" @click="startWebCall">
-                <Globe class="mb-2" :size="20"/>
-                <span class="font-medium">Web Call (Browser)</span>
-                <span class="text-xs text-ink-muted mt-1">Talk via your computer microphone</span>
-              </button>
-              
-              <div class="relative py-2">
-                <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-line"></div></div>
-                <div class="relative flex justify-center"><span class="bg-surface px-2 text-xs text-ink-muted">OR</span></div>
+
+          <div class="flex-1 overflow-y-auto p-5">
+            <!-- Voice Tab -->
+            <div v-if="testTab === 'voice'" class="space-y-6">
+              <div class="text-center py-4">
+                <div class="h-16 w-16 bg-accent-soft text-accent rounded-full flex items-center justify-center mx-auto mb-4">
+                  <Volume2 :size="32"/>
+                </div>
+                <h3 class="font-bold text-lg">Voice Conversation</h3>
+                <p class="text-sm text-ink-muted">Test how your agent sounds and handles real-time speech.</p>
+              </div>
+
+              <div class="grid grid-cols-1 gap-3">
+                <button class="btn btn-subtle w-full flex items-center justify-between p-4 h-auto" @click="startWebCall">
+                  <div class="flex items-center gap-3">
+                    <div class="h-10 w-10 bg-accent/10 text-accent rounded-lg flex items-center justify-center"><Globe :size="20"/></div>
+                    <div class="text-left">
+                      <div class="font-bold">Web Call</div>
+                      <div class="text-xs text-ink-muted">Test in browser (WebRTC)</div>
+                    </div>
+                  </div>
+                  <ChevronRight :size="16" class="text-ink-muted"/>
+                </button>
+
+                <div class="relative py-2">
+                  <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-line"></div></div>
+                  <div class="relative flex justify-center"><span class="bg-surface px-3 text-[10px] text-ink-muted uppercase tracking-widest">or dial phone</span></div>
+                </div>
+
+                <div class="space-y-3">
+                  <div class="flex gap-2">
+                    <input v-model="testPhoneNumber" type="tel" class="input flex-1" placeholder="+91..." @keyup.enter="startPhoneCall">
+                    <button class="btn btn-primary" @click="startPhoneCall" :disabled="testDialing || !testPhoneNumber">
+                      <Loader2 v-if="testDialing" class="animate-spin" :size="14"/>
+                      <PhoneOutgoing v-else :size="14"/>
+                      Dial
+                    </button>
+                  </div>
+                  <p v-if="testDialError" class="text-red-400 text-xs text-center">{{ testDialError }}</p>
+                  <p v-if="testDialSuccess" class="text-green-400 text-xs text-center">Ringing! Check your phone.</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Chat Tab -->
+            <div v-else-if="testTab === 'chat'" class="flex flex-col h-[500px]">
+              <div class="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar" id="chat-body">
+                <div v-if="chatMessages.length === 0" class="h-full flex flex-col items-center justify-center text-ink-muted opacity-40">
+                  <MessageSquare :size="48" class="mb-4"/>
+                  <p class="text-sm">Start a conversation to test the agent's logic.</p>
+                </div>
+                <div v-for="(m, i) in chatMessages" :key="i" class="flex" :class="m.role === 'user' ? 'justify-end' : 'justify-start'">
+                  <div class="max-w-[85%] p-3 rounded-2xl text-sm" :class="m.role === 'user' ? 'bg-accent text-bg font-medium rounded-tr-none' : 'bg-white/5 border border-white/10 rounded-tl-none whitespace-pre-wrap'">
+                    {{ m.content }}
+                    <span v-if="chatSending && i === chatMessages.length - 1 && m.role === 'assistant' && !m.content" class="flex gap-1">
+                      <span class="w-1.5 h-1.5 bg-accent rounded-full animate-bounce"></span>
+                      <span class="w-1.5 h-1.5 bg-accent rounded-full animate-bounce [animation-delay:0.2s]"></span>
+                      <span class="w-1.5 h-1.5 bg-accent rounded-full animate-bounce [animation-delay:0.4s]"></span>
+                    </span>
+                  </div>
+                </div>
               </div>
               
-              <div class="space-y-2">
-                <label class="label text-xs">Enter your phone number</label>
-                <div class="flex gap-2">
-                  <input v-model="testPhoneNumber" type="tel" class="input flex-1" placeholder="+91..." @keyup.enter="startPhoneCall">
-                  <button class="btn btn-primary" @click="startPhoneCall" :disabled="testDialing || !testPhoneNumber">
-                    <Loader2 v-if="testDialing" class="animate-spin" :size="14"/>
-                    <PhoneOutgoing v-else :size="14"/>
-                    Dial
-                  </button>
-                </div>
-                <p v-if="testDialError" class="text-red-400 text-xs">{{ testDialError }}</p>
-                <p v-if="testDialSuccess" class="text-green-400 text-xs">Ringing! Check your phone.</p>
+              <div class="mt-4 pt-4 border-t border-line flex gap-2">
+                <input v-model="chatInput" class="input flex-1" placeholder="Type a message..." @keyup.enter="sendChat" :disabled="chatSending">
+                <button class="btn btn-primary btn-icon h-10 w-10 !p-0" @click="sendChat" :disabled="chatSending || !chatInput.trim()">
+                  <Send :size="18"/>
+                </button>
               </div>
             </div>
           </div>
@@ -376,8 +478,8 @@ async function startPhoneCall() {
             <h3 class="text-sm font-semibold mb-3">Test the agent</h3>
             <p class="text-xs text-ink-muted mb-3">Quick checks without leaving the studio.</p>
             <div class="space-y-2">
-              <button class="btn btn-ghost w-full" @click="showTestCallModal = true"><PhoneOutgoing :size="14"/> Place test call</button>
-              <button class="btn btn-ghost w-full" @click="openWebRTCChat"><Bot :size="14"/> Open WebRTC chat</button>
+              <button class="btn btn-ghost w-full" @click="showTestModal = true; testTab = 'voice'"><PhoneOutgoing :size="14"/> Voice Test (Call)</button>
+              <button class="btn btn-ghost w-full" @click="showTestModal = true; testTab = 'chat'"><Bot :size="14"/> Text Chat Test</button>
             </div>
           </div>
 

@@ -55,6 +55,7 @@ export const Agents = {
   remove: (id) => api(`/api/agents/${id}/delete`, { method: 'POST' }),
   logs: (id) => api(`/api/agents/${id}/logs`),
   callOutbound: (id, payload) => api(`/api/agents/${id}/call-outbound`, { method: 'POST', body: payload }),
+  chat: (id, payload, opts = {}) => api(`/api/agents/${id}/chat`, { method: 'POST', body: payload, ...opts }),
   kb: {
     list: (agentId) => api(`/api/agents/${agentId}/kb`),
     upload: (agentId, formData) => api(`/api/agents/${agentId}/kb`, { method: 'POST', body: formData }),
