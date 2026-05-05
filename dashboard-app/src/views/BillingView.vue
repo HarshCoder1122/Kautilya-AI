@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import { Crown, Zap, Sparkles, CreditCard, Download, Loader2, ArrowUpRight } from 'lucide-vue-next'
-import { api } from '@/lib/api'
+import { Billing } from '@/lib/api'
 
 const loading = ref(true)
 const config = ref(null)
@@ -11,7 +11,7 @@ async function load() {
   loading.value = true
   try {
     const [cfg, tx] = await Promise.all([
-      api('/api/billing/config').catch(() => ({})),
+      Billing.status().catch(() => ({})),
       api('/api/billing/transactions').catch(() => ({ transactions: [] })),
     ])
     config.value = cfg || {}

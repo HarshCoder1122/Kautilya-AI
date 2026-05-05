@@ -243,11 +243,10 @@ def vobiz_answer(agent_id):
 
 @webhooks_bp.route('/api/webhooks/exotel/answer/<agent_id>', methods=['POST', 'GET'])
 def exotel_answer(agent_id):
-    call_uid = uuid.uuid4().hex[:4]
-    room_name = f"voice-{agent_id}--{call_uid}"
-    sip_uri = f"sip:{room_name}@{SIP_DOMAIN}"
-    create_room_fire_and_forget(room_name, agent_id)
     caller_id = request.values.get('From', '')
+    from_number = caller_id.strip().lstrip('+') or 'caller'
+    sip_uri = f"sip:{from_number}@{SIP_DOMAIN}"
+    
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Dial callerId="{caller_id}">

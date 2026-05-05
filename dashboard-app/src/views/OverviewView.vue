@@ -8,34 +8,64 @@ import {
 import { useAgents } from '@/stores/agents'
 import { useAuth } from '@/stores/auth'
 import { relativeTime } from '@/lib/format'
+import { Analytics } from '@/lib/api'
 
 const auth = useAuth()
 const agents = useAgents()
 const router = useRouter()
 
+const timeRange = ref('12h')
+const volData = ref(null)
+
 onMounted(() => {
   if (!agents.loaded && !agents.loading) agents.fetch().catch(() => {})
+  loadAnalytics()
 })
 
+watch(timeRange, loadAnalytics)
+
+async function loadAnalytics() {
+  try {
+    volData.value = await Analytics.callVolume(timeRange.value)
+  } catch (e) {
+    console.error("Failed to load analytics:", e)
+  }
+}
+
 const totalAgents = computed(() => agents.items.length)
-const totalCalls = computed(() => agents.items.reduce((n, a) => n + (a.call_count || 0), 0))
 const activeAgents = computed(() => agents.items.filter((a) => a.status !== 'inactive').length)
 
-// Demo sparkline
-const spark = [4, 9, 6, 11, 8, 14, 10, 17, 13, 19, 16, 22]
+// Real sparkline based on analytics data
 const sparkPoints = computed(() => {
-  const max = Math.max(...spark)
+  if (!volData.value || !volData.value.buckets) return '0,40 200,40'
+  const buckets = volData.value.buckets
+  const counts = buckets.map(b => b.count)
+  const max = Math.max(...counts, 1) // prevent div by zero
   const w = 200, h = 40
-  return spark.map((v, i) => `${(i / (spark.length - 1)) * w},${h - (v / max) * (h - 4) - 2}`).join(' ')
+  return counts.map((v, i) => `${(i / (counts.length - 1)) * w},${h - (v / max) * (h - 4) - 2}`).join(' ')
+})
+
+const chartLabels = computed(() => {
+  if (!volData.value || !volData.value.buckets) return []
+  const buckets = volData.value.buckets
+  // Take 4 evenly spaced labels
+  if (buckets.length <= 4) return buckets.map(b => b.label)
+  const step = Math.floor(buckets.length / 4)
+  return [
+    buckets[0].label,
+    buckets[step].label,
+    buckets[step*2].label,
+    buckets[buckets.length - 1].label
+  ]
 })
 
 const firstName = computed(() => (auth.displayName || '').split(' ')[0] || 'there')
 
 const stats = computed(() => ([
-  { label: 'Active Agents', value: activeAgents.value, delta: '+1', up: true, icon: Bot, accent: 'text-accent' },
-  { label: 'Total Calls', value: totalCalls.value, delta: '+12%', up: true, icon: PhoneCall, accent: 'text-info' },
-  { label: 'Avg. Sentiment', value: '92%', delta: '+3.2%', up: true, icon: Sparkles, accent: 'text-success' },
-  { label: 'Failed Calls', value: '2', delta: '-1', up: true, icon: Activity, accent: 'text-warning' },
+  { label: 'Active Agents', value: activeAgents.value, delta: '0', up: true, icon: Bot, accent: 'text-accent' },
+  { label: 'Total Calls', value: volData.value?.total_calls || 0, delta: '0', up: true, icon: PhoneCall, accent: 'text-info' },
+  { label: 'Avg. Sentiment', value: (volData.value?.avg_sentiment || 0) + '%', delta: '0', up: true, icon: Sparkles, accent: 'text-success' },
+  { label: 'Failed Calls', value: volData.value?.failed_calls || 0, delta: '0', up: false, icon: Activity, accent: 'text-warning' },
 ]))
 </script>
 
@@ -80,12 +110,12 @@ const stats = computed(() => ([
         <div class="flex flex-wrap items-start justify-between gap-3 mb-4">
           <div>
             <h2 class="text-base font-semibold">Call Volume</h2>
-            <p class="text-xs text-ink-muted mt-0.5">Last 12 hours · all channels</p>
+            <p class="text-xs text-ink-muted mt-0.5">Last {{ timeRange }} · all channels</p>
           </div>
           <div class="flex items-center gap-1 p-0.5 bg-bg-subtle rounded-lg border border-line">
-            <button class="px-2.5 py-1 text-xs rounded-md bg-bg-card text-ink">12h</button>
-            <button class="px-2.5 py-1 text-xs rounded-md text-ink-muted hover:text-ink">7d</button>
-            <button class="px-2.5 py-1 text-xs rounded-md text-ink-muted hover:text-ink">30d</button>
+            <button @click="timeRange = '12h'" :class="timeRange === '12h' ? 'bg-bg-card text-ink shadow-sm' : 'text-ink-muted hover:text-ink'" class="px-2.5 py-1 text-xs rounded-md transition-colors">12h</button>
+            <button @click="timeRange = '7d'" :class="timeRange === '7d' ? 'bg-bg-card text-ink shadow-sm' : 'text-ink-muted hover:text-ink'" class="px-2.5 py-1 text-xs rounded-md transition-colors">7d</button>
+            <button @click="timeRange = '30d'" :class="timeRange === '30d' ? 'bg-bg-card text-ink shadow-sm' : 'text-ink-muted hover:text-ink'" class="px-2.5 py-1 text-xs rounded-md transition-colors">30d</button>
           </div>
         </div>
 
@@ -101,7 +131,7 @@ const stats = computed(() => ([
             <polygon :points="`0,40 ${sparkPoints} 200,40`" fill="url(#sparkFill)"/>
           </svg>
           <div class="absolute bottom-0 left-0 right-0 flex justify-between text-[10px] text-ink-dim font-mono">
-            <span>10:00</span><span>14:00</span><span>18:00</span><span>22:00</span>
+            <span v-for="(lbl, idx) in chartLabels" :key="idx">{{ lbl }}</span>
           </div>
         </div>
       </div>

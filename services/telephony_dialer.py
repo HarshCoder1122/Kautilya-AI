@@ -122,9 +122,10 @@ def _dial_vobiz(uid, agent_id, config, to_number, base_url, db):
         data = resp.json()
         call_id = data.get('api_id') or data.get('call_uuid') or data.get('request_uuid')
 
-        # Persist mappings BEFORE the answer-webhook fires so the agent
-        # worker's lookup chain has data to find.
-        _save_active_call_mapping(db, to_number, agent_id, call_id or '')
+        # Persist ONLY the call ID mapping so that when Vobiz hits the answer webhook,
+        # we can look up which agent_id this call belongs to.
+        # We intentionally do NOT write to active_calls/<phone> here, because that would 
+        # prematurely trigger the agent worker before the SIP room is actually created.
         if db and call_id:
             try:
                 db.collection('call_mappings').document(call_id).set({

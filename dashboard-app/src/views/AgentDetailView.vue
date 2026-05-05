@@ -3,9 +3,9 @@ import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft, Save, Loader2, PhoneOutgoing, BookOpen, Settings as SettingsIcon,
-  History, Sparkles, Volume2, Globe, Bot, Trash2,
+  History, Sparkles, Volume2, Globe, Bot, Trash2, Play, Pause
 } from 'lucide-vue-next'
-import { Agents } from '@/lib/api'
+import { Agents, Voice } from '@/lib/api'
 import { useAgents } from '@/stores/agents'
 import { formatDuration, relativeTime, sentimentMeta, channelMeta } from '@/lib/format'
 
@@ -22,6 +22,28 @@ const err = ref('')
 
 const logs = ref([])
 const logsLoading = ref(false)
+
+const sarvamVoices = ['shubh', 'meera', 'amartya', 'aatreyi']
+const geminiVoices = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede']
+
+const availableVoices = computed(() => {
+  return (agent.value?.model || '').includes('gemini') ? geminiVoices : sarvamVoices
+})
+
+watch(() => agent.value?.model, (newModel, oldModel) => {
+  if (oldModel && newModel !== oldModel) {
+    // If we switched from Gemini to Sarvam or vice versa, reset the voice to default
+    const isNowGemini = newModel.includes('gemini')
+    const wasGemini = oldModel.includes('gemini')
+    if (isNowGemini !== wasGemini) {
+      agent.value.voice = isNowGemini ? 'Puck' : 'shubh'
+    }
+  }
+})
+
+// Preview state
+const previewing = ref(false)
+const previewAudio = ref(null)
 
 async function load() {
   loading.value = true
@@ -77,6 +99,80 @@ const TABS = [
   { id: 'calls', label: 'Recent Calls', icon: History },
   { id: 'settings', label: 'Advanced', icon: SettingsIcon },
 ]
+
+async function playPreview() {
+  if (!agent.value || previewing.value) return
+  if (previewAudio.value) {
+    previewAudio.value.pause()
+    previewAudio.value = null
+    return
+  }
+  
+  // Gemini real-time voices can't be easily previewed via TTS REST API currently
+  if ((agent.value.model || '').includes('gemini')) {
+    alert("Gemini voices can only be previewed during a live call.")
+    return
+  }
+
+  previewing.value = true
+  try {
+    const audioData = await Voice.preview({
+      voice: agent.value.voice || 'shubh',
+      provider: 'sarvam',
+      text: agent.value.welcome_message || "Namaste! This is a preview of my voice."
+    })
+    
+    // Create a blob URL from the binary response
+    const blob = new Blob([audioData], { type: 'audio/mpeg' })
+    const url = URL.createObjectURL(blob)
+    previewAudio.value = new Audio(url)
+    previewAudio.value.onended = () => { previewAudio.value = null }
+    previewAudio.value.play()
+  } catch (e) {
+    alert(`Preview failed: ${e.message}`)
+  } finally {
+    previewing.value = false
+  }
+}
+const showTestCallModal = ref(false)
+const testPhoneNumber = ref('')
+const testDialing = ref(false)
+const testDialError = ref('')
+const testDialSuccess = ref(false)
+
+function openWebRTCChat() {
+  // Opens the embedded livekit viewer in a new window/tab
+  window.open(`/embed.html?agent_id=${id.value}`, '_blank', 'width=400,height=600')
+}
+
+function startWebCall() {
+  showTestCallModal.value = false
+  openWebRTCChat()
+}
+
+async function startPhoneCall() {
+  if (!testPhoneNumber.value) return
+  testDialing.value = true
+  testDialError.value = ''
+  testDialSuccess.value = false
+  try {
+    const res = await Agents.callOutbound(id.value, { to: testPhoneNumber.value })
+    if (res?.ok) {
+      testDialSuccess.value = true
+      setTimeout(() => {
+        showTestCallModal.value = false
+        testDialSuccess.value = false
+        testPhoneNumber.value = ''
+      }, 3000)
+    } else {
+      testDialError.value = res?.error || 'Dial failed'
+    }
+  } catch (e) {
+    testDialError.value = e.message
+  } finally {
+    testDialing.value = false
+  }
+}
 </script>
 
 <template>
@@ -108,6 +204,46 @@ const TABS = [
     </div>
 
     <template v-else>
+      <!-- Test Call Modal -->
+      <div v-if="showTestCallModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fadein">
+        <div class="bg-surface border border-line rounded-xl w-full max-w-md shadow-2xl overflow-hidden">
+          <div class="p-5 border-b border-line flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Test Agent</h2>
+            <button class="btn btn-ghost p-1" @click="showTestCallModal = false">✕</button>
+          </div>
+          <div class="p-5 space-y-4">
+            <p class="text-sm text-ink-muted">Choose how you want to test the agent:</p>
+            
+            <div class="space-y-3">
+              <button class="btn btn-subtle w-full flex flex-col items-center py-4" @click="startWebCall">
+                <Globe class="mb-2" :size="20"/>
+                <span class="font-medium">Web Call (Browser)</span>
+                <span class="text-xs text-ink-muted mt-1">Talk via your computer microphone</span>
+              </button>
+              
+              <div class="relative py-2">
+                <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-line"></div></div>
+                <div class="relative flex justify-center"><span class="bg-surface px-2 text-xs text-ink-muted">OR</span></div>
+              </div>
+              
+              <div class="space-y-2">
+                <label class="label text-xs">Enter your phone number</label>
+                <div class="flex gap-2">
+                  <input v-model="testPhoneNumber" type="tel" class="input flex-1" placeholder="+91..." @keyup.enter="startPhoneCall">
+                  <button class="btn btn-primary" @click="startPhoneCall" :disabled="testDialing || !testPhoneNumber">
+                    <Loader2 v-if="testDialing" class="animate-spin" :size="14"/>
+                    <PhoneOutgoing v-else :size="14"/>
+                    Dial
+                  </button>
+                </div>
+                <p v-if="testDialError" class="text-red-400 text-xs">{{ testDialError }}</p>
+                <p v-if="testDialSuccess" class="text-green-400 text-xs">Ringing! Check your phone.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Tabs -->
       <nav class="tabs">
         <button v-for="t in TABS" :key="t.id"
@@ -162,13 +298,25 @@ const TABS = [
         <aside class="space-y-4">
           <div class="card p-5">
             <h3 class="text-sm font-semibold mb-3">Voice</h3>
-            <div class="flex items-center gap-3">
-              <div class="h-10 w-10 rounded-lg bg-accent-soft text-accent flex items-center justify-center"><Volume2 :size="16"/></div>
-              <div class="flex-1 min-w-0">
-                <p class="text-sm font-medium">{{ agent.voice || 'shubh' }}</p>
-                <p class="text-xs text-ink-muted">{{ agent.tts_provider || 'cartesia' }}</p>
+            <div class="space-y-4">
+              <select v-model="agent.voice" class="select w-full">
+                <option v-for="v in availableVoices" :key="v" :value="v">{{ v }}</option>
+              </select>
+              
+              <div class="flex items-center gap-3">
+                <div class="h-10 w-10 rounded-lg bg-accent-soft text-accent flex items-center justify-center">
+                  <Volume2 :size="16"/>
+                </div>
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm font-medium">{{ agent.voice || 'shubh' }}</p>
+                  <p class="text-xs text-ink-muted">{{ (agent.model || '').includes('gemini') ? 'Gemini Realtime' : 'Sarvam TTS' }}</p>
+                </div>
+                <button class="btn btn-subtle btn-sm" @click="playPreview" :disabled="previewing">
+                  <Loader2 v-if="previewing" :size="14" class="animate-spin" />
+                  <Pause v-else-if="previewAudio" :size="14" />
+                  <Play v-else :size="14" />
+                </button>
               </div>
-              <button class="btn btn-subtle btn-sm">Preview</button>
             </div>
           </div>
 
@@ -176,8 +324,8 @@ const TABS = [
             <h3 class="text-sm font-semibold mb-3">Test the agent</h3>
             <p class="text-xs text-ink-muted mb-3">Quick checks without leaving the studio.</p>
             <div class="space-y-2">
-              <button class="btn btn-ghost w-full"><PhoneOutgoing :size="14"/> Place test call</button>
-              <button class="btn btn-ghost w-full"><Bot :size="14"/> Open chat playground</button>
+              <button class="btn btn-ghost w-full" @click="showTestCallModal = true"><PhoneOutgoing :size="14"/> Place test call</button>
+              <button class="btn btn-ghost w-full" @click="openWebRTCChat"><Bot :size="14"/> Open WebRTC chat</button>
             </div>
           </div>
 
@@ -268,6 +416,26 @@ const TABS = [
           <div>
             <label class="label">Linked phone number</label>
             <input v-model="agent.vobiz_number" class="input" placeholder="+91…"/>
+          </div>
+        </div>
+
+        <div class="card p-5 space-y-4 sm:col-span-2">
+          <h3 class="text-sm font-semibold">Advanced Human Handoff</h3>
+          <p class="text-xs text-ink-muted -mt-2">Configure behavior when a caller asks to speak to support.</p>
+          <label class="flex items-center gap-2 text-sm pt-2">
+            <input type="checkbox" v-model="agent.handoff_enabled" class="accent-accent"/>
+            Enable human handoff fallback
+          </label>
+          <div v-if="agent.handoff_enabled" class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3 p-4 bg-surface-raised rounded-lg border border-line">
+            <div>
+              <label class="label">Support Phone Number</label>
+              <input v-model="agent.handoff_number" class="input" placeholder="+91..." />
+              <p class="text-[11px] text-ink-muted mt-1">For internal context. Live transfer isn't active yet.</p>
+            </div>
+            <div>
+              <label class="label">Callback Message</label>
+              <textarea v-model="agent.handoff_callback_message" class="textarea" rows="3" placeholder="All our support team members are busy right now..."></textarea>
+            </div>
           </div>
         </div>
       </section>

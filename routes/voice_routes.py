@@ -178,3 +178,60 @@ def api_v1_voices():
         except Exception as e:
             return jsonify({"error": str(e)}), 500
     return jsonify({"voices": current_app.edge_voices_cache})
+
+
+@voice_bp.route('/api/voice/preview', methods=['POST'])
+def voice_preview():
+    """Generate a short TTS preview audio clip for a specific voice and provider."""
+    data = request.get_json() or {}
+    voice = data.get('voice', 'shubh')
+    provider = data.get('provider', 'sarvam')
+    text = data.get('text', "Namaste! This is a preview of how my voice will sound on the call.")
+    
+    if not text:
+        return jsonify({"error": "No text provided"}), 400
+        
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    
+    # Simple rate limiting/usage tracking
+    if uid:
+        record_usage(uid, 'tts_chars', len(text), model=f'preview-{provider}')
+
+    if provider.lower() == 'sarvam':
+        if not SARVAM_API_KEY:
+            return jsonify({"error": "Sarvam API Key missing"}), 500
+            
+        text = clean_text_for_tts(text)
+        if not text:
+            return jsonify({"error": "No speakable text"}), 400
+            
+        try:
+            payload = {
+                "inputs": [text],
+                "target_language_code": "hi-IN",
+                "speaker": voice,
+                "model": "bulbul:v3",
+                "pace": 1.1,
+                "speech_sample_rate": 22050,
+                "output_audio_codec": "mp3",
+                "enable_preprocessing": True
+            }
+            resp = requests.post("https://api.sarvam.ai/text-to-speech",
+                               headers={"api-subscription-key": SARVAM_API_KEY, "Content-Type": "application/json"},
+                               json=payload, timeout=10)
+            if resp.status_code != 200:
+                return jsonify({"error": f"Sarvam API Error: {resp.text}"}), 500
+            rjson = resp.json()
+            if "audios" not in rjson or len(rjson["audios"]) == 0:
+                return jsonify({"error": "No audio returned"}), 500
+            audio_data = base64.b64decode(rjson["audios"][0])
+            return Response(audio_data, mimetype="audio/mpeg")
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+            
+    # If it's Cartesia or Gemini or other, fallback to Edge TTS for preview or just return error
+    # since Gemini realtime voices can't be easily previewed via a simple REST TTS call yet.
+    # For now, we'll return an error explaining that only Sarvam supports direct preview here,
+    # or implement a fallback edge-tts if needed.
+    return jsonify({"error": f"Preview not supported for provider: {provider}. Gemini voices are only available during live calls."}), 400

@@ -100,6 +100,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     response_gen = None
 
     # Model display names for UI status
+    # NVIDIA NIM model IDs - verified available on https://build.nvidia.com
     _MODEL_LABELS = {
         'coder': ('DeepSeek V4 Pro', 'deepseek-ai/deepseek-v4-pro'),
         'pro':   ('Nemotron-3 Super 120B', 'nvidia/nemotron-3-super-120b-a12b'),

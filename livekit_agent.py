@@ -405,6 +405,11 @@ async def entrypoint(ctx: JobContext):
     is_sip = _looks_like_sip_room(ctx.room.name, ctx.room)
     print(f"[Agent] Parsed agent_id={raw_agent_id} call_id={call_id} is_sip={is_sip}")
 
+    agent_voice = "shubh"
+    handoff_enabled = False
+    handoff_number = ""
+    handoff_callback_message = "All our support team members are busy right now. Would you like to add a callback request?"
+
     # ----- FAST PATH: read agent config from room metadata (set by pre-warm) -----
     # Telephony webhooks call create_room_fire_and_forget() which embeds the full
     # agent config in the room metadata BEFORE the SIP user picks up. Reading
@@ -424,8 +429,10 @@ async def entrypoint(ctx: JobContext):
                     agent_language = meta["language"]
                 if meta.get("model"):
                     selected_model = meta["model"]
+                if meta.get("voice"):
+                    agent_voice = meta["voice"]
                 meta_loaded = True
-                print(f"[Config] ⚡ Loaded from room metadata: agent={agent_id} model={selected_model}")
+                print(f"[Config] ⚡ Loaded from room metadata: agent={agent_id} model={selected_model} voice={agent_voice}")
     except Exception as e:
         print(f"[Config] room.metadata parse warning: {e}")
 
@@ -441,11 +448,27 @@ async def entrypoint(ctx: JobContext):
                 welcome_message = data.get("welcome_message") or welcome_message
                 agent_language = data.get("language") or agent_language
                 selected_model = (data.get("model") or selected_model)
+                agent_voice = data.get("voice") or agent_voice
+                handoff_enabled = bool(data.get("handoff_enabled", False))
+                handoff_number = data.get("handoff_number", "")
+                handoff_callback_message = data.get("handoff_callback_message") or handoff_callback_message
                 print(f"[Config] Model selected in dashboard: {selected_model}")
             except Exception as e:
                 print(f"[Config] Error reading agent doc: {e}")
         else:
             print(f"[Config] ⚠️ No agent doc resolved for {raw_agent_id} — using defaults")
+
+    if handoff_enabled:
+        hardcoded_instructions = f"""
+\n\n---
+IMPORTANT HANDOFF INSTRUCTIONS:
+If the user requests to speak with a human or support, DO NOT transfer them immediately.
+Instead, tell them exactly: "{handoff_callback_message}"
+If they agree to a callback, ask for their preferred time and note it down. 
+(For your internal context, the assigned support number is {handoff_number}, but you must follow this callback flow as the team is currently busy.)
+---
+"""
+        system_prompt += hardcoded_instructions
 
     await connect_task
 
@@ -527,7 +550,7 @@ async def entrypoint(ctx: JobContext):
 
             llm_kwargs = {
                 "model": api_model,
-                "voice": "Puck",
+                "voice": agent_voice if agent_voice in ["Puck", "Charon", "Kore", "Fenrir", "Aoede"] else "Puck",
                 "instructions": gemini_instructions,
                 "temperature": 0.8,
             }
@@ -577,7 +600,7 @@ async def entrypoint(ctx: JobContext):
             print(f"[Pipeline] Using STT/LLM/TTS path — model={selected_model} lang={agent_language}")
             vad = silero.VAD.load()
             stt = sarvam.STT(language=agent_language)
-            tts = sarvam.TTS(target_language_code=agent_language, model="bulbul:v3")
+            tts = sarvam.TTS(target_language_code=agent_language, speaker=agent_voice, model="bulbul:v3")
             llm_plugin = openai.LLM(
                 base_url="https://api.groq.com/openai/v1",
                 api_key=os.environ.get("GROQ_API_KEY"),
