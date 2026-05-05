@@ -196,7 +196,7 @@ async def _lookup_by_phone(phone_raw: str):
         try:
             pending_q = (db.collection('active_calls').document(v)
                            .collection('pending')
-                           .where('claimed', '==', False)
+                           .where(filter=firestore.FieldFilter('claimed', '==', False))
                            .order_by('created_at')
                            .limit(1))
             pending_docs = list(pending_q.stream())
@@ -262,7 +262,7 @@ async def _lookup_by_vobiz_number(phone_raw: str):
         return None, None
     try:
         for v in _phone_variants(phone_raw):
-            results = db.collection('agents').where('vobiz_number', '==', v).limit(1).get()
+            results = db.collection('agents').where(filter=firestore.FieldFilter('vobiz_number', '==', v)).limit(1).get()
             if results:
                 d = results[0]
                 if d.exists:
