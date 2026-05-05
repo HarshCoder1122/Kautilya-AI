@@ -181,13 +181,16 @@ def _looks_like_sip_room(room_name: str, room: rtc.Room) -> bool:
         if (p.identity or "").lower().startswith("sip"):
             return True
     # 3. Check room name patterns
-    return "sip" in rn or (rn.startswith("voice-") and "_" in rn)
-    after = rn.split("voice-", 1)[-1]
-    if after.startswith("_+") or after.startswith("+"):
+    if "sip" in rn:
         return True
-    aid, _ = _resolve_agent_id(room_name)
-    if aid and _is_phone_like(aid):
-        return True
+    if rn.startswith("voice-") and "_" in rn:
+        after = rn.split("voice-", 1)[-1]
+        if after.startswith("_+") or after.startswith("+"):
+            return True
+        # Check if it resolves to a phone number
+        aid, _ = _resolve_agent_id(room_name)
+        if aid and _is_phone_like(aid):
+            return True
     return False
 
 
@@ -811,6 +814,8 @@ If they agree to a callback, ask for their preferred time and note it down.
                         print(f"[Analysis] ✅ summary='{summary[:80]}' sentiment={sentiment} outcome={outcome_label}")
                     except Exception as je:
                         print(f"[Analysis] JSON parse failed: {je}")
+                else:
+                    print(f"[Analysis] No JSON found in NIM response: {result[:200]}")
     except Exception as e:
         print(f"[Analysis] NIM call failed: {e}")
 
