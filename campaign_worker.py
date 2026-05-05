@@ -215,7 +215,7 @@ def main():
         try:
             running = list(
                 db.collection_group('campaigns')
-                  .where('status', '==', 'running')
+                  .where(filter=firestore.FieldFilter('status', '==', 'running'))
                   .limit(20)
                   .stream()
             )

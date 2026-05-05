@@ -62,6 +62,18 @@ def serve_docs():
     return send_from_directory(STATIC_FOLDER, 'docs.html')
 
 
+@static_bp.route('/embed.html')
+def serve_embed_html():
+    """Serve the web widget embed container."""
+    return send_from_directory(STATIC_FOLDER, 'embed.html')
+
+
+@static_bp.route('/embed.js')
+def serve_embed_js():
+    """Serve the web widget loader script."""
+    return send_from_directory(STATIC_FOLDER, 'embed.js')
+
+
 @static_bp.route('/PROJECT_DOCUMENTATION.md')
 def serve_docs_md():
     """Serve the raw markdown so the /docs page can render it."""

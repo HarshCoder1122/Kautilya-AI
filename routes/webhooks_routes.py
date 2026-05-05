@@ -276,7 +276,7 @@ def _process_post_call(agent_id, payload, call_uuid):
             return
 
         # Find the latest transcript for this agent
-        transcripts_ref = db.collection('transcripts').where('agent_id', '==', agent_id).order_by('created_at', direction=firestore.Query.DESCENDING).limit(1).get()
+        transcripts_ref = db.collection('transcripts').where(filter=firestore.FieldFilter('agent_id', '==', agent_id)).order_by('created_at', direction=firestore.Query.DESCENDING).limit(1).get()
         
         transcript_text = ""
         if transcripts_ref:

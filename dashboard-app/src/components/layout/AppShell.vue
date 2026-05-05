@@ -3,7 +3,7 @@ import { ref, computed } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import {
   LayoutDashboard, Bot, Phone, Radio, Wallet, Settings, Plug, Users, Code2,
-  Menu, X, Search, LogOut, ChevronsLeft, ChevronsRight, Plus,
+  Menu, X, Search, LogOut, ChevronsLeft, ChevronsRight, Plus, Megaphone
 } from 'lucide-vue-next'
 import { useAuth } from '@/stores/auth'
 import { initials } from '@/lib/format'
@@ -22,6 +22,7 @@ const NAV = [
   { to: '/leads', label: 'Leads', icon: Users },
   { to: '/embed', label: 'Embed on Web', icon: Code2 },
   { to: '/telephony', label: 'Telephony', icon: Radio },
+  { to: '/campaigns', label: 'Campaigns', icon: Megaphone },
   { to: '/integrations', label: 'Integrations', icon: Plug },
   { to: '/billing', label: 'Billing', icon: Wallet },
   { to: '/settings', label: 'Settings', icon: Settings },
