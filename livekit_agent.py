@@ -111,13 +111,6 @@ def _extract_phone_from_token(tok: str):
     return None
 
 
-def _ids_match(left: str, right: str) -> bool:
-    """Loose but explicit match for provider call identifiers."""
-    if not left or not right:
-        return False
-    return str(left).strip() == str(right).strip()
-
-
 def _clean_placeholders(text: str) -> str:
     """Removes raw template variables like {name}, {email_id} if they weren't resolved."""
     if not text: return ""
@@ -173,28 +166,23 @@ def _looks_like_sip_room(room_name: str, room: rtc.Room) -> bool:
     if not room_name:
         return False
     rn = room_name.lower()
-    # 1. Web calls always use '--' separator
-    if "--" in rn:
-        return False
-    # 2. Check identity of participants
+    # 1. Check identity of participants
     for p in (room.remote_participants or {}).values():
         if (p.identity or "").lower().startswith("sip"):
             return True
-    # 3. Check room name patterns
-    if "sip" in rn:
+    # 2. Check room name patterns
+    return "sip" in rn or rn.startswith("voice-")
+    # combo is a strong SIP signal.
+    after = rn.split("voice-", 1)[-1]
+    if after.startswith("_+") or after.startswith("+"):
         return True
-    if rn.startswith("voice-") and "_" in rn:
-        after = rn.split("voice-", 1)[-1]
-        if after.startswith("_+") or after.startswith("+"):
-            return True
-        # Check if it resolves to a phone number
-        aid, _ = _resolve_agent_id(room_name)
-        if aid and _is_phone_like(aid):
-            return True
+    aid, _ = _resolve_agent_id(room_name)
+    if aid and _is_phone_like(aid):
+        return True
     return False
 
 
-async def _lookup_by_phone(phone_raw: str, call_id: str = None):
+async def _lookup_by_phone(phone_raw: str):
     """Resolve (agent_doc, agent_id) for a phone number, race-safe.
 
     Strategy:
@@ -213,90 +201,44 @@ async def _lookup_by_phone(phone_raw: str, call_id: str = None):
         return None, None
 
     for v in _phone_variants(phone_raw):
-        pending_call_already_claimed = False
-
-        # ---- 1. Deterministic lookup by call_id (NEW) ----
+        # ---- 1. FIFO claim from pending subcollection ----
         try:
-            if call_id:
-                pending_ref = db.collection('active_calls').document(v).collection('pending').document(call_id)
-                
+            pending_q = (db.collection('active_calls').document(v)
+                           .collection('pending')
+                           .where(filter=firestore.FieldFilter('claimed', '==', False))
+                           .order_by('created_at')
+                           .limit(1))
+            pending_docs = list(pending_q.stream())
+            if pending_docs:
+                claim_ref = pending_docs[0].reference
+
                 @firestore.transactional
-                def _claim_deterministic(tx, ref):
+                def _claim(tx, ref):
                     snap = ref.get(transaction=tx)
                     if not snap.exists:
                         return None
                     data = snap.to_dict() or {}
                     if data.get('claimed'):
-                        return {"_already_claimed": True, **data}
-                    tx.update(ref, {"claimed": True, "claimed_at": firestore.SERVER_TIMESTAMP})
+                        return None
+                    tx.update(ref, {"claimed": True,
+                                     "claimed_at": firestore.SERVER_TIMESTAMP})
                     return data
 
-                tx_result = _claim_deterministic(db.transaction(), pending_ref)
-                if tx_result and tx_result.get('_already_claimed'):
-                    pending_call_already_claimed = True
-                    print(f"[Config] active_calls/{v}/pending/{call_id} already claimed; rejecting duplicate room")
-                    continue
+                tx_result = _claim(db.transaction(), claim_ref)
                 if tx_result and tx_result.get('agent_id'):
                     mapped = tx_result['agent_id']
                     agent_doc = db.collection('agents').document(mapped).get()
                     if agent_doc.exists:
-                        print(f"[Config] 🎯 active_calls/{v}/pending/{call_id} → agent {mapped} (Deterministic)")
+                        print(f"[Config] 🎯 active_calls/{v}/pending → agent {mapped} (FIFO claim)")
                         return agent_doc, mapped
         except Exception as e:
-            print(f"[Config] Deterministic claim error on {v}/{call_id}: {e}")
+            print(f"[Config] FIFO claim error on {v}: {e}")
 
-        # ---- 2. FIFO claim fallback ----
-        # Only use FIFO when the room has no call token. If LiveKit gives us a
-        # call_id-like suffix, claiming a different pending doc can turn a
-        # duplicate/random SIP room into the active call.
-        if not call_id:
-            try:
-                pending_q = (db.collection('active_calls').document(v)
-                               .collection('pending')
-                               .where(filter=firestore.FieldFilter('claimed', '==', False))
-                               .order_by('created_at')
-                               .limit(1))
-                pending_docs = list(pending_q.stream())
-                if pending_docs:
-                    claim_ref = pending_docs[0].reference
-
-                    @firestore.transactional
-                    def _claim_fifo(tx, ref):
-                        snap = ref.get(transaction=tx)
-                        if not snap.exists:
-                            return None
-                        data = snap.to_dict() or {}
-                        if data.get('claimed'):
-                            return None
-                        tx.update(ref, {"claimed": True,
-                                         "claimed_at": firestore.SERVER_TIMESTAMP})
-                        return data
-
-                    tx_result = _claim_fifo(db.transaction(), claim_ref)
-                    if tx_result and tx_result.get('agent_id'):
-                        mapped = tx_result['agent_id']
-                        agent_doc = db.collection('agents').document(mapped).get()
-                        if agent_doc.exists:
-                            print(f"[Config] 🎯 active_calls/{v}/pending → agent {mapped} (FIFO claim)")
-                            return agent_doc, mapped
-            except Exception as e:
-                print(f"[Config] FIFO claim error on {v}: {e}")
-
-        # ---- 3. Legacy top-level doc fallback ----
+        # ---- 2. Legacy top-level doc fallback ----
         try:
-            if pending_call_already_claimed:
-                continue
             call_doc = db.collection('active_calls').document(v).get()
             if call_doc.exists:
-                call_data = call_doc.to_dict() or {}
-                stored_call_id = call_data.get('call_uuid') or call_data.get('call_id')
-                if call_id and stored_call_id and not _ids_match(call_id, stored_call_id):
-                    print(f"[Config] Skipping active_calls/{v} legacy mapping: room_call_id={call_id} stored_call_id={stored_call_id}")
-                    continue
-                if call_id and not stored_call_id:
-                    print(f"[Config] Skipping active_calls/{v} legacy mapping: missing stored call_id for room_call_id={call_id}")
-                    continue
-                mapped = call_data.get('agent_id')
+                mapped = (call_doc.to_dict() or {}).get('agent_id')
                 if mapped:
                     doc = db.collection('agents').document(mapped).get()
                     if doc.exists:
@@ -311,33 +253,14 @@ async def _lookup_by_call_id(call_id: str):
     if not (db and call_id):
         return None, None
     try:
-        m_ref = db.collection('call_mappings').document(call_id)
-
-        @firestore.transactional
-        def _claim_call_mapping(tx, ref):
-            snap = ref.get(transaction=tx)
-            if not snap.exists:
-                return None
-            data = snap.to_dict() or {}
-            if data.get('worker_claimed'):
-                return {"_already_claimed": True, **data}
-            if data.get('agent_id'):
-                tx.set(ref, {
-                    "worker_claimed": True,
-                    "worker_claimed_at": firestore.SERVER_TIMESTAMP,
-                }, merge=True)
-            return data
-
-        data = _claim_call_mapping(db.transaction(), m_ref)
-        if data and data.get('_already_claimed'):
-            print(f"[Config] call_mappings/{call_id} already claimed; rejecting duplicate room")
-            return None, "__already_claimed__"
-        mapped = (data or {}).get('agent_id')
-        if mapped:
-            doc = db.collection('agents').document(mapped).get()
-            if doc.exists:
-                print(f"[Config] 🎯 call_mappings/{call_id} → agent {mapped} (global claim)")
-                return doc, mapped
+        m = db.collection('call_mappings').document(call_id).get()
+        if m.exists:
+            mapped = (m.to_dict() or {}).get('agent_id')
+            if mapped:
+                doc = db.collection('agents').document(mapped).get()
+                if doc.exists:
+                    print(f"[Config] 🎯 call_mappings/{call_id} → agent {mapped}")
+                    return doc, mapped
     except Exception as e:
         print(f"[Config] call_mappings/{call_id} lookup error: {e}")
     return None, None
@@ -385,23 +308,20 @@ async def _resolve_agent_doc(ctx: JobContext, parsed_id: str, call_id: str, is_s
 
     # Pass 1: try every signal up-front
     for attempt in range(6):  # ~3s with 0.5s sleeps
-        # 1. Global call-id claim. This prevents duplicate rooms for the same
-        # provider call from starting two agent sessions across phone variants.
-        doc, aid = await _lookup_by_call_id(call_id)
-        if aid == "__already_claimed__":
-            return None, parsed_id
+        # 1. active_calls by phone (set by trigger_vobiz_call BEFORE dial)
+        doc, aid = await _lookup_by_phone(parsed_id)
         if doc:
             try:
-                ctx.room.metadata = json.dumps({"resolved_agent_id": aid, "resolved_call_id": call_id})
+                ctx.room.metadata = json.dumps({"resolved_agent_id": aid, "resolved_call_id": call_id or ""})
             except Exception:
                 pass
             return doc, aid
 
-        # 2. active_calls by phone (set by trigger_vobiz_call BEFORE dial)
-        doc, aid = await _lookup_by_phone(parsed_id, call_id)
+        # 2. call_mappings by call uuid (set by webhook on ringing)
+        doc, aid = await _lookup_by_call_id(call_id)
         if doc:
             try:
-                ctx.room.metadata = json.dumps({"resolved_agent_id": aid, "resolved_call_id": call_id or ""})
+                ctx.room.metadata = json.dumps({"resolved_agent_id": aid, "resolved_call_id": call_id})
             except Exception:
                 pass
             return doc, aid
@@ -420,7 +340,7 @@ async def _resolve_agent_doc(ctx: JobContext, parsed_id: str, call_id: str, is_s
                     if _extract_phone_from_token(tok):
                         candidates.append(tok)
                 for c in candidates:
-                    doc, aid = await _lookup_by_phone(c, call_id)
+                    doc, aid = await _lookup_by_phone(c)
                     if doc:
                         try:
                             ctx.room.metadata = json.dumps({"resolved_agent_id": aid, "resolved_call_id": call_id or ""})
@@ -525,22 +445,6 @@ async def entrypoint(ctx: JobContext):
     except Exception as e:
         print(f"[Config] room.metadata parse warning: {e}")
 
-    if meta_loaded and is_sip and call_id:
-        _, claim_status = await _lookup_by_call_id(call_id)
-        if claim_status == "__already_claimed__":
-            print(f"[Agent] Rejecting duplicate SIP metadata room: room={ctx.room.name} call_id={call_id}")
-            try:
-                if connect_task.done():
-                    await connect_task
-                else:
-                    connect_task.cancel()
-                    await connect_task
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                print(f"[Agent] connect cleanup warning after duplicate metadata reject: {e}")
-            return
-
     # Fallback path: resolve via Firestore (used by Web calls and any SIP call
     # that didn't go through the pre-warm path).
     if not meta_loaded:
@@ -562,19 +466,6 @@ async def entrypoint(ctx: JobContext):
                 print(f"[Config] Error reading agent doc: {e}")
         else:
             print(f"[Config] ⚠️ No agent doc resolved for {raw_agent_id} — using defaults")
-            if is_sip:
-                print(f"[Agent] Rejecting SIP room without a matching active call mapping: room={ctx.room.name} call_id={call_id}")
-                try:
-                    if connect_task.done():
-                        await connect_task
-                    else:
-                        connect_task.cancel()
-                        await connect_task
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    print(f"[Agent] connect cleanup warning after SIP reject: {e}")
-                return
     
     # Final cleanup of any unresolved placeholders in the prompt or greeting
     system_prompt = _clean_placeholders(system_prompt)
@@ -696,19 +587,12 @@ If they agree to a callback, ask for their preferred time and note it down.
             )
             triggered = False
             try:
-                # Multimodal models (Gemini Live) do not support generate_reply()
-                model_lower = (selected_model or "").lower()
-                is_multimodal = "flash" in model_lower or "live" in model_lower or "gemini" in model_lower
-                if hasattr(session, 'generate_reply') and not is_multimodal:
+                if hasattr(session, 'generate_reply'):
                     await session.generate_reply(instructions=greet_prompt)
                     triggered = True
                     print("[Gemini] ✅ generate_reply() kicked off welcome turn.")
-                elif hasattr(session, 'say'):
-                    await session.say(welcome_message)
-                    triggered = True
-                    print("[Gemini] ✅ session.say() kicked off welcome turn.")
             except Exception as e:
-                print(f"[Gemini] welcome turn failed: {e}")
+                print(f"[Gemini] generate_reply failed: {e}")
             if not triggered:
                 try:
                     if hasattr(session, 'say'):
@@ -793,7 +677,7 @@ If they agree to a callback, ask for their preferred time and note it down.
                 [{"role": "user", "content": analysis_prompt}],
                 stream=False,
                 max_tokens=600,
-                model='meta/llama-3.1-405b-instruct',
+                model='nvidia/llama-3.1-nemotron-70b-instruct',
             )
             if isinstance(result, str) and result.strip():
                 # Extract the first JSON object out of the response (Nemotron
@@ -814,8 +698,6 @@ If they agree to a callback, ask for their preferred time and note it down.
                         print(f"[Analysis] ✅ summary='{summary[:80]}' sentiment={sentiment} outcome={outcome_label}")
                     except Exception as je:
                         print(f"[Analysis] JSON parse failed: {je}")
-                else:
-                    print(f"[Analysis] No JSON found in NIM response: {result[:200]}")
     except Exception as e:
         print(f"[Analysis] NIM call failed: {e}")
 
