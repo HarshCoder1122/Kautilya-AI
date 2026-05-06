@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import uuid
 import asyncio
 import time as _time
 import sys
@@ -531,6 +532,7 @@ async def entrypoint(ctx: JobContext):
     welcome_message = "Hello, I am Kautilya."
     agent_language = "hi-IN"
     selected_model = "kautilya-daily"
+    owner_uid = None
 
     raw_agent_id, call_id = _resolve_agent_id(ctx.room.name)
     is_sip = _looks_like_sip_room(ctx.room.name, ctx.room)
@@ -555,6 +557,7 @@ async def entrypoint(ctx: JobContext):
                 agent_language = meta.get("language") or agent_language
                 selected_model = meta.get("model") or selected_model
                 agent_voice = meta.get("voice") or agent_voice
+                owner_uid = meta.get("uid")
                 meta_loaded = True
                 print(f"[Config] ⚡ Loaded from room metadata: agent={agent_id} model={selected_model}", flush=True)
     except Exception as e:
@@ -581,6 +584,7 @@ async def entrypoint(ctx: JobContext):
                 agent_language = data.get("language") or agent_language
                 selected_model = (data.get("model") or selected_model)
                 agent_voice = data.get("voice") or agent_voice
+                owner_uid = data.get("uid")
                 handoff_enabled = bool(data.get("handoff_enabled", False))
                 handoff_number = data.get("handoff_number", "")
                 handoff_callback_message = data.get("handoff_callback_message") or handoff_callback_message
@@ -701,7 +705,8 @@ async def entrypoint(ctx: JobContext):
             from services.llm_service import call_nvidia
             analysis_prompt = (
                 "You are a call analyst. Extract JSON only:\n"
-                '{"summary": "...", "sentiment": "positive|neutral|negative", "outcome": "...", "topics": [...]}\n\n'
+                '{"summary": "...", "sentiment": "positive|neutral|negative", "outcome": "...", "topics": [...], '
+                '"lead": {"name": "...", "email": "...", "phone": "...", "intent": "...", "score": 0-10}}\n\n'
                 f"TRANSCRIPT:\n{transcript_text[:6000]}"
             )
             result = call_nvidia([{"role": "user", "content": analysis_prompt}], stream=False, max_tokens=600, model='meta/llama-3.1-405b-instruct')
@@ -714,6 +719,28 @@ async def entrypoint(ctx: JobContext):
                     sentiment = parsed.get('sentiment', 'neutral')
                     outcome_label = parsed.get('outcome', outcome_label)
                     key_topics = (parsed.get('topics') or [])[:5]
+                    lead_data = parsed.get('lead')
+                    if lead_data and owner_uid:
+                        # Only save if there's some useful info
+                        if any(lead_data.get(k) for k in ['name', 'email', 'phone']):
+                            lead_id = 'lead_' + uuid.uuid4().hex[:20]
+                            lead_doc = {
+                                "id": lead_id,
+                                "uid": owner_uid,
+                                "agent_id": agent_id,
+                                "name": str(lead_data.get('name') or '')[:120],
+                                "email": str(lead_data.get('email') or '')[:200],
+                                "phone": str(lead_data.get('phone') or '')[:40],
+                                "message": summary,
+                                "source": 'voice_sip' if is_sip else 'voice_web',
+                                "status": "new",
+                                "sentiment": sentiment,
+                                "intent": str(lead_data.get('intent') or '')[:400],
+                                "score": int(lead_data.get('score') or 0),
+                                "created_at": firestore.SERVER_TIMESTAMP,
+                            }
+                            db.collection('leads').document(lead_id).set(lead_doc)
+                            print(f"[Agent] 🏆 Lead captured: {lead_id}", flush=True)
     except: pass
 
     if not summary and convo_turns: summary = convo_turns[0]['content'][:200]
