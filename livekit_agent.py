@@ -19,6 +19,7 @@ from livekit.agents import (
 )
 from livekit.agents.llm import ChatMessage
 from livekit.plugins import sarvam, openai, silero, cartesia, google
+from services.llm_service import call_nvidia
 
 load_dotenv()
 
@@ -336,13 +337,20 @@ async def _cleanup_pending_doc(phone: str, call_id: str):
     try:
         for v in _phone_variants(phone):
             ref = db.collection('active_calls').document(v).collection('pending').document(call_id)
-            snap = ref.get()
-            if snap.exists:
-                ref.update({
-                    "completed": True,
-                    "completed_at": firestore.SERVER_TIMESTAMP,
-                    "claimed": True,  # belt-and-suspenders
-                })
+            
+            def _update_doc():
+                snap = ref.get()
+                if snap.exists:
+                    ref.update({
+                        "completed": True,
+                        "completed_at": firestore.SERVER_TIMESTAMP,
+                        "claimed": True,
+                    })
+                    return True
+                return False
+
+            updated = await asyncio.to_thread(_update_doc)
+            if updated:
                 print(f"[Cleanup] Marked pending/{call_id} as completed for {v}", flush=True)
                 break
     except Exception as e:
@@ -606,6 +614,9 @@ async def entrypoint(ctx: JobContext):
     if handoff_enabled:
         system_prompt += f"\n\nHANDOFF: If user wants human, say: \"{handoff_callback_message}\""
 
+    # Hardcoded Lead Capture Instructions
+    system_prompt += "\n\nLEAD CAPTURE: You MUST ask the user for their Name, Email ID, and Contact Number during the conversation if not already provided. This is essential for our records."
+
     await connect_task
 
     is_gemini_live = "gemini" in (selected_model or "").lower()
@@ -702,14 +713,20 @@ async def entrypoint(ctx: JobContext):
 
     try:
         if transcript_text and msg_count >= 2:
-            from services.llm_service import call_nvidia
             analysis_prompt = (
                 "You are a call analyst. Extract JSON only:\n"
                 '{"summary": "...", "sentiment": "positive|neutral|negative", "outcome": "...", "topics": [...], '
                 '"lead": {"name": "...", "email": "...", "phone": "...", "intent": "...", "score": 0-10}}\n\n'
                 f"TRANSCRIPT:\n{transcript_text[:6000]}"
             )
-            result = call_nvidia([{"role": "user", "content": analysis_prompt}], stream=False, max_tokens=600, model='meta/llama-3.1-405b-instruct')
+            # Offload blocking LLM call to thread to prevent health-check timeout
+            result = await asyncio.to_thread(
+                call_nvidia,
+                [{"role": "user", "content": analysis_prompt}],
+                stream=False,
+                max_tokens=600,
+                model='meta/llama-3.3-70b-instruct'
+            )
             if result:
                 cleaned = re.sub(r"<thinking>.*?</thinking>", "", result, flags=re.DOTALL).strip()
                 m = re.search(r"\{[\s\S]*\}", cleaned)
@@ -739,7 +756,7 @@ async def entrypoint(ctx: JobContext):
                                 "score": int(lead_data.get('score') or 0),
                                 "created_at": firestore.SERVER_TIMESTAMP,
                             }
-                            db.collection('leads').document(lead_id).set(lead_doc)
+                            await asyncio.to_thread(db.collection('leads').document(lead_id).set, lead_doc)
                             print(f"[Agent] 🏆 Lead captured: {lead_id}", flush=True)
     except: pass
 
@@ -759,8 +776,12 @@ async def entrypoint(ctx: JobContext):
                 'model': selected_model, 'language': agent_language,
                 'created_at': firestore.SERVER_TIMESTAMP, 'timestamp': int(_time.time()),
             }
-            db.collection('agents').document(agent_id).collection('agent_logs').add(log_payload)
-            db.collection('agents').document(agent_id).update({"call_count": firestore.Increment(1)})
+            
+            def _save_final_logs():
+                db.collection('agents').document(agent_id).collection('agent_logs').add(log_payload)
+                db.collection('agents').document(agent_id).update({"call_count": firestore.Increment(1)})
+
+            await asyncio.to_thread(_save_final_logs)
             print(f"[Agent] ✅ Log saved for {agent_id}", flush=True)
     except Exception as e:
         print(f"[Agent] ❌ Save failed: {e}", flush=True)
