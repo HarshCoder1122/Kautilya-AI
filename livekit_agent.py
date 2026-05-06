@@ -24,6 +24,23 @@ load_dotenv()
 # Force unbuffered output for faster logs on HF
 sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
 
+# ---- Module-level pre-warm (runs ONCE when worker process starts) ----
+_PREWARMED_VAD = None
+
+def _get_vad():
+    global _PREWARMED_VAD
+    if _PREWARMED_VAD is None:
+        _PREWARMED_VAD = silero.VAD.load()
+        print("[PreWarm] VAD loaded", flush=True)
+    return _PREWARMED_VAD
+
+# Call this at module load time so idle workers are ready:
+try:
+    _get_vad()
+    print("[PreWarm] VAD pre-loaded at startup", flush=True)
+except Exception as e:
+    print(f"[PreWarm] VAD warmup failed: {e}", flush=True)
+
 # ============== Firebase Admin Initialization ==============
 db = None
 FIREBASE_AVAILABLE = False
@@ -257,6 +274,7 @@ async def _lookup_by_phone(phone_raw: str, call_id: str = None):
             pending_q = (db.collection('active_calls').document(v)
                            .collection('pending')
                            .where(filter=firestore.FieldFilter('claimed', '==', False))
+                           .where(filter=firestore.FieldFilter('completed', '!=', True))
                            .order_by('created_at')
                            .limit(1))
             pending_docs = list(pending_q.stream())
@@ -308,6 +326,26 @@ async def _lookup_by_phone(phone_raw: str, call_id: str = None):
         except Exception as e:
             print(f"[Config] active_calls/{v} lookup error: {e}", flush=True)
     return None, None
+
+
+async def _cleanup_pending_doc(phone: str, call_id: str):
+    """Mark the pending doc as completed so it never gets re-claimed."""
+    if not (db and phone and call_id):
+        return
+    try:
+        for v in _phone_variants(phone):
+            ref = db.collection('active_calls').document(v).collection('pending').document(call_id)
+            snap = ref.get()
+            if snap.exists:
+                ref.update({
+                    "completed": True,
+                    "completed_at": firestore.SERVER_TIMESTAMP,
+                    "claimed": True,  # belt-and-suspenders
+                })
+                print(f"[Cleanup] Marked pending/{call_id} as completed for {v}", flush=True)
+                break
+    except Exception as e:
+        print(f"[Cleanup] Error: {e}", flush=True)
 
 
 async def _lookup_by_call_id(call_id: str):
@@ -498,6 +536,7 @@ async def entrypoint(ctx: JobContext):
     is_sip = _looks_like_sip_room(ctx.room.name, ctx.room)
     print(f"[Agent] Parsed agent_id={raw_agent_id} call_id={call_id} is_sip={is_sip}", flush=True)
 
+
     agent_voice = "shubh"
     handoff_enabled = False
     handoff_number = ""
@@ -623,7 +662,7 @@ async def entrypoint(ctx: JobContext):
                     triggered = True
             except: pass
         else:
-            vad = silero.VAD.load()
+            vad = _get_vad()
             stt = sarvam.STT(language=agent_language)
             tts = sarvam.TTS(target_language_code=agent_language, speaker=agent_voice, model="bulbul:v3")
             llm_plugin = openai.LLM(base_url="https://api.groq.com/openai/v1", api_key=os.environ.get("GROQ_API_KEY"), model="llama-3.3-70b-versatile")
@@ -678,6 +717,9 @@ async def entrypoint(ctx: JobContext):
     except: pass
 
     if not summary and convo_turns: summary = convo_turns[0]['content'][:200]
+
+    if is_sip and raw_agent_id and call_id:
+        await _cleanup_pending_doc(raw_agent_id, call_id)
 
     try:
         if FIREBASE_AVAILABLE and db and agent_id:
