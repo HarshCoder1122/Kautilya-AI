@@ -129,6 +129,40 @@ def serve_manifest():
 def serve_sw():
     return send_from_directory(STATIC_FOLDER, 'sw.js')
 
+@app.route('/api/config/firebase', methods=['GET'])
+def get_firebase_config():
+    """Extract public Web Config from Service Account or Env."""
+    from extensions import FIREBASE_AVAILABLE
+    if not FIREBASE_AVAILABLE:
+        return jsonify({"error": "Firebase not available"}), 503
+    
+    try:
+        from firebase_admin import project_management
+        # Fetch the first web app registered in this project
+        apps = project_management.list_web_apps()
+        if apps:
+            config = apps[0].get_config()
+            return jsonify({
+                "apiKey": config.api_key,
+                "authDomain": f"{config.project_id}.firebaseapp.com",
+                "projectId": config.project_id,
+                "storageBucket": f"{config.project_id}.appspot.com",
+                "messagingSenderId": config.messaging_sender_id,
+                "appId": config.app_id
+            })
+    except Exception as e:
+        logger.error(f"[Config] Dynamic fetch failed: {e}")
+    
+    # Fallback to manual environment variables if project_management fails
+    return jsonify({
+        "apiKey": os.environ.get("FIREBASE_API_KEY", ""),
+        "authDomain": os.environ.get("FIREBASE_AUTH_DOMAIN", ""),
+        "projectId": os.environ.get("FIREBASE_PROJECT_ID", "jarvis-a6e18"),
+        "storageBucket": os.environ.get("FIREBASE_STORAGE_BUCKET", ""),
+        "messagingSenderId": os.environ.get("FIREBASE_MESSAGING_SENDER_ID", ""),
+        "appId": os.environ.get("FIREBASE_APP_ID", "")
+    })
+
 @app.route('/__/<path:firebase_path>')
 def firebase_proxy(firebase_path):
     firebase_url = f"https://jarvis-a6e18.firebaseapp.com/__/{firebase_path}"

@@ -116,54 +116,27 @@ RULES:
 
 
 _ARTIFACT_PROTOCOL = """
-[ARTIFACT PROTOCOL — Claude-style downloadable artifacts]
+[ARTIFACT PROTOCOL — Dynamic Canvas & Deliverables]
 
-When the user asks you to CREATE a substantial deliverable, wrap it in a fenced artifact
-block so the UI renders it in a side panel with a Download button.
+When you produce a substantial deliverable (reports, code, charts, complex tables), wrap it in an <artifact> tag. This triggers the Kautilya Dynamic Canvas for the user.
 
-Use artifacts for:
-  - Long-form documents (>30 lines) — reports, essays, plans
-  - Spreadsheets / tabular data — emit a markdown table OR JSON payload
-  - PDF / DOCX exports — full document content
-  - Standalone HTML pages, SVG graphics, Mermaid diagrams
-  - Code files >40 lines or any complete runnable file
-  - React / Vue components
+Syntax (STRICT):
+<artifact type="kind" title="Short Title">
+CONTENT_HERE
+</artifact>
 
-Syntax (use this EXACTLY):
-```artifact:<kind> title="<short title>"
-<content here>
-```
-
-Supported kinds:
-  - `excel`     — markdown tables OR JSON: {"sheets":[{"name":"...","header":[...],"rows":[[...]]}]}
-  - `pdf`       — markdown text (headings, lists, tables, code)
-  - `docx`      — markdown text (formatted as Word doc)
-  - `csv`       — single markdown table OR JSON list of objects
-  - `markdown`  — long-form markdown document
-  - `html`      — full standalone HTML page (<!doctype html>...)
-  - `svg`       — single <svg> element
-  - `mermaid`   — mermaid diagram source
-  - `react`     — React component (single function component, default export, Tailwind ok)
-  - `code:<lang>` — large code block in any language (lang=python, js, ts, go, rust, etc.)
+Supported types:
+  - `chart`     — Dynamic BI data (JSON format: { kpis: [], revenue: [], ... })
+  - `code`      — Large code files (React, Python, JS, etc.)
+  - `markdown`  — Long-form reports, proposals, or plans
+  - `svg`       — Vector graphics and diagrams
+  - `mermaid`   — Mermaid flowcharts and diagrams
 
 Rules:
-  - DO NOT use artifact blocks for short snippets (<20 lines) — use regular ``` code fences.
-  - The title attribute is REQUIRED and should be 2-6 words.
-  - Inside the artifact, do NOT include extra commentary — only the deliverable.
-  - Put any explanation or notes BEFORE or AFTER the artifact block, not inside it.
-  - For Excel/CSV with tables, prefer JSON for rich data; markdown table is fine for simple stuff.
-
-Example:
-> Sure — here is the financial model you asked for.
->
-> ```artifact:excel title="Q1 Financial Model"
-> | Month | Revenue | Cost | Profit |
-> |-------|---------|------|--------|
-> | Jan   | 50000   | 30000| 20000  |
-> | Feb   | 65000   | 35000| 30000  |
-> ```
->
-> Bottom line: profit grows 50% MoM at this trajectory.
+  - DO NOT use artifact tags for short snippets (<20 lines).
+  - The title attribute is REQUIRED (2-6 words).
+  - For `chart` type, ALWAYS provide valid JSON that the Canvas can render.
+  - Explanation goes outside the tag.
 """
 
 
