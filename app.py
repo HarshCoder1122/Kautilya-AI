@@ -103,6 +103,10 @@ def set_security_headers(response):
         'camera=(self), microphone=(self), geolocation=(self), '
         'payment=(self), usb=(), magnetometer=(self), gyroscope=(self), accelerometer=(self)'
     )
+    # Force disable cache for all requests during transition
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, post-check=0, pre-check=0, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '-1'
     return response
 
 @app.errorhandler(Exception)

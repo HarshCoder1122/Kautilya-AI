@@ -298,43 +298,53 @@ export const ttsAPI = {
     },
   },
 
-  // Cartesia TTS - calls backend endpoint (backend uses ENV keys)
+  // Cartesia TTS - calls backend endpoint
   cartesia: {
     synthesize: async (text, voice) => {
-      const response = await api.post('/api/tts/cartesia/synthesize', {
-        text,
-        voice,
-      }, {
-        responseType: 'blob',
-      });
+      const response = await api.post('/api/tts/cartesia/synthesize', { text, voice }, { responseType: 'blob' });
       return response.data;
     },
+    getVoices: () => [
+      { id: '79a125e8-cd45-4c05-8747-8f8c6989182a', name: 'British Male (Baritone)' },
+      { id: '694f9389-aac1-45b6-b726-9d9369182a5a', name: 'Soft Female (US)' },
+      { id: 'a0e99861-dfaf-42ad-86c7-fb0ac95fc403', name: 'Professional Male' },
+      { id: '50fb60ef-c195-4674-8b6f-11758c0c4558', name: 'Sweet Female' },
+    ]
   },
 
-  // ElevenLabs TTS - calls backend endpoint (backend uses ENV keys)
+  // ElevenLabs TTS - calls backend endpoint
   elevenLabs: {
     synthesize: async (text, voiceId) => {
-      const response = await api.post('/api/tts/elevenlabs/synthesize', {
-        text,
-        voice_id: voiceId,
-      }, {
-        responseType: 'blob',
-      });
+      const response = await api.post('/api/tts/elevenlabs/synthesize', { text, voice_id: voiceId }, { responseType: 'blob' });
       return response.data;
     },
+    getVoices: () => [
+      { id: '21m00Tcm4TlvDq8ikWAM', name: 'Rachel (Female, Soft)' },
+      { id: 'AZnzlk1XhkUvS5ch7s7i', name: 'Nicole (Female, Whisper)' },
+      { id: 'EXAVITQu4vr4xnSDxMaL', name: 'Bella (Female, Professional)' },
+      { id: 'ErXw9S1aaH7HBy8S4H2u', name: 'Antoni (Male, Deep)' },
+      { id: 'Lcf7m3M63S7G38m7V8p7', name: 'Domi (Female, News)' },
+      { id: 'MF3m7V8p7m7V8p7m7V8p', name: 'Josh (Male, Generic)' },
+    ]
   },
 
-  // Sarvam TTS - calls backend endpoint (backend uses ENV keys)
+  // Sarvam TTS - calls backend endpoint
   sarvam: {
     synthesize: async (text, language = 'hi-IN') => {
-      const response = await api.post('/api/tts/sarvam/synthesize', {
-        text,
-        language,
-      }, {
-        responseType: 'blob',
-      });
+      const response = await api.post('/api/tts/sarvam/synthesize', { text, language }, { responseType: 'blob' });
       return response.data;
     },
+    getLanguages: () => [
+      { id: 'hi-IN', name: 'Hindi' },
+      { id: 'en-IN', name: 'English (India)' },
+      { id: 'bn-IN', name: 'Bengali' },
+      { id: 'kn-IN', name: 'Kannada' },
+      { id: 'ml-IN', name: 'Malayalam' },
+      { id: 'mr-IN', name: 'Marathi' },
+      { id: 'ta-IN', name: 'Tamil' },
+      { id: 'te-IN', name: 'Telugu' },
+      { id: 'gu-IN', name: 'Gujarati' },
+    ]
   },
 };
 

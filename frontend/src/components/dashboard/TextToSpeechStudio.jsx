@@ -19,13 +19,13 @@ export default function TextToSpeechStudio() {
   const [revealIQSpeed, setRevealIQSpeed] = useState(1.0);
   
   // Cartesia specific
-  const [cartesiaVoice, setCartesiaVoice] = useState('');
+  const [cartesiaVoice, setCartesiaVoice] = useState(ttsAPI.cartesia.getVoices()[0].id);
   
   // ElevenLabs specific
-  const [elevenLabsVoiceId, setElevenLabsVoiceId] = useState('');
+  const [elevenLabsVoiceId, setElevenLabsVoiceId] = useState(ttsAPI.elevenLabs.getVoices()[0].id);
   
   // Sarvam specific
-  const [sarvamLanguage, setSarvamLanguage] = useState('hi-IN');
+  const [sarvamLanguage, setSarvamLanguage] = useState(ttsAPI.sarvam.getLanguages()[0].id);
 
   const handleSynthesize = async () => {
     if (!text.trim()) return;
@@ -191,37 +191,37 @@ export default function TextToSpeechStudio() {
                 </div>
               </div>
               
-              <div className="text-xs text-muted-foreground">
-                <Sparkle className="w-3 h-3 inline mr-1" />
-                Swara TTS engine based on Kokoro-82M. Configure API keys in Settings.
-              </div>
             </TabsContent>
 
             {/* Cartesia */}
             <TabsContent value="cartesia" className="space-y-4">
               <div>
-                <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Voice ID</label>
-                <input
-                  type="text"
-                  placeholder="e.g., 79a125e8-cd45-4c05-8747-8f8c6989182a"
+                <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Voice</label>
+                <select
                   value={cartesiaVoice}
                   onChange={(e) => setCartesiaVoice(e.target.value)}
                   className="w-full px-3 py-2 text-sm bg-transparent border border-[var(--k-border)] rounded-md text-foreground focus:outline-none focus:ring-1 focus:ring-[var(--k-brand)]"
-                />
+                >
+                  {ttsAPI.cartesia.getVoices().map(voice => (
+                    <option key={voice.id} value={voice.id}>{voice.name}</option>
+                  ))}
+                </select>
               </div>
             </TabsContent>
 
             {/* ElevenLabs */}
             <TabsContent value="elevenLabs" className="space-y-4">
               <div>
-                <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Voice ID</label>
-                <input
-                  type="text"
-                  placeholder="e.g., 21m00Tcm4TlvDq8ikWAM"
+                <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Voice</label>
+                <select
                   value={elevenLabsVoiceId}
                   onChange={(e) => setElevenLabsVoiceId(e.target.value)}
                   className="w-full px-3 py-2 text-sm bg-transparent border border-[var(--k-border)] rounded-md text-foreground focus:outline-none focus:ring-1 focus:ring-[var(--k-brand)]"
-                />
+                >
+                  {ttsAPI.elevenLabs.getVoices().map(voice => (
+                    <option key={voice.id} value={voice.id}>{voice.name}</option>
+                  ))}
+                </select>
               </div>
             </TabsContent>
 
@@ -234,12 +234,9 @@ export default function TextToSpeechStudio() {
                   onChange={(e) => setSarvamLanguage(e.target.value)}
                   className="w-full px-3 py-2 text-sm bg-transparent border border-[var(--k-border)] rounded-md text-foreground focus:outline-none focus:ring-1 focus:ring-[var(--k-brand)]"
                 >
-                  <option value="hi-IN">Hindi</option>
-                  <option value="en-IN">English (India)</option>
-                  <option value="ta-IN">Tamil</option>
-                  <option value="te-IN">Telugu</option>
-                  <option value="kn-IN">Kannada</option>
-                  <option value="ml-IN">Malayalam</option>
+                  {ttsAPI.sarvam.getLanguages().map(lang => (
+                    <option key={lang.id} value={lang.id}>{lang.name}</option>
+                  ))}
                 </select>
               </div>
             </TabsContent>
