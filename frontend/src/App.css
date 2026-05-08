@@ -1,0 +1,143 @@
+/* Kautilya AI - Global Styles */
+.k-heading {
+  font-family: 'Cabinet Grotesk', sans-serif;
+  letter-spacing: -0.02em;
+}
+
+.k-body {
+  font-family: 'IBM Plex Sans', sans-serif;
+}
+
+.k-mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Split pane layout */
+.chat-layout {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.chat-sidebar {
+  width: 280px;
+  min-width: 280px;
+  border-right: 1px solid var(--k-border);
+  background: var(--k-surface);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.chat-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.canvas-pane {
+  width: 45%;
+  min-width: 400px;
+  border-left: 1px solid var(--k-border);
+  background: var(--k-surface);
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Message styles */
+.message-user {
+  max-width: 720px;
+}
+
+.message-ai {
+  max-width: 720px;
+}
+
+.message-ai pre {
+  background: var(--k-surface-elevated);
+  border: 1px solid var(--k-border);
+  border-radius: 6px;
+  padding: 16px;
+  overflow-x: auto;
+  margin: 12px 0;
+}
+
+.message-ai code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+}
+
+.message-ai p {
+  margin-bottom: 8px;
+  line-height: 1.7;
+}
+
+.message-ai ul, .message-ai ol {
+  margin: 8px 0;
+  padding-left: 24px;
+}
+
+.message-ai li {
+  margin-bottom: 4px;
+}
+
+.message-ai h1, .message-ai h2, .message-ai h3 {
+  font-family: 'Cabinet Grotesk', sans-serif;
+  margin-top: 16px;
+  margin-bottom: 8px;
+}
+
+/* Canvas code editor theme */
+.canvas-code-block {
+  background: #1E1E1E;
+  color: #D4D4D4;
+  border-radius: 6px;
+  padding: 20px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-x: auto;
+}
+
+/* Research citation */
+.citation-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--k-brand);
+  color: white;
+  font-size: 10px;
+  font-weight: 600;
+  vertical-align: super;
+  margin: 0 2px;
+  cursor: pointer;
+}
+
+/* Dashboard layout */
+.dashboard-layout {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.dashboard-sidebar {
+  width: 260px;
+  min-width: 260px;
+  border-right: 1px solid var(--k-border);
+  background: var(--k-surface);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.dashboard-content {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--k-bg);
+}

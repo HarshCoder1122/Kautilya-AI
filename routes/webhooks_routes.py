@@ -292,22 +292,28 @@ def _process_post_call(agent_id, payload, call_uuid):
         # Analyze with NIM
         analytics = nim_service.analyze_call_transcript(transcript_text)
         
-        # Build the final log document
+        # Build the final log document for the dashboard
         log_data = {
             "call_id": call_uuid,
             "agent_id": agent_id,
-            "timestamp": firestore.SERVER_TIMESTAMP,
-            "duration": payload.get('Duration', 'Unknown'),
+            "created_at": firestore.SERVER_TIMESTAMP,
+            "timestamp": int(time.time()),
+            "duration": payload.get('Duration', 0),
             "from_number": payload.get('From', 'Unknown'),
             "to_number": payload.get('To', 'Unknown'),
-            "status": payload.get('CallStatus', 'completed'),
+            "status": analytics.get('outcome', payload.get('CallStatus', 'completed')),
             "transcript": transcript_text,
-            "analysis": analytics
+            "summary": analytics.get('summary', ''),
+            "sentiment": analytics.get('sentiment', 'neutral'),
+            "topics": analytics.get('topics', []),
+            "channel": "voice_sip",
         }
         
-        # Save to agents/{agent_id}/logs
-        db.collection('agents').document(agent_id).collection('logs').document(call_uuid).set(log_data)
-        print(f"[NIM] ✅ Saved structured call log for {call_uuid}")
+        # Save to agents/{agent_id}/agent_logs
+        # We use call_uuid as doc ID to prevent duplicates if livekit_agent already saved it
+        db.collection('agents').document(agent_id).collection('agent_logs').document(call_uuid).set(log_data, merge=True)
+        db.collection('agents').document(agent_id).update({"call_count": firestore.Increment(1)})
+        print(f"[NIM] ✅ Saved structured call log for {call_uuid} to agent_logs")
         
     except Exception as e:
         print(f"[NIM] ❌ Error in post-call processing: {e}")

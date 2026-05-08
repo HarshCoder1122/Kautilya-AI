@@ -1,0 +1,12 @@
+name: kautilya-ai-frontend
+services:
+  - type: web
+    name: frontend
+    env: node
+    buildCommand: npm install --legacy-peer-deps && npm run build
+    startCommand: serve -s build -l 3000
+    envVars:
+      - key: REACT_APP_API_URL
+        value: https://api.kautilya.ai
+    region: mumbai
+    plan: free
