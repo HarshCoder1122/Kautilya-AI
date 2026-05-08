@@ -15,6 +15,7 @@ import CallAnalytics from "@/components/dashboard/CallAnalytics";
 import BIAnalytics from "@/components/dashboard/BIAnalytics";
 import WidgetPreview from "@/components/dashboard/WidgetPreview";
 import TextToSpeechStudio from "@/components/dashboard/TextToSpeechStudio";
+import UserSettings from "@/components/dashboard/UserSettings";
 
 const navItems = [
   { id: 'agents', label: 'Agent Studio', icon: Robot, path: '/dashboard' },
@@ -24,6 +25,7 @@ const navItems = [
   { id: 'analytics', label: 'BI Analytics', icon: ChartBar, path: '/dashboard/analytics' },
   { id: 'widgets', label: 'Widgets', icon: ChatCircleDots, path: '/dashboard/widgets' },
   { id: 'tts', label: 'TTS Studio', icon: SpeakerHigh, path: '/dashboard/tts' },
+  { id: 'settings', label: 'Settings', icon: Gear, path: '/dashboard/settings' },
 ];
 
 export default function DashboardPage({ theme, toggleTheme, user }) {
@@ -87,6 +89,18 @@ export default function DashboardPage({ theme, toggleTheme, user }) {
             <span>Back to Chat</span>
           </button>
           <button
+            data-testid="settings-btn"
+            onClick={() => navigate('/dashboard/settings')}
+            className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition-colors text-sm ${
+              activeItem.id === 'settings'
+                ? 'bg-[var(--k-brand)]/10 text-[var(--k-brand)]'
+                : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+            }`}
+          >
+            <Gear className="w-4 h-4" />
+            <span>Settings</span>
+          </button>
+          <button
             data-testid="sign-out-btn"
             onClick={() => logout()}
             className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-muted-foreground hover:bg-rose-500/10 hover:text-rose-400 transition-colors text-sm"
@@ -121,6 +135,7 @@ export default function DashboardPage({ theme, toggleTheme, user }) {
           <Route path="analytics" element={<BIAnalytics />} />
           <Route path="widgets" element={<WidgetPreview />} />
           <Route path="tts" element={<TextToSpeechStudio />} />
+          <Route path="settings" element={<UserSettings user={user} />} />
         </Routes>
       </div>
     </div>
