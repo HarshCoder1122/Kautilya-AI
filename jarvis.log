@@ -199,3 +199,13 @@
 2026-05-03 18:43:59,506 - werkzeug - INFO - 127.0.0.1 - - [03/May/2026 18:43:59] "GET /static/favicon.ico HTTP/1.1" 200 -
 2026-05-03 18:43:59,644 - werkzeug - INFO - 127.0.0.1 - - [03/May/2026 18:43:59] "[36mGET /static/icon-192.png HTTP/1.1[0m" 304 -
 2026-05-03 18:43:59,644 - werkzeug - INFO - 127.0.0.1 - - [03/May/2026 18:43:59] "[36mGET /static/icon-192.png HTTP/1.1[0m" 304 -
+2026-05-08 22:35:37,637 - werkzeug - INFO - [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.31.46:5000
+2026-05-08 22:35:37,637 - werkzeug - INFO - [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.31.46:5000
+2026-05-08 22:35:37,640 - werkzeug - INFO - [33mPress CTRL+C to quit[0m
+2026-05-08 22:35:37,640 - werkzeug - INFO - [33mPress CTRL+C to quit[0m
