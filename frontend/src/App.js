@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { auth } from "@/lib/firebase";
+import { getAuthInstance } from "@/lib/firebase";
 import { onAuthStateChanged } from "firebase/auth";
 import ChatPage from "@/pages/ChatPage";
 import DashboardPage from "@/pages/DashboardPage";
@@ -17,6 +17,7 @@ function App() {
   }, [theme]);
 
   useEffect(() => {
+    const auth = getAuthInstance();
     const unsubscribe = onAuthStateChanged(auth, async (authUser) => {
       if (authUser) {
         const token = await authUser.getIdToken();

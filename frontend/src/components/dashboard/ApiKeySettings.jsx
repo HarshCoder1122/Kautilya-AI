@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Key, Save, Trash, Eye, EyeSlash, Plus, CheckCircle } from "@phosphor-icons/react";
+import { Key, FloppyDisk, Trash, Eye, EyeSlash, Plus, CheckCircle } from "@phosphor-icons/react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 export default function ApiKeySettings() {
@@ -127,7 +127,7 @@ export default function ApiKeySettings() {
                       onClick={() => handleSaveKey(provider.id, apiKeys[provider.id])}
                       className="flex items-center gap-2 px-4 py-2 rounded-md bg-[var(--k-brand)] text-white text-sm font-medium hover:bg-[var(--k-brand-hover)] transition-all duration-200"
                     >
-                      <Save className="w-4 h-4" />
+                      <FloppyDisk className="w-4 h-4" />
                       Save
                     </button>
                   </div>
