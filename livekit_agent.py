@@ -638,12 +638,27 @@ async def entrypoint(ctx: JobContext):
     def _attach_session_events(sess):
         if sess is None: return
         try:
+            # ---- Multimodal / Gemini Realtime path ----
             @sess.on("conversation_item_added")
             def _on_item(ev):
                 item = getattr(ev, 'item', None) or ev
                 role = getattr(item, 'role', None) or 'unknown'
                 content = getattr(item, 'text_content', None) or getattr(item, 'content', '')
                 _record_turn(str(role).lower(), content)
+        except: pass
+
+        try:
+            # ---- Standard VoiceAssistant / Pipeline path ----
+            # Some versions use SpeechEvent with .transcript; others pass string.
+            @sess.on("user_speech_committed")
+            def _on_user_speech(ev):
+                txt = getattr(ev, 'transcript', str(ev))
+                _record_turn("user", txt)
+
+            @sess.on("agent_speech_committed")
+            def _on_agent_speech(ev):
+                txt = getattr(ev, 'transcript', str(ev))
+                _record_turn("assistant", txt)
         except: pass
 
     try:
@@ -706,10 +721,27 @@ async def entrypoint(ctx: JobContext):
     transcript_text = "\n".join(f"{t['role'].upper()}: {t['content']}" for t in convo_turns).strip()
     msg_count = len(convo_turns)
 
+    # Save transcript to global collection for compatibility with background analytics
+    if FIREBASE_AVAILABLE and db and transcript_text and agent_id:
+        try:
+            t_doc = {
+                "agent_id": agent_id,
+                "call_id": call_id or ctx.room.name,
+                "transcript": transcript_text,
+                "created_at": firestore.SERVER_TIMESTAMP,
+                "source": 'voice_sip' if is_sip else 'voice_web'
+            }
+            await asyncio.to_thread(db.collection('transcripts').add, t_doc)
+            print(f"[Agent] Transcript saved for {agent_id} ({len(transcript_text)} chars)", flush=True)
+        except Exception as e:
+            print(f"[Agent] Transcript save warning: {e}", flush=True)
+
     summary = ""
     sentiment = "neutral"
     key_topics = []
     outcome_label = "completed" if transcript_text else "no_audio"
+
+    print(f"[Agent] Analyzing transcript ({msg_count} turns, {len(transcript_text)} chars)...", flush=True)
 
     try:
         if transcript_text and msg_count >= 2:
@@ -727,6 +759,7 @@ async def entrypoint(ctx: JobContext):
                 max_tokens=600,
                 model='meta/llama-3.3-70b-instruct'
             )
+            print(f"[Agent] Analysis result received from LLM", flush=True)
             if result:
                 cleaned = re.sub(r"<thinking>.*?</thinking>", "", result, flags=re.DOTALL).strip()
                 m = re.search(r"\{[\s\S]*\}", cleaned)
@@ -736,6 +769,8 @@ async def entrypoint(ctx: JobContext):
                     sentiment = parsed.get('sentiment', 'neutral')
                     outcome_label = parsed.get('outcome', outcome_label)
                     key_topics = (parsed.get('topics') or [])[:5]
+                    print(f"[Agent] Analysis parsed: sentiment={sentiment}, outcome={outcome_label}", flush=True)
+                    
                     lead_data = parsed.get('lead')
                     if lead_data and owner_uid:
                         # Only save if there's some useful info
@@ -758,7 +793,12 @@ async def entrypoint(ctx: JobContext):
                             }
                             await asyncio.to_thread(db.collection('leads').document(lead_id).set, lead_doc)
                             print(f"[Agent] 🏆 Lead captured: {lead_id}", flush=True)
-    except: pass
+                else:
+                    print(f"[Agent] No JSON found in LLM response: {result[:200]}...", flush=True)
+            else:
+                print(f"[Agent] LLM returned empty analysis result", flush=True)
+    except Exception as e:
+        print(f"[Agent] Analysis block error: {e}", flush=True)
 
     if not summary and convo_turns: summary = convo_turns[0]['content'][:200]
 

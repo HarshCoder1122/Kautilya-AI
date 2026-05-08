@@ -14,40 +14,15 @@ static_bp = Blueprint('static_routes', __name__)
 
 
 @static_bp.route('/')
-def home():
-    """Serve the main chat application."""
-    return send_from_directory(STATIC_FOLDER, 'index.html')
-
-
-@static_bp.route('/coder')
-def serve_coder_auth():
-    """Serve the CLI authentication bridge page."""
-    return send_from_directory(STATIC_FOLDER, 'coder_auth.html')
-
-
-@static_bp.route('/dashboard-legacy')
-def serve_dashboard_legacy():
-    """Legacy single-file dashboard. Kept available during the v2 rollout."""
-    return send_from_directory(STATIC_FOLDER, 'dashboard.html')
-
-
 @static_bp.route('/dashboard', defaults={'subpath': ''})
 @static_bp.route('/dashboard/', defaults={'subpath': ''})
 @static_bp.route('/dashboard/<path:subpath>')
-def serve_dashboard(subpath):
-    """Serve the Vue 3 SPA. We do SPA history-fallback: any /dashboard/...
-    URL returns the same index.html so Vue Router can resolve client-side.
-
-    Build artifacts live in `static/dashboard-v2/` (run `npm run build` inside
-    `dashboard-app/`). If the SPA hasn't been built yet, we transparently
-    fall back to the legacy single-file dashboard so the app stays usable.
+def home(subpath=None):
+    """Serve the main React SPA.
+    Both the root (/) and /dashboard routes serve the same index.html.
+    React Router handles the client-side navigation.
     """
-    spa_dir = os.path.join(STATIC_FOLDER, 'dashboard-v2')
-    spa_index = os.path.join(spa_dir, 'index.html')
-    if os.path.exists(spa_index):
-        return send_from_directory(spa_dir, 'index.html')
-    # SPA not built yet — fall back to legacy
-    return send_from_directory(STATIC_FOLDER, 'dashboard.html')
+    return send_from_directory(STATIC_FOLDER, 'index.html')
 
 
 @static_bp.route('/playground')
@@ -122,17 +97,65 @@ def health_check():
 
 @static_bp.route('/api/analytics/trends', methods=['GET'])
 def api_analytics_trends():
-    """Return sentiment and conversion trends for the dashboard."""
+    """Return real sentiment and lead status trends for the dashboard."""
+    from extensions import db
+    from firebase_admin import firestore
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
     if not uid: return jsonify({"error": "Auth required"}), 401
-    
-    # Generic placeholder logic - aggregation would be done here
-    return jsonify({
-        "trends": [
-            {"date": "2024-04-01", "hot": 5, "warm": 12, "cold": 8},
-            {"date": "2024-04-02", "hot": 8, "warm": 10, "cold": 5},
-            {"date": "2024-04-03", "hot": 12, "warm": 15, "cold": 10}
-        ],
-        "sentiment_stats": {"positive": 65, "neutral": 20, "negative": 15}
-    })
+    if not db: return jsonify({"trends": [], "sentiment_stats": {"positive": 0, "neutral": 0, "negative": 0}})
+
+    try:
+        # Get last 7 days of leads to build a trend
+        from datetime import datetime, timedelta
+        seven_days_ago = datetime.utcnow() - timedelta(days=7)
+        
+        leads_ref = db.collection('leads').where(
+            filter=firestore.FieldFilter('uid', '==', uid)
+        ).where(
+            filter=firestore.FieldFilter('created_at', '>=', seven_days_ago)
+        ).stream()
+        
+        daily_stats = {}
+        sentiment_counts = {"positive": 0, "neutral": 0, "negative": 0}
+        
+        for doc in leads_ref:
+            data = doc.to_dict()
+            ts = data.get('created_at')
+            if ts and hasattr(ts, 'strftime'):
+                day_str = ts.strftime("%Y-%m-%d")
+                status = data.get('status', 'new').lower()
+                
+                if day_str not in daily_stats:
+                    daily_stats[day_str] = {"hot": 0, "warm": 0, "cold": 0}
+                
+                # Map status to dashboard categories
+                if status in ('hot', 'qualified'): daily_stats[day_str]['hot'] += 1
+                elif status in ('warm', 'new'): daily_stats[day_str]['warm'] += 1
+                else: daily_stats[day_str]['cold'] += 1
+                
+                # Sentiment
+                sent = data.get('sentiment', 'neutral').lower()
+                if sent in sentiment_counts:
+                    sentiment_counts[sent] += 1
+
+        # Format trends for frontend
+        trends = []
+        for i in range(6, -1, -1):
+            d = (datetime.utcnow() - timedelta(days=i)).strftime("%Y-%m-%d")
+            stats = daily_stats.get(d, {"hot": 0, "warm": 0, "cold": 0})
+            trends.append({"date": d, **stats})
+
+        # Calculate percentages for sentiment
+        total_sent = sum(sentiment_counts.values())
+        if total_sent > 0:
+            sentiment_stats = {k: round((v/total_sent)*100) for k, v in sentiment_counts.items()}
+        else:
+            sentiment_stats = {"positive": 0, "neutral": 0, "negative": 0}
+
+        return jsonify({
+            "trends": trends,
+            "sentiment_stats": sentiment_stats
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
