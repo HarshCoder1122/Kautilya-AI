@@ -1,7 +1,6 @@
 """
 Kautilya AI — Core Orchestrator (Thin app.py)
-This is the entry point for the Flask application. It only handles configuration,
-middleware initialization, blueprint registration, and global handlers.
+This is the entry point for the Flask application.
 """
 import os
 import requests
@@ -20,7 +19,7 @@ load_dotenv()
 from config import STATIC_FOLDER
 from extensions import db, limit_manager
 
-# Blueprints
+# Import Blueprints
 from routes.chat_routes import chat_bp
 from routes.voice_routes import voice_bp
 from routes.user_routes import user_bp
@@ -41,10 +40,16 @@ from routes.embed_routes import embed_bp
 from routes.artifact_routes import artifact_bp
 from routes.tts_routes import tts_bp
 
-from flask_compress import Compress
 app = Flask(__name__, static_folder=STATIC_FOLDER)
-Compress(app)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24).hex())
+
+# Optional Gzip Compression for Performance
+try:
+    from flask_compress import Compress
+    Compress(app)
+    logger.info("[App] Gzip compression enabled via flask-compress")
+except ImportError:
+    logger.warning("[App] flask-compress not found, skipping Gzip compression")
 
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
@@ -69,12 +74,11 @@ app.register_blueprint(embed_bp)
 app.register_blueprint(artifact_bp)
 app.register_blueprint(tts_bp)
 
-# CORS for /v1/* OpenAI-compatible endpoints (Cline/Continue/etc.)
+# CORS for special endpoints
 CORS(app, resources={r"/v1/*": {"origins": "*"}})
-# CORS for /embed/* so customer websites can embed the widget
 CORS(app, resources={r"/embed/*": {"origins": "*"}, r"/embed.js": {"origins": "*"}})
 
-# Global Security Headers
+# Global Security & Cache Headers
 @app.after_request
 def set_security_headers(response):
     response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
@@ -101,17 +105,12 @@ def set_security_headers(response):
     response.headers['X-Frame-Options'] = 'SAMEORIGIN'
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-    response.headers['Permissions-Policy'] = (
-        'camera=(self), microphone=(self), geolocation=(self), '
-        'payment=(self), usb=(), magnetometer=(self), gyroscope=(self), accelerometer=(self)'
-    )
+    
     # Smart Caching for Production Performance
     path = request.path
     if path.endswith(('.js', '.css', '.woff2', '.png', '.jpg', '.jpeg', '.svg', '.ico')):
-        # Hashed assets or static media can be cached for 1 year
         response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
     else:
-        # HTML and API responses should not be cached
         response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     
     response.headers['Pragma'] = 'no-cache'
@@ -130,22 +129,13 @@ def handle_exception(e):
         "status": 500
     }), 500
 
-@app.route('/manifest.json')
-def serve_manifest():
-    return send_from_directory(STATIC_FOLDER, 'manifest.json')
-
-@app.route('/sw.js')
-def serve_sw():
-    return send_from_directory(STATIC_FOLDER, 'sw.js')
-
 @app.route('/api/config/firebase', methods=['GET'])
 def get_firebase_config():
-    """Extract public Web Config from Service Account or Env."""
     from extensions import FIREBASE_AVAILABLE
     if not FIREBASE_AVAILABLE:
-        return jsonify({"error": "Firebase Admin not initialized on server"}), 503
+        return jsonify({"error": "Firebase Admin not initialized"}), 503
     
-    # Priority 1: Direct Environment Variables (Explicit is better than implicit)
+    # Env priority
     env_config = {
         "apiKey": os.environ.get("FIREBASE_API_KEY"),
         "authDomain": os.environ.get("FIREBASE_AUTH_DOMAIN"),
@@ -154,11 +144,10 @@ def get_firebase_config():
         "messagingSenderId": os.environ.get("FIREBASE_MESSAGING_SENDER_ID"),
         "appId": os.environ.get("FIREBASE_APP_ID")
     }
-    
     if env_config["apiKey"] and env_config["appId"]:
         return jsonify(env_config)
 
-    # Priority 2: Try to fetch dynamically using Project Management API
+    # Dynamic fetch
     try:
         from firebase_admin import project_management
         apps = project_management.list_web_apps()
@@ -173,9 +162,8 @@ def get_firebase_config():
                 "appId": config.app_id
             })
     except Exception as e:
-        logger.warning(f"[Config] Dynamic fetch failed (May need Firebase Management API enabled): {e}")
+        logger.warning(f"Config dynamic fetch failed: {e}")
     
-    # Priority 3: Fallback to the one seen in proxy/config
     return jsonify({
         "apiKey": env_config["apiKey"] or "",
         "authDomain": env_config["authDomain"] or "jarvis-a6e18.firebaseapp.com",
@@ -188,17 +176,13 @@ def get_firebase_config():
 @app.route('/__/<path:firebase_path>')
 def firebase_proxy(firebase_path):
     firebase_url = f"https://jarvis-a6e18.firebaseapp.com/__/{firebase_path}"
-    params = request.query_string.decode()
-    if params:
-        firebase_url += f"?{params}"
     try:
         resp = requests.get(firebase_url, timeout=15)
         excluded_headers = {'content-encoding', 'transfer-encoding', 'connection'}
         headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded_headers}
         return Response(resp.content, status=resp.status_code, headers=headers)
     except Exception as e:
-        logger.error(f"[Firebase Proxy] Error: {e}")
-        return Response("Firebase proxy error", status=502)
+        return Response(f"Proxy error: {e}", status=502)
 
 if __name__ == '__main__':
     PORT = int(os.environ.get("PORT", 5000))
