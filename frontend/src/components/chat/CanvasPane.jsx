@@ -77,6 +77,14 @@ export function CanvasPane({ content, onClose, activeMode }) {
               <FileText className="w-3.5 h-3.5 mr-1.5" />
               Document
             </TabsTrigger>
+            <TabsTrigger
+              value="preview"
+              data-testid="canvas-tab-preview"
+              className="bg-transparent data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:text-foreground text-muted-foreground px-0 pb-2 rounded-none border-b-2 border-transparent data-[state=active]:border-[var(--k-brand)] text-xs font-medium"
+            >
+              <ArrowsOutSimple className="w-3.5 h-3.5 mr-1.5" />
+              Preview
+            </TabsTrigger>
           </TabsList>
         </div>
 
@@ -218,6 +226,23 @@ export function CanvasPane({ content, onClose, activeMode }) {
               </div>
             </div>
           </ScrollArea>
+        </TabsContent>
+
+        <TabsContent value="preview" className="flex-1 overflow-hidden m-0 bg-white">
+          {content?.code?.includes('<!DOCTYPE html>') || content?.code?.includes('<html') ? (
+            <iframe
+              srcDoc={content.code}
+              title="Preview"
+              className="w-full h-full border-none"
+              sandbox="allow-scripts"
+            />
+          ) : (
+            <div className="flex flex-col items-center justify-center h-full text-center p-10">
+              <ArrowsOutSimple className="w-12 h-12 text-muted-foreground/20 mb-4" />
+              <p className="text-sm text-muted-foreground">No web preview available for this content</p>
+              <p className="text-[10px] text-muted-foreground/60 mt-1">Assistant must generate HTML to enable preview.</p>
+            </div>
+          )}
         </TabsContent>
       </Tabs>
     </div>

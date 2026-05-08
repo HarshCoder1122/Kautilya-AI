@@ -18,55 +18,41 @@ const modes = [
 ];
 
 export function ChatMain({ sidebarCollapsed, onExpandSidebar, canvasOpen, onToggleCanvas, onOpenCanvas, activeMode, onSetMode, theme, toggleTheme, sessionId, onSessionChange }) {
-  const [inputValue, setInputValue] = useState('');
-  const [messages, setMessages] = useState([]);
-  const [isThinking, setIsThinking] = useState(false);
-  const [isStreaming, setIsStreaming] = useState(false);
-  const messagesEndRef = useRef(null);
-  const inputRef = useRef(null);
+  const [selectedFiles, setSelectedFiles] = useState([]);
+  const fileInputRef = useRef(null);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const handleFileSelect = (e) => {
+    const files = Array.from(e.target.files);
+    setSelectedFiles(prev => [...prev, ...files]);
   };
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages, isThinking]);
-
-  // Load conversation history when sessionId changes
-  useEffect(() => {
-    if (sessionId) {
-      loadConversation(sessionId);
-    } else {
-      setMessages([]);
-    }
-  }, [sessionId]);
-
-  const loadConversation = async (sid) => {
-    try {
-      const data = await chatAPI.getConversation(sid);
-      setMessages(data.messages || []);
-    } catch (error) {
-      console.error('Failed to load conversation:', error);
-    }
+  const removeFile = (index) => {
+    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
   const handleSend = async () => {
-    if (!inputValue.trim()) return;
+    if (!inputValue.trim() && selectedFiles.length === 0) return;
     
     const userMsg = {
       id: `msg-${Date.now()}`,
       role: 'user',
       content: inputValue,
+      files: selectedFiles.map(f => ({ name: f.name, type: f.type })),
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
     setMessages(prev => [...prev, userMsg]);
+    
+    const currentFiles = [...selectedFiles];
     setInputValue('');
+    setSelectedFiles([]);
     setIsThinking(true);
 
     try {
       // Determine model based on active mode
-      const model = activeMode === 'code' ? 'coder' : activeMode === 'research' ? 'daily' : 'daily';
+      // coder -> DeepSeek (via NVIDIA NIM)
+      // pro -> Nemotron (via NVIDIA NIM)
+      // daily -> Llama 3 (via Groq)
+      const model = activeMode === 'code' ? 'coder' : activeMode === 'research' ? 'pro' : 'daily';
       
       // Create new session if needed
       const currentSessionId = sessionId || `session-${Date.now()}`;
@@ -75,7 +61,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, canvasOpen, onTogg
       }
 
       // Stream response
-      const response = await chatAPI.streamMessage(inputValue, currentSessionId, model);
+      const response = await chatAPI.streamMessage(inputValue, currentSessionId, model, currentFiles);
       
       setIsThinking(false);
       setIsStreaming(true);
@@ -293,9 +279,32 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, canvasOpen, onTogg
       {/* Input Area */}
       <div className="border-t border-[var(--k-border)] p-4">
         <div className="max-w-3xl mx-auto">
+          {/* Selected Files Preview */}
+          {selectedFiles.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-3">
+              {selectedFiles.map((file, i) => (
+                <div key={i} className="flex items-center gap-2 px-2 py-1 bg-accent/50 rounded-md border border-[var(--k-border)] text-[10px]">
+                  <Paperclip className="w-3 h-3" />
+                  <span className="max-w-[100px] truncate">{file.name}</span>
+                  <button onClick={() => removeFile(i)} className="p-0.5 hover:text-red-400">
+                    <X className="w-2.5 h-2.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
           <div className="relative flex items-end border border-[var(--k-border)] rounded-lg bg-[var(--k-surface)] focus-within:ring-1 focus-within:ring-[var(--k-brand)] transition-all duration-200">
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileSelect}
+              multiple
+              className="hidden"
+            />
             <button
               data-testid="attach-file-btn"
+              onClick={() => fileInputRef.current?.click()}
               className="p-3 text-muted-foreground hover:text-foreground transition-colors"
             >
               <Paperclip className="w-4 h-4" />

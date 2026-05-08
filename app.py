@@ -91,7 +91,7 @@ def set_security_headers(response):
         "style-src 'self' 'unsafe-inline' "
             "https://fonts.googleapis.com https://cdnjs.cloudflare.com "
             "https://cdn.jsdelivr.net https://api.fontshare.com; "
-        "font-src 'self' https://fonts.gstatic.com https://fonts.googleapis.com https://fonts.fontshare.com; "
+        "font-src 'self' data: https://fonts.gstatic.com https://fonts.googleapis.com https://api.fontshare.com; "
         "img-src 'self' data: blob: https: http: https://unpkg.com; "
         "connect-src 'self' https: wss: https://api.razorpay.com https://lumberjack.razorpay.com; "
         "media-src 'self' blob: https:; "
@@ -191,6 +191,9 @@ def catch_all(path):
     # Exclude API and static files from catch-all
     if path.startswith(('api/', 'static/', 'v1/', 'embed')):
         return jsonify({"error": "Not Found"}), 404
+    # Favicon specific check
+    if path == 'favicon.ico':
+        return send_from_directory(STATIC_FOLDER, 'favicon.ico', mimetype='image/vnd.microsoft.icon')
     # Special files that should return 404 if not caught above
     if "." in path and not path.endswith(".html"):
         return send_from_directory(STATIC_FOLDER, path)
