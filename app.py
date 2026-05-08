@@ -134,11 +134,24 @@ def get_firebase_config():
     """Extract public Web Config from Service Account or Env."""
     from extensions import FIREBASE_AVAILABLE
     if not FIREBASE_AVAILABLE:
-        return jsonify({"error": "Firebase not available"}), 503
+        return jsonify({"error": "Firebase Admin not initialized on server"}), 503
     
+    # Priority 1: Direct Environment Variables (Explicit is better than implicit)
+    env_config = {
+        "apiKey": os.environ.get("FIREBASE_API_KEY"),
+        "authDomain": os.environ.get("FIREBASE_AUTH_DOMAIN"),
+        "projectId": os.environ.get("FIREBASE_PROJECT_ID", "jarvis-a6e18"),
+        "storageBucket": os.environ.get("FIREBASE_STORAGE_BUCKET"),
+        "messagingSenderId": os.environ.get("FIREBASE_MESSAGING_SENDER_ID"),
+        "appId": os.environ.get("FIREBASE_APP_ID")
+    }
+    
+    if env_config["apiKey"] and env_config["appId"]:
+        return jsonify(env_config)
+
+    # Priority 2: Try to fetch dynamically using Project Management API
     try:
         from firebase_admin import project_management
-        # Fetch the first web app registered in this project
         apps = project_management.list_web_apps()
         if apps:
             config = apps[0].get_config()
@@ -151,16 +164,16 @@ def get_firebase_config():
                 "appId": config.app_id
             })
     except Exception as e:
-        logger.error(f"[Config] Dynamic fetch failed: {e}")
+        logger.warning(f"[Config] Dynamic fetch failed (May need Firebase Management API enabled): {e}")
     
-    # Fallback to manual environment variables if project_management fails
+    # Priority 3: Fallback to the one seen in proxy/config
     return jsonify({
-        "apiKey": os.environ.get("FIREBASE_API_KEY", ""),
-        "authDomain": os.environ.get("FIREBASE_AUTH_DOMAIN", ""),
-        "projectId": os.environ.get("FIREBASE_PROJECT_ID", "jarvis-a6e18"),
-        "storageBucket": os.environ.get("FIREBASE_STORAGE_BUCKET", ""),
-        "messagingSenderId": os.environ.get("FIREBASE_MESSAGING_SENDER_ID", ""),
-        "appId": os.environ.get("FIREBASE_APP_ID", "")
+        "apiKey": env_config["apiKey"] or "",
+        "authDomain": env_config["authDomain"] or "jarvis-a6e18.firebaseapp.com",
+        "projectId": "jarvis-a6e18",
+        "storageBucket": "jarvis-a6e18.appspot.com",
+        "messagingSenderId": env_config["messagingSenderId"] or "",
+        "appId": env_config["appId"] or ""
     })
 
 @app.route('/__/<path:firebase_path>')
