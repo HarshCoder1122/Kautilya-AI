@@ -114,14 +114,31 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, canvasOpen, onTogg
               const parsed = JSON.parse(data);
               if (parsed.chunk) {
                 fullContent += parsed.chunk;
+                
+                // Extract artifact if present (e.g. <artifact type="chart">...</artifact>)
+                const artifactMatch = fullContent.match(/<artifact\s+type="([^"]+)"(?:\s+title="([^"]+)")?>([\s\S]*?)<\/artifact>/);
+                const artifactData = artifactMatch ? {
+                  type: artifactMatch[1],
+                  title: artifactMatch[2] || 'Analysis',
+                  code: artifactMatch[3].trim()
+                } : null;
+
                 setMessages(prev => prev.map(msg => 
                   msg.id === aiMsg.id 
-                    ? { ...msg, content: fullContent, thinkingDone: true }
+                    ? { 
+                        ...msg, 
+                        content: fullContent.replace(/<artifact[\s\S]*?<\/artifact>/g, '').trim(), 
+                        thinkingDone: true,
+                        artifactType: artifactData?.type,
+                        artifactTitle: artifactData?.title,
+                        artifactCode: artifactData?.code,
+                        hasArtifact: !!artifactData
+                      }
                     : msg
                 ));
               }
             } catch (e) {
-              // Handle non-JSON chunks
+              // Handle non-JSON chunks or incomplete JSON
               fullContent += data;
               setMessages(prev => prev.map(msg => 
                 msg.id === aiMsg.id 
@@ -331,7 +348,6 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, canvasOpen, onTogg
                 </button>
               ))}
             </div>
-            <span className="text-[10px] text-muted-foreground/50">Llama 3.3 70B via Groq</span>
           </div>
         </div>
       </div>
