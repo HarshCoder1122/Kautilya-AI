@@ -1,6 +1,8 @@
 import axios from 'axios';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || '';
+const API_BASE_URL = (process.env.REACT_APP_API_URL && process.env.REACT_APP_API_URL !== 'http://localhost:5000') 
+  ? process.env.REACT_APP_API_URL 
+  : (window.location.hostname === 'localhost' ? 'http://localhost:5000' : window.location.origin);
 
 // Create axios instance with default config
 const api = axios.create({
@@ -22,18 +24,34 @@ api.interceptors.request.use(async (config) => {
 // Chat API
 export const chatAPI = {
   // Stream chat message
-  streamMessage: async (message, sessionId = null, model = 'daily') => {
-    const response = await fetch(`${API_BASE_URL}/api/jarvis/stream`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${localStorage.getItem('firebase_token')}`,
-      },
-      body: JSON.stringify({
+  streamMessage: async (message, sessionId = null, model = 'daily', files = []) => {
+    let body;
+    let headers = {
+      'Authorization': `Bearer ${localStorage.getItem('firebase_token')}`,
+    };
+
+    if (files && files.length > 0) {
+      // Use FormData if files are present
+      body = new FormData();
+      body.append('message', message);
+      if (sessionId) body.append('session_id', sessionId);
+      body.append('model', model);
+      files.forEach(file => body.append('files', file));
+      // Fetch will automatically set the correct boundary for FormData
+    } else {
+      // Use JSON if no files
+      headers['Content-Type'] = 'application/json';
+      body = JSON.stringify({
         message,
         session_id: sessionId,
         model,
-      }),
+      });
+    }
+
+    const response = await fetch(`${API_BASE_URL}/api/jarvis/stream`, {
+      method: 'POST',
+      headers,
+      body,
     });
     return response;
   },
@@ -209,25 +227,42 @@ export const userAPI = {
   },
 };
 
-// Artifacts API (if available)
+// Artifacts API
 export const artifactsAPI = {
-  // List artifacts
-  list: async () => {
-    const response = await api.get('/api/artifacts');
-    return response.data;
-  },
-
-  // Get artifact
-  get: async (artifactId) => {
-    const response = await api.get(`/api/artifacts/${artifactId}`);
-    return response.data;
-  },
-
-  // Create artifact
+  // Create artifact (excel, pdf, etc.)
   create: async (artifactData) => {
-    const response = await api.post('/api/artifacts', artifactData);
+    const response = await api.post('/api/artifact/create', artifactData, {
+      responseType: 'blob'
+    });
     return response.data;
   },
+
+  // List supported artifact types
+  getTypes: async () => {
+    const response = await api.get('/api/artifact/types');
+    return response.data;
+  }
+};
+
+// Billing API
+export const billingAPI = {
+  // Get billing config and user tier
+  getConfig: async () => {
+    const response = await api.get('/api/billing/config');
+    return response.data;
+  },
+
+  // Create payment order
+  createOrder: async (amount, planType) => {
+    const response = await api.post('/api/billing/create-order', { amount, plan_type: planType });
+    return response.data;
+  },
+
+  // Verify payment
+  verifyPayment: async (paymentData) => {
+    const response = await api.post('/api/billing/verify-payment', paymentData);
+    return response.data;
+  }
 };
 
 // Leads API

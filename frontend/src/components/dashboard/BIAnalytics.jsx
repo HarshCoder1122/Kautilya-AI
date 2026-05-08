@@ -42,8 +42,8 @@ export default function BIAnalytics() {
         { label: 'Active Campaigns', value: totalCampaigns.campaigns?.length || 0, change: '+5%', positive: true },
         { label: 'AI Agents', value: totalAgents.agents?.length || 0, change: '+2', positive: true },
         { label: 'Total Calls', value: usage.total_calls || 0, change: '+23%', positive: true },
-        { label: 'Avg Sentiment', value: usage.avg_sentiment?.toFixed(1) || '0', change: '+5%', positive: true },
-        { label: 'Success Rate', value: usage.success_rate?.toFixed(1) || '0%', change: '+8%', positive: true },
+        { label: 'Avg Sentiment', value: typeof usage.avg_sentiment === 'number' ? usage.avg_sentiment.toFixed(1) : '0.0', change: '+5%', positive: true },
+        { label: 'Success Rate', value: usage.success_rate || '0%', change: '+8%', positive: true },
       ];
       setKpis(kpisData);
 

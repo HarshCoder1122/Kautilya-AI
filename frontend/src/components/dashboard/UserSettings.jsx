@@ -1,10 +1,74 @@
-import { useState } from "react";
-import { User, Key, Bell, Shield, Palette, CaretRight, CheckCircle, Warning, GoogleLogo } from "@phosphor-icons/react";
+import { useState, useEffect } from "react";
+import { User, Key, Bell, Shield, Palette, CaretRight, CheckCircle, Warning, GoogleLogo, Crown } from "@phosphor-icons/react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { billingAPI } from "@/lib/api";
 import ApiKeySettings from "./ApiKeySettings";
 
 export default function UserSettings({ user }) {
   const [activeTab, setActiveTab] = useState('profile');
+  const [billingConfig, setBillingConfig] = useState(null);
+  const [isUpgrading, setIsUpgrading] = useState(false);
+
+  useEffect(() => {
+    loadBillingStatus();
+  }, []);
+
+  const loadBillingStatus = async () => {
+    try {
+      const config = await billingAPI.getConfig();
+      setBillingConfig(config);
+    } catch (error) {
+      console.error("Failed to load billing status:", error);
+    }
+  };
+
+  const handleUpgrade = async () => {
+    if (!billingConfig) return;
+    try {
+      setIsUpgrading(true);
+      const amount = 599; // Default Pro Price
+      const order = await billingAPI.createOrder(amount, 'pro_subscription');
+      
+      const options = {
+        key: billingConfig.razorpay_key_id,
+        amount: order.amount,
+        currency: order.currency,
+        name: "Kautilya AI",
+        description: "Pro Subscription",
+        subscription_id: order.id,
+        handler: async function (response) {
+          try {
+            await billingAPI.verifyPayment({
+              razorpay_order_id: order.id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+              plan_type: 'pro',
+              amount: amount
+            });
+            await loadBillingStatus();
+            alert("Upgrade successful! Welcome to Pro.");
+          } catch (e) {
+            alert("Payment verification failed. Please contact support.");
+          }
+        },
+        prefill: {
+          name: user?.displayName || "",
+          email: user?.email || "",
+        },
+        theme: {
+          color: "#FF6D3F",
+        },
+      };
+
+      const rzp = new window.Razorpay(options);
+      rzp.open();
+    } catch (error) {
+      console.error("Upgrade failed:", error);
+      alert("Failed to initialize payment.");
+    } finally {
+      setIsUpgrading(false);
+    }
+  };
 
   const tabs = [
     { id: 'profile', label: 'Profile', icon: User },
@@ -12,6 +76,8 @@ export default function UserSettings({ user }) {
     { id: 'preferences', label: 'Preferences', icon: Palette },
     { id: 'security', label: 'Security', icon: Shield },
   ];
+
+  const isPro = billingConfig?.is_pro || billingConfig?.tier === 'pro';
 
   return (
     <div className="h-full flex flex-col bg-background" data-testid="user-settings">
@@ -64,7 +130,10 @@ export default function UserSettings({ user }) {
                         )}
                       </div>
                       <div className="space-y-1">
-                        <div className="text-lg font-semibold text-foreground">{user?.displayName || 'User'}</div>
+                        <div className="text-lg font-semibold text-foreground flex items-center gap-2">
+                          {user?.displayName || 'User'}
+                          {isPro && <Crown className="w-5 h-5 text-amber-400" weight="fill" />}
+                        </div>
                         <div className="text-sm text-muted-foreground flex items-center gap-2">
                           {user?.email}
                           <Badge className="bg-emerald-500/10 text-emerald-400 border-none text-[10px] uppercase">Verified</Badge>
@@ -81,12 +150,24 @@ export default function UserSettings({ user }) {
                     <h3 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Subscription</h3>
                     <div className="p-4 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] flex items-center justify-between">
                       <div>
-                        <div className="text-sm font-medium text-foreground">Daily Free Tier</div>
-                        <div className="text-xs text-muted-foreground">Access to base models and limited TTS characters</div>
+                        <div className="text-sm font-medium text-foreground">
+                          {isPro ? 'Kautilya Pro Tier' : 'Daily Free Tier'}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {isPro 
+                            ? 'Unlimited models, NVIDIA NIM access, and high-priority support.' 
+                            : 'Access to base models and limited daily tokens.'}
+                        </div>
                       </div>
-                      <button className="px-4 py-1.5 rounded-md bg-[var(--k-brand)] text-white text-xs font-semibold hover:bg-[var(--k-brand-hover)] transition-colors">
-                        Upgrade to Pro
-                      </button>
+                      {!isPro && (
+                        <button 
+                          onClick={handleUpgrade}
+                          disabled={isUpgrading}
+                          className="px-4 py-1.5 rounded-md bg-[var(--k-brand)] text-white text-xs font-semibold hover:bg-[var(--k-brand-hover)] transition-colors disabled:opacity-50"
+                        >
+                          {isUpgrading ? 'Processing...' : 'Upgrade to Pro'}
+                        </button>
+                      )}
                     </div>
                   </section>
                 </div>
