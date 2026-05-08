@@ -41,7 +41,9 @@ from routes.embed_routes import embed_bp
 from routes.artifact_routes import artifact_bp
 from routes.tts_routes import tts_bp
 
+from flask_compress import Compress
 app = Flask(__name__, static_folder=STATIC_FOLDER)
+Compress(app)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24).hex())
 
 CORS(app, resources={r"/api/*": {"origins": "*"}})
@@ -103,8 +105,15 @@ def set_security_headers(response):
         'camera=(self), microphone=(self), geolocation=(self), '
         'payment=(self), usb=(), magnetometer=(self), gyroscope=(self), accelerometer=(self)'
     )
-    # Force disable cache for all requests during transition
-    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, post-check=0, pre-check=0, max-age=0'
+    # Smart Caching for Production Performance
+    path = request.path
+    if path.endswith(('.js', '.css', '.woff2', '.png', '.jpg', '.jpeg', '.svg', '.ico')):
+        # Hashed assets or static media can be cached for 1 year
+        response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+    else:
+        # HTML and API responses should not be cached
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    
     response.headers['Pragma'] = 'no-cache'
     response.headers['Expires'] = '-1'
     return response

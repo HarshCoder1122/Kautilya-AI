@@ -30,3 +30,4 @@ websockets
 razorpay
 flask-cors
 openai
+flask-compress

@@ -11,6 +11,10 @@ from config import GROQ_API_KEY
 from services.llm_service import call_groq, call_nvidia
 
 
+# Shared executor to reduce overhead
+_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+_loc_cache = {} # Cache for IP location lookups
+
 def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=None, tool_choice=None, max_thinking=False):
     """
     Agentic Loop: Thoughts -> Actions -> Observations -> Final Answer.
@@ -21,42 +25,55 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     rag_context = ""
     location_context = ""
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        def fetch_loc():
-            if not user_ip or user_ip in ('127.0.0.1', 'localhost', '::1'):
-                return ""
-            try:
-                import requests
-                resp = requests.get(f"http://ip-api.com/json/{user_ip}", timeout=1.0)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get('status') == 'success':
-                        return f"\n[System: User is currently located in {data.get('city')}, {data.get('regionName')}. Use this to personalize greetings!]\n"
-            except:
-                pass
+    # Fetch context in parallel
+    def fetch_loc():
+        if not user_ip or user_ip in ('127.0.0.1', 'localhost', '::1', 'unknown'):
             return ""
+        # Check cache (1 hour TTL)
+        now = time.time()
+        if user_ip in _loc_cache:
+            data, ts = _loc_cache[user_ip]
+            if now - ts < 3600:
+                return data
+        try:
+            import requests
+            resp = requests.get(f"http://ip-api.com/json/{user_ip}", timeout=0.8)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('status') == 'success':
+                    loc_str = f"\n[System: User location: {data.get('city')}, {data.get('regionName')}]\n"
+                    _loc_cache[user_ip] = (loc_str, now)
+                    return loc_str
+        except:
+            pass
+        return ""
 
-        def fetch_rag():
-            if not uid:
-                return ""
-            last_msg = messages[-1]["content"]
-            query_text = last_msg if isinstance(last_msg, str) else " ".join([p["text"] for p in last_msg if p.get("type") == "text"])
-            if query_text:
+    def fetch_rag():
+        if not uid or not messages:
+            return ""
+        last_msg = messages[-1]["content"]
+        query_text = last_msg if isinstance(last_msg, str) else " ".join([p["text"] for p in last_msg if p.get("type") == "text"])
+        # Only RAG if query is meaningful (> 10 chars)
+        if len(query_text) > 10:
+            try:
                 hits = vector_store.search(uid, query_text, top_k=2)
                 if hits:
                     return "\n\nRELEVANT MEMORIES:\n" + "\n".join([f"- {h[1]}" for h in hits])
-            return ""
+            except:
+                pass
+        return ""
 
-        future_loc = executor.submit(fetch_loc)
-        future_rag = executor.submit(fetch_rag)
-        try:
-            location_context = future_loc.result(timeout=1.0)
-        except:
-            pass
-        try:
-            rag_context = future_rag.result(timeout=1.5)
-        except:
-            print("[Agent] RAG search timed out.")
+    future_loc = _executor.submit(fetch_loc)
+    future_rag = _executor.submit(fetch_rag)
+    
+    try:
+        location_context = future_loc.result(timeout=0.9)
+    except:
+        pass
+    try:
+        rag_context = future_rag.result(timeout=1.0)
+    except:
+        pass
 
     current_messages = [m.copy() for m in messages]
     if location_context or rag_context:
