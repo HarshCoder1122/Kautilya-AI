@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
-import { Plus, MagnifyingGlass, ChatCircleDots, SidebarSimple, Brain, Code, ChartBar } from "@phosphor-icons/react";
+import { Plus, MagnifyingGlass, ChatCircleDots, SidebarSimple, Brain, Code, ChartBar, SignOut, UserCircle } from "@phosphor-icons/react";
 import { ThemeToggle } from "@/components/shared/ThemeToggle";
 import { chatAPI } from "@/lib/api";
+import { logout } from "@/lib/firebase";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useNavigate } from "react-router-dom";
 
@@ -19,7 +20,7 @@ const agentColors = {
   daily: 'text-purple-400',
 };
 
-export function ChatSidebar({ selectedConversation, onSelectConversation, onCollapse, theme, toggleTheme }) {
+export function ChatSidebar({ selectedConversation, onSelectConversation, onCollapse, theme, toggleTheme, user }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [conversations, setConversations] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -143,7 +144,7 @@ export function ChatSidebar({ selectedConversation, onSelectConversation, onColl
       </ScrollArea>
 
       {/* Footer */}
-      <div className="p-3 border-t border-[var(--k-border)]">
+      <div className="p-3 border-t border-[var(--k-border)] space-y-1">
         <button
           data-testid="go-to-dashboard-btn"
           onClick={() => navigate('/dashboard')}
@@ -152,6 +153,29 @@ export function ChatSidebar({ selectedConversation, onSelectConversation, onColl
           <ChartBar className="w-4 h-4" />
           <span>Dashboard</span>
         </button>
+        
+        <div className="pt-2 px-1">
+          <div className="flex items-center justify-between p-2 rounded-lg bg-white/5 border border-white/5">
+            <div className="flex items-center gap-2 overflow-hidden">
+              {user?.photoURL ? (
+                <img src={user.photoURL} alt="" className="w-7 h-7 rounded-full" />
+              ) : (
+                <UserCircle className="w-7 h-7 text-muted-foreground" />
+              )}
+              <div className="overflow-hidden">
+                <div className="text-xs font-medium truncate text-foreground">{user?.displayName || 'User'}</div>
+                <div className="text-[10px] truncate text-muted-foreground">{user?.email}</div>
+              </div>
+            </div>
+            <button
+              onClick={() => logout()}
+              className="p-1.5 rounded-md hover:bg-rose-500/10 text-muted-foreground hover:text-rose-400 transition-colors"
+              title="Sign Out"
+            >
+              <SignOut className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

@@ -6,6 +6,8 @@ import {
 } from "@phosphor-icons/react";
 import { ThemeToggle } from "@/components/shared/ThemeToggle";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { logout } from "@/lib/firebase";
+import { UserCircle } from "@phosphor-icons/react";
 import AgentStudio from "@/components/dashboard/AgentStudio";
 import LeadManagement from "@/components/dashboard/LeadManagement";
 import CampaignDialer from "@/components/dashboard/CampaignDialer";
@@ -24,7 +26,7 @@ const navItems = [
   { id: 'tts', label: 'TTS Studio', icon: SpeakerHigh, path: '/dashboard/tts' },
 ];
 
-export default function DashboardPage({ theme, toggleTheme }) {
+export default function DashboardPage({ theme, toggleTheme, user }) {
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -85,12 +87,27 @@ export default function DashboardPage({ theme, toggleTheme }) {
             <span>Back to Chat</span>
           </button>
           <button
-            data-testid="settings-btn"
-            className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors text-sm"
+            data-testid="sign-out-btn"
+            onClick={() => logout()}
+            className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-muted-foreground hover:bg-rose-500/10 hover:text-rose-400 transition-colors text-sm"
           >
-            <Gear className="w-4 h-4" />
-            <span>Settings</span>
+            <SignOut className="w-4 h-4" />
+            <span>Sign Out</span>
           </button>
+
+          <div className="pt-2 px-1">
+            <div className="flex items-center gap-2 p-2 rounded-lg bg-white/5 border border-white/5 overflow-hidden">
+              {user?.photoURL ? (
+                <img src={user.photoURL} alt="" className="w-7 h-7 rounded-full" />
+              ) : (
+                <UserCircle className="w-7 h-7 text-muted-foreground" />
+              )}
+              <div className="overflow-hidden">
+                <div className="text-[10px] font-medium truncate text-foreground">{user?.displayName || 'User'}</div>
+                <div className="text-[9px] truncate text-muted-foreground">{user?.email}</div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

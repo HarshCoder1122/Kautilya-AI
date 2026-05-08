@@ -2,11 +2,30 @@ import { useState } from "react";
 import { X, Code, ChartBar, FileText, Copy, Download, ArrowsOutSimple } from "@phosphor-icons/react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { mockArtifactCode, mockBIData } from "@/lib/mockData";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, Area, AreaChart } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Area, AreaChart } from "recharts";
 
 export function CanvasPane({ content, onClose, activeMode }) {
-  const [activeTab, setActiveTab] = useState(content?.type === 'code' ? 'code' : 'dashboard');
+  const [activeTab, setActiveTab] = useState(content?.type === 'code' ? 'code' : content?.type === 'document' ? 'document' : 'dashboard');
+
+  // Try to parse dynamic data from content.code if it's meant to be a dashboard/chart
+  const getDynamicData = () => {
+    if (!content?.code) return null;
+    try {
+      // If code starts with { or [, it might be JSON data for charts
+      if (content.code.trim().startsWith('{') || content.code.trim().startsWith('[')) {
+        return JSON.parse(content.code);
+      }
+    } catch (e) {
+      return null;
+    }
+    return null;
+  };
+
+  const dynamicData = getDynamicData();
+  const kpis = dynamicData?.kpis || [];
+  const revenueData = dynamicData?.revenue || [];
+  const salesByRegion = dynamicData?.salesByRegion || [];
+  const funnelData = dynamicData?.conversionFunnel || [];
 
   return (
     <div className="canvas-pane flex flex-col" data-testid="canvas-pane">
@@ -64,84 +83,97 @@ export function CanvasPane({ content, onClose, activeMode }) {
         <TabsContent value="dashboard" className="flex-1 overflow-hidden m-0">
           <ScrollArea className="h-full">
             <div className="p-4 space-y-4">
-              {(!mockBIData.kpis || mockBIData.kpis.length === 0) ? (
+              {(!kpis || kpis.length === 0) && (!revenueData || revenueData.length === 0) ? (
                 <div className="flex flex-col items-center justify-center py-20 text-center">
                   <ChartBar className="w-12 h-12 text-muted-foreground/20 mb-4" />
-                  <p className="text-sm text-muted-foreground">No dashboard data available for this artifact</p>
+                  <p className="text-sm text-muted-foreground">No dashboard data generated for this query</p>
+                  <p className="text-[10px] text-muted-foreground/60 mt-1 max-w-[200px]">Ask the assistant to generate a report or visualize data.</p>
                 </div>
               ) : (
                 <>
                   {/* KPIs */}
-                  <div className="grid grid-cols-3 gap-3">
-                    {mockBIData.kpis.slice(0, 3).map((kpi, i) => (
-                      <div key={i} className="p-3 rounded-md border border-[var(--k-border)] bg-[var(--k-surface)]" data-testid={`canvas-kpi-${i}`}>
-                        <div className="text-[10px] tracking-[0.15em] uppercase text-muted-foreground font-semibold">{kpi.label}</div>
-                        <div className="text-xl font-medium k-heading tracking-tight text-foreground mt-1">{kpi.value}</div>
-                        <div className={`text-xs font-medium mt-0.5 ${kpi.positive ? 'text-[var(--k-green)]' : 'text-red-400'}`}>{kpi.change}</div>
-                      </div>
-                    ))}
-                  </div>
+                  {kpis.length > 0 && (
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                      {kpis.map((kpi, i) => (
+                        <div key={i} className="p-3 rounded-md border border-[var(--k-border)] bg-[var(--k-surface)]">
+                          <div className="text-[10px] tracking-[0.15em] uppercase text-muted-foreground font-semibold truncate">{kpi.label}</div>
+                          <div className="text-xl font-medium k-heading tracking-tight text-foreground mt-1 truncate">{kpi.value}</div>
+                          {kpi.change && (
+                            <div className={`text-xs font-medium mt-0.5 ${kpi.positive ? 'text-[var(--k-green)]' : 'text-red-400'}`}>
+                              {kpi.change}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
                   {/* Revenue Chart */}
-                  <div className="p-4 rounded-md border border-[var(--k-border)] bg-[var(--k-surface)]">
-                    <div className="text-xs font-semibold text-foreground mb-3 k-heading">Revenue Trend</div>
-                    <ResponsiveContainer width="100%" height={200}>
-                      <AreaChart data={mockBIData.revenue}>
-                        <defs>
-                          <linearGradient id="colorRevenue" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#0052FF" stopOpacity={0.1}/>
-                            <stop offset="95%" stopColor="#0052FF" stopOpacity={0}/>
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" stroke="var(--k-border)" />
-                        <XAxis dataKey="month" tick={{ fontSize: 11, fill: 'var(--k-text-secondary)' }} axisLine={false} tickLine={false} />
-                        <YAxis tick={{ fontSize: 11, fill: 'var(--k-text-secondary)' }} axisLine={false} tickLine={false} />
-                        <Tooltip contentStyle={{ background: 'var(--k-surface-elevated)', border: '1px solid var(--k-border)', borderRadius: '6px', fontSize: '12px' }} />
-                        <Area type="monotone" dataKey="value" stroke="#0052FF" strokeWidth={2} fill="url(#colorRevenue)" />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
+                  {revenueData.length > 0 && (
+                    <div className="p-4 rounded-md border border-[var(--k-border)] bg-[var(--k-surface)]">
+                      <div className="text-xs font-semibold text-foreground mb-3 k-heading">Trend Analysis</div>
+                      <ResponsiveContainer width="100%" height={200}>
+                        <AreaChart data={revenueData}>
+                          <defs>
+                            <linearGradient id="colorRevenue" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="var(--k-brand)" stopOpacity={0.1}/>
+                              <stop offset="95%" stopColor="var(--k-brand)" stopOpacity={0}/>
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke="var(--k-border)" vertical={false} />
+                          <XAxis dataKey="label" hide={false} tick={{ fontSize: 10, fill: 'var(--k-text-secondary)' }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fontSize: 10, fill: 'var(--k-text-secondary)' }} axisLine={false} tickLine={false} />
+                          <Tooltip contentStyle={{ background: 'var(--k-surface-elevated)', border: '1px solid var(--k-border)', borderRadius: '6px', fontSize: '12px' }} />
+                          <Area type="monotone" dataKey="value" stroke="var(--k-brand)" strokeWidth={2} fill="url(#colorRevenue)" />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
 
                   {/* Sales by Region */}
-                  <div className="p-4 rounded-md border border-[var(--k-border)] bg-[var(--k-surface)]">
-                    <div className="text-xs font-semibold text-foreground mb-3 k-heading">Sales by Region</div>
-                    <ResponsiveContainer width="100%" height={200}>
-                      <BarChart data={mockBIData.salesByRegion}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="var(--k-border)" />
-                        <XAxis dataKey="name" tick={{ fontSize: 10, fill: 'var(--k-text-secondary)' }} axisLine={false} tickLine={false} />
-                        <YAxis tick={{ fontSize: 11, fill: 'var(--k-text-secondary)' }} axisLine={false} tickLine={false} />
-                        <Tooltip contentStyle={{ background: 'var(--k-surface-elevated)', border: '1px solid var(--k-border)', borderRadius: '6px', fontSize: '12px' }} />
-                        <Bar dataKey="value" radius={[3, 3, 0, 0]}>
-                          {mockBIData.salesByRegion.map((entry, index) => (
-                            <Cell key={index} fill={entry.fill} />
-                          ))}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
+                  {salesByRegion.length > 0 && (
+                    <div className="p-4 rounded-md border border-[var(--k-border)] bg-[var(--k-surface)]">
+                      <div className="text-xs font-semibold text-foreground mb-3 k-heading">Distribution</div>
+                      <ResponsiveContainer width="100%" height={200}>
+                        <BarChart data={salesByRegion}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="var(--k-border)" vertical={false} />
+                          <XAxis dataKey="name" tick={{ fontSize: 10, fill: 'var(--k-text-secondary)' }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fontSize: 10, fill: 'var(--k-text-secondary)' }} axisLine={false} tickLine={false} />
+                          <Tooltip contentStyle={{ background: 'var(--k-surface-elevated)', border: '1px solid var(--k-border)', borderRadius: '6px', fontSize: '12px' }} />
+                          <Bar dataKey="value" radius={[3, 3, 0, 0]}>
+                            {salesByRegion.map((entry, index) => (
+                              <Cell key={index} fill={entry.fill || "var(--k-brand)"} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
 
                   {/* Funnel */}
-                  <div className="p-4 rounded-md border border-[var(--k-border)] bg-[var(--k-surface)]">
-                    <div className="text-xs font-semibold text-foreground mb-3 k-heading">Conversion Funnel</div>
-                    <div className="space-y-2">
-                      {mockBIData.conversionFunnel.map((stage, i) => {
-                        const width = (stage.value / mockBIData.conversionFunnel[0].value) * 100;
-                        return (
-                          <div key={i} className="flex items-center gap-3">
-                            <span className="text-xs text-muted-foreground w-20 text-right">{stage.stage}</span>
-                            <div className="flex-1 h-7 bg-[var(--k-surface-elevated)] rounded-sm overflow-hidden">
-                              <div
-                                className="h-full bg-[var(--k-brand)] rounded-sm flex items-center justify-end pr-2 transition-all duration-500"
-                                style={{ width: `${width}%`, opacity: 1 - (i * 0.15) }}
-                              >
-                                <span className="text-[10px] text-white font-medium">{stage.value}</span>
+                  {funnelData.length > 0 && (
+                    <div className="p-4 rounded-md border border-[var(--k-border)] bg-[var(--k-surface)]">
+                      <div className="text-xs font-semibold text-foreground mb-3 k-heading">Funnel Analysis</div>
+                      <div className="space-y-2">
+                        {funnelData.map((stage, i) => {
+                          const width = (stage.value / funnelData[0].value) * 100;
+                          return (
+                            <div key={i} className="flex items-center gap-3">
+                              <span className="text-[10px] text-muted-foreground w-20 text-right truncate">{stage.stage}</span>
+                              <div className="flex-1 h-7 bg-[var(--k-surface-elevated)] rounded-sm overflow-hidden">
+                                <div
+                                  className="h-full bg-[var(--k-brand)] rounded-sm flex items-center justify-end pr-2 transition-all duration-500"
+                                  style={{ width: `${width}%`, opacity: 1 - (i * 0.1) }}
+                                >
+                                  <span className="text-[10px] text-white font-medium">{stage.value}</span>
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        );
-                      })}
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </>
               )}
             </div>
@@ -173,27 +205,16 @@ export function CanvasPane({ content, onClose, activeMode }) {
           <ScrollArea className="h-full">
             <div className="p-6 max-w-none">
               <div className="prose prose-sm dark:prose-invert max-w-none">
-                <h1 className="text-2xl font-medium k-heading tracking-tight">Q3 Revenue Analysis Report</h1>
-                <p className="text-xs text-muted-foreground mb-6">Generated by Kautilya AI | October 2025</p>
-                <h2 className="text-lg font-medium k-heading tracking-tight mt-6">Executive Summary</h2>
-                <p className="text-sm leading-relaxed text-foreground">
-                  Q3 2025 demonstrated strong revenue growth of 23% quarter-over-quarter, reaching INR 4.2 Crores.
-                  The growth was primarily driven by expansion in Maharashtra and Karnataka markets, with enterprise
-                  segment showing the highest average deal size increase of 15%.
-                </p>
-                <h2 className="text-lg font-medium k-heading tracking-tight mt-6">Key Findings</h2>
-                <ul className="text-sm space-y-2">
-                  <li>Win rate improved to 34%, exceeding industry average of 28%</li>
-                  <li>Average deal size grew to INR 2.8L from INR 2.4L in Q2</li>
-                  <li>Customer acquisition cost decreased by 12%</li>
-                  <li>Net Revenue Retention (NRR) stands at 124%</li>
-                </ul>
-                <h2 className="text-lg font-medium k-heading tracking-tight mt-6">Recommendations</h2>
-                <ol className="text-sm space-y-2">
-                  <li>Increase headcount in Maharashtra region by 3 reps</li>
-                  <li>Launch enterprise tier targeting Delhi NCR segment</li>
-                  <li>Implement partner channel program for Gujarat expansion</li>
-                </ol>
+                {content?.code && !dynamicData ? (
+                  <div className="whitespace-pre-wrap font-sans text-foreground leading-relaxed">
+                    {content.code}
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-20 text-center">
+                    <FileText className="w-12 h-12 text-muted-foreground/20 mb-4" />
+                    <p className="text-sm text-muted-foreground">No document content generated</p>
+                  </div>
+                )}
               </div>
             </div>
           </ScrollArea>

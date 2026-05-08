@@ -4,7 +4,7 @@ import { ChatMain } from "@/components/chat/ChatMain";
 import { CanvasPane } from "@/components/chat/CanvasPane";
 import { ThemeToggle } from "@/components/shared/ThemeToggle";
 
-export default function ChatPage({ theme, toggleTheme }) {
+export default function ChatPage({ theme, toggleTheme, user }) {
   const [selectedConversation, setSelectedConversation] = useState(null);
   const [canvasOpen, setCanvasOpen] = useState(false);
   const [canvasContent, setCanvasContent] = useState(null);
@@ -24,6 +24,7 @@ export default function ChatPage({ theme, toggleTheme }) {
           onCollapse={() => setSidebarCollapsed(true)}
           theme={theme}
           toggleTheme={toggleTheme}
+          user={user}
         />
       )}
       <ChatMain
