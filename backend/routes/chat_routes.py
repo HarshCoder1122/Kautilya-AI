@@ -18,7 +18,8 @@ from services.memory_service import (
     extract_memories, build_personalized_prompt, build_cli_system_prompt,
     process_uploaded_file, record_user_session
 )
-from services.agent_loop_service import get_llm_response
+from services.agent_loop_service import get_llm_response, normalize_model_choice
+from services.research_service import deep_research_stream
 from middleware.rate_limiter import check_message_rate_limit
 from middleware.security import block_sensitive_query
 
@@ -116,7 +117,7 @@ def jarvis_stream():
                args.get('text') or args.get('message') or '').strip()
                
     session_id = data.get('session_id') or form.get('session_id') or args.get('session_id', str(uuid.uuid4()))
-    model = data.get('model') or form.get('model') or args.get('model', 'daily')
+    model = normalize_model_choice(data.get('model') or form.get('model') or args.get('model', 'auto'))
     # Max Thinking toggle — enables reasoning_content streaming on pro/coder models.
     _mt_raw = data.get('max_thinking', form.get('max_thinking', args.get('max_thinking', False)))
     max_thinking = str(_mt_raw).lower() in ('1', 'true', 'yes', 'on')
@@ -207,6 +208,19 @@ def jarvis_stream():
 
     if not user_content_parts:
         return jsonify({"error": "No message"}), 400
+
+    if model == "research":
+        def research_sse():
+            try:
+                for event in deep_research_stream(message):
+                    yield f"data: {json.dumps(event)}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'event': 'chunk', 'chunk': f'[error: {e}]'})}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return Response(research_sse(), mimetype='text/event-stream', headers={
+            'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'
+        })
 
     user_message = user_content_parts if len(user_content_parts) > 1 else (user_content_parts[0].get("text", "") if user_content_parts[0].get("type") == "text" else user_content_parts)
 
@@ -300,7 +314,7 @@ def chat_legacy():
     data = request.json
     message = data.get("message", "")
     uid = data.get("uid", None)
-    model = data.get("model", "daily")
+    model = normalize_model_choice(data.get("model", "auto"))
     client_ip = request.remote_addr
     if limit_manager.is_banned(uid, client_ip):
         return jsonify({"response": "🚫 Access Denied"}), 403

@@ -422,7 +422,8 @@ def api_agent_chat(agent_id):
     Server-Sent Events: `data: {"content": "..."}` per chunk, `data: [DONE]`.
     """
     from extensions import db
-    from services.llm_service import call_groq
+    from services.agent_loop_service import normalize_model_choice
+    from services.llm_service import call_groq, call_nvidia
 
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
@@ -489,11 +490,12 @@ def api_agent_chat(agent_id):
         full_system += f"\n\nIf the conversation has just started, greet the user with: \"{welcome}\""
 
     # Map dashboard model aliases to a real Groq model id
-    groq_model = "llama-3.3-70b-versatile"
-    if "pro" in model_name:
-        groq_model = "llama-3.3-70b-versatile"
-    elif "coder" in model_name:
-        groq_model = "llama-3.3-70b-versatile"
+    model_choice = normalize_model_choice(model_name, default="daily")
+    upstream_model = "llama-3.3-70b-versatile"
+    if model_choice == "pro":
+        upstream_model = "nvidia/nemotron-3-super-120b-a12b"
+    elif model_choice == "coder":
+        upstream_model = "deepseek-ai/deepseek-v4-pro"
     # Gemini Live is voice-only — fall through to Groq for chat.
 
     chat_messages = [{"role": "system", "content": full_system}]
@@ -504,13 +506,31 @@ def api_agent_chat(agent_id):
     def stream():
         full_text = ""
         try:
-            gen = call_groq(
-                chat_messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=True,
-                model=groq_model,
-            )
+            if model_choice in ("pro", "coder"):
+                gen = call_nvidia(
+                    chat_messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=True,
+                    model=upstream_model,
+                    expose_thinking=False,
+                )
+                if gen is None:
+                    gen = call_groq(
+                        chat_messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        stream=True,
+                        model="llama-3.3-70b-versatile",
+                    )
+            else:
+                gen = call_groq(
+                    chat_messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=True,
+                    model=upstream_model,
+                )
             if gen is None:
                 yield f"data: {json.dumps({'content': 'Service temporarily unavailable.'})}\n\n"
                 yield "data: [DONE]\n\n"
@@ -529,7 +549,7 @@ def api_agent_chat(agent_id):
         try:
             in_chars = sum(len(str(m.get('content') or '')) for m in chat_messages)
             est_tokens = max(1, (in_chars + len(full_text)) // 4)
-            record_usage(uid, 'llm_tokens', est_tokens, model=groq_model)
+            record_usage(uid, 'llm_tokens', est_tokens, model=upstream_model)
         except Exception as e:
             print(f"[Agent Chat] usage record failed: {e}")
 
@@ -548,7 +568,7 @@ def api_agent_chat(agent_id):
                 'summary': (full_text or '').strip().splitlines()[0][:200] if full_text else 'Test chat',
                 'sentiment': 'neutral',
                 'outcome': bool(full_text),
-                'model': groq_model,
+                'model': upstream_model,
                 'created_at': _fs.SERVER_TIMESTAMP,
             })
         except Exception as e:

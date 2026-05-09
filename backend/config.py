@@ -9,9 +9,20 @@ load_dotenv()
 
 # ============== Paths ==============
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATIC_FOLDER = os.path.join(BASE_DIR, 'static')
+# HF Spaces specific: Try to use /tmp if /app/chat_data is not writable
 CHAT_DATA_DIR = os.path.join(BASE_DIR, 'chat_data')
-os.makedirs(CHAT_DATA_DIR, exist_ok=True)
+try:
+    os.makedirs(CHAT_DATA_DIR, exist_ok=True)
+    # Test writability
+    test_file = os.path.join(CHAT_DATA_DIR, '.write_test')
+    with open(test_file, 'w') as f: f.write('test')
+    os.remove(test_file)
+except Exception:
+    CHAT_DATA_DIR = '/tmp/chat_data'
+    os.makedirs(CHAT_DATA_DIR, exist_ok=True)
+    print(f"[CONFIG] Read-only filesystem detected. Using {CHAT_DATA_DIR} for volatile storage.")
+
+STATIC_FOLDER = os.path.join(BASE_DIR, 'static')
 
 # ============== Flask ==============
 FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", os.urandom(24).hex())
@@ -26,6 +37,14 @@ SARVAM_API_KEY = os.environ.get("SARVAM_API_KEY", "")
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
 if not NVIDIA_API_KEY:
     print("[CONFIG] WARNING: NVIDIA_API_KEY not set — Pro/Coder models will fall back to Groq Llama")
+
+# ============== TTS Provider Keys ==============
+REVEALIQ_HF_TOKEN = os.environ.get("REVEALIQ_HF_TOKEN", "")
+CARTESIA_API_KEY = os.environ.get("CARTESIA_API_KEY", "")
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+
+if not REVEALIQ_HF_TOKEN:
+    print("[CONFIG] WARNING: REVEALIQ_HF_TOKEN not set — RevealIQ TTS disabled")
 
 # Startup warnings for missing critical keys
 if not OPENROUTER_API_KEY:
@@ -129,6 +148,16 @@ LIVEKIT_SIP_URI = os.environ.get('LIVEKIT_SIP_URI', '4mu6v2usrj9.sip.livekit.clo
 # ============== Admin ==============
 ADMIN_SECRET_KEY = os.environ.get("ADMIN_SECRET_KEY", "")
 KAUTILYA_API_KEY = os.environ.get("KAUTILYA_API_KEY", "")
+
+# ============== Infrastructure Base URL (For Webhooks) ==============
+# Auto-detect HF Space URL if not provided
+PUBLIC_BASE_URL = os.environ.get('PUBLIC_BASE_URL', '').rstrip('/')
+if not PUBLIC_BASE_URL:
+    hf_owner = os.environ.get('SPACE_AUTHOR_NAME')
+    hf_name = os.environ.get('SPACE_REPO_NAME')
+    if hf_owner and hf_name:
+        PUBLIC_BASE_URL = f"https://{hf_owner}-{hf_name.replace('_', '-')}.hf.space"
+        print(f"[CONFIG] Auto-detected HF Space URL: {PUBLIC_BASE_URL}")
 
 # ============== Vobiz Master (for Studio Test Calls) ==============
 # Test calls from the Studio always use these master credentials

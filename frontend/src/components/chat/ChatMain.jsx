@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { SidebarSimple, ArrowRight, Paperclip, Brain, Code, MagnifyingGlass, Lightning, Columns, CaretDown } from "@phosphor-icons/react";
+import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning, Columns, CaretDown, X } from "@phosphor-icons/react";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ThinkingTokens } from "@/components/chat/ThinkingTokens";
 import { chatAPI } from "@/lib/api";
@@ -18,8 +18,26 @@ const modes = [
 ];
 
 export function ChatMain({ sidebarCollapsed, onExpandSidebar, canvasOpen, onToggleCanvas, onOpenCanvas, activeMode, onSetMode, theme, toggleTheme, sessionId, onSessionChange }) {
+  const [messages, setMessages] = useState([]);
+  const [inputValue, setInputValue] = useState("");
   const [selectedFiles, setSelectedFiles] = useState([]);
+  const [isThinking, setIsThinking] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
   const fileInputRef = useRef(null);
+  const inputRef = useRef(null);
+  const messagesEndRef = useRef(null);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, isThinking, isStreaming]);
+
+  const parseSSELines = (buffer) => {
+    const lines = buffer.split(/\r?\n/);
+    return {
+      completeLines: lines.slice(0, -1),
+      remainder: lines[lines.length - 1] || "",
+    };
+  };
 
   const handleFileSelect = (e) => {
     const files = Array.from(e.target.files);
@@ -48,11 +66,9 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, canvasOpen, onTogg
     setIsThinking(true);
 
     try {
-      // Determine model based on active mode
-      // coder -> DeepSeek (via NVIDIA NIM)
-      // pro -> Nemotron (via NVIDIA NIM)
-      // daily -> Llama 3 (via Groq)
-      const model = activeMode === 'code' ? 'coder' : activeMode === 'research' ? 'pro' : 'daily';
+      // chat -> backend auto router, code -> DeepSeek via NVIDIA,
+      // research -> dedicated SerpAPI-backed research endpoint.
+      const model = activeMode === 'code' ? 'coder' : 'auto';
       
       // Create new session if needed
       const currentSessionId = sessionId || `session-${Date.now()}`;
@@ -60,8 +76,22 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, canvasOpen, onTogg
         onSessionChange(currentSessionId);
       }
 
-      // Stream response
-      const response = await chatAPI.streamMessage(inputValue, currentSessionId, model, currentFiles);
+      const response = activeMode === 'research'
+        ? await chatAPI.streamResearch(inputValue)
+        : await chatAPI.streamMessage(inputValue, currentSessionId, model, currentFiles, {
+            maxThinking: activeMode === 'code',
+          });
+
+      if (!response.ok || !response.body) {
+        let detail = '';
+        try {
+          const payload = await response.json();
+          detail = payload.error || payload.message || '';
+        } catch (e) {
+          detail = response.statusText;
+        }
+        throw new Error(detail || `Request failed (${response.status})`);
+      }
       
       setIsThinking(false);
       setIsStreaming(true);
@@ -70,25 +100,52 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, canvasOpen, onTogg
         id: `msg-${Date.now() + 1}`,
         role: 'assistant',
         content: '',
-        thinking: 'Processing your request...',
+        thinking: '',
         thinkingDone: false,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        agentType: activeMode === 'research' ? 'researcher' : activeMode === 'code' ? 'coder' : 'sales',
+        agentType: activeMode === 'research' ? 'researcher' : activeMode === 'code' ? 'coder' : null,
       };
       setMessages(prev => [...prev, aiMsg]);
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let fullContent = '';
+      let buffer = '';
+      let researchSources = [];
+
+      const updateAssistant = (patch) => {
+        setMessages(prev => prev.map(msg => (
+          msg.id === aiMsg.id ? { ...msg, ...patch } : msg
+        )));
+      };
+
+      const updateContent = () => {
+        const artifactMatch = fullContent.match(/<artifact\s+type="([^"]+)"(?:\s+title="([^"]+)")?>([\s\S]*?)<\/artifact>/);
+        const artifactData = artifactMatch ? {
+          type: artifactMatch[1],
+          title: artifactMatch[2] || 'Analysis',
+          code: artifactMatch[3].trim()
+        } : null;
+
+        updateAssistant({
+          content: fullContent.replace(/<artifact[\s\S]*?<\/artifact>/g, '').trim(),
+          thinkingDone: true,
+          artifactType: artifactData?.type,
+          artifactTitle: artifactData?.title,
+          artifactCode: artifactData?.code,
+          hasArtifact: !!artifactData,
+        });
+      };
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
+        buffer += decoder.decode(value, { stream: true });
+        const parsedBuffer = parseSSELines(buffer);
+        buffer = parsedBuffer.remainder;
         
-        for (const line of lines) {
+        for (const line of parsedBuffer.completeLines) {
           if (line.startsWith('data: ')) {
             const data = line.slice(6);
             if (data === '[DONE]') {
@@ -98,40 +155,65 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, canvasOpen, onTogg
             
             try {
               const parsed = JSON.parse(data);
+              if (parsed.event === 'agent') {
+                updateAssistant({ agentType: parsed.agent || aiMsg.agentType });
+                continue;
+              }
+              if (parsed.event === 'query') {
+                updateAssistant({ thinking: `Searching: ${(parsed.queries || []).join(' | ')}` });
+                continue;
+              }
+              if (parsed.event === 'sources') {
+                researchSources = (parsed.sources || []).map((source, index) => ({
+                  id: index + 1,
+                  title: source.title || source.site || source.url,
+                  url: source.url,
+                  source: source.site || '',
+                }));
+                updateAssistant({ citations: researchSources, thinkingDone: true });
+                continue;
+              }
+              if (parsed.event === 'done') {
+                updateAssistant({ thinkingDone: true });
+                continue;
+              }
+              if (parsed.thinking) {
+                setMessages(prev => prev.map(msg => (
+                  msg.id === aiMsg.id
+                    ? { ...msg, thinking: `${msg.thinking || ''}${parsed.thinking}`, thinkingDone: false }
+                    : msg
+                )));
+                continue;
+              }
+              if (parsed.thinking_done) {
+                updateAssistant({ thinkingDone: true });
+                continue;
+              }
               if (parsed.chunk) {
                 fullContent += parsed.chunk;
-                
-                // Extract artifact if present (e.g. <artifact type="chart">...</artifact>)
-                const artifactMatch = fullContent.match(/<artifact\s+type="([^"]+)"(?:\s+title="([^"]+)")?>([\s\S]*?)<\/artifact>/);
-                const artifactData = artifactMatch ? {
-                  type: artifactMatch[1],
-                  title: artifactMatch[2] || 'Analysis',
-                  code: artifactMatch[3].trim()
-                } : null;
-
-                setMessages(prev => prev.map(msg => 
-                  msg.id === aiMsg.id 
-                    ? { 
-                        ...msg, 
-                        content: fullContent.replace(/<artifact[\s\S]*?<\/artifact>/g, '').trim(), 
-                        thinkingDone: true,
-                        artifactType: artifactData?.type,
-                        artifactTitle: artifactData?.title,
-                        artifactCode: artifactData?.code,
-                        hasArtifact: !!artifactData
-                      }
-                    : msg
-                ));
+                updateContent();
               }
             } catch (e) {
               // Handle non-JSON chunks or incomplete JSON
               fullContent += data;
-              setMessages(prev => prev.map(msg => 
-                msg.id === aiMsg.id 
-                  ? { ...msg, content: fullContent, thinkingDone: true }
-                  : msg
-              ));
+              updateContent();
             }
+          }
+        }
+      }
+
+      if (buffer.startsWith('data: ')) {
+        const data = buffer.slice(6);
+        if (data && data !== '[DONE]') {
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.chunk) {
+              fullContent += parsed.chunk;
+              updateContent();
+            }
+          } catch (e) {
+            fullContent += data;
+            updateContent();
           }
         }
       }

@@ -59,9 +59,17 @@ def _serpapi_search(query: str, k: int = 6) -> List[Dict[str, Any]]:
     if not SERPAPI_API_KEY:
         return []
     try:
-        from serpapi import GoogleSearch
         params = {"q": query, "api_key": SERPAPI_API_KEY, "num": k, "hl": "en"}
-        data = GoogleSearch(params).get_dict()
+        try:
+            from serpapi import GoogleSearch
+            data = GoogleSearch(params).get_dict()
+        except Exception as sdk_error:
+            print(f"[Research] serpapi sdk err, trying HTTP fallback: {sdk_error}")
+            resp = requests.get("https://serpapi.com/search.json", params=params, timeout=FETCH_TIMEOUT)
+            if resp.status_code != 200:
+                print(f"[Research] serpapi HTTP {resp.status_code}: {resp.text[:200]}")
+                return []
+            data = resp.json()
         results = []
         for r in (data.get("organic_results") or [])[:k]:
             url = r.get("link")

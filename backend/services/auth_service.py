@@ -11,11 +11,22 @@ from config import API_KEY_PREFIX, API_RATE_LIMITS, KAUTILYA_API_KEY
 
 
 def verify_firebase_token():
-    """Verify Firebase ID token OR master API key from Authorization header."""
+    """Verify Firebase ID token OR master API key.
+    Supports standard Authorization header OR X-Firebase-Token (for private HF Spaces).
+    """
     auth_header = request.headers.get('Authorization', '')
-    if not auth_header.startswith('Bearer '):
+    fb_token_header = request.headers.get('X-Firebase-Token', '')
+    
+    token = None
+    if auth_header.startswith('Bearer '):
+        token = auth_header.split('Bearer ', 1)[1].strip()
+    elif fb_token_header.startswith('Bearer '):
+        token = fb_token_header.split('Bearer ', 1)[1].strip()
+    elif fb_token_header:
+        token = fb_token_header.strip()
+
+    if not token:
         return None
-    token = auth_header.split('Bearer ', 1)[1].strip()
     if KAUTILYA_API_KEY and token == KAUTILYA_API_KEY:
         return {"uid": "admin", "email": "system@revealiq.in", "provider": "system", "is_admin": True}
     from extensions import FIREBASE_AVAILABLE

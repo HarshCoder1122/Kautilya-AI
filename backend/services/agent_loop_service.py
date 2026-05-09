@@ -7,8 +7,28 @@ import json
 import time
 import concurrent.futures
 
-from config import GROQ_API_KEY
 from services.llm_service import call_groq, call_nvidia
+
+
+MODEL_ALIASES = {
+    "kautilya-daily": "daily",
+    "llama": "daily",
+    "llama-3.3-70b-versatile": "daily",
+    "kautilya-pro": "pro",
+    "nemotron": "pro",
+    "nvidia/nemotron-3-super-120b-a12b": "pro",
+    "kautilya-coder": "coder",
+    "deepseek": "coder",
+    "deepseek-ai/deepseek-v4-pro": "coder",
+}
+
+
+def normalize_model_choice(model, default="auto"):
+    """Normalize UI/API aliases into the internal routing ids."""
+    raw = str(model or default).strip().lower()
+    if raw in ("auto", "daily", "pro", "coder", "research"):
+        return raw
+    return MODEL_ALIASES.get(raw, "auto")
 
 
 # Shared executor to reduce overhead
@@ -210,6 +230,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         yield json.dumps({"type": "status", "message": None})
 
         accumulated_response = ""
+        in_thinking_tag = False
 
         try:
             for item in response_gen:
@@ -223,10 +244,49 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                     chunk = item.get("chunk", "")
                 else:
                     chunk = item
+                
                 if not chunk:
                     continue
-                accumulated_response += chunk
-                yield json.dumps({"chunk": chunk})
+
+                # --- Thinking Tag Logic (Opus Grade) ---
+                if "<think>" in chunk:
+                    parts = chunk.split("<think>", 1)
+                    if parts[0]:
+                        yield json.dumps({"chunk": parts[0]})
+                        accumulated_response += parts[0]
+                    in_thinking_tag = True
+                    if parts[1]:
+                        if "</think>" in parts[1]:
+                            think_parts = parts[1].split("</think>", 1)
+                            yield json.dumps({"thinking": think_parts[0]})
+                            in_thinking_tag = False
+                            yield json.dumps({"thinking_done": True})
+                            if think_parts[1]:
+                                yield json.dumps({"chunk": think_parts[1]})
+                                accumulated_response += think_parts[1]
+                        else:
+                            yield json.dumps({"thinking": parts[1]})
+                    continue
+
+                if "</think>" in chunk and in_thinking_tag:
+                    parts = chunk.split("</think>", 1)
+                    if parts[0]:
+                        yield json.dumps({"thinking": parts[0]})
+                    in_thinking_tag = False
+                    yield json.dumps({"thinking_done": True})
+                    if parts[1]:
+                        yield json.dumps({"chunk": parts[1]})
+                        accumulated_response += parts[1]
+                    continue
+
+                if in_thinking_tag:
+                    yield json.dumps({"thinking": chunk})
+                else:
+                    accumulated_response += chunk
+                    yield json.dumps({"chunk": chunk})
+
+            if in_thinking_tag:
+                yield json.dumps({"thinking_done": True})
             # stream complete
         except Exception as e:
             print(f"[Agent] Generator streaming error: {e}")
@@ -264,6 +324,8 @@ def _estimate_tokens(user_msg, mode):
 
 def get_llm_response(messages, uid=None, model="daily", user_ip=None, tools=None, tool_choice=None, max_thinking=False):
     """Entry point for chat. Routes to fast-path, orchestrator, or agent_loop."""
+    model = normalize_model_choice(model)
+
     # Multi-agent auto-routing
     if model == "auto":
         from services.orchestrator_service import run as orchestrator_run

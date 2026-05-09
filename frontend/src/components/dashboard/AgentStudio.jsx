@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Plus, Play, Pause, PencilSimple, Trash, SpeakerHigh, Brain, Lightning, CheckCircle, Phone, X } from "@phosphor-icons/react";
+import { Plus, PencilSimple, Trash, SpeakerHigh, Brain, Lightning, CheckCircle, Phone, X, UploadSimple, LinkSimple, FileText, ChatCircleText, Clock } from "@phosphor-icons/react";
 import { agentsAPI, telephonyAPI } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -18,6 +18,7 @@ export default function AgentStudio() {
   const [loading, setLoading] = useState(true);
   const [selectedAgent, setSelectedAgent] = useState(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [studioError, setStudioError] = useState("");
 
   useEffect(() => {
     loadAgents();
@@ -46,6 +47,18 @@ export default function AgentStudio() {
     }
   };
 
+  const handleEditAgent = async (agent) => {
+    try {
+      setStudioError("");
+      const data = await agentsAPI.get(agent.agent_id);
+      setSelectedAgent({ ...agent, ...data });
+    } catch (error) {
+      console.error('Failed to open agent:', error);
+      setStudioError(error.response?.data?.error || error.message || 'Failed to open agent');
+      setSelectedAgent(agent);
+    }
+  };
+
   return (
     <div className="h-full flex flex-col bg-background" data-testid="agent-studio">
       {/* Header */}
@@ -54,6 +67,7 @@ export default function AgentStudio() {
           <div>
             <h1 className="text-2xl font-medium k-heading tracking-tight text-foreground">Agent Studio</h1>
             <p className="text-sm text-muted-foreground mt-1">Create and manage your AI voice & chat agents</p>
+            {studioError && <p className="text-xs text-rose-400 mt-2">{studioError}</p>}
           </div>
           <Dialog open={showCreate} onOpenChange={setShowCreate}>
             <DialogTrigger asChild>
@@ -90,7 +104,7 @@ export default function AgentStudio() {
                 <AgentCard
                   key={agent.agent_id}
                   agent={agent}
-                  onEdit={() => setSelectedAgent(agent)}
+                  onEdit={() => handleEditAgent(agent)}
                   onDelete={() => handleDeleteAgent(agent.agent_id)}
                 />
               ))}
@@ -112,7 +126,7 @@ export default function AgentStudio() {
       </ScrollArea>
 
       {/* Agent Edit/Detail Dialog */}
-      <Dialog open={!!selectedAgent} onOpenChange={() => setSelectedAgent(null)}>
+      <Dialog open={!!selectedAgent} onOpenChange={(open) => { if (!open) setSelectedAgent(null); }}>
         <DialogContent className="sm:max-w-[750px] max-h-[90vh] p-0 overflow-hidden bg-[var(--k-surface)] border-[var(--k-border)] shadow-2xl">
           {selectedAgent && (
             <AgentDetail 
@@ -187,9 +201,26 @@ function AgentCard({ agent, onEdit, onDelete }) {
 function AgentDetail({ agent, onClose, onUpdate }) {
   const [isSaving, setIsSaving] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
+  const [isPreviewing, setIsPreviewing] = useState(false);
   const [testNumber, setTestNumber] = useState("");
   const [editedAgent, setEditedAgent] = useState({ ...agent });
   const [activeTab, setActiveTab] = useState("config");
+  const [kbFiles, setKbFiles] = useState([]);
+  const [kbUrl, setKbUrl] = useState("");
+  const [kbLoading, setKbLoading] = useState(false);
+  const [logs, setLogs] = useState([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [testMessages, setTestMessages] = useState([]);
+  const [testInput, setTestInput] = useState("");
+  const [isChatTesting, setIsChatTesting] = useState(false);
+  const [testNotice, setTestNotice] = useState("");
+
+	  useEffect(() => {
+	    if (activeTab === "knowledge") loadKnowledge();
+	    if (activeTab === "logs") loadLogs();
+	    // The loaders are local actions; re-run only when the selected tab/agent changes.
+	    // eslint-disable-next-line react-hooks/exhaustive-deps
+	  }, [activeTab, agent.agent_id]);
 
   const handleSave = async () => {
     try {
@@ -222,6 +253,137 @@ function AgentDetail({ agent, onClose, onUpdate }) {
     }
   };
 
+  const handleVoicePreview = async () => {
+    try {
+      setIsPreviewing(true);
+      const audioBlob = await agentsAPI.previewVoice({
+        voice: editedAgent.voice || 'shubh',
+        provider: editedAgent.tts_provider || 'sarvam',
+        text: editedAgent.welcome_message || 'Namaste! This is a preview of how my voice will sound on the call.',
+      });
+      const audio = new Audio(URL.createObjectURL(audioBlob));
+      audio.play();
+    } catch (error) {
+      console.error('Voice preview failed:', error);
+      alert(error.response?.data?.error || 'Voice preview failed');
+    } finally {
+      setIsPreviewing(false);
+    }
+  };
+
+  const loadKnowledge = async () => {
+    try {
+      setKbLoading(true);
+      const data = await agentsAPI.getKB(agent.agent_id);
+      setKbFiles(data.knowledge_base || []);
+    } catch (error) {
+      console.error('Failed to load knowledge:', error);
+    } finally {
+      setKbLoading(false);
+    }
+  };
+
+  const handleKbUpload = async (event) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+    try {
+      setKbLoading(true);
+      await agentsAPI.uploadKB(agent.agent_id, files);
+      event.target.value = "";
+      await loadKnowledge();
+    } catch (error) {
+      alert(error.response?.data?.error || 'Upload failed');
+    } finally {
+      setKbLoading(false);
+    }
+  };
+
+  const handleAddKbUrl = async () => {
+    if (!kbUrl.trim()) return;
+    try {
+      setKbLoading(true);
+      await agentsAPI.addKBUrl(agent.agent_id, kbUrl.trim());
+      setKbUrl("");
+      await loadKnowledge();
+    } catch (error) {
+      alert(error.response?.data?.error || 'Website indexing failed');
+    } finally {
+      setKbLoading(false);
+    }
+  };
+
+  const handleDeleteKb = async (fileId) => {
+    if (!confirm("Delete this knowledge file?")) return;
+    try {
+      await agentsAPI.deleteKBFile(agent.agent_id, fileId);
+      setKbFiles(prev => prev.filter(file => file.id !== fileId));
+    } catch (error) {
+      alert(error.response?.data?.error || 'Delete failed');
+    }
+  };
+
+  const loadLogs = async () => {
+    try {
+      setLogsLoading(true);
+      const data = await agentsAPI.getLogs(agent.agent_id);
+      setLogs(data.logs || []);
+    } catch (error) {
+      console.error('Failed to load logs:', error);
+      setLogs([]);
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
+  const handleChatTest = async () => {
+    const text = testInput.trim();
+    if (!text || isChatTesting) return;
+    const nextMessages = [...testMessages, { role: 'user', content: text }];
+    const assistantMsg = { role: 'assistant', content: '' };
+    setTestMessages([...nextMessages, assistantMsg]);
+    setTestInput("");
+    setIsChatTesting(true);
+    try {
+      const response = await agentsAPI.chat(agent.agent_id, nextMessages.slice(-10));
+      if (!response.ok || !response.body) throw new Error(response.statusText || 'Agent chat failed');
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let answer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const raw = line.slice(6).trim();
+          if (!raw || raw === '[DONE]') continue;
+          try {
+            const parsed = JSON.parse(raw);
+            const chunk = parsed.content || parsed.chunk || "";
+            if (chunk) {
+              answer += chunk;
+              setTestMessages(prev => prev.map((msg, index) => (
+                index === prev.length - 1 ? { ...msg, content: answer } : msg
+              )));
+            }
+          } catch (e) {
+            answer += raw;
+          }
+        }
+      }
+      setTestNotice("Text test saved to recent logs.");
+    } catch (error) {
+      setTestMessages(prev => prev.map((msg, index) => (
+        index === prev.length - 1 ? { ...msg, content: `Error: ${error.message}` } : msg
+      )));
+    } finally {
+      setIsChatTesting(false);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full">
       <div className="px-6 py-4 border-b border-[var(--k-border)] flex items-center justify-between bg-[var(--k-surface-elevated)]">
@@ -241,13 +403,33 @@ function AgentDetail({ agent, onClose, onUpdate }) {
 
       <ScrollArea className="flex-1 p-6">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="bg-accent/50 h-10 p-1 mb-6 rounded-lg w-full max-w-sm">
+          <TabsList className="bg-accent/50 h-10 p-1 mb-6 rounded-lg w-full max-w-2xl">
             <TabsTrigger value="config" className="flex-1 rounded-md text-xs font-semibold data-[state=active]:bg-background data-[state=active]:text-[var(--k-brand)]">Instruction</TabsTrigger>
             <TabsTrigger value="voice" className="flex-1 rounded-md text-xs font-semibold data-[state=active]:bg-background data-[state=active]:text-[var(--k-brand)]">Voice & LLM</TabsTrigger>
+            <TabsTrigger value="knowledge" className="flex-1 rounded-md text-xs font-semibold data-[state=active]:bg-background data-[state=active]:text-[var(--k-brand)]">Knowledge</TabsTrigger>
             <TabsTrigger value="test" className="flex-1 rounded-md text-xs font-semibold data-[state=active]:bg-background data-[state=active]:text-[var(--k-brand)]">Live Test</TabsTrigger>
+            <TabsTrigger value="logs" className="flex-1 rounded-md text-xs font-semibold data-[state=active]:bg-background data-[state=active]:text-[var(--k-brand)]">Logs</TabsTrigger>
           </TabsList>
 
           <TabsContent value="config" className="space-y-6 animate-fade-up">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Agent Name</label>
+                <input
+                  value={editedAgent.name || ''}
+                  onChange={(e) => setEditedAgent({ ...editedAgent, name: e.target.value })}
+                  className="w-full px-3 py-2.5 text-sm bg-accent/20 border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Welcome Message</label>
+                <input
+                  value={editedAgent.welcome_message || ''}
+                  onChange={(e) => setEditedAgent({ ...editedAgent, welcome_message: e.target.value })}
+                  className="w-full px-3 py-2.5 text-sm bg-accent/20 border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none"
+                />
+              </div>
+            </div>
             <div className="space-y-2">
               <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground flex items-center justify-between">
                  <span>Agent Personality & Role</span>
@@ -286,6 +468,15 @@ function AgentDetail({ agent, onClose, onUpdate }) {
                   <option value="priya">Priya (Indian Female)</option>
                   <option value="rahul">Rahul (Deep Voice)</option>
                 </select>
+                <button
+                  type="button"
+                  onClick={handleVoicePreview}
+                  disabled={isPreviewing}
+                  className="mt-2 flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--k-border)] hover:bg-accent text-xs text-foreground disabled:opacity-50"
+                >
+                  <SpeakerHigh className="w-3.5 h-3.5" />
+                  {isPreviewing ? 'Previewing...' : 'Preview Voice'}
+                </button>
               </div>
               <div className="space-y-2">
                 <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Language</label>
@@ -325,6 +516,69 @@ function AgentDetail({ agent, onClose, onUpdate }) {
             </div>
           </TabsContent>
 
+          <TabsContent value="knowledge" className="space-y-6 animate-fade-up">
+            <div className="grid grid-cols-2 gap-4">
+              <label className="relative p-6 rounded-xl border border-dashed border-[var(--k-border)] hover:border-[var(--k-brand)]/40 bg-accent/10 cursor-pointer text-center">
+                <input
+                  type="file"
+                  multiple
+                  accept=".pdf,.txt,.docx"
+                  onChange={handleKbUpload}
+                  disabled={kbLoading}
+                  className="absolute inset-0 opacity-0 cursor-pointer"
+                />
+                <UploadSimple className="w-8 h-8 mx-auto mb-3 text-[var(--k-brand)]" />
+                <div className="text-sm font-bold text-foreground">{kbLoading ? 'Processing...' : 'Upload Documents'}</div>
+                <div className="text-xs text-muted-foreground mt-1">PDF, TXT, DOCX knowledge files</div>
+              </label>
+              <div className="p-6 rounded-xl border border-[var(--k-border)] bg-accent/10">
+                <LinkSimple className="w-8 h-8 mb-3 text-[var(--k-brand)]" />
+                <div className="text-sm font-bold text-foreground mb-3">Index Website</div>
+                <div className="flex gap-2">
+                  <input
+                    value={kbUrl}
+                    onChange={(e) => setKbUrl(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleAddKbUrl(); }}
+                    placeholder="https://example.com/docs"
+                    className="flex-1 px-3 py-2 text-xs bg-background border border-[var(--k-border)] rounded-lg text-foreground"
+                  />
+                  <button
+                    onClick={handleAddKbUrl}
+                    disabled={kbLoading || !kbUrl.trim()}
+                    className="px-3 py-2 rounded-lg bg-[var(--k-brand)] text-white text-xs font-bold disabled:opacity-50"
+                  >
+                    Add
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Current Knowledge</div>
+              {kbFiles.length === 0 ? (
+                <div className="p-8 rounded-xl border border-dashed border-[var(--k-border)] text-center text-sm text-muted-foreground">
+                  No knowledge files added yet.
+                </div>
+              ) : (
+                kbFiles.map(file => (
+                  <div key={file.id} className="flex items-center gap-3 p-3 rounded-xl border border-[var(--k-border)] bg-accent/10">
+                    <FileText className="w-5 h-5 text-[var(--k-brand)]" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm text-foreground truncate">{file.name}</div>
+                      <div className="text-[10px] text-muted-foreground">{Math.round((file.size || 0) / 1024)} KB</div>
+                    </div>
+                    <button
+                      onClick={() => handleDeleteKb(file.id)}
+                      className="p-2 rounded-md hover:bg-rose-500/10 text-muted-foreground hover:text-rose-400"
+                    >
+                      <Trash className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </TabsContent>
+
           <TabsContent value="test" className="space-y-6 animate-fade-up">
              <div className="p-6 rounded-2xl border border-[var(--k-brand)]/20 bg-[var(--k-brand)]/5">
                 <div className="flex items-center gap-3 mb-4">
@@ -359,6 +613,72 @@ function AgentDetail({ agent, onClose, onUpdate }) {
                    Uses master SIP credentials for instantaneous routing.
                 </p>
              </div>
+             <div className="p-6 rounded-2xl border border-[var(--k-border)] bg-accent/10">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 rounded-full bg-emerald-500/10 flex items-center justify-center">
+                    <ChatCircleText className="w-5 h-5 text-emerald-400" weight="duotone" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-foreground">Text Chat Test</h4>
+                    <p className="text-xs text-muted-foreground">Check prompt, model routing, and knowledge-base answers.</p>
+                  </div>
+                </div>
+                <div className="h-56 overflow-y-auto rounded-xl border border-[var(--k-border)] bg-background/60 p-3 space-y-3">
+                  {testMessages.length === 0 ? (
+                    <div className="h-full flex items-center justify-center text-xs text-muted-foreground">Start a test conversation.</div>
+                  ) : (
+                    testMessages.map((msg, index) => (
+                      <div key={index} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                        <div className={`max-w-[82%] px-3 py-2 rounded-xl text-xs whitespace-pre-wrap ${msg.role === 'user' ? 'bg-[var(--k-brand)] text-white' : 'bg-accent text-foreground'}`}>
+                          {msg.content || (isChatTesting && index === testMessages.length - 1 ? 'Thinking...' : '')}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <div className="flex gap-2 mt-3">
+                  <input
+                    value={testInput}
+                    onChange={(e) => setTestInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleChatTest(); }}
+                    placeholder="Type a test message..."
+                    disabled={isChatTesting}
+                    className="flex-1 px-4 py-3 text-sm bg-background border border-[var(--k-border)] rounded-xl text-foreground"
+                  />
+                  <button
+                    onClick={handleChatTest}
+                    disabled={isChatTesting || !testInput.trim()}
+                    className="px-5 py-3 rounded-xl bg-[var(--k-brand)] text-white text-sm font-bold disabled:opacity-50"
+                  >
+                    Send
+                  </button>
+                </div>
+                {testNotice && <p className="mt-2 text-[10px] text-emerald-400">{testNotice}</p>}
+             </div>
+          </TabsContent>
+
+          <TabsContent value="logs" className="space-y-4 animate-fade-up">
+            {logsLoading ? (
+              <div className="p-8 text-center text-sm text-muted-foreground">Loading recent activity...</div>
+            ) : logs.length === 0 ? (
+              <div className="p-8 rounded-xl border border-dashed border-[var(--k-border)] text-center text-sm text-muted-foreground">No logs yet.</div>
+            ) : (
+              logs.map((log, index) => (
+                <div key={log.id || index} className="p-4 rounded-xl border border-[var(--k-border)] bg-accent/10">
+                  <div className="flex items-start gap-3">
+                    <Clock className="w-4 h-4 mt-0.5 text-[var(--k-brand)]" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-foreground">{log.summary || log.analysis || 'Agent activity completed.'}</div>
+                      <div className="mt-1 flex flex-wrap gap-2 text-[10px] text-muted-foreground">
+                        <span>{log.channel || log.type || 'activity'}</span>
+                        <span>{log.model || editedAgent.model}</span>
+                        <span>{log.status || 'completed'}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
           </TabsContent>
         </Tabs>
       </ScrollArea>

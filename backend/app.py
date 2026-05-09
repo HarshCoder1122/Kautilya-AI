@@ -108,13 +108,23 @@ def set_security_headers(response):
     
     # Smart Caching for Production Performance
     path = request.path
-    if path.endswith(('.js', '.css', '.woff2', '.png', '.jpg', '.jpeg', '.svg', '.ico')):
+    if path == '/' or path.endswith('index.html'):
+        # THE CRITICAL FIX: Ensure index.html is NEVER cached so users always get fresh build references
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '-1'
+    elif any(path.endswith(ext) for ext in ['.js', '.css', '.woff2', '.png', '.jpg', '.jpeg', '.svg', '.ico']):
+        # Static assets with hashes should be cached long-term
         response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+        # Remove contradictory headers for assets
+        response.headers.pop('Pragma', None)
+        response.headers.pop('Expires', None)
     else:
+        # Default for API and other routes: no-store
         response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '-1'
     
-    response.headers['Pragma'] = 'no-cache'
-    response.headers['Expires'] = '-1'
     return response
 
 @app.errorhandler(Exception)

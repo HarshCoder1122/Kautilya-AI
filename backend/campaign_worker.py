@@ -36,6 +36,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 
 from services.telephony_dialer import dial_outbound, load_provider_config
+from config import PUBLIC_BASE_URL
 
 # --------------------------------------------------------------------------
 # Configuration
@@ -44,7 +45,6 @@ POLL_INTERVAL = float(os.environ.get('CAMPAIGN_POLL_INTERVAL', '5'))
 PER_CAMPAIGN_CONCURRENCY = int(os.environ.get('CAMPAIGN_CONCURRENCY', '3'))
 GLOBAL_MAX_IN_FLIGHT = int(os.environ.get('CAMPAIGN_GLOBAL_MAX', '20'))
 DIAL_PACING_SEC = float(os.environ.get('CAMPAIGN_DIAL_PACING', '0.5'))
-PUBLIC_BASE_URL = os.environ.get('PUBLIC_BASE_URL', '').rstrip('/')
 
 # --------------------------------------------------------------------------
 # Firebase
