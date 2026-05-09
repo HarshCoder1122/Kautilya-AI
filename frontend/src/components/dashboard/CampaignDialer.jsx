@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Play, Pause, Clock, CheckCircle, Plus, Lightning, Users, Trash } from "@phosphor-icons/react";
-import { campaignsAPI, agentsAPI } from "@/lib/api";
+import { campaignsAPI, agentsAPI } from "../../lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Progress } from "@/components/ui/progress";
 import {

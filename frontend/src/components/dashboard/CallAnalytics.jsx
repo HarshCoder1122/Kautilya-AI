@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Phone, SmileyMelting, Smiley, SmileyNervous, ArrowSquareOut, Clock, Lightning, Play, Headphones, Article, X, Info } from "@phosphor-icons/react";
-import { analyticsAPI, agentsAPI } from "@/lib/api";
+import { analyticsAPI, agentsAPI } from "../../lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
