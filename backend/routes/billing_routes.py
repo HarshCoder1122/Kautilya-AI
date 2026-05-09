@@ -12,7 +12,7 @@ from services.auth_service import verify_firebase_token
 billing_bp = Blueprint('billing', __name__)
 
 
-@billing_bp.route('/api/billing/create-order', methods=['POST'])
+@billing_bp.route('/billing/create-order', methods=['POST'])
 def create_billing_order():
     from extensions import razorpay_client, db
     try:
@@ -49,7 +49,7 @@ def create_billing_order():
         return jsonify({"error": str(e)}), 500
 
 
-@billing_bp.route('/api/billing/verify-payment', methods=['POST'])
+@billing_bp.route('/billing/verify-payment', methods=['POST'])
 def verify_payment():
     from extensions import razorpay_client, limit_manager
     try:
@@ -89,7 +89,7 @@ def verify_payment():
         return jsonify({"error": str(e)}), 500
 
 
-@billing_bp.route('/api/billing/razorpay-webhook', methods=['POST'])
+@billing_bp.route('/billing/razorpay-webhook', methods=['POST'])
 def razorpay_webhook():
     from extensions import razorpay_client, limit_manager
     webhook_secret = os.environ.get('RAZORPAY_WEBHOOK_SECRET')
@@ -117,7 +117,7 @@ def razorpay_webhook():
         return "Internal Error", 500
 
 
-@billing_bp.route('/api/billing/transactions', methods=['GET'])
+@billing_bp.route('/billing/transactions', methods=['GET'])
 def get_user_transactions():
     from extensions import limit_manager
     try:
@@ -130,7 +130,7 @@ def get_user_transactions():
         return jsonify({"error": str(e)}), 500
 
 
-@billing_bp.route('/api/billing/config', methods=['GET'])
+@billing_bp.route('/billing/config', methods=['GET'])
 def billing_config():
     """Return Razorpay public config plus the caller's tier & credits, so the
     Billing page can render the correct Pro/Free badge and balance."""

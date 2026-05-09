@@ -125,7 +125,7 @@ def _require_auth():
 
 
 # ---------- Catalog / status ----------
-@integrations_bp.route('/api/integrations', methods=['GET'])
+@integrations_bp.route('/integrations', methods=['GET'])
 def list_integrations():
     uid = _require_auth()
     if not uid:
@@ -146,7 +146,7 @@ def list_integrations():
 
 
 # ---------- OAuth start ----------
-@integrations_bp.route('/api/integrations/<provider>/connect', methods=['GET'])
+@integrations_bp.route('/integrations/<provider>/connect', methods=['GET'])
 def connect(provider):
     uid = _require_auth()
     if not uid:
@@ -182,7 +182,7 @@ def connect(provider):
 
 
 # ---------- OAuth callback ----------
-@integrations_bp.route('/api/integrations/<provider>/callback', methods=['GET'])
+@integrations_bp.route('/integrations/<provider>/callback', methods=['GET'])
 def oauth_callback(provider):
     meta = PROVIDERS.get(provider)
     if not meta or not meta.get('token_url'):
@@ -231,7 +231,7 @@ def oauth_callback(provider):
 
 
 # ---------- Disconnect / save manual API keys ----------
-@integrations_bp.route('/api/integrations/<provider>/disconnect', methods=['POST'])
+@integrations_bp.route('/integrations/<provider>/disconnect', methods=['POST'])
 def disconnect(provider):
     uid = _require_auth()
     if not uid:
@@ -243,7 +243,7 @@ def disconnect(provider):
     return jsonify({"status": "ok"})
 
 
-@integrations_bp.route('/api/integrations/<provider>/save', methods=['POST'])
+@integrations_bp.route('/integrations/<provider>/save', methods=['POST'])
 def save_manual(provider):
     """Save manual API credentials for WhatsApp / Slack / Zapier / OAuth client_id."""
     uid = _require_auth()
@@ -267,7 +267,7 @@ def save_manual(provider):
 
 
 # ---------- WhatsApp ----------
-@integrations_bp.route('/api/integrations/whatsapp/send', methods=['POST'])
+@integrations_bp.route('/integrations/whatsapp/send', methods=['POST'])
 def whatsapp_send():
     uid = _require_auth()
     if not uid:
@@ -296,7 +296,7 @@ def whatsapp_send():
 
 
 # WhatsApp inbound webhook (Meta verification + incoming messages)
-@integrations_bp.route('/api/integrations/webhook/whatsapp', methods=['GET', 'POST'])
+@integrations_bp.route('/integrations/webhook/whatsapp', methods=['GET', 'POST'])
 def whatsapp_webhook():
     if request.method == 'GET':
         # Meta verification handshake. We accept any caller with a matching verify_token.
@@ -332,7 +332,7 @@ def whatsapp_webhook():
 
 
 # ---------- Slack ----------
-@integrations_bp.route('/api/integrations/slack/post', methods=['POST'])
+@integrations_bp.route('/integrations/slack/post', methods=['POST'])
 def slack_post():
     uid = _require_auth()
     if not uid:
@@ -356,7 +356,7 @@ def slack_post():
 
 
 # ---------- Google Calendar ----------
-@integrations_bp.route('/api/integrations/calendar/event', methods=['POST'])
+@integrations_bp.route('/integrations/calendar/event', methods=['POST'])
 def calendar_event():
     uid = _require_auth()
     if not uid:
@@ -391,7 +391,7 @@ def calendar_event():
 
 
 # ---------- Zapier generic trigger ----------
-@integrations_bp.route('/api/integrations/zapier/trigger', methods=['POST'])
+@integrations_bp.route('/integrations/zapier/trigger', methods=['POST'])
 def zapier_trigger():
     uid = _require_auth()
     if not uid:
@@ -411,7 +411,7 @@ def zapier_trigger():
 
 
 # ---------- Follow-up automation ----------
-@integrations_bp.route('/api/integrations/followup/extract', methods=['POST'])
+@integrations_bp.route('/integrations/followup/extract', methods=['POST'])
 def followup_extract():
     """LLM extracts action items from a transcript or conversation."""
     uid = _require_auth()
@@ -444,7 +444,7 @@ def followup_extract():
     return jsonify({"action_items": items})
 
 
-@integrations_bp.route('/api/integrations/followup/dispatch', methods=['POST'])
+@integrations_bp.route('/integrations/followup/dispatch', methods=['POST'])
 def followup_dispatch():
     """Fire a list of action items across the appropriate channels."""
     uid = _require_auth()

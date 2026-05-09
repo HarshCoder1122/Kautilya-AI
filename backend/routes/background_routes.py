@@ -115,7 +115,7 @@ def _worker(task_id):
         task['updated'] = time.time()
 
 
-@background_bp.route('/api/jarvis/background', methods=['POST'])
+@background_bp.route('/jarvis/background', methods=['POST'])
 def create_task():
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
@@ -160,7 +160,7 @@ def create_task():
     return jsonify({"status": "ok", "task_id": task_id, "title": title})
 
 
-@background_bp.route('/api/jarvis/background', methods=['GET'])
+@background_bp.route('/jarvis/background', methods=['GET'])
 def list_tasks():
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
@@ -176,7 +176,7 @@ def list_tasks():
     return jsonify({"tasks": items})
 
 
-@background_bp.route('/api/jarvis/background/<task_id>', methods=['GET'])
+@background_bp.route('/jarvis/background/<task_id>', methods=['GET'])
 def get_task(task_id):
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
@@ -199,7 +199,7 @@ def get_task(task_id):
     return jsonify(resp)
 
 
-@background_bp.route('/api/jarvis/background/<task_id>', methods=['DELETE'])
+@background_bp.route('/jarvis/background/<task_id>', methods=['DELETE'])
 def delete_task(task_id):
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
@@ -219,7 +219,7 @@ def delete_task(task_id):
     return jsonify({"status": "ok"})
 
 
-@background_bp.route('/api/jarvis/background/<task_id>/stream', methods=['GET'])
+@background_bp.route('/jarvis/background/<task_id>/stream', methods=['GET'])
 def stream_task(task_id):
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None

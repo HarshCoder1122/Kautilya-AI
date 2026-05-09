@@ -16,7 +16,7 @@ from services.artifact_service import create_artifact
 artifact_bp = Blueprint('artifact', __name__)
 
 
-@artifact_bp.route('/api/artifact/create', methods=['POST'])
+@artifact_bp.route('/artifact/create', methods=['POST'])
 def api_create_artifact():
     try:
         data = request.get_json(silent=True) or {}
@@ -39,7 +39,7 @@ def api_create_artifact():
         return jsonify({"error": str(e)}), 500
 
 
-@artifact_bp.route('/api/artifact/types', methods=['GET'])
+@artifact_bp.route('/artifact/types', methods=['GET'])
 def api_artifact_types():
     """List supported artifact types — used by the UI's slash-command menu."""
     return jsonify({

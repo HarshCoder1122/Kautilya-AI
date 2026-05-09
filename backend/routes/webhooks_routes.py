@@ -139,7 +139,7 @@ def create_room_fire_and_forget(room_name, agent_id):
             print(f"[Bridge] ❌ Error: {e}")
     threading.Thread(target=_task, daemon=True).start()
 
-@webhooks_bp.route('/api/webhooks/vobiz/answer/<agent_id>', methods=['POST', 'GET'])
+@webhooks_bp.route('/webhooks/vobiz/answer/<agent_id>', methods=['POST', 'GET'])
 def vobiz_answer(agent_id):
     print(f"[Vobiz] Incoming: {dict(request.values)}")
 
@@ -244,7 +244,7 @@ def vobiz_answer(agent_id):
     print(f"[Vobiz] Returning XML with SIP URI: {sip_uri} {log_suffix}")
     return Response(xml, mimetype='text/xml')
 
-@webhooks_bp.route('/api/webhooks/exotel/answer/<agent_id>', methods=['POST', 'GET'])
+@webhooks_bp.route('/webhooks/exotel/answer/<agent_id>', methods=['POST', 'GET'])
 def exotel_answer(agent_id):
     caller_id = request.values.get('From', '')
     from_number = caller_id.strip().lstrip('+') or 'caller'
@@ -258,11 +258,11 @@ def exotel_answer(agent_id):
 </Response>"""
     return Response(xml, mimetype='text/xml')
 
-@webhooks_bp.route('/api/webhooks/vobiz/events', methods=['POST'])
-@webhooks_bp.route('/api/webhooks/exotel/events', methods=['POST'])
+@webhooks_bp.route('/webhooks/vobiz/events', methods=['POST'])
+@webhooks_bp.route('/webhooks/exotel/events', methods=['POST'])
 def telephony_events(): return "OK", 200
 
-@webhooks_bp.route('/api/webhooks/livekit', methods=['POST'])
+@webhooks_bp.route('/webhooks/livekit', methods=['POST'])
 def livekit_webhook(): return "OK", 200
 
 def _process_post_call(agent_id, payload, call_uuid):

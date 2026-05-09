@@ -34,7 +34,7 @@ def embed_js():
 
 
 # ---------- agent-side: generate embed token ----------
-@embed_bp.route('/api/agents/<agent_id>/embed-token', methods=['POST'])
+@embed_bp.route('/agents/<agent_id>/embed-token', methods=['POST'])
 def rotate_embed_token(agent_id):
     from extensions import db
     from firebase_admin import firestore
@@ -229,7 +229,7 @@ def public_lead_capture(agent_id):
 
 
 # ---------- authenticated lead management ----------
-@embed_bp.route('/api/leads', methods=['GET'])
+@embed_bp.route('/leads', methods=['GET'])
 def api_leads_list():
     from extensions import db
     from firebase_admin import firestore
@@ -256,7 +256,7 @@ def api_leads_list():
         return jsonify({"error": str(e)}), 500
 
 
-@embed_bp.route('/api/leads/<lead_id>', methods=['PATCH'])
+@embed_bp.route('/leads/<lead_id>', methods=['PATCH'])
 def api_leads_update(lead_id):
     from extensions import db
     td = verify_firebase_token()
@@ -276,7 +276,7 @@ def api_leads_update(lead_id):
     return jsonify({"status": "ok"})
 
 
-@embed_bp.route('/api/leads/<lead_id>', methods=['DELETE'])
+@embed_bp.route('/leads/<lead_id>', methods=['DELETE'])
 def api_leads_delete(lead_id):
     from extensions import db
     td = verify_firebase_token()

@@ -14,7 +14,7 @@ code_bp = Blueprint('code', __name__)
 MAX_CODE_LEN = 50_000
 
 
-@code_bp.route('/api/code/run', methods=['POST'])
+@code_bp.route('/code/run', methods=['POST'])
 def api_code_run():
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None

@@ -101,7 +101,7 @@ def save_to_firestore(uid, session_id, role, content):
         print(f"[History] Save failed: {e}")
 
 
-@chat_bp.route('/api/jarvis/stream', methods=['POST'])
+@chat_bp.route('/jarvis/stream', methods=['POST'])
 def jarvis_stream():
     """Main streaming chat endpoint."""
     from extensions import limit_manager, vector_store, db
@@ -295,19 +295,19 @@ def jarvis_stream():
         'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'
     })
 
-@chat_bp.route('/api/jarvis/command', methods=['POST'])
+@chat_bp.route('/jarvis/command', methods=['POST'])
 def jarvis_command():
     """Wrapper for jarvis_stream to support the dashboard's /command endpoint."""
     return jarvis_stream()
 
 
-@chat_bp.route('/api/jarvis/prewarm', methods=['POST'])
+@chat_bp.route('/jarvis/prewarm', methods=['POST'])
 def jarvis_prewarm():
     """Pre-warm endpoint to initialize conversation state."""
     return jsonify({"status": "ok", "message": "Kautilya Brain pre-warmed."})
 
 
-@chat_bp.route('/api/chat', methods=['POST'])
+@chat_bp.route('/chat', methods=['POST'])
 def chat_legacy():
     """Legacy non-streaming chat endpoint."""
     from extensions import limit_manager
@@ -335,7 +335,7 @@ def chat_legacy():
         return jsonify({"status": "error", "response": f"Internal error: {str(e)}"}), 500
 
 
-@chat_bp.route('/api/jarvis/history', methods=['GET'])
+@chat_bp.route('/jarvis/history', methods=['GET'])
 def get_all_history():
     from extensions import db
     from firebase_admin import firestore
@@ -362,7 +362,7 @@ def get_all_history():
         return jsonify({"error": str(e)}), 500
 
 
-@chat_bp.route('/api/jarvis/history/<session_id>', methods=['GET'])
+@chat_bp.route('/jarvis/history/<session_id>', methods=['GET'])
 def get_chat_history(session_id):
     from extensions import db
     token_data = verify_firebase_token()
@@ -390,7 +390,7 @@ def get_chat_history(session_id):
         return jsonify({"error": str(e)}), 500
 
 
-@chat_bp.route('/api/jarvis/history/<session_id>', methods=['DELETE'])
+@chat_bp.route('/jarvis/history/<session_id>', methods=['DELETE'])
 def delete_chat_history(session_id):
     from extensions import db
     token_data = verify_firebase_token()
@@ -413,7 +413,7 @@ def delete_chat_history(session_id):
         return jsonify({"error": str(e)}), 500
 
 
-@chat_bp.route('/api/jarvis/status', methods=['GET'])
+@chat_bp.route('/jarvis/status', methods=['GET'])
 def get_user_status():
     from extensions import limit_manager
     from config import _MESSAGE_RATE_LIMITS
@@ -443,7 +443,7 @@ def get_user_status():
     })
 
 
-@chat_bp.route('/api/jarvis/make_pro', methods=['POST'])
+@chat_bp.route('/jarvis/make_pro', methods=['POST'])
 def remote_make_pro():
     from extensions import limit_manager
     admin_key = os.environ.get("ADMIN_SECRET_KEY")
@@ -462,7 +462,7 @@ def remote_make_pro():
         return jsonify({"error": str(e)}), 500
 
 
-@chat_bp.route('/api/chat/history', methods=['GET'])
+@chat_bp.route('/chat/history', methods=['GET'])
 def chat_history_legacy():
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
@@ -480,7 +480,7 @@ def chat_history_legacy():
     return jsonify({"chats": {}})
 
 
-@chat_bp.route('/api/chat/save', methods=['POST'])
+@chat_bp.route('/chat/save', methods=['POST'])
 def chat_save():
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
@@ -505,7 +505,7 @@ def chat_save():
     return jsonify({"status": "ok", "saved": len(incoming_chats)})
 
 
-@chat_bp.route('/api/chat/delete', methods=['DELETE'])
+@chat_bp.route('/chat/delete', methods=['DELETE'])
 def chat_delete():
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None

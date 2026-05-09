@@ -15,7 +15,7 @@ from services.memory_service import process_uploaded_file, generate_semantic_chu
 agents_bp = Blueprint('agents', __name__)
 
 
-@agents_bp.route('/api/agents/create', methods=['POST'])
+@agents_bp.route('/agents/create', methods=['POST'])
 def api_agent_create():
     from extensions import db, limit_manager
     from firebase_admin import firestore
@@ -83,7 +83,7 @@ def api_agent_create():
     return jsonify({"agent_id": agent_id, "name": name, "message": "Agent created successfully"})
 
 
-@agents_bp.route('/api/agents/list', methods=['GET'])
+@agents_bp.route('/agents/list', methods=['GET'])
 def api_agent_list():
     from extensions import db, limit_manager
     from firebase_admin import firestore
@@ -130,21 +130,21 @@ def api_agent_list():
         return jsonify({"error": str(e)}), 500
 
 
-@agents_bp.route('/api/agents/<agent_id>/update', methods=['POST'])
+@agents_bp.route('/agents/<agent_id>/update', methods=['POST'])
 def api_agent_update_alias(agent_id):
     """Dashboard-compat alias for PUT /api/agents/<id>."""
     request.environ['REQUEST_METHOD'] = 'PUT'
     return api_agent_detail(agent_id)
 
 
-@agents_bp.route('/api/agents/<agent_id>/delete', methods=['POST'])
+@agents_bp.route('/agents/<agent_id>/delete', methods=['POST'])
 def api_agent_delete_alias(agent_id):
     """Dashboard-compat alias for DELETE /api/agents/<id>."""
     request.environ['REQUEST_METHOD'] = 'DELETE'
     return api_agent_delete(agent_id)
 
 
-@agents_bp.route('/api/agents/<agent_id>', methods=['GET', 'PUT'])
+@agents_bp.route('/agents/<agent_id>', methods=['GET', 'PUT'])
 def api_agent_detail(agent_id):
     from extensions import db
     from firebase_admin import firestore
@@ -199,7 +199,7 @@ def api_agent_detail(agent_id):
         return jsonify({"error": str(e)}), 500
 
 
-@agents_bp.route('/api/agents/<agent_id>', methods=['DELETE'])
+@agents_bp.route('/agents/<agent_id>', methods=['DELETE'])
 def api_agent_delete(agent_id):
     from extensions import db
     token_data = verify_firebase_token()
@@ -215,7 +215,7 @@ def api_agent_delete(agent_id):
         return jsonify({"error": str(e)}), 500
 
 
-@agents_bp.route('/api/agents/<agent_id>/logs', methods=['GET', 'POST'])
+@agents_bp.route('/agents/<agent_id>/logs', methods=['GET', 'POST'])
 def api_agent_logs(agent_id):
     from extensions import db
     from firebase_admin import firestore
@@ -257,7 +257,7 @@ def api_agent_logs(agent_id):
         return jsonify({"error": str(e)}), 500
 
 
-@agents_bp.route('/api/agents/<agent_id>/livekit-token', methods=['POST'])
+@agents_bp.route('/agents/<agent_id>/livekit-token', methods=['POST'])
 def generate_external_livekit_token(agent_id):
     """External API endpoint to generate a LiveKit token using an API key."""
     import os
@@ -330,7 +330,7 @@ def generate_external_livekit_token(agent_id):
     })
 
 
-@agents_bp.route('/api/agents/<agent_id>/kb', methods=['GET', 'POST'])
+@agents_bp.route('/agents/<agent_id>/kb', methods=['GET', 'POST'])
 def api_agent_kb(agent_id):
     from extensions import db
     from firebase_admin import firestore
@@ -368,7 +368,7 @@ def api_agent_kb(agent_id):
         return jsonify({"error": str(e)}), 500
 
 
-@agents_bp.route('/api/agents/<agent_id>/kb-url', methods=['POST'])
+@agents_bp.route('/agents/<agent_id>/kb-url', methods=['POST'])
 def api_agent_kb_url(agent_id):
     from extensions import db
     from firebase_admin import firestore
@@ -396,7 +396,7 @@ def api_agent_kb_url(agent_id):
         return jsonify({"error": str(e)}), 500
 
 
-@agents_bp.route('/api/agents/<agent_id>/kb/<file_id>/content', methods=['GET'])
+@agents_bp.route('/agents/<agent_id>/kb/<file_id>/content', methods=['GET'])
 def api_agent_kb_content(agent_id, file_id):
     from extensions import db
     token_data = verify_firebase_token()
@@ -412,7 +412,7 @@ def api_agent_kb_content(agent_id, file_id):
         return jsonify({"error": str(e)}), 500
 
 
-@agents_bp.route('/api/agents/<agent_id>/chat', methods=['POST'])
+@agents_bp.route('/agents/<agent_id>/chat', methods=['POST'])
 def api_agent_chat(agent_id):
     """Streaming chat with a configured agent.
 
@@ -581,7 +581,7 @@ def api_agent_chat(agent_id):
     })
 
 
-@agents_bp.route('/api/agents/<agent_id>/kb/<file_id>', methods=['DELETE'])
+@agents_bp.route('/agents/<agent_id>/kb/<file_id>', methods=['DELETE'])
 def api_agent_kb_delete(agent_id, file_id):
     from extensions import db
     from firebase_admin import firestore

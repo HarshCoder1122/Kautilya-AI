@@ -54,7 +54,7 @@ def health_check_simple():
     return "OK", 200
 
 
-@static_bp.route('/api/health', methods=['GET'])
+@static_bp.route('/health', methods=['GET'])
 def health_check():
     """Detailed health check endpoint for Render (JSON)."""
     from config import GROQ_API_KEYS
@@ -65,7 +65,7 @@ def health_check():
     })
 
 
-@static_bp.route('/api/analytics/trends', methods=['GET'])
+@static_bp.route('/analytics/trends', methods=['GET'])
 def api_analytics_trends():
     """Return real sentiment and lead status trends for the dashboard."""
     from extensions import db

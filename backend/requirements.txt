@@ -31,3 +31,4 @@ razorpay
 flask-cors
 openai
 flask-compress
+googlesearch-python

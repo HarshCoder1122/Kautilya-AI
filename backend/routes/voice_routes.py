@@ -17,7 +17,7 @@ from services.auth_service import verify_firebase_token, record_usage
 voice_bp = Blueprint('voice', __name__)
 
 
-@voice_bp.route('/api/voice/transcribe', methods=['POST'])
+@voice_bp.route('/voice/transcribe', methods=['POST'])
 def voice_transcribe():
     if 'audio' not in request.files:
         return jsonify({"error": "No audio file provided"}), 400
@@ -67,7 +67,7 @@ def voice_transcribe():
         return jsonify({"error": str(e)}), 500
 
 
-@voice_bp.route('/api/voice/speak', methods=['POST'])
+@voice_bp.route('/voice/speak', methods=['POST'])
 def voice_speak():
     data = request.get_json()
     text = data.get("text", "").strip()
@@ -108,7 +108,7 @@ def voice_speak():
         return jsonify({"error": str(e)}), 500
 
 
-@voice_bp.route('/api/livekit/token', methods=['POST', 'GET'])
+@voice_bp.route('/livekit/token', methods=['POST', 'GET'])
 def generate_livekit_token():
     """Generates a token for the LiveKit agent voice streaming connection."""
     import os
@@ -165,7 +165,7 @@ def generate_livekit_token():
     })
 
 
-@voice_bp.route('/api/v1/audio/voices', methods=['GET'])
+@voice_bp.route('/v1/audio/voices', methods=['GET'])
 def api_v1_voices():
     """Returns a list of available TTS voices (cached)."""
     from flask import current_app
@@ -180,7 +180,7 @@ def api_v1_voices():
     return jsonify({"voices": current_app.edge_voices_cache})
 
 
-@voice_bp.route('/api/voice/preview', methods=['POST'])
+@voice_bp.route('/voice/preview', methods=['POST'])
 def voice_preview():
     """Generate a short TTS preview audio clip for a specific voice and provider."""
     data = request.get_json() or {}

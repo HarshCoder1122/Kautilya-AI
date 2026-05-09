@@ -9,7 +9,7 @@ from services.auth_service import verify_firebase_token
 campaigns_bp = Blueprint('campaigns', __name__)
 
 
-@campaigns_bp.route('/api/campaigns', methods=['GET'])
+@campaigns_bp.route('/campaigns', methods=['GET'])
 def api_campaigns_get():
     from extensions import db
     from firebase_admin import firestore
@@ -34,7 +34,7 @@ def api_campaigns_get():
         return jsonify({"error": str(e)}), 500
 
 
-@campaigns_bp.route('/api/campaigns/create', methods=['POST'])
+@campaigns_bp.route('/campaigns/create', methods=['POST'])
 def api_campaigns_create():
     from extensions import db
     from firebase_admin import firestore
@@ -62,8 +62,8 @@ def api_campaigns_create():
         return jsonify({"error": str(e)}), 500
 
 
-@campaigns_bp.route('/api/campaigns/<camp_id>/start', methods=['POST'])
-@campaigns_bp.route('/api/campaigns/<camp_id>/resume', methods=['POST'])
+@campaigns_bp.route('/campaigns/<camp_id>/start', methods=['POST'])
+@campaigns_bp.route('/campaigns/<camp_id>/resume', methods=['POST'])
 def api_campaigns_start(camp_id):
     from extensions import db
     token_data = verify_firebase_token()
@@ -78,8 +78,8 @@ def api_campaigns_start(camp_id):
         return jsonify({"error": str(e)}), 500
 
 
-@campaigns_bp.route('/api/campaigns/<camp_id>/stop', methods=['POST'])
-@campaigns_bp.route('/api/campaigns/<camp_id>/pause', methods=['POST'])
+@campaigns_bp.route('/campaigns/<camp_id>/stop', methods=['POST'])
+@campaigns_bp.route('/campaigns/<camp_id>/pause', methods=['POST'])
 def api_campaigns_stop(camp_id):
     from extensions import db
     token_data = verify_firebase_token()
@@ -94,7 +94,7 @@ def api_campaigns_stop(camp_id):
         return jsonify({"error": str(e)}), 500
 
 
-@campaigns_bp.route('/api/campaigns/<camp_id>', methods=['DELETE'])
+@campaigns_bp.route('/campaigns/<camp_id>', methods=['DELETE'])
 def api_campaigns_delete(camp_id):
     from extensions import db
     token_data = verify_firebase_token()
@@ -109,7 +109,7 @@ def api_campaigns_delete(camp_id):
         return jsonify({"error": str(e)}), 500
 
 
-@campaigns_bp.route('/api/campaigns/upload', methods=['POST'])
+@campaigns_bp.route('/campaigns/upload', methods=['POST'])
 def api_campaigns_upload():
     """Upload a CSV/Excel file, parse phone numbers, and create a campaign."""
     from extensions import db
@@ -176,7 +176,7 @@ def api_campaigns_upload():
         return jsonify({"error": f"Failed to process file: {str(e)}"}), 500
 
 
-@campaigns_bp.route('/api/campaigns/<camp_id>/status', methods=['GET'])
+@campaigns_bp.route('/campaigns/<camp_id>/status', methods=['GET'])
 def api_campaigns_status(camp_id):
     """Get the live status and dial results of a specific campaign."""
     from extensions import db

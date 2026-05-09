@@ -10,7 +10,7 @@ from services.memory_service import record_user_session
 user_bp = Blueprint('user', __name__)
 
 
-@user_bp.route('/api/user/settings', methods=['GET'])
+@user_bp.route('/user/settings', methods=['GET'])
 def get_user_settings():
     from extensions import db
     token_data = verify_firebase_token()
@@ -24,7 +24,7 @@ def get_user_settings():
         return jsonify({"error": str(e)}), 500
 
 
-@user_bp.route('/api/user/settings', methods=['POST'])
+@user_bp.route('/user/settings', methods=['POST'])
 def save_user_settings():
     from extensions import db
     from firebase_admin import firestore
@@ -51,7 +51,7 @@ def save_user_settings():
         return jsonify({"error": str(e)}), 500
 
 
-@user_bp.route('/api/user/integrations', methods=['GET'])
+@user_bp.route('/user/integrations', methods=['GET'])
 def get_user_integrations():
     from extensions import db
     token_data = verify_firebase_token()
@@ -64,7 +64,7 @@ def get_user_integrations():
         return jsonify({"error": str(e)}), 500
 
 
-@user_bp.route('/api/user/integrations', methods=['POST'])
+@user_bp.route('/user/integrations', methods=['POST'])
 def save_user_integrations():
     from extensions import db
     from firebase_admin import firestore
@@ -88,7 +88,7 @@ def save_user_integrations():
         return jsonify({"error": str(e)}), 500
 
 
-@user_bp.route('/api/user/account', methods=['GET'])
+@user_bp.route('/user/account', methods=['GET'])
 def get_user_account():
     from extensions import db
     from firebase_admin import firestore
@@ -130,7 +130,7 @@ def get_user_account():
     return jsonify(account_info)
 
 
-@user_bp.route('/api/user/api-key', methods=['POST'])
+@user_bp.route('/user/api-key', methods=['POST'])
 def generate_api_key():
     """Generate a new API key for external API access."""
     import secrets
@@ -163,7 +163,7 @@ def generate_api_key():
         return jsonify({"error": str(e)}), 500
 
 
-@user_bp.route('/api/memory/clear', methods=['POST'])
+@user_bp.route('/memory/clear', methods=['POST'])
 def clear_user_memory():
     """Clear all user memories from Firestore."""
     from extensions import db
@@ -194,7 +194,7 @@ def clear_user_memory():
         return jsonify({"error": str(e)}), 500
 
 
-@user_bp.route('/api/user/profile', methods=['GET', 'POST'])
+@user_bp.route('/user/profile', methods=['GET', 'POST'])
 def user_profile():
     """Get or save user profile (display name, preferences)."""
     from extensions import db
@@ -231,14 +231,14 @@ def user_profile():
         return jsonify({"error": str(e)}), 500
 
 
-@user_bp.route('/api/user/profile', methods=['PUT'])
+@user_bp.route('/user/profile', methods=['PUT'])
 def user_profile_put():
     """Alias for POST /api/user/profile to support common REST clients."""
     return user_profile()
 
 
 
-@user_bp.route('/api/analytics/usage', methods=['GET'])
+@user_bp.route('/analytics/usage', methods=['GET'])
 def get_usage_analytics():
     """Return full usage analytics for the dashboard (daily, hourly, models,
     current_usage, limits, tier, recent_activity)."""
@@ -400,7 +400,7 @@ def get_usage_analytics():
     return jsonify(response)
 
 
-@user_bp.route('/api/analytics/trends', methods=['GET'])
+@user_bp.route('/analytics/trends', methods=['GET'])
 def get_analytics_trends():
     """Return trend analysis for the BI dashboard."""
     from datetime import datetime, timedelta
@@ -425,7 +425,7 @@ def get_analytics_trends():
     })
 
 
-@user_bp.route('/api/analytics/call-volume', methods=['GET'])
+@user_bp.route('/analytics/call-volume', methods=['GET'])
 def get_call_volume():
     """Aggregate real call volume from agent_logs for the overview chart.
     Query params: range=12h|7d|30d (default 12h)
