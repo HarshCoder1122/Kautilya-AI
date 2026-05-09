@@ -139,9 +139,9 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     # Model display names for UI status
     # NVIDIA NIM model IDs - verified available on https://build.nvidia.com
     _MODEL_LABELS = {
-        'coder': ('DeepSeek V4 Pro', 'deepseek-ai/deepseek-v4-pro'),
-        'pro':   ('Nemotron-3 Super 120B', 'nvidia/nemotron-3-super-120b-a12b'),
-        'daily': ('Llama 3.3 70B', 'llama-3.3-70b-versatile'),
+        'coder': ('Kautilya Coder', 'deepseek-ai/deepseek-v4-pro'),
+        'pro':   ('Kautilya Pro', 'nvidia/nemotron-3-super-120b-a12b'),
+        'daily': ('Kautilya Daily', 'llama-3.3-70b-versatile'),
     }
 
     for turn in range(MAX_TURNS):
@@ -162,21 +162,21 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             from config import NVIDIA_API_KEY
             label, model_id = _MODEL_LABELS['coder']
             if not NVIDIA_API_KEY:
-                yield json.dumps({"type": "status", "message": f"⚡ {label} requires NVIDIA API key — using fast model…"})
+                yield json.dumps({"event": "status", "message": f"⚡ {label} requires NVIDIA API key — using fast model…"})
                 response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
                                          model='llama-3.3-70b-versatile', temperature=0.6)
             else:
-                yield json.dumps({"type": "status", "message": f"🧠 Connecting to {label}…"})
+                yield json.dumps({"event": "status", "message": f"🧠 Connecting to {label}…"})
                 response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
                                            model=model_id, tools=tools, tool_choice=tool_choice,
                                            temperature=1.0, top_p=0.95, max_thinking=max_thinking)
                 if not response_gen:
                     # Retry once
-                    yield json.dumps({"type": "status", "message": f"⚡ Retrying {label}…"})
+                    yield json.dumps({"event": "status", "message": f"⚡ Retrying {label}…"})
                     response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
                                                model=model_id, temperature=1.0, top_p=0.95, max_thinking=max_thinking)
                 if not response_gen:
-                    yield json.dumps({"type": "status", "message": f"⚡ {label} unavailable — using fast model…"})
+                    yield json.dumps({"event": "status", "message": f"⚡ {label} unavailable — using fast model…"})
                     response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
                                              model='llama-3.3-70b-versatile', temperature=0.6)
 
@@ -185,7 +185,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             from config import NVIDIA_API_KEY
             label, model_id = _MODEL_LABELS['pro']
             if not NVIDIA_API_KEY:
-                yield json.dumps({"type": "status", "message": f"⚡ {label} requires NVIDIA API key — using fast model…"})
+                yield json.dumps({"event": "status", "message": f"⚡ {label} requires NVIDIA API key — using fast model…"})
                 response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
                                          model='llama-3.3-70b-versatile', temperature=0.6)
             else:
@@ -219,16 +219,16 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
 
         # Final fallback: try anything
         if not response_gen:
-            yield json.dumps({"type": "status", "message": "🔄 Trying backup service…"})
+            yield json.dumps({"event": "status", "message": "🔄 Trying backup service…"})
             response_gen = call_nvidia(current_messages, max_tokens=max_tokens)
 
         if not response_gen:
-            yield json.dumps({"type": "status", "message": None})
+            yield json.dumps({"event": "status", "message": None})
             yield "⚠️ All AI services are currently at capacity. Please try again in a moment."
             return
 
         # Clear status once streaming starts
-        yield json.dumps({"type": "status", "message": None})
+        yield json.dumps({"event": "status", "message": None})
 
         accumulated_response = ""
         in_thinking_tag = False

@@ -224,7 +224,7 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                                 continue
 
                             content = delta.get("content")
-                            if content:
+                            if content is not None:
                                 if thinking_active:
                                     # Reasoning is over — let the UI collapse the
                                     # thinking bubble before content tokens start.
