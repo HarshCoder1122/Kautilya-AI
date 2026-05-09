@@ -13,7 +13,7 @@ from services.telephony_dialer import dial_outbound, load_provider_config
 telephony_bp = Blueprint('telephony', __name__)
 
 
-@telephony_bp.route('/api/telephony/config', methods=['GET'])
+@telephony_bp.route('/telephony/config', methods=['GET'])
 def api_telephony_config():
     from extensions import db
     token_data = verify_firebase_token()
@@ -43,7 +43,7 @@ def api_telephony_config():
         return jsonify({"error": str(e)}), 500
 
 
-@telephony_bp.route('/api/telephony/save', methods=['POST'])
+@telephony_bp.route('/telephony/save', methods=['POST'])
 def api_telephony_save():
     from extensions import db
     from firebase_admin import firestore

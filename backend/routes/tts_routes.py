@@ -4,13 +4,13 @@ Handles /api/tts/* endpoints for Text-to-Speech synthesis.
 """
 import os
 import requests
-from flask import Blueprint, request, send_file
+from flask import Blueprint, request, send_file, jsonify
 from flask_cors import cross_origin
 
 tts_bp = Blueprint('tts', __name__)
 
 
-@tts_bp.route('/api/tts/revealiq/synthesize', methods=['POST', 'OPTIONS'])
+@tts_bp.route('/tts/revealiq/synthesize', methods=['POST', 'OPTIONS'])
 @cross_origin()
 def reveal_iq_synthesize():
     """Synthesize speech using RevealIQ (Kokoro-82M) engine."""
@@ -20,7 +20,9 @@ def reveal_iq_synthesize():
     try:
         data = request.get_json()
         text = data.get('text', '')
-        model = data.get('model', 'kokoro-en')
+        # Standardize model names for Kokoro engine
+        raw_model = data.get('model', 'kokoro-en')
+        model = 'kokoro' if 'kokoro' in raw_model.lower() else raw_model
         voice = data.get('voice', 'af_heart')
         speed = data.get('speed', 1.0)
         
@@ -61,7 +63,7 @@ def reveal_iq_synthesize():
         return jsonify({"error": str(e)}), 500
 
 
-@tts_bp.route('/api/tts/cartesia/synthesize', methods=['POST', 'OPTIONS'])
+@tts_bp.route('/tts/cartesia/synthesize', methods=['POST', 'OPTIONS'])
 @cross_origin()
 def cartesia_synthesize():
     """Synthesize speech using Cartesia TTS."""
@@ -111,7 +113,7 @@ def cartesia_synthesize():
         return jsonify({"error": str(e)}), 500
 
 
-@tts_bp.route('/api/tts/elevenlabs/synthesize', methods=['POST', 'OPTIONS'])
+@tts_bp.route('/tts/elevenlabs/synthesize', methods=['POST', 'OPTIONS'])
 @cross_origin()
 def elevenlabs_synthesize():
     """Synthesize speech using ElevenLabs TTS."""
@@ -161,7 +163,7 @@ def elevenlabs_synthesize():
         return jsonify({"error": str(e)}), 500
 
 
-@tts_bp.route('/api/tts/sarvam/synthesize', methods=['POST', 'OPTIONS'])
+@tts_bp.route('/tts/sarvam/synthesize', methods=['POST', 'OPTIONS'])
 @cross_origin()
 def sarvam_synthesize():
     """Synthesize speech using Sarvam AI TTS."""

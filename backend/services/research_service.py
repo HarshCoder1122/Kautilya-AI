@@ -30,7 +30,7 @@ from services.llm_service import call_groq, call_nvidia
 
 MAX_SOURCES = 6
 FETCH_TIMEOUT = 6
-MAX_DOC_CHARS = 5000
+MAX_DOC_CHARS = 2000
 
 
 def _expand_queries(question: str) -> List[str]:
@@ -232,7 +232,7 @@ def deep_research_stream(question: str) -> Iterator[Dict[str, Any]]:
     try:
         # Primary: NVIDIA Nemotron-3-Super-120B for deep research synthesis
         gen = call_nvidia(messages, stream=True, max_tokens=4096,
-                          model="nvidia/nemotron-3-super-120b-a12b",
+                          model="nvidia/llama-3.1-405b-instruct",
                           temperature=0.3, expose_thinking=False)
         if gen is None:
             # Fallback to Groq only if NVIDIA unavailable

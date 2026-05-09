@@ -181,18 +181,6 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
             payload["tools"] = tools
         if tool_choice:
             payload["tool_choice"] = tool_choice
-        model_lower = model.lower()
-        # Nemotron uses `enable_thinking`; DeepSeek-v4 uses `thinking`.
-        if "nemotron" in model_lower:
-            payload["chat_template_kwargs"] = {"enable_thinking": bool(max_thinking)}
-            if max_thinking:
-                payload["reasoning_budget"] = reasoning_budget or 16384
-            else:
-                payload["reasoning_budget"] = reasoning_budget or 1024
-        elif "deepseek" in model_lower:
-            payload["chat_template_kwargs"] = {"thinking": bool(max_thinking)}
-            if max_thinking and reasoning_budget:
-                payload["reasoning_budget"] = reasoning_budget
         resp = requests.post(
             "https://integrate.api.nvidia.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {NVIDIA_API_KEY}",
@@ -201,6 +189,7 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
             json=payload, timeout=600, stream=stream
         )
         if resp.status_code == 200:
+            print(f"[NVIDIA] Success (model: {model})")
             if stream:
                 def generate():
                     try:
@@ -317,7 +306,10 @@ def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False,
                 json=payload, timeout=120, stream=stream
             )
             if resp.status_code == 200:
-                print(f"[Groq] Success with {key_label} (model: {model})")
+                # Distinguish between classifier and regular calls
+                is_classifier = max_tokens <= 20 and stream is False
+                tag = "[Classifier]" if is_classifier else "[Groq]"
+                print(f"{tag} Success with {key_label} (model: {model})")
                 if not stream:
                     msg = resp.json()["choices"][0]["message"]
                     if tools:

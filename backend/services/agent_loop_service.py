@@ -189,23 +189,24 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
                                          model='llama-3.3-70b-versatile', temperature=0.6)
             else:
-                yield json.dumps({"type": "status", "message": f"💎 Connecting to {label}…"})
+                yield json.dumps({"event": "status", "message": f"💎 Connecting to {label}…"})
                 response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
                                            model=model_id, tools=tools, tool_choice=tool_choice,
                                            temperature=1.0, top_p=0.95, max_thinking=max_thinking,
                                            reasoning_budget=16384 if max_thinking else 1024)
                 if not response_gen:
-                    yield json.dumps({"type": "status", "message": f"⚡ Retrying {label}…"})
+                    yield json.dumps({"event": "status", "message": f"⚡ Retrying {label}…"})
                     response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
                                                model=model_id, temperature=1.0, top_p=0.95, max_thinking=max_thinking)
                 if not response_gen:
-                    yield json.dumps({"type": "status", "message": f"⚡ {label} unavailable — using fast model…"})
+                    yield json.dumps({"event": "status", "message": f"⚡ {label} unavailable — using fast model…"})
+                    print(f"[FALLBACK] {label} failed/unavailable. Switching to Groq.")
                     response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
                                              model='llama-3.3-70b-versatile', temperature=0.6)
 
         elif has_image:
             # Vision model
-            yield json.dumps({"type": "status", "message": "👁️ Analyzing image…"})
+            yield json.dumps({"event": "status", "message": "👁️ Analyzing image…"})
             response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
                                      model='llama-3.2-11b-vision-preview', temperature=0.6)
             if not response_gen:
@@ -293,9 +294,41 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             yield json.dumps({"chunk": f"\n[Stream interrupted: {e}]"})
             return
 
-        if not accumulated_response:
-            yield json.dumps({"chunk": "I apologize, but I couldn't generate a response. Please try again."})
-        return
+        # --- Agentic Action Parsing ---
+        # Look for [SEARCH: query] or [CALCULATE: expr]
+        action_found = False
+        
+        # 1. Search Action
+        search_match = re.search(r'\[SEARCH:\s*(.*?)\]', accumulated_response)
+        if search_match:
+            query = search_match.group(1).strip()
+            yield json.dumps({"event": "query", "queries": [query]})
+            
+            from services.research_service import _gather_sources
+            try:
+                sources = _gather_sources([query])
+                if sources:
+                    obs_text = "SEARCH RESULTS:\n"
+                    for i, s in enumerate(sources[:3], 1):
+                        obs_text += f"[{i}] {s['title']} ({s['url']}): {s['snippet']}\n"
+                    
+                    current_messages.append({"role": "assistant", "content": accumulated_response})
+                    current_messages.append({"role": "user", "content": f"OBSERVATION: {obs_text}\n\nPlease provide a final comprehensive answer based on these findings."})
+                    action_found = True
+                else:
+                    current_messages.append({"role": "assistant", "content": accumulated_response})
+                    current_messages.append({"role": "user", "content": "OBSERVATION: No relevant search results found. Please answer based on your internal knowledge or admit if unknown."})
+                    action_found = True
+            except Exception as e:
+                print(f"[Agent] Search failed: {e}")
+                current_messages.append({"role": "assistant", "content": accumulated_response})
+                current_messages.append({"role": "user", "content": f"OBSERVATION: Search service error: {e}"})
+                action_found = True
+
+        # If an action was performed, we continue to the next turn.
+        # Otherwise, we are done.
+        if not action_found:
+            return
 
 
 def _estimate_tokens(user_msg, mode):

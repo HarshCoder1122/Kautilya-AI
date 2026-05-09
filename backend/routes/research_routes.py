@@ -17,7 +17,7 @@ from services.research_service import deep_research_stream
 research_bp = Blueprint('research', __name__)
 
 
-@research_bp.route('/api/research/stream', methods=['POST'])
+@research_bp.route('/research/stream', methods=['POST'])
 def api_research_stream():
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None

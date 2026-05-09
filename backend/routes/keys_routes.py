@@ -10,7 +10,7 @@ from services.auth_service import verify_firebase_token, generate_api_key, hash_
 keys_bp = Blueprint('keys', __name__)
 
 
-@keys_bp.route('/api/keys/create', methods=['POST'])
+@keys_bp.route('/keys/create', methods=['POST'])
 def api_key_create():
     from extensions import db
     from firebase_admin import firestore
@@ -45,7 +45,7 @@ def api_key_create():
     return jsonify({"key": raw_key, "key_id": key_hash[:16], "name": key_name, "message": "API key created!"})
 
 
-@keys_bp.route('/api/keys/list', methods=['GET'])
+@keys_bp.route('/keys/list', methods=['GET'])
 def api_key_list():
     from extensions import db, limit_manager
     from firebase_admin import firestore
@@ -82,7 +82,7 @@ def api_key_list():
         return jsonify({"error": str(e)}), 500
 
 
-@keys_bp.route('/api/keys/revoke', methods=['POST'])
+@keys_bp.route('/keys/revoke', methods=['POST'])
 def api_key_revoke():
     from extensions import db
     token_data = verify_firebase_token()

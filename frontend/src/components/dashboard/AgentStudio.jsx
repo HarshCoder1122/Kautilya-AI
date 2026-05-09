@@ -128,6 +128,10 @@ export default function AgentStudio() {
       {/* Agent Edit/Detail Dialog */}
       <Dialog open={!!selectedAgent} onOpenChange={(open) => { if (!open) setSelectedAgent(null); }}>
         <DialogContent className="sm:max-w-[750px] max-h-[90vh] p-0 overflow-hidden bg-[var(--k-surface)] border-[var(--k-border)] shadow-2xl">
+          <DialogHeader className="sr-only">
+            <DialogTitle>Agent Details</DialogTitle>
+            <DialogDescription>View and manage agent settings and performance.</DialogDescription>
+          </DialogHeader>
           {selectedAgent && (
             <AgentDetail 
               agent={selectedAgent} 
@@ -256,13 +260,29 @@ function AgentDetail({ agent, onClose, onUpdate }) {
   const handleVoicePreview = async () => {
     try {
       setIsPreviewing(true);
-      const audioBlob = await agentsAPI.previewVoice({
-        voice: editedAgent.voice || 'shubh',
-        provider: editedAgent.tts_provider || 'sarvam',
-        text: editedAgent.welcome_message || 'Namaste! This is a preview of how my voice will sound on the call.',
-      });
+      let audioBlob;
+      if (editedAgent.voice?.startsWith('revealiq:')) {
+        const voiceId = editedAgent.voice.split(':')[1];
+        const isHindi = voiceId.startsWith('hf_');
+        audioBlob = await ttsAPI.revealIQ.synthesize(
+          editedAgent.welcome_message || 'Namaste! This is a preview.',
+          isHindi ? 'kokoro-hi' : 'kokoro-en',
+          voiceId
+        );
+      } else {
+        audioBlob = await ttsAPI.previewVoice({
+          voice: editedAgent.voice || 'shubh',
+          provider: 'sarvam',
+          text: editedAgent.welcome_message || 'Namaste! This is a preview of how my voice will sound on the call.',
+        });
+      }
       const audio = new Audio(URL.createObjectURL(audioBlob));
-      audio.play();
+      const playPromise = audio.play();
+      if (playPromise !== undefined) {
+        playPromise.catch(error => {
+          console.warn("[AgentStudio] Audio play interrupted or blocked:", error);
+        });
+      }
     } catch (error) {
       console.error('Voice preview failed:', error);
       alert(error.response?.data?.error || 'Voice preview failed');
@@ -464,9 +484,16 @@ function AgentDetail({ agent, onClose, onUpdate }) {
                   onChange={(e) => setEditedAgent({ ...editedAgent, voice: e.target.value })}
                   className="w-full px-3 py-2.5 text-sm bg-accent/20 border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none"
                 >
-                  <option value="shubh">Shubh (Indian Male)</option>
-                  <option value="priya">Priya (Indian Female)</option>
-                  <option value="rahul">Rahul (Deep Voice)</option>
+                  <optgroup label="RevealIQ (Premium Indian Voices)">
+                    <option value="revealiq:af_heart">Priya (Hindi/English Female)</option>
+                    <option value="revealiq:hf_alpha">Aarav (Hindi Male)</option>
+                    <option value="revealiq:af_bella">Ananya (English Female)</option>
+                    <option value="revealiq:am_adam">Arjun (English Male)</option>
+                  </optgroup>
+                  <optgroup label="Standard Voices">
+                    <option value="shubh">Shubh (Standard Male)</option>
+                    <option value="priya">Priya (Standard Female)</option>
+                  </optgroup>
                 </select>
                 <button
                   type="button"
