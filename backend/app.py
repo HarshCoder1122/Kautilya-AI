@@ -194,19 +194,19 @@ def firebase_proxy(firebase_path):
     except Exception as e:
         return Response(f"Proxy error: {e}", status=502)
 
-# Catch-all route for SPA routing
+# SPA Catch-all (Must be last)
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def catch_all(path):
-    # Exclude API and static files from catch-all
-    if path.startswith(('api/', 'static/', 'v1/', 'embed')):
-        return jsonify({"error": "Not Found"}), 404
-    # Favicon specific check
-    if path == 'favicon.ico':
-        return send_from_directory(STATIC_FOLDER, 'favicon.ico', mimetype='image/vnd.microsoft.icon')
-    # Special files that should return 404 if not caught above
-    if "." in path and not path.endswith(".html"):
+    # If the path actually exists as a file in STATIC_FOLDER, serve it
+    if path and os.path.exists(os.path.join(STATIC_FOLDER, path)):
         return send_from_directory(STATIC_FOLDER, path)
+    
+    # Exclude API and system routes from catch-all
+    if path.startswith(('api/', 'v1/', 'embed', 'static/')):
+        return jsonify({"error": "Not Found", "path": path}), 404
+        
+    # Default to SPA index
     return send_from_directory(STATIC_FOLDER, 'index.html')
 
 if __name__ == '__main__':
