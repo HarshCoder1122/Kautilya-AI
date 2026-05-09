@@ -9,6 +9,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
 } from "@/components/ui/dialog";
 
 const sentimentIcons = {
@@ -217,6 +218,10 @@ export default function CallAnalytics() {
       {/* Call Detail Dialog */}
       <Dialog open={!!selectedCall} onOpenChange={() => setSelectedCall(null)}>
         <DialogContent className="sm:max-w-[800px] max-h-[90vh] p-0 overflow-hidden bg-[var(--k-surface)] border-[var(--k-border)] shadow-2xl">
+          <DialogHeader className="sr-only">
+            <DialogTitle>Call Details</DialogTitle>
+            <DialogDescription>Full recording, transcript, and AI summary of the call.</DialogDescription>
+          </DialogHeader>
           {selectedCall && (
             <div className="flex flex-col h-full">
                <div className="px-6 py-5 border-b border-[var(--k-border)] bg-[var(--k-surface-elevated)] flex items-center justify-between">
