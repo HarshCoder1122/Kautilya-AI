@@ -8,6 +8,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogTrigger,
 } from "@/components/ui/dialog";
 
@@ -100,6 +101,7 @@ export default function CampaignDialer() {
             <DialogContent className="sm:max-w-[500px]">
               <DialogHeader>
                 <DialogTitle className="k-heading tracking-tight">Create Campaign</DialogTitle>
+                <DialogDescription className="sr-only">Set up a new outbound calling campaign.</DialogDescription>
               </DialogHeader>
               <CreateCampaignForm onClose={() => setShowCreate(false)} onSuccess={loadCampaigns} agents={agents} />
             </DialogContent>
