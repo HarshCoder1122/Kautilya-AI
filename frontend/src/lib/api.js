@@ -11,23 +11,30 @@ const api = axios.create({
   },
 });
 
-// Add Firebase token to requests if available
-api.interceptors.request.use(async (config) => {
+// Helper to get consistent headers for both axios and fetch
+export const getAuthHeaders = () => {
   const fbToken = localStorage.getItem('firebase_token');
   const hfToken = process.env.REACT_APP_HF_API_TOKEN;
+  const headers = {};
 
-  // 1. If we are behind a Private HF Space, Authorization MUST be the HF Token
   if (hfToken) {
-    config.headers.Authorization = `Bearer ${hfToken}`;
-    // Send Firebase token in custom header so backend can still identify the user
+    // 1. Private HF Space: Authorization must be HF Token
+    headers['Authorization'] = `Bearer ${hfToken}`;
     if (fbToken) {
-      config.headers['X-Firebase-Token'] = fbToken;
+      headers['X-Firebase-Token'] = fbToken;
     }
   } else if (fbToken) {
-    // 2. Standard Public Space or Localhost: Use Authorization for Firebase
-    config.headers.Authorization = `Bearer ${fbToken}`;
+    // 2. Public Space/Local: Authorization is Firebase Token
+    headers['Authorization'] = `Bearer ${fbToken}`;
   }
 
+  return headers;
+};
+
+// Add Firebase token to requests if available
+api.interceptors.request.use(async (config) => {
+  const authHeaders = getAuthHeaders();
+  Object.assign(config.headers, authHeaders);
   return config;
 }, (error) => {
   return Promise.reject(error);
@@ -39,7 +46,7 @@ export const chatAPI = {
   streamMessage: async (message, sessionId = null, model = 'auto', files = [], options = {}) => {
     let body;
     let headers = {
-      'Authorization': `Bearer ${localStorage.getItem('firebase_token')}`,
+      ...getAuthHeaders(),
     };
 
     if (files && files.length > 0) {
@@ -77,7 +84,7 @@ export const chatAPI = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${localStorage.getItem('firebase_token')}`,
+        ...getAuthHeaders(),
       },
       body: JSON.stringify({ question }),
     });
@@ -147,7 +154,7 @@ export const agentsAPI = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${localStorage.getItem('firebase_token')}`,
+        ...getAuthHeaders(),
       },
       body: JSON.stringify({ messages }),
     });

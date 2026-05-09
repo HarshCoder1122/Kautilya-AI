@@ -18,12 +18,18 @@ def verify_firebase_token():
     fb_token_header = request.headers.get('X-Firebase-Token', '')
     
     token = None
-    if auth_header.startswith('Bearer '):
+    
+    # 1. ALWAYS Prioritize X-Firebase-Token if it exists
+    if fb_token_header:
+        if fb_token_header.startswith('Bearer '):
+            token = fb_token_header.split('Bearer ', 1)[1].strip()
+        else:
+            token = fb_token_header.strip()
+    
+    # 2. Fallback to Authorization ONLY if X-Firebase-Token is missing
+    # (On Private HF Spaces, Authorization will contain the HF Token which would fail Firebase verification)
+    if not token and auth_header.startswith('Bearer '):
         token = auth_header.split('Bearer ', 1)[1].strip()
-    elif fb_token_header.startswith('Bearer '):
-        token = fb_token_header.split('Bearer ', 1)[1].strip()
-    elif fb_token_header:
-        token = fb_token_header.strip()
 
     if not token:
         return None
