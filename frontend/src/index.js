@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 import "@/index.css";
 import App from "@/App";
-import { initFirebase } from "@/lib/firebase";
+import { initFirebase } from "./lib/firebase";
 
 function Root() {
   const [initialized, setInitialized] = useState(false);

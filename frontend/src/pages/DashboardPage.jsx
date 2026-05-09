@@ -6,7 +6,7 @@ import {
 } from "@phosphor-icons/react";
 import { ThemeToggle } from "@/components/shared/ThemeToggle";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { logout } from "@/lib/firebase";
+import { logout } from "../lib/firebase";
 import { UserCircle } from "@phosphor-icons/react";
 import AgentStudio from "@/components/dashboard/AgentStudio";
 import LeadManagement from "@/components/dashboard/LeadManagement";
