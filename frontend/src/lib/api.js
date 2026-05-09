@@ -1,8 +1,7 @@
 import axios from 'axios';
 
-const API_BASE_URL = (process.env.REACT_APP_API_URL && process.env.REACT_APP_API_URL !== 'http://localhost:5000') 
-  ? process.env.REACT_APP_API_URL 
-  : (window.location.hostname === 'localhost' ? 'http://localhost:5000' : window.location.origin);
+const API_BASE_URL = process.env.REACT_APP_API_URL 
+  || (window.location.hostname === 'localhost' ? 'http://localhost:5000' : window.location.origin);
 
 // Create axios instance with default config
 const api = axios.create({
@@ -14,17 +13,30 @@ const api = axios.create({
 
 // Add Firebase token to requests if available
 api.interceptors.request.use(async (config) => {
-  const token = localStorage.getItem('firebase_token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
+  const fbToken = localStorage.getItem('firebase_token');
+  const hfToken = process.env.REACT_APP_HF_API_TOKEN;
+
+  // 1. If we are behind a Private HF Space, Authorization MUST be the HF Token
+  if (hfToken) {
+    config.headers.Authorization = `Bearer ${hfToken}`;
+    // Send Firebase token in custom header so backend can still identify the user
+    if (fbToken) {
+      config.headers['X-Firebase-Token'] = fbToken;
+    }
+  } else if (fbToken) {
+    // 2. Standard Public Space or Localhost: Use Authorization for Firebase
+    config.headers.Authorization = `Bearer ${fbToken}`;
   }
+
   return config;
+}, (error) => {
+  return Promise.reject(error);
 });
 
 // Chat API
 export const chatAPI = {
   // Stream chat message
-  streamMessage: async (message, sessionId = null, model = 'daily', files = []) => {
+  streamMessage: async (message, sessionId = null, model = 'auto', files = [], options = {}) => {
     let body;
     let headers = {
       'Authorization': `Bearer ${localStorage.getItem('firebase_token')}`,
@@ -36,6 +48,7 @@ export const chatAPI = {
       body.append('message', message);
       if (sessionId) body.append('session_id', sessionId);
       body.append('model', model);
+      if (options.maxThinking) body.append('max_thinking', 'true');
       files.forEach(file => body.append('files', file));
       // Fetch will automatically set the correct boundary for FormData
     } else {
@@ -45,6 +58,7 @@ export const chatAPI = {
         message,
         session_id: sessionId,
         model,
+        max_thinking: !!options.maxThinking,
       });
     }
 
@@ -52,6 +66,20 @@ export const chatAPI = {
       method: 'POST',
       headers,
       body,
+    });
+    return response;
+  },
+
+  // Stream deep research; this hits the backend research pipeline
+  // so SerpAPI/source gathering is actually used.
+  streamResearch: async (question) => {
+    const response = await fetch(`${API_BASE_URL}/api/research/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('firebase_token')}`,
+      },
+      body: JSON.stringify({ question }),
     });
     return response;
   },
@@ -159,6 +187,18 @@ export const agentsAPI = {
     const response = await api.delete(`/api/agents/${agentId}/kb/${fileId}`);
     return response.data;
   },
+
+  // Preview voice for an agent
+  previewVoice: async ({ voice = 'shubh', provider = 'sarvam', text }) => {
+    const response = await api.post('/api/voice/preview', {
+      voice,
+      provider,
+      text,
+    }, {
+      responseType: 'blob',
+    });
+    return response.data;
+  },
 };
 
 // Campaigns API
@@ -242,6 +282,45 @@ export const artifactsAPI = {
     const response = await api.get('/api/artifact/types');
     return response.data;
   }
+};
+
+// API Keys
+export const keysAPI = {
+  list: async () => {
+    const response = await api.get('/api/keys/list');
+    return response.data;
+  },
+
+  create: async (keyData) => {
+    const response = await api.post('/api/keys/create', keyData);
+    return response.data;
+  },
+
+  revoke: async (keyHash) => {
+    const response = await api.post('/api/keys/revoke', { key_hash: keyHash });
+    return response.data;
+  },
+};
+
+// Telephony
+export const telephonyAPI = {
+  getConfig: async () => {
+    const response = await api.get('/api/telephony/config');
+    return response.data;
+  },
+
+  saveConfig: async (config) => {
+    const response = await api.post('/api/telephony/save', config);
+    return response.data;
+  },
+
+  outbound: async ({ agent_id, agentId, to, to_number }) => {
+    const resolvedAgentId = agent_id || agentId;
+    const response = await api.post(`/api/agents/${resolvedAgentId}/call-outbound`, {
+      to_number: to_number || to,
+    });
+    return response.data;
+  },
 };
 
 // Billing API

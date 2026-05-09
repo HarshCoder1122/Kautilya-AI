@@ -38,7 +38,7 @@ function App() {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-[#020202] text-white">
         <div className="w-12 h-12 border-2 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin mb-4"></div>
-        <div className="text-sm text-gray-500 font-medium tracking-widest uppercase">Initializing J.A.R.V.I.S</div>
+        <div className="text-sm text-gray-500 font-medium tracking-widest uppercase">Initializing Kautilya</div>
       </div>
     );
   }

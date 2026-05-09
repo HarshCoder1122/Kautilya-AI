@@ -35,23 +35,29 @@ export function ChatMessage({ message, onOpenArtifact }) {
         </div>
       )}
 
-      {/* Thinking (collapsed) */}
+      {/* Thinking (streaming or collapsed) */}
+      {!message.thinkingDone && message.thinking && (
+        <div className="mb-3">
+          <ThinkingTokens text={message.thinking} />
+        </div>
+      )}
+
       {message.thinkingDone && message.thinking && (
         <details className="mb-3 group" data-testid="thinking-details">
           <summary className="flex items-center gap-2 cursor-pointer text-xs text-muted-foreground hover:text-foreground transition-colors list-none">
             <Brain className="w-3.5 h-3.5 text-[var(--k-yellow)]" weight="duotone" />
             <span className="font-mono text-[11px]">Thinking completed</span>
-            <span className="text-[10px] text-muted-foreground/40">click to expand</span>
+            <span className="text-[10px] text-muted-foreground/40 ml-1 opacity-0 group-hover:opacity-100 transition-opacity">click to expand</span>
           </summary>
-          <div className="mt-2 pl-5 border-l-2 border-[var(--k-yellow)]/20">
-            <p className="text-xs text-muted-foreground font-mono leading-relaxed">{message.thinking}</p>
+          <div className="mt-2 pl-4 border-l-2 border-[var(--k-yellow)]/20">
+            <p className="text-[11px] text-muted-foreground/80 font-mono leading-relaxed whitespace-pre-wrap">{message.thinking}</p>
           </div>
         </details>
       )}
 
       {/* Response with markdown */}
       <div className="text-sm text-foreground leading-relaxed prose prose-invert prose-sm max-w-none">
-        <ReactMarkdown>{message.responseText || message.content}</ReactMarkdown>
+        <ReactMarkdown>{(message.responseText || message.content || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim()}</ReactMarkdown>
       </div>
 
       {/* Citations */}
