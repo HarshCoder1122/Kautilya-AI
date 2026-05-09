@@ -31,6 +31,33 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, canvasOpen, onTogg
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, isThinking, isStreaming]);
 
+  // Load history when sessionId changes
+  useEffect(() => {
+    if (sessionId) {
+      loadHistory(sessionId);
+    } else {
+      setMessages([]);
+    }
+  }, [sessionId]);
+
+  const loadHistory = async (sid) => {
+    try {
+      setIsThinking(true);
+      const data = await chatAPI.getConversation(sid);
+      if (data && data.messages) {
+        setMessages(data.messages.map(m => ({
+          ...m,
+          id: m.id || `msg-${Math.random()}`,
+          timestamp: m.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        })));
+      }
+    } catch (error) {
+      console.error('Failed to load conversation history:', error);
+    } finally {
+      setIsThinking(false);
+    }
+  };
+
   const parseSSELines = (buffer) => {
     const lines = buffer.split(/\r?\n/);
     return {
