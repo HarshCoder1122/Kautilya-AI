@@ -160,7 +160,11 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, canvasOpen, onTogg
                 continue;
               }
               if (parsed.event === 'query') {
-                updateAssistant({ thinking: `Searching: ${(parsed.queries || []).join(' | ')}` });
+                updateAssistant({ thinking: `Searching: ${(parsed.queries || []).join(' | ')}`, thinkingDone: false });
+                continue;
+              }
+              if (parsed.event === 'status') {
+                updateAssistant({ thinking: parsed.message, thinkingDone: false });
                 continue;
               }
               if (parsed.event === 'sources') {
