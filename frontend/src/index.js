@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
-import "@/index.css";
-import App from "@/App";
-import { initFirebase } from "./lib/firebase";
+import "./index.css";
+import App from "./App";
+import { initFirebase } from "./lib/firebase.js";
 
 function Root() {
   const [initialized, setInitialized] = useState(false);
