@@ -18,7 +18,15 @@ export const initFirebase = async () => {
     if (cached) {
       config = JSON.parse(cached);
     } else {
-      const response = await fetch("/api/config/firebase");
+      const apiBase = process.env.REACT_APP_API_URL || "";
+      const hfToken = process.env.REACT_APP_HF_API_TOKEN;
+      
+      const headers = {};
+      if (hfToken) {
+        headers["Authorization"] = `Bearer ${hfToken}`;
+      }
+
+      const response = await fetch(`${apiBase}/api/config/firebase`, { headers });
       config = await response.json();
       if (config.error) throw new Error(config.error);
       sessionStorage.setItem('firebase_config', JSON.stringify(config));
