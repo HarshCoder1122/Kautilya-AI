@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Upload, ChartBar, TrendUp, MagnifyingGlass, Lightning, ArrowsClockwise } from "@phosphor-icons/react";
-import { analyticsAPI, campaignsAPI, leadsAPI, agentsAPI } from "@/lib/api";
+import { analyticsAPI, campaignsAPI, leadsAPI, agentsAPI } from "../../lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,

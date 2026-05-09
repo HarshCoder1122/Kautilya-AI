@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { Play, Stop, VolumeHigh, Settings, Sparkle, Download } from "@phosphor-icons/react";
-import { ttsAPI } from "@/lib/api";
+import { ttsAPI } from "../../lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";

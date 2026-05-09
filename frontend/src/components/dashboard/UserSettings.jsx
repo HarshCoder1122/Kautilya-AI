@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { User, Key, Bell, Shield, Palette, CaretRight, CheckCircle, Warning, GoogleLogo, Crown } from "@phosphor-icons/react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { billingAPI } from "@/lib/api";
+import { billingAPI } from "../../lib/api";
 import ApiKeySettings from "./ApiKeySettings";
 
 export default function UserSettings({ user }) {

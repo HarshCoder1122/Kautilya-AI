@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning, Columns, CaretDown, X } from "@phosphor-icons/react";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ThinkingTokens } from "@/components/chat/ThinkingTokens";
-import { chatAPI } from "@/lib/api";
+import { chatAPI } from "../../lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   DropdownMenu,

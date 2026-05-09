@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { MagnifyingGlass, FunnelSimple, Export, Phone, EnvelopeSimple, ArrowUp, ArrowDown, Trash } from "@phosphor-icons/react";
-import { leadsAPI } from "@/lib/api";
+import { leadsAPI } from "../../lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import {

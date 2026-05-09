@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Key, Trash, Eye, EyeSlash, Plus, CheckCircle, Copy, ChartBar, Warning } from "@phosphor-icons/react";
-import { keysAPI } from "@/lib/api";
+import { keysAPI } from "../../lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 
