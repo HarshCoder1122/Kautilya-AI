@@ -1,5 +1,6 @@
 import { Brain, Code, ChartBar, ArrowSquareOut } from "@phosphor-icons/react";
 import ReactMarkdown from 'react-markdown';
+import { ThinkingTokens } from "./ThinkingTokens";
 
 const agentBadge = {
   researcher: { icon: Brain, label: 'Researcher', color: 'text-blue-400', bg: 'bg-blue-400/10' },
