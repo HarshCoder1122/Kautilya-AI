@@ -33,7 +33,7 @@ def reveal_iq_synthesize():
         if not hf_token:
             return jsonify({"error": "RevealIQ HF token not configured"}), 500
         
-        # Call RevealIQ Hugging Face Space
+        # Call RevealIQ Hugging Face Space (Universal URL format)
         url = 'https://harshsharma1212-revealiq-asr.hf.space/v1/audio/speech'
         headers = {
             'Content-Type': 'application/json',
@@ -43,8 +43,11 @@ def reveal_iq_synthesize():
             'model': model,
             'input': text,
             'voice': voice,
-            'speed': speed,
+            'speed': float(speed),
         }
+        
+        print(f"[RevealIQ] Attempting synthesis | URL: {url} | Model: {model} | Voice: {voice}")
+        print(f"[RevealIQ] Payload: {json.dumps(payload)}")
         
         response = requests.post(url, headers=headers, json=payload, timeout=30)
         
