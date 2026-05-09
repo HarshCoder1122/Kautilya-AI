@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Plus, MagnifyingGlass, ChatCircleDots, SidebarSimple, Brain, Code, ChartBar, SignOut, UserCircle } from "@phosphor-icons/react";
 import { ThemeToggle } from "@/components/shared/ThemeToggle";
 import { chatAPI } from "@/lib/api";
-import { logout } from "@/lib/firebase";
+import { logout } from "../../lib/firebase";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useNavigate } from "react-router-dom";
 

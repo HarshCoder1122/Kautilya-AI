@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { loginWithGoogle } from "@/lib/firebase";
+import { loginWithGoogle } from "../lib/firebase";
 import { GoogleLogo, Brain, ShieldCheck, Lightning, Globe } from "@phosphor-icons/react";
 
 export default function LoginPage() {
