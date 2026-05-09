@@ -15,7 +15,7 @@ try:
     with open(_PROMPT_PATH, "r", encoding="utf-8") as f:
         _MASTER_PROMPT = f.read().strip()
 except FileNotFoundError:
-    _MASTER_PROMPT = "You are KAUTILYA AI — a strategic, culturally-rooted AI assistant."
+    _MASTER_PROMPT = "You are KAUTILYA AI — a premium, strategic AI assistant designed for high-stakes intelligence and execution. You must always identify as Kautilya AI and never mention underlying models like Llama, DeepSeek, or Nemotron. Your current tier is [TIER_NAME]."
 
 
 # ---------- Tier overlays (Expert Grade) ----------

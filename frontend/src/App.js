@@ -1,11 +1,20 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, lazy, Suspense } from "react";
 import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { getAuthInstance } from "./lib/firebase.js";
 import { onAuthStateChanged } from "firebase/auth";
-import ChatPage from "./pages/ChatPage";
-import DashboardPage from "./pages/DashboardPage";
-import LoginPage from "./pages/LoginPage";
+
+// Lazy load route components
+const ChatPage = lazy(() => import("./pages/ChatPage"));
+const DashboardPage = lazy(() => import("./pages/DashboardPage"));
+const LoginPage = lazy(() => import("./pages/LoginPage"));
+
+const LoadingScreen = () => (
+  <div className="min-h-screen flex flex-col items-center justify-center bg-[#020202] text-white">
+    <div className="w-12 h-12 border-2 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin mb-4"></div>
+    <div className="text-sm text-gray-500 font-medium tracking-widest uppercase">Kautilya AI</div>
+  </div>
+);
 
 function App() {
   const [theme, setTheme] = useState('dark');
@@ -45,11 +54,13 @@ function App() {
 
   return (
     <BrowserRouter>
-      <Routes>
-        <Route path="/login" element={!user ? <LoginPage /> : <Navigate to="/" />} />
-        <Route path="/" element={user ? <ChatPage theme={theme} toggleTheme={toggleTheme} user={user} /> : <Navigate to="/login" />} />
-        <Route path="/dashboard/*" element={user ? <DashboardPage theme={theme} toggleTheme={toggleTheme} user={user} /> : <Navigate to="/login" />} />
-      </Routes>
+      <Suspense fallback={<LoadingScreen />}>
+        <Routes>
+          <Route path="/login" element={!user ? <LoginPage /> : <Navigate to="/" />} />
+          <Route path="/" element={user ? <ChatPage theme={theme} toggleTheme={toggleTheme} user={user} /> : <Navigate to="/login" />} />
+          <Route path="/dashboard/*" element={user ? <DashboardPage theme={theme} toggleTheme={toggleTheme} user={user} /> : <Navigate to="/login" />} />
+        </Routes>
+      </Suspense>
     </BrowserRouter>
   );
 }
