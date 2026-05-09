@@ -1,11 +1,11 @@
 import { useState, useEffect } from "react";
 import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { getAuthInstance } from "./lib/firebase";
+import { getAuthInstance } from "./lib/firebase.js";
 import { onAuthStateChanged } from "firebase/auth";
-import ChatPage from "@/pages/ChatPage";
-import DashboardPage from "@/pages/DashboardPage";
-import LoginPage from "@/pages/LoginPage";
+import ChatPage from "./pages/ChatPage";
+import DashboardPage from "./pages/DashboardPage";
+import LoginPage from "./pages/LoginPage";
 
 function App() {
   const [theme, setTheme] = useState('dark');
