@@ -17,6 +17,7 @@ export const initFirebase = async () => {
     if (cached) {
       config = JSON.parse(cached);
     } else {
+      console.log("Environment Keys Available:", Object.keys(process.env).filter(k => k.startsWith("REACT_APP_")));
       console.log("Firebase: Attempting to load config...");
       
       // 1. Try Environment Variable first
@@ -67,8 +68,19 @@ export const initFirebase = async () => {
       }
     }
 
+    const fallbackConfig = {
+      apiKey: "AIzaSyA5GIkQSRq2Kdcn0SVsWDNgokA1IgL3k2c",
+      authDomain: "jarvis-a6e18.firebaseapp.com",
+      projectId: "jarvis-a6e18",
+      storageBucket: "jarvis-a6e18.firebasestorage.app",
+      messagingSenderId: "872168972424",
+      appId: "1:872168972424:web:2b0b9b82922860a52c3f3d",
+      measurementId: "G-H2FB26YQ9R"
+    };
+
     if (!config || !config.apiKey) {
-      throw new Error("CRITICAL: No valid Firebase configuration found in Env Vars or API.");
+      console.log("Firebase: Using Hardcoded Fallback Config");
+      config = fallbackConfig;
     }
 
     const app = initializeApp(config);
@@ -77,7 +89,6 @@ export const initFirebase = async () => {
     return authInstance;
   } catch (error) {
     console.error("Firebase Initialization Error:", error.message);
-    // Silent fail for first load, will retry on action
     return null;
   }
 };
