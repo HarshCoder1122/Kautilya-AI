@@ -12,54 +12,73 @@ export const initFirebase = async () => {
   }
 
   try {
-    // Check session storage for cached config
     let config;
     const cached = sessionStorage.getItem('firebase_config');
     if (cached) {
       config = JSON.parse(cached);
     } else {
-      // 1. Try Environment Variable first (JSON string)
+      console.log("Firebase: Attempting to load config...");
+      
+      // 1. Try Environment Variable first
       const envConfig = process.env.REACT_APP_FIREBASE_CONFIG;
       if (envConfig) {
         try {
           config = JSON.parse(envConfig);
-          console.log("Firebase initialized from Env Var");
+          console.log("Firebase: Loaded from REACT_APP_FIREBASE_CONFIG env var");
         } catch (e) {
-          console.error("Failed to parse REACT_APP_FIREBASE_CONFIG:", e);
+          console.error("Firebase: Failed to parse REACT_APP_FIREBASE_CONFIG JSON string", e);
         }
       }
 
-      // 2. Fallback to API fetch if Env Var not found
-      if (!config) {
-        const apiBase = process.env.REACT_APP_API_URL || "";
-        const hfToken = process.env.REACT_APP_HF_API_TOKEN;
-        const headers = hfToken ? { "Authorization": `Bearer ${hfToken}` } : {};
+      // 2. Try individual env variables as fallback
+      if (!config || !config.apiKey) {
+        if (process.env.REACT_APP_FIREBASE_API_KEY) {
+           config = {
+             apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
+             authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
+             projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID,
+             storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
+             messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
+             appId: process.env.REACT_APP_FIREBASE_APP_ID
+           };
+           console.log("Firebase: Loaded from individual REACT_APP_FIREBASE_* env vars");
+        }
+      }
 
-        const response = await fetch(`${apiBase}/api/config/firebase`, { headers });
-        config = await response.json();
+      // 3. Try API fetch
+      if (!config || !config.apiKey) {
+        try {
+          const apiBase = process.env.REACT_APP_API_URL || "";
+          const hfToken = process.env.REACT_APP_HF_API_TOKEN;
+          const headers = hfToken ? { "Authorization": `Bearer ${hfToken}` } : {};
+          console.log("Firebase: Fetching from API...");
+          const response = await fetch(`${apiBase}/api/config/firebase`, { headers });
+          config = await response.json();
+          if (config && !config.error) {
+             console.log("Firebase: Loaded from Backend API");
+          }
+        } catch (e) {
+          console.error("Firebase: API fetch failed", e);
+        }
       }
       
-      if (config && !config.error) {
+      if (config && !config.error && config.apiKey) {
         sessionStorage.setItem('firebase_config', JSON.stringify(config));
       }
     }
 
-    if (!config || !config.apiKey) throw new Error("Invalid config");
+    if (!config || !config.apiKey) {
+      throw new Error("CRITICAL: No valid Firebase configuration found in Env Vars or API.");
+    }
 
     const app = initializeApp(config);
     authInstance = getAuth(app);
     googleProvider = new GoogleAuthProvider();
     return authInstance;
   } catch (error) {
-    console.error("Firebase init failed:", error);
-    if (getApps().length === 0) {
-      const app = initializeApp({ projectId: "jarvis-a6e18", apiKey: "MISSING" });
-      authInstance = getAuth(app);
-    } else {
-      authInstance = getAuth(getApp());
-    }
-    googleProvider = new GoogleAuthProvider();
-    return authInstance;
+    console.error("Firebase Initialization Error:", error.message);
+    // Silent fail for first load, will retry on action
+    return null;
   }
 };
 
