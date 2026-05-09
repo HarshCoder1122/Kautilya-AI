@@ -18,18 +18,30 @@ export const initFirebase = async () => {
     if (cached) {
       config = JSON.parse(cached);
     } else {
-      const apiBase = process.env.REACT_APP_API_URL || "";
-      const hfToken = process.env.REACT_APP_HF_API_TOKEN;
-      
-      const headers = {};
-      if (hfToken) {
-        headers["Authorization"] = `Bearer ${hfToken}`;
+      // 1. Try Environment Variable first (JSON string)
+      const envConfig = process.env.REACT_APP_FIREBASE_CONFIG;
+      if (envConfig) {
+        try {
+          config = JSON.parse(envConfig);
+          console.log("Firebase initialized from Env Var");
+        } catch (e) {
+          console.error("Failed to parse REACT_APP_FIREBASE_CONFIG:", e);
+        }
       }
 
-      const response = await fetch(`${apiBase}/api/config/firebase`, { headers });
-      config = await response.json();
-      if (config.error) throw new Error(config.error);
-      sessionStorage.setItem('firebase_config', JSON.stringify(config));
+      // 2. Fallback to API fetch if Env Var not found
+      if (!config) {
+        const apiBase = process.env.REACT_APP_API_URL || "";
+        const hfToken = process.env.REACT_APP_HF_API_TOKEN;
+        const headers = hfToken ? { "Authorization": `Bearer ${hfToken}` } : {};
+
+        const response = await fetch(`${apiBase}/api/config/firebase`, { headers });
+        config = await response.json();
+      }
+      
+      if (config && !config.error) {
+        sessionStorage.setItem('firebase_config', JSON.stringify(config));
+      }
     }
 
     if (!config || !config.apiKey) throw new Error("Invalid config");
