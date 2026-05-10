@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Play, Pause, VolumeHigh, Settings, Sparkle, Download, Waveform, SpeakerHigh, Activity } from "@phosphor-icons/react";
+import { Play, Pause, VolumeHigh, Gear, Sparkle, Download, Waveform, SpeakerHigh, Activity } from "@phosphor-icons/react";
 import { ttsAPI } from "../../lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -145,7 +145,7 @@ export default function TextToSpeechStudio() {
             <div className="lg:col-span-5 space-y-8">
               <div className="p-6 rounded-2xl border border-[var(--k-border)] bg-black/20 backdrop-blur-md">
                 <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-muted-foreground mb-6 flex items-center gap-2">
-                  <Settings className="w-4 h-4" /> Engine Configuration
+                  <Gear className="w-4 h-4" /> Engine Configuration
                 </h3>
                 
                 <Tabs value={selectedProvider} onValueChange={setSelectedProvider} className="space-y-6">
