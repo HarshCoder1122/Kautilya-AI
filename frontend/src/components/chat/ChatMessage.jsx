@@ -37,11 +37,11 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
 
     try {
       setIsSynthesizing(true);
-      // Using Neha Kapoor (Swara-EN) - Model: kokoro-en, Voice: af_heart
+      // Using Neha Kapoor (Swara-EN) - Model: kokoro-en, Voice: af_nicole
       const audioBlob = await ttsAPI.revealIQ.synthesize(
         message.content.replace(/<think>[\s\S]*?<\/think>/g, '').trim(),
         'kokoro-en',
-        'af_heart'
+        'af_nicole'
       );
       
       const url = URL.createObjectURL(audioBlob);
