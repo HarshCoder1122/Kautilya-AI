@@ -207,7 +207,9 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                                 break
                             try:
                                 data = json.loads(json_str)
-                                delta = data["choices"][0].get("delta", {})
+                                choices = data.get("choices", [])
+                                if not choices: continue
+                                delta = choices[0].get("delta", {})
                             except Exception:
                                 continue
 
@@ -216,7 +218,6 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                                 if expose_thinking:
                                     thinking_active = True
                                     yield {"thinking": reasoning}
-                                # Always 'continue' — never mix reasoning into chunks
                                 continue
 
                             if "tool_calls" in delta:
@@ -226,8 +227,6 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                             content = delta.get("content")
                             if content is not None:
                                 if thinking_active:
-                                    # Reasoning is over — let the UI collapse the
-                                    # thinking bubble before content tokens start.
                                     yield {"thinking_done": True}
                                     thinking_active = False
                                 yield {"chunk": content}
