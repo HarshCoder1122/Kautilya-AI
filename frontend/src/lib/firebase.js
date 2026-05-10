@@ -11,24 +11,42 @@ export const initFirebase = async () => {
     return authInstance;
   }
 
+  const sanitizeConfig = (raw) => {
+    if (!raw) return null;
+    try {
+      // If it's already a clean JSON string
+      if (raw.trim().startsWith('{')) return JSON.parse(raw);
+      
+      // If it contains "const firebaseConfig =" or similar JS junk
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (match) {
+        // Attempt to convert JS object-like string to valid JSON
+        let jsonStr = match[0]
+          .replace(/(\w+):/g, '"$1":') // Quote keys
+          .replace(/'/g, '"')         // Replace single quotes with double quotes
+          .replace(/,\s*}/g, '}')     // Remove trailing commas
+          .replace(/,\s*]/g, ']');    // Remove trailing commas in arrays
+        return JSON.parse(jsonStr);
+      }
+    } catch (e) {
+      console.warn("Firebase: Sanitize failed, returning null", e);
+    }
+    return null;
+  };
+
   try {
     let config;
     const cached = sessionStorage.getItem('firebase_config');
     if (cached) {
       config = JSON.parse(cached);
     } else {
-      console.log("Environment Keys Available:", Object.keys(process.env).filter(k => k.startsWith("REACT_APP_")));
       console.log("Firebase: Attempting to load config...");
       
       // 1. Try Environment Variable first
       const envConfig = process.env.REACT_APP_FIREBASE_CONFIG;
       if (envConfig) {
-        try {
-          config = JSON.parse(envConfig);
-          console.log("Firebase: Loaded from REACT_APP_FIREBASE_CONFIG env var");
-        } catch (e) {
-          console.error("Firebase: Failed to parse REACT_APP_FIREBASE_CONFIG JSON string", e);
-        }
+        config = sanitizeConfig(envConfig);
+        if (config) console.log("Firebase: Loaded from REACT_APP_FIREBASE_CONFIG (Sanitized)");
       }
 
       // 2. Try individual env variables as fallback
