@@ -230,14 +230,15 @@ def deep_research_stream(question: str) -> Iterator[Dict[str, Any]]:
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
     try:
-        # Primary: NVIDIA Nemotron-3-Super-120B for deep research synthesis
-        gen = call_nvidia(messages, stream=True, max_tokens=4096,
-                          model="nvidia/llama-3.1-405b-instruct",
-                          temperature=0.3, expose_thinking=False)
+        # Primary: Groq openai/gpt-oss-120b for ULTRA FAST deep research synthesis
+        gen = call_groq(messages, stream=True, model="openai/gpt-oss-120b",
+                        temperature=1.0, max_tokens=8192)
+        
         if gen is None:
-            # Fallback to Groq only if NVIDIA unavailable
+            # Fallback to standard Groq model
             gen = call_groq(messages, stream=True, model="llama-3.3-70b-versatile",
                             temperature=0.3, max_tokens=4096)
+        
         if gen is None:
             yield {"event": "chunk", "chunk": "Research synthesis LLM unavailable."}
             yield {"event": "done"}

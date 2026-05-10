@@ -293,7 +293,15 @@ def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False,
         key_label = f"Key#{key_idx + 1}"
         try:
             payload = {"model": model, "messages": clean_messages, "temperature": temperature,
-                       "max_tokens": max_tokens, "stream": stream}
+                       "stream": stream}
+            
+            # Use max_completion_tokens for O1/OSS models
+            if "gpt-oss" in model or "o1-" in model:
+                payload["max_completion_tokens"] = max_tokens
+                payload["reasoning_effort"] = "medium"
+            else:
+                payload["max_tokens"] = max_tokens
+
             if stream:
                 payload["stream_options"] = {"include_usage": True}
             if tools:
