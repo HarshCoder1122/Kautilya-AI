@@ -3,6 +3,8 @@ import React, { useState, useRef } from "react";
 import ReactMarkdown from 'react-markdown';
 import { ThinkingTokens } from "./ThinkingTokens";
 import { ttsAPI } from "../../lib/api";
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 const agentBadge = {
   researcher: { icon: Brain, label: 'Researcher', color: 'text-blue-400', bg: 'bg-blue-400/10' },
@@ -16,8 +18,8 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
   const [isSynthesizing, setIsSynthesizing] = useState(false);
   const audioRef = useRef(null);
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(message.content);
+  const handleCopy = (text) => {
+    navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -37,11 +39,10 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
 
     try {
       setIsSynthesizing(true);
-      // Using Neha Kapoor (Swara-EN) - Model: kokoro-en, Voice: af_nicole
       const audioBlob = await ttsAPI.revealIQ.synthesize(
         message.content.replace(/<think>[\s\S]*?<\/think>/g, '').trim(),
         'kokoro-en',
-        'af_nicole'
+        'af_bella'
       );
       
       const url = URL.createObjectURL(audioBlob);
@@ -112,8 +113,67 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
       )}
 
       {/* Response with markdown */}
-      <div className="text-sm text-foreground leading-relaxed prose prose-invert prose-sm max-w-none prose-pre:bg-black/40 prose-pre:border prose-pre:border-white/5">
-        <ReactMarkdown>{(message.responseText || message.content || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim()}</ReactMarkdown>
+      <div className="text-sm text-foreground leading-relaxed prose prose-invert prose-sm max-w-none prose-pre:bg-transparent prose-pre:p-0 prose-pre:border-none">
+        <ReactMarkdown
+          components={{
+            code({ node, inline, className, children, ...props }) {
+              const match = /language-(\w+)/.exec(className || '');
+              const lang = match ? match[1] : '';
+              const codeString = String(children).replace(/\n$/, '');
+              
+              if (inline) {
+                return <code className="bg-accent/50 px-1.5 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
+              }
+
+              return (
+                <div className="relative group/code my-4 rounded-xl overflow-hidden border border-[var(--k-border)] bg-black/40">
+                  <div className="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">{lang || 'code'}</span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => handleCopy(codeString)}
+                        className="p-1.5 rounded hover:bg-white/10 text-muted-foreground hover:text-foreground transition-all"
+                        title="Copy Code"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => onOpenArtifact?.({
+                          type: 'code',
+                          title: `${lang.toUpperCase()} Implementation`,
+                          code: codeString,
+                          language: lang
+                        })}
+                        className="p-1.5 rounded hover:bg-white/10 text-muted-foreground hover:text-foreground transition-all"
+                        title="Open in Canvas"
+                      >
+                        <ArrowSquareOut className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                  <SyntaxHighlighter
+                    language={lang}
+                    style={vscDarkPlus}
+                    customStyle={{
+                      margin: 0,
+                      padding: '1rem',
+                      fontSize: '0.8rem',
+                      lineHeight: '1.5',
+                      background: 'transparent',
+                    }}
+                    codeTagProps={{
+                      style: { fontFamily: 'inherit' }
+                    }}
+                  >
+                    {codeString}
+                  </SyntaxHighlighter>
+                </div>
+              );
+            }
+          }}
+        >
+          {(message.responseText || message.content || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim()}
+        </ReactMarkdown>
       </div>
 
       {/* Action Buttons */}
@@ -122,7 +182,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
           onClick={handlePlayTTS}
           disabled={isSynthesizing}
           className={`p-2 rounded-md transition-all duration-200 ${isPlaying ? 'bg-[var(--k-brand)]/10 text-[var(--k-brand)]' : 'hover:bg-accent text-muted-foreground hover:text-foreground'}`}
-          title="Play Neha's Voice"
+          title="Play Kautilya Voice"
         >
           {isSynthesizing ? <SpeakerHigh className="w-4 h-4 animate-pulse" /> : isPlaying ? <Pause className="w-4 h-4" weight="bold" /> : <Play className="w-4 h-4" weight="bold" />}
         </button>

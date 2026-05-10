@@ -17,7 +17,7 @@ const modes = [
   { id: 'code', label: 'Code Interpreter', icon: Code, desc: 'Execute & analyze code' },
 ];
 
-export function ChatMain({ sidebarCollapsed, onExpandSidebar, canvasOpen, onToggleCanvas, onOpenCanvas, activeMode, onSetMode, theme, toggleTheme, sessionId, onSessionChange }) {
+export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSidebar, canvasOpen, onToggleCanvas, onOpenCanvas, activeMode, onSetMode, theme, toggleTheme, sessionId, onSessionChange }) {
   const [messages, setMessages] = useState([]);
   const [inputValue, setInputValue] = useState("");
   const [selectedFiles, setSelectedFiles] = useState([]);
@@ -279,11 +279,20 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, canvasOpen, onTogg
       {/* Top Bar */}
       <div className="h-12 min-h-[48px] flex items-center justify-between px-4 border-b border-[var(--k-border)]">
         <div className="flex items-center gap-2">
+          {/* Mobile Menu Button */}
+          <button
+            data-testid="mobile-menu-btn"
+            onClick={onOpenMobileSidebar}
+            className="md:hidden p-1.5 rounded-md hover:bg-accent transition-colors duration-200"
+          >
+            <SidebarSimple className="w-5 h-5 text-muted-foreground" />
+          </button>
+
           {sidebarCollapsed && (
             <button
               data-testid="expand-sidebar-btn"
               onClick={onExpandSidebar}
-              className="p-1.5 rounded-md hover:bg-accent transition-colors duration-200 mr-1"
+              className="hidden md:block p-1.5 rounded-md hover:bg-accent transition-colors duration-200 mr-1"
             >
               <SidebarSimple className="w-4 h-4 text-muted-foreground" />
             </button>
