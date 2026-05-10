@@ -411,7 +411,8 @@ export const ttsAPI = {
 
     stream: async (text, model = 'kokoro-en', voice = 'af_heart', speed = 1.0) => {
       const fbToken = localStorage.getItem('firebase_token');
-      const response = await fetch(`${API_BASE_URL}/api/tts/revealiq/stream`, {
+      const baseUrl = API_BASE_URL.endsWith('/api') ? API_BASE_URL : `${API_BASE_URL}/api`;
+      const response = await fetch(`${baseUrl}/tts/revealiq/stream`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
