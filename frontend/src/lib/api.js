@@ -409,6 +409,19 @@ export const ttsAPI = {
       return response.data;
     },
 
+    stream: async (text, model = 'kokoro-en', voice = 'af_heart', speed = 1.0) => {
+      const fbToken = localStorage.getItem('firebase_token');
+      const response = await fetch(`${API_BASE_URL}/api/tts/revealiq/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${fbToken}`,
+        },
+        body: JSON.stringify({ text, model, voice, speed }),
+      });
+      return response;
+    },
+
     getVoices: (model) => {
       if (model === 'kokoro-en') {
         return ['af_heart', 'af_bella', 'af_nicole', 'af_sky', 'am_adam', 'am_michael'];
