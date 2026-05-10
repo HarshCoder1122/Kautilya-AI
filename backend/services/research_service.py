@@ -230,9 +230,16 @@ def deep_research_stream(question: str) -> Iterator[Dict[str, Any]]:
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
     try:
+        # Smart Token Budgeting: Estimate needed output based on context size
+        # We want enough room for a report but don't want to exhaust Groq TPM/RPM
+        prompt_len = len(system) + len(user)
+        # Aim for a healthy balance, typically 4k is plenty for a report, 
+        # but we allow up to 6k if context is huge.
+        smart_tokens = min(6144, max(4096, 8000 - (prompt_len // 4)))
+        
         # Primary: Groq openai/gpt-oss-120b for ULTRA FAST deep research synthesis
         gen = call_groq(messages, stream=True, model="openai/gpt-oss-120b",
-                        temperature=1.0, max_tokens=8192)
+                        temperature=1.0, max_tokens=smart_tokens)
         
         if gen is None:
             # Fallback to standard Groq model
