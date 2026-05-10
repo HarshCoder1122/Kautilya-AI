@@ -9,6 +9,7 @@ export default function ChatPage({ theme, toggleTheme, user }) {
   const [canvasOpen, setCanvasOpen] = useState(false);
   const [canvasContent, setCanvasContent] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [activeMode, setActiveMode] = useState('chat'); // chat, research, code
 
   const handleSessionChange = (sessionId) => {
@@ -16,20 +17,21 @@ export default function ChatPage({ theme, toggleTheme, user }) {
   };
 
   return (
-    <div className="chat-layout" data-testid="chat-page">
-      {!sidebarCollapsed && (
-        <ChatSidebar
-          selectedConversation={selectedConversation}
-          onSelectConversation={setSelectedConversation}
-          onCollapse={() => setSidebarCollapsed(true)}
-          theme={theme}
-          toggleTheme={toggleTheme}
-          user={user}
-        />
-      )}
+    <div className={`chat-layout ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} data-testid="chat-page">
+      <ChatSidebar
+        selectedConversation={selectedConversation}
+        onSelectConversation={setSelectedConversation}
+        onCollapse={() => setSidebarCollapsed(true)}
+        theme={theme}
+        toggleTheme={toggleTheme}
+        user={user}
+        isOpen={mobileSidebarOpen}
+        onClose={() => setMobileSidebarOpen(false)}
+      />
       <ChatMain
         sidebarCollapsed={sidebarCollapsed}
         onExpandSidebar={() => setSidebarCollapsed(false)}
+        onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
         canvasOpen={canvasOpen}
         onToggleCanvas={() => setCanvasOpen(!canvasOpen)}
         onOpenCanvas={(content) => { setCanvasContent(content); setCanvasOpen(true); }}

@@ -18,8 +18,9 @@ MODEL_ALIASES = {
     "nemotron": "pro",
     "nvidia/nemotron-3-super-120b-a12b": "pro",
     "kautilya-coder": "coder",
-    "deepseek": "coder",
-    "deepseek-ai/deepseek-v4-pro": "coder",
+    "qwen": "coder",
+    "qwen-3": "coder",
+    "qwen-3-coder-480b-a35b-instruct": "coder",
 }
 
 
@@ -139,7 +140,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     # Model display names for UI status
     # NVIDIA NIM model IDs - verified available on https://build.nvidia.com
     _MODEL_LABELS = {
-        'coder': ('Kautilya Coder', 'deepseek-ai/deepseek-v4-pro'),
+        'coder': ('Kautilya Coder', 'qwen/qwen3-coder-480b-a35b-instruct'),
         'pro':   ('Kautilya Pro', 'nvidia/nemotron-3-super-120b-a12b'),
         'daily': ('Kautilya Daily', 'llama-3.3-70b-versatile'),
     }
@@ -334,25 +335,22 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
 def _estimate_tokens(user_msg, mode):
     msg_lower = user_msg.lower().strip()
     msg_len = len(msg_lower)
-    if mode == 'pro':
-        return 16384
-    greetings = ['hi', 'hello', 'hey', 'yo', 'sup', 'namaste', 'hola', 'thanks', 'thank you',
-                 'ok', 'okay', 'bye', 'good morning', 'good night', 'good evening', 'gm', 'gn']
-    if msg_lower in greetings or msg_len < 10:
+    
+    # Base budget for standard models
+    if mode == 'daily':
+        return 4096
+        
+    # Smart Budget for Heavy NVIDIA Models (to avoid RPM/TPM hit)
+    # Formula: 8k base - input_impact, capped between 2k and 6k for stability
+    input_impact = (msg_len // 4)
+    smart_tokens = min(6144, max(2048, 8000 - input_impact))
+    
+    # Greetings/Short queries don't need much
+    greetings = ['hi', 'hello', 'hey', 'yo', 'sup', 'namaste', 'thanks', 'ok', 'bye']
+    if msg_lower in greetings or msg_len < 12:
         return 512
-    simple_keywords = ['what is', 'who is', 'when is', 'where is', 'how are', 'what time',
-                       'tell me a joke', 'meaning of', 'define ']
-    if any(msg_lower.startswith(k) for k in simple_keywords) and msg_len < 60:
-        return 2048
-    complex_keywords = ['write', 'code', 'create', 'build', 'implement', 'explain in detail',
-                        'essay', 'article', 'compare', 'analyze', 'list all', 'step by step',
-                        'debug', 'fix this', 'refactor', 'convert', 'generate', 'design',
-                        'full', 'complete', 'detailed', 'comprehensive', 'script', 'function',
-                        'class', 'regex', 'sql', 'css', 'html', 'javascript', 'python',
-                        'error', 'exception', 'test', 'docker', 'api', 'json']
-    if any(k in msg_lower for k in complex_keywords) or msg_len > 200:
-        return 16384
-    return 4096
+        
+    return smart_tokens
 
 
 def get_llm_response(messages, uid=None, model="daily", user_ip=None, tools=None, tool_choice=None, max_thinking=False):

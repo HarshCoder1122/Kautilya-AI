@@ -189,76 +189,134 @@ def _fetch_readable(url: str) -> str:
 
 
 def deep_research_stream(question: str) -> Iterator[Dict[str, Any]]:
-    """Streaming generator. Yields dicts with `event` key."""
+    """Streaming generator for Kautilya Deep Research.
+    
+    Architecture:
+    1. Query expansion via Llama-3.
+    2. Parallel search via SerpAPI/Google.
+    3. Content extraction.
+    4. Phase 1 (Reasoning): Stream deep thinking via NVIDIA Nemotron-3 (120b) or DeepSeek-R1.
+    5. Phase 2 (Synthesis): Generate high-signal report via GPT-OSS-120b.
+    """
     queries = _expand_queries(question)
     yield {"event": "query", "queries": queries}
 
     sources = _gather_sources(queries)
     if not sources:
-        yield {"event": "chunk", "chunk": "I couldn't find relevant sources for this question. "
-                                           "Try rephrasing or be more specific."}
+        yield {"event": "chunk", "chunk": "I couldn't find relevant sources for this question. Try rephrasing."}
         yield {"event": "done"}
         return
 
     yield {"event": "sources", "sources": sources}
 
-    # Fetch all pages in parallel (bounded)
+    # Fetch in parallel
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(sources))) as ex:
         bodies = list(ex.map(_fetch_readable, [s["url"] for s in sources]))
 
-    # Build the research context for the LLM
     ctx_lines = []
     for i, (s, body) in enumerate(zip(sources, bodies), 1):
         body = body or s.get("snippet", "")
-        ctx_lines.append(f"[{i}] {s['title']} — {s['url']}\n{body[:MAX_DOC_CHARS]}")
+        ctx_lines.append(f"SOURCE [{i}]: {s['title']} ({s['url']})\nCONTENT: {body[:MAX_DOC_CHARS]}")
     context = "\n\n".join(ctx_lines)
 
-    system = (
-        "You are KAUTILYA Deep Research. Write a structured, concise research report.\n\n"
-        "STRICT FORMAT:\n"
-        "## Summary\nOne paragraph. The most important finding up front.\n\n"
-        "## Findings\nBulleted. Each bullet MUST cite sources like [1] or [2,3].\n\n"
-        "## Implications\n2-4 bullets. So-what.\n\n"
-        "## Open Questions\n1-3 bullets. What remains uncertain.\n\n"
-        "Rules:\n"
-        "- Only use facts that appear in the Sources section below.\n"
-        "- If sources disagree, say so explicitly.\n"
-        "- No filler. No preamble. No 'I will now…' statements. Just the report.\n"
-        "- Every non-trivial claim MUST have a [N] citation.\n"
+    # PHASE 1: Initial Synthesis (Extraction & Drafting)
+    # We use GPT-OSS to quickly pull key facts and draft a preliminary report.
+    yield {"event": "status", "message": "Drafting initial synthesis with GPT-OSS..."}
+    
+    draft_system = (
+        "You are a Research Assistant. Extract key facts and draft a preliminary report from the sources provided. "
+        "Your draft will be reviewed by a Lead Analyst for deep reasoning and refinement."
     )
-    user = f"QUESTION:\n{question}\n\nSOURCES:\n{context}\n\nWrite the report now."
-    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    draft_messages = [
+        {"role": "system", "content": draft_system},
+        {"role": "user", "content": f"QUESTION: {question}\n\nSOURCES:\n{context}"}
+    ]
 
+    draft_parts = []
     try:
-        # Smart Token Budgeting: Estimate needed output based on context size
-        # We want enough room for a report but don't want to exhaust Groq TPM/RPM
-        prompt_len = len(system) + len(user)
-        # Aim for a healthy balance, typically 4k is plenty for a report, 
-        # but we allow up to 6k if context is huge.
-        smart_tokens = min(6144, max(4096, 8000 - (prompt_len // 4)))
+        draft_gen = call_groq(draft_messages, stream=True, model="openai/gpt-oss-120b",
+                             temperature=0.7, max_tokens=2048)
+        if not draft_gen:
+            draft_gen = call_groq(draft_messages, stream=True, model="llama-3.3-70b-versatile")
         
-        # Primary: Groq openai/gpt-oss-120b for ULTRA FAST deep research synthesis
-        gen = call_groq(messages, stream=True, model="openai/gpt-oss-120b",
-                        temperature=1.0, max_tokens=smart_tokens)
-        
-        if gen is None:
-            # Fallback to standard Groq model
-            gen = call_groq(messages, stream=True, model="llama-3.3-70b-versatile",
-                            temperature=0.3, max_tokens=4096)
-        
-        if gen is None:
-            yield {"event": "chunk", "chunk": "Research synthesis LLM unavailable."}
-            yield {"event": "done"}
-            return
-
-        for item in gen:
-            if isinstance(item, str):
-                yield {"event": "chunk", "chunk": item}
-            elif isinstance(item, dict):
+        if draft_gen:
+            for item in draft_gen:
                 if "chunk" in item:
-                    yield {"event": "chunk", "chunk": item["chunk"]}
-                # Silently drop thinking during research synthesis
+                    draft_parts.append(item["chunk"])
+                    # We don't stream the draft chunks to the user yet, 
+                    # as it's an internal step for the final reasoning.
     except Exception as e:
-        yield {"event": "chunk", "chunk": f"\n\n[synthesis error: {e}]"}
+        print(f"[Research] Phase 1 Draft Failed: {e}")
+        draft_parts = ["No preliminary draft available due to service error."]
+
+    initial_draft = "".join(draft_parts)
+
+    # PHASE 2: Heavy Reasoning & Refinement
+    # Now use Kautilya Pro (Nemotron) to reason over the draft + sources and generate the final report.
+    yield {"event": "status", "message": "Applying Kautilya Pro Heavy Reasoning & Refinement..."}
+
+    system = (
+        "You are KAUTILYA Lead Research Analyst. Your goal is to produce a 'Claude-level' high-signal research report.\n\n"
+        "REASONING PROTOCOL:\n"
+        "1. Review the initial draft provided below.\n"
+        "2. Cross-reference it with the original sources to identify gaps or inaccuracies.\n"
+        "3. Apply deep reasoning to provide strategic implications and critical insights.\n"
+        "4. Produce the final report in clean, high-signal Markdown.\n\n"
+        "STRICT STRUCTURE:\n"
+        "## Executive Summary\n"
+        "## Key Findings (with [N] citations)\n"
+        "## Strategic Implications\n"
+        "## Critical Uncertainties\n\n"
+        "RULES:\n"
+        "- NO '????' or placeholders.\n"
+        "- Cite sources using [1], [2], etc.\n"
+        "- Stream your reasoning trace before the final answer."
+    )
+    
+    user_prompt = (
+        f"QUESTION: {question}\n\n"
+        f"INITIAL DRAFT:\n{initial_draft[:4000]}\n\n"
+        f"ORIGINAL SOURCES:\n{context[:6000]}"
+    )
+    
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user_prompt}]
+
+    full_report_content = []
+    try:
+        # Final Reasoning & Synthesis: NVIDIA Nemotron
+        gen = call_nvidia(
+            messages, 
+            model="nvidia/nemotron-3-super-120b-a12b",
+            temperature=0.7, 
+            stream=True,
+            expose_thinking=True,
+            max_tokens=6000
+        )
+        
+        if gen:
+            for item in gen:
+                if "thinking" in item:
+                    yield {"thinking": item["thinking"]}
+                if "thinking_done" in item:
+                    yield {"thinking_done": True}
+                if "chunk" in item:
+                    # Sanitize any weird characters
+                    chunk = item["chunk"].replace("\ufffd", "")
+                    full_report_content.append(chunk)
+                    yield {"event": "chunk", "chunk": chunk}
+            
+            # AUTOMATIC ARTIFACT GENERATION
+            # If the report is substantial, wrap it in a document artifact for the Canvas
+            final_report = "".join(full_report_content)
+            if len(final_report) > 500:
+                artifact_title = f"Deep Research: {question[:40]}..."
+                artifact_tag = f'\n\n<artifact type="document" title="{artifact_title}">{final_report}</artifact>'
+                yield {"event": "chunk", "chunk": artifact_tag}
+        else:
+            # Fallback
+            yield {"event": "chunk", "chunk": "Research refinement failed. Returning initial draft.\n\n" + initial_draft}
+            
+    except Exception as e:
+        yield {"event": "chunk", "chunk": f"\n\n[Reasoning Error: {e}]"}
 
     yield {"event": "done"}
