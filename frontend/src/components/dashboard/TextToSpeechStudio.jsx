@@ -42,17 +42,52 @@ export default function TextToSpeechStudio() {
     // Stop any existing playback
     if (audioInstanceRef.current) {
       audioInstanceRef.current.pause();
-      setIsPlaying(false);
+      audioInstanceRef.current = null;
     }
 
     try {
       setLoading(true);
-      let audioBlob;
       
+      if (selectedProvider === 'revealIQ') {
+        // --- START NEW ZERO-LAG STREAMING LOGIC ---
+        const response = await ttsAPI.revealIQ.stream(text, revealIQModel, revealIQVoice, revealIQSpeed);
+        
+        if (!response.ok) throw new Error('Streaming failed');
+
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+        const reader = response.body.getReader();
+        let startTime = audioCtx.currentTime + 0.1;
+
+        setIsPlaying(true);
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          // Convert Int16 PCM bytes to Float32 for Web Audio API
+          const pcmData = new Int16Array(value.buffer);
+          const float32Data = new Float32Array(pcmData.length);
+          for (let i = 0; i < pcmData.length; i++) {
+            float32Data[i] = pcmData[i] / 32768.0;
+          }
+
+          const audioBuffer = audioCtx.createBuffer(1, float32Data.length, 24000);
+          audioBuffer.getChannelData(0).set(float32Data);
+
+          const source = audioCtx.createBufferSource();
+          source.buffer = audioBuffer;
+          source.connect(audioCtx.destination);
+          
+          source.start(startTime);
+          startTime += audioBuffer.duration;
+        }
+        // --- END STREAMING LOGIC ---
+        return;
+      }
+
+      // Fallback for other providers (Standard synthesis)
+      let audioBlob;
       switch (selectedProvider) {
-        case 'revealIQ':
-          audioBlob = await ttsAPI.revealIQ.synthesize(text, revealIQModel, revealIQVoice, revealIQSpeed);
-          break;
         case 'cartesia':
           audioBlob = await ttsAPI.cartesia.synthesize(text, cartesiaVoice);
           break;
@@ -68,17 +103,9 @@ export default function TextToSpeechStudio() {
       
       const url = URL.createObjectURL(audioBlob);
       setAudioUrl(url);
-      
       const audio = new Audio(url);
       audioInstanceRef.current = audio;
-      
-      audio.onended = () => {
-        setIsPlaying(false);
-      };
-
-      audio.onplay = () => setIsPlaying(true);
-      audio.onpause = () => setIsPlaying(false);
-
+      audio.onended = () => setIsPlaying(false);
       await audio.play();
       setIsPlaying(true);
     } catch (error) {
@@ -168,10 +195,10 @@ export default function TextToSpeechStudio() {
                               setRevealIQModel(e.target.value);
                               setRevealIQVoice(e.target.value === 'kokoro-en' ? 'af_heart' : 'hf_alpha');
                             }}
-                            className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-[var(--k-brand)]/50 focus:outline-none transition-all"
+                            className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-[var(--k-brand)]/50 focus:outline-none transition-all appearance-none cursor-pointer"
                           >
-                            <option value="kokoro-en">Swara-EN (English)</option>
-                            <option value="kokoro-hi">Swara-HI (Hindi)</option>
+                            <option value="kokoro-en" className="bg-[#1a1a1a] text-white">Swara-EN (English)</option>
+                            <option value="kokoro-hi" className="bg-[#1a1a1a] text-white">Swara-HI (Hindi)</option>
                           </select>
                         </div>
                         <div className="space-y-2">
@@ -179,10 +206,10 @@ export default function TextToSpeechStudio() {
                           <select
                             value={revealIQVoice}
                             onChange={(e) => setRevealIQVoice(e.target.value)}
-                            className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-[var(--k-brand)]/50 focus:outline-none transition-all"
+                            className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-[var(--k-brand)]/50 focus:outline-none transition-all appearance-none cursor-pointer"
                           >
                             {revealIQVoices.map(voice => (
-                              <option key={voice} value={voice}>{voiceDisplayNames[voice] || voice}</option>
+                              <option key={voice} value={voice} className="bg-[#1a1a1a] text-white">{voiceDisplayNames[voice] || voice}</option>
                             ))}
                           </select>
                         </div>
