@@ -1,9 +1,8 @@
-import { useState, useRef } from "react";
-import { Play, Stop, VolumeHigh, Settings, Sparkle, Download } from "@phosphor-icons/react";
+import { useState, useRef, useEffect } from "react";
+import { Play, Pause, VolumeHigh, Settings, Sparkle, Download, Waveform, SpeakerHigh, Activity } from "@phosphor-icons/react";
 import { ttsAPI } from "../../lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Button } from "@/components/ui/button";
 
 export default function TextToSpeechStudio() {
   const [selectedProvider, setSelectedProvider] = useState('revealIQ');
@@ -11,11 +10,11 @@ export default function TextToSpeechStudio() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [audioUrl, setAudioUrl] = useState(null);
   const [loading, setLoading] = useState(false);
-  const audioRef = useRef(null);
+  const audioInstanceRef = useRef(null);
   
   // RevealIQ specific
   const [revealIQModel, setRevealIQModel] = useState('kokoro-en');
-  const [revealIQVoice, setRevealIQVoice] = useState('af_heart');
+  const [revealIQVoice, setRevealIQVoice] = useState('af_nicole');
   const [revealIQSpeed, setRevealIQSpeed] = useState(1.0);
   
   // Cartesia specific
@@ -27,9 +26,25 @@ export default function TextToSpeechStudio() {
   // Sarvam specific
   const [sarvamLanguage, setSarvamLanguage] = useState(ttsAPI.sarvam.getLanguages()[0].id);
 
+  // Clean up audio instance on unmount
+  useEffect(() => {
+    return () => {
+      if (audioInstanceRef.current) {
+        audioInstanceRef.current.pause();
+        audioInstanceRef.current = null;
+      }
+    };
+  }, []);
+
   const handleSynthesize = async () => {
     if (!text.trim()) return;
     
+    // Stop any existing playback
+    if (audioInstanceRef.current) {
+      audioInstanceRef.current.pause();
+      setIsPlaying(false);
+    }
+
     try {
       setLoading(true);
       let audioBlob;
@@ -39,17 +54,9 @@ export default function TextToSpeechStudio() {
           audioBlob = await ttsAPI.revealIQ.synthesize(text, revealIQModel, revealIQVoice, revealIQSpeed);
           break;
         case 'cartesia':
-          if (!cartesiaVoice) {
-            alert('Please enter a voice ID');
-            return;
-          }
           audioBlob = await ttsAPI.cartesia.synthesize(text, cartesiaVoice);
           break;
         case 'elevenLabs':
-          if (!elevenLabsVoiceId) {
-            alert('Please enter a voice ID');
-            return;
-          }
           audioBlob = await ttsAPI.elevenLabs.synthesize(text, elevenLabsVoiceId);
           break;
         case 'sarvam':
@@ -62,27 +69,32 @@ export default function TextToSpeechStudio() {
       const url = URL.createObjectURL(audioBlob);
       setAudioUrl(url);
       
-      if (audioRef.current) {
-        audioRef.current.src = url;
-        audioRef.current.play();
-        setIsPlaying(true);
-      }
+      const audio = new Audio(url);
+      audioInstanceRef.current = audio;
+      
+      audio.onended = () => {
+        setIsPlaying(false);
+      };
+
+      audio.onplay = () => setIsPlaying(true);
+      audio.onpause = () => setIsPlaying(false);
+
+      await audio.play();
+      setIsPlaying(true);
     } catch (error) {
       console.error('TTS synthesis failed:', error);
-      alert('Failed to synthesize speech: ' + error.message);
+      alert('Failed to synthesize speech. Please check your credentials.');
     } finally {
       setLoading(false);
     }
   };
 
-  const handlePlay = () => {
-    if (audioRef.current && audioUrl) {
+  const handleTogglePlay = () => {
+    if (audioInstanceRef.current) {
       if (isPlaying) {
-        audioRef.current.pause();
-        setIsPlaying(false);
+        audioInstanceRef.current.pause();
       } else {
-        audioRef.current.play();
-        setIsPlaying(true);
+        audioInstanceRef.current.play();
       }
     }
   };
@@ -91,221 +103,220 @@ export default function TextToSpeechStudio() {
     if (audioUrl) {
       const a = document.createElement('a');
       a.href = audioUrl;
-      a.download = `tts-${selectedProvider}-${Date.now()}.wav`;
+      a.download = `kautilya-tts-${Date.now()}.wav`;
       a.click();
     }
   };
 
   const revealIQVoices = ttsAPI.revealIQ.getVoices(revealIQModel);
 
-  // Voice display names mapping
   const voiceDisplayNames = {
-    'af_heart': 'Priya Sharma',
-    'af_bella': 'Ananya Singh',
-    'af_nicole': 'Neha Kapoor',
-    'af_sky': 'Sneha Reddy',
-    'am_adam': 'Arjun Mehta',
-    'am_michael': 'Rahul Verma',
-    'hf_alpha': 'Aarav Kumar',
-    'hf_beta': 'Vihaan Sharma',
-  };
-
-  // Model display names mapping
-  const modelDisplayNames = {
-    'kokoro-en': 'Swara-EN',
-    'kokoro-hi': 'Swara-HI',
+    'af_heart': 'Priya Sharma (Sweet)',
+    'af_bella': 'Ananya Singh (Professional)',
+    'af_nicole': 'Neha Kapoor (Expressive)',
+    'af_sky': 'Sneha Reddy (Soft)',
+    'am_adam': 'Arjun Mehta (Deep)',
+    'am_michael': 'Rahul Verma (Narrator)',
+    'hf_alpha': 'Aarav Kumar (Hindi Female)',
+    'hf_beta': 'Vihaan Sharma (Hindi Male)',
   };
 
   return (
-    <div className="h-full" data-testid="tts-studio">
-      <div className="px-8 py-6 border-b border-[var(--k-border)]">
+    <div className="h-full bg-[var(--k-surface)]/30 backdrop-blur-sm" data-testid="tts-studio">
+      <div className="px-8 py-8 border-b border-[var(--k-border)] bg-gradient-to-r from-black/20 to-transparent">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-medium k-heading tracking-tight text-foreground">Text to Speech Studio</h1>
-            <p className="text-sm text-muted-foreground mt-1">Synthesize speech with multiple TTS providers</p>
+            <div className="flex items-center gap-3 mb-1">
+              <div className="w-10 h-10 rounded-xl bg-[var(--k-brand)] flex items-center justify-center shadow-lg shadow-[var(--k-brand)]/20">
+                <Waveform className="w-6 h-6 text-white" weight="bold" />
+              </div>
+              <h1 className="text-3xl font-bold k-heading tracking-tighter text-foreground">Voice Studio</h1>
+            </div>
+            <p className="text-sm text-muted-foreground/60 ml-13">Next-generation neural speech synthesis</p>
           </div>
         </div>
       </div>
 
-      <ScrollArea className="h-[calc(100vh-120px)]">
-        <div className="px-8 py-6 space-y-6">
-          <Tabs value={selectedProvider} onValueChange={setSelectedProvider}>
-            <TabsList className="bg-transparent h-10 p-0 gap-2 mb-6">
-              <TabsTrigger value="revealIQ" className="bg-transparent data-[state=active]:bg-[var(--k-brand)] data-[state=active]:text-white px-4 rounded-md text-sm">
-                RevealIQ
-              </TabsTrigger>
-              <TabsTrigger value="cartesia" className="bg-transparent data-[state=active]:bg-[var(--k-brand)] data-[state=active]:text-white px-4 rounded-md text-sm">
-                Cartesia
-              </TabsTrigger>
-              <TabsTrigger value="elevenLabs" className="bg-transparent data-[state=active]:bg-[var(--k-brand)] data-[state=active]:text-white px-4 rounded-md text-sm">
-                ElevenLabs
-              </TabsTrigger>
-              <TabsTrigger value="sarvam" className="bg-transparent data-[state=active]:bg-[var(--k-brand)] data-[state=active]:text-white px-4 rounded-md text-sm">
-                Sarvam
-              </TabsTrigger>
-            </TabsList>
-
-            {/* RevealIQ */}
-            <TabsContent value="revealIQ" className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Model</label>
-                  <select
-                    value={revealIQModel}
-                    onChange={(e) => {
-                      setRevealIQModel(e.target.value);
-                      setRevealIQVoice(e.target.value === 'kokoro-en' ? 'af_heart' : 'hf_alpha');
-                    }}
-                    className="w-full px-3 py-2 text-sm bg-transparent border border-[var(--k-border)] rounded-md text-foreground focus:outline-none focus:ring-1 focus:ring-[var(--k-brand)]"
-                  >
-                    <option value="kokoro-en">{modelDisplayNames['kokoro-en']}</option>
-                    <option value="kokoro-hi">{modelDisplayNames['kokoro-hi']}</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Voice</label>
-                  <select
-                    value={revealIQVoice}
-                    onChange={(e) => setRevealIQVoice(e.target.value)}
-                    className="w-full px-3 py-2 text-sm bg-transparent border border-[var(--k-border)] rounded-md text-foreground focus:outline-none focus:ring-1 focus:ring-[var(--k-brand)]"
-                  >
-                    {revealIQVoices.map(voice => (
-                      <option key={voice} value={voice}>{voiceDisplayNames[voice] || voice}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-              
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Speed: {revealIQSpeed.toFixed(1)}x</label>
-                  <input
-                    type="range"
-                    min="0.5"
-                    max="2.0"
-                    step="0.1"
-                    value={revealIQSpeed}
-                    onChange={(e) => setRevealIQSpeed(parseFloat(e.target.value))}
-                    className="w-full"
-                  />
-                </div>
-              </div>
-              
-            </TabsContent>
-
-            {/* Cartesia */}
-            <TabsContent value="cartesia" className="space-y-4">
-              <div>
-                <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Voice</label>
-                <select
-                  value={cartesiaVoice}
-                  onChange={(e) => setCartesiaVoice(e.target.value)}
-                  className="w-full px-3 py-2 text-sm bg-transparent border border-[var(--k-border)] rounded-md text-foreground focus:outline-none focus:ring-1 focus:ring-[var(--k-brand)]"
-                >
-                  {ttsAPI.cartesia.getVoices().map(voice => (
-                    <option key={voice.id} value={voice.id}>{voice.name}</option>
-                  ))}
-                </select>
-              </div>
-            </TabsContent>
-
-            {/* ElevenLabs */}
-            <TabsContent value="elevenLabs" className="space-y-4">
-              <div>
-                <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Voice</label>
-                <select
-                  value={elevenLabsVoiceId}
-                  onChange={(e) => setElevenLabsVoiceId(e.target.value)}
-                  className="w-full px-3 py-2 text-sm bg-transparent border border-[var(--k-border)] rounded-md text-foreground focus:outline-none focus:ring-1 focus:ring-[var(--k-brand)]"
-                >
-                  {ttsAPI.elevenLabs.getVoices().map(voice => (
-                    <option key={voice.id} value={voice.id}>{voice.name}</option>
-                  ))}
-                </select>
-              </div>
-            </TabsContent>
-
-            {/* Sarvam */}
-            <TabsContent value="sarvam" className="space-y-4">
-              <div>
-                <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Language</label>
-                <select
-                  value={sarvamLanguage}
-                  onChange={(e) => setSarvamLanguage(e.target.value)}
-                  className="w-full px-3 py-2 text-sm bg-transparent border border-[var(--k-border)] rounded-md text-foreground focus:outline-none focus:ring-1 focus:ring-[var(--k-brand)]"
-                >
-                  {ttsAPI.sarvam.getLanguages().map(lang => (
-                    <option key={lang.id} value={lang.id}>{lang.name}</option>
-                  ))}
-                </select>
-              </div>
-            </TabsContent>
-          </Tabs>
-
-          {/* Text Input */}
-          <div>
-            <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Text to Synthesize</label>
-            <textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="Enter text to synthesize..."
-              rows={4}
-              className="w-full px-3 py-2 text-sm bg-transparent border border-[var(--k-border)] rounded-md text-foreground focus:outline-none focus:ring-1 focus:ring-[var(--k-brand)] resize-none"
-            />
-          </div>
-
-          {/* Action Buttons */}
-          <div className="flex items-center gap-3">
-            <button
-              onClick={handleSynthesize}
-              disabled={loading || !text.trim()}
-              className="flex items-center gap-2 px-6 py-2.5 rounded-md bg-[var(--k-brand)] text-white text-sm font-medium hover:bg-[var(--k-brand-hover)] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {loading ? (
-                <>
-                  <Sparkle className="w-4 h-4 animate-spin" />
-                  Synthesizing...
-                </>
-              ) : (
-                <>
-                  <Sparkle className="w-4 h-4" />
-                  Synthesize
-                </>
-              )}
-            </button>
+      <ScrollArea className="h-[calc(100vh-140px)]">
+        <div className="max-w-5xl mx-auto px-8 py-10">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
             
-            {audioUrl && (
-              <>
-                <button
-                  onClick={handlePlay}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-md border border-[var(--k-border)] text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-all duration-200"
-                >
-                  {isPlaying ? <Stop className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-                  {isPlaying ? 'Stop' : 'Play'}
-                </button>
+            {/* Left: Configuration */}
+            <div className="lg:col-span-5 space-y-8">
+              <div className="p-6 rounded-2xl border border-[var(--k-border)] bg-black/20 backdrop-blur-md">
+                <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-muted-foreground mb-6 flex items-center gap-2">
+                  <Settings className="w-4 h-4" /> Engine Configuration
+                </h3>
                 
-                <button
-                  onClick={handleDownload}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-md border border-[var(--k-border)] text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-all duration-200"
-                >
-                  <Download className="w-4 h-4" />
-                  Download
-                </button>
-              </>
-            )}
-          </div>
+                <Tabs value={selectedProvider} onValueChange={setSelectedProvider} className="space-y-6">
+                  <TabsList className="grid grid-cols-4 bg-muted/10 p-1 rounded-xl h-12 border border-white/5">
+                    {['revealIQ', 'cartesia', 'elevenLabs', 'sarvam'].map(p => (
+                      <TabsTrigger key={p} value={p} className="text-[10px] uppercase font-bold tracking-wider data-[state=active]:bg-[var(--k-brand)] data-[state=active]:text-white transition-all duration-300">
+                        {p}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
 
-          {/* Audio Player */}
-          {audioUrl && (
-            <div className="p-4 rounded-md border border-[var(--k-border)] bg-[var(--k-surface)]">
-              <audio
-                ref={audioRef}
-                onEnded={() => setIsPlaying(false)}
-                controls
-                className="w-full"
-              />
+                  <div className="space-y-6 pt-2">
+                    {selectedProvider === 'revealIQ' && (
+                      <>
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">Language Model</label>
+                          <select
+                            value={revealIQModel}
+                            onChange={(e) => {
+                              setRevealIQModel(e.target.value);
+                              setRevealIQVoice(e.target.value === 'kokoro-en' ? 'af_heart' : 'hf_alpha');
+                            }}
+                            className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-[var(--k-brand)]/50 focus:outline-none transition-all"
+                          >
+                            <option value="kokoro-en">Swara-EN (English)</option>
+                            <option value="kokoro-hi">Swara-HI (Hindi)</option>
+                          </select>
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">Voice Personality</label>
+                          <select
+                            value={revealIQVoice}
+                            onChange={(e) => setRevealIQVoice(e.target.value)}
+                            className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-[var(--k-brand)]/50 focus:outline-none transition-all"
+                          >
+                            {revealIQVoices.map(voice => (
+                              <option key={voice} value={voice}>{voiceDisplayNames[voice] || voice}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </>
+                    )}
+
+                    {selectedProvider === 'cartesia' && (
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">Sonic Identity</label>
+                        <select
+                          value={cartesiaVoice}
+                          onChange={(e) => setCartesiaVoice(e.target.value)}
+                          className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-sm"
+                        >
+                          {ttsAPI.cartesia.getVoices().map(voice => (
+                            <option key={voice.id} value={voice.id}>{voice.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {selectedProvider === 'elevenLabs' && (
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">Premium Narrator</label>
+                        <select
+                          value={elevenLabsVoiceId}
+                          onChange={(e) => setElevenLabsVoiceId(e.target.value)}
+                          className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-sm"
+                        >
+                          {ttsAPI.elevenLabs.getVoices().map(voice => (
+                            <option key={voice.id} value={voice.id}>{voice.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {selectedProvider === 'sarvam' && (
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">Regional Language</label>
+                        <select
+                          value={sarvamLanguage}
+                          onChange={(e) => setSarvamLanguage(e.target.value)}
+                          className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-sm"
+                        >
+                          {ttsAPI.sarvam.getLanguages().map(lang => (
+                            <option key={lang.id} value={lang.id}>{lang.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                </Tabs>
+              </div>
+
+              {/* Status Visualizer */}
+              {loading && (
+                <div className="p-8 rounded-2xl border border-[var(--k-brand)]/20 bg-[var(--k-brand)]/5 flex flex-col items-center justify-center space-y-4 animate-in fade-in zoom-in duration-300">
+                  <div className="flex items-center gap-1">
+                    {[...Array(6)].map((_, i) => (
+                      <div 
+                        key={i} 
+                        className="w-1.5 h-8 bg-[var(--k-brand)] rounded-full animate-pulse" 
+                        style={{ animationDelay: `${i * 100}ms`, height: `${16 + Math.random() * 24}px` }} 
+                      />
+                    ))}
+                  </div>
+                  <span className="text-xs font-bold uppercase tracking-widest text-[var(--k-brand)]">Neural Processing...</span>
+                </div>
+              )}
             </div>
-          )}
+
+            {/* Right: Input & Playback */}
+            <div className="lg:col-span-7 space-y-6">
+              <div className="relative group">
+                <textarea
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  placeholder="Type or paste the content you want to transform into high-fidelity speech..."
+                  className="w-full h-[320px] p-8 text-xl bg-black/40 border border-white/5 rounded-3xl focus:ring-2 focus:ring-[var(--k-brand)]/30 focus:outline-none transition-all placeholder:text-muted-foreground/20 leading-relaxed shadow-inner font-light"
+                />
+                <div className="absolute bottom-6 right-8 text-[10px] font-mono text-muted-foreground/30 uppercase tracking-widest">
+                  {text.length} Characters
+                </div>
+              </div>
+
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={handleSynthesize}
+                  disabled={loading || !text.trim()}
+                  className="flex-1 h-14 flex items-center justify-center gap-3 rounded-2xl bg-[var(--k-brand)] hover:bg-[var(--k-brand-hover)] text-white font-bold transition-all duration-300 shadow-lg shadow-[var(--k-brand)]/20 active:scale-[0.98] disabled:opacity-30 disabled:grayscale"
+                >
+                  {loading ? <Activity className="w-6 h-6 animate-spin" /> : <Sparkle className="w-6 h-6" weight="fill" />}
+                  <span className="uppercase tracking-widest text-sm">Generate Voice</span>
+                </button>
+
+                {audioUrl && (
+                  <button
+                    onClick={handleDownload}
+                    className="w-14 h-14 flex items-center justify-center rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 text-white transition-all duration-300 active:scale-[0.95]"
+                    title="Download WAV"
+                  >
+                    <Download className="w-6 h-6" />
+                  </button>
+                )}
+              </div>
+
+              {/* Custom Playback Bar */}
+              {audioUrl && (
+                <div className="p-6 rounded-3xl border border-white/5 bg-gradient-to-br from-white/10 to-transparent flex items-center gap-6 animate-in slide-in-from-bottom-4 duration-500">
+                  <button 
+                    onClick={handleTogglePlay}
+                    className="w-14 h-14 rounded-full bg-white text-black flex items-center justify-center hover:scale-110 transition-transform active:scale-90"
+                  >
+                    {isPlaying ? <Pause className="w-6 h-6" weight="fill" /> : <Play className="w-6 h-6 ml-1" weight="fill" />}
+                  </button>
+                  
+                  <div className="flex-1 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-white/50 flex items-center gap-2">
+                        <SpeakerHigh className="w-3 h-3" /> Master Output
+                      </span>
+                      <span className="text-[10px] font-mono text-white/40">HI-RES AUDIO</span>
+                    </div>
+                    <div className="h-1.5 w-full bg-white/10 rounded-full overflow-hidden">
+                      <div 
+                        className={`h-full bg-white transition-all duration-300 ${isPlaying ? 'w-full opacity-100' : 'w-1/3 opacity-50'}`}
+                        style={{ transitionDuration: isPlaying ? '30s' : '0.5s' }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </ScrollArea>
     </div>

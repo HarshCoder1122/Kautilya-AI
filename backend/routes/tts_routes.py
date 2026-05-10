@@ -10,6 +10,54 @@ logger = logging.getLogger(__name__)
 tts_bp = Blueprint('tts', __name__)
 
 
+@tts_bp.route('/tts/revealiq/stream', methods=['POST', 'OPTIONS'])
+@cross_origin()
+def reveal_iq_stream():
+    """Stream raw PCM audio from RevealIQ (Zero-Lag)."""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        data = request.get_json()
+        text = data.get('text', '')
+        raw_model = data.get('model', 'kokoro-en')
+        model = 'kokoro-en' if 'hi' not in raw_model.lower() else 'kokoro-hi'
+        voice = data.get('voice', 'af_nicole')
+        speed = data.get('speed', 1.0)
+        
+        hf_token = os.environ.get('REVEALIQ_HF_TOKEN') or os.environ.get('HF_TOKEN')
+        url = 'https://harshsharma1212-revealiq-asr.hf.space/v1/audio/stream'
+        
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {hf_token}',
+        }
+        payload = {
+            'model': model,
+            'input': text,
+            'voice': voice,
+            'speed': float(speed),
+        }
+
+        # Request streaming from Space
+        resp = requests.post(url, headers=headers, json=payload, stream=True, timeout=60)
+        
+        if not resp.ok:
+            return jsonify({"error": f"Streaming failed: {resp.text}"}), 500
+
+        # Proxy chunks to client
+        from flask import Response
+        def generate():
+            for chunk in resp.iter_content(chunk_size=4096):
+                if chunk:
+                    yield chunk
+
+        return Response(generate(), mimetype='application/octet-stream')
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @tts_bp.route('/tts/revealiq/synthesize', methods=['POST', 'OPTIONS'])
 @cross_origin()
 def reveal_iq_synthesize():
@@ -39,11 +87,14 @@ def reveal_iq_synthesize():
             return jsonify({"error": "RevealIQ HF token not configured"}), 500
         
         # Call RevealIQ Hugging Face Space (Universal URL format)
+        # Using the NEW high-performance endpoints
         url = 'https://harshsharma1212-revealiq-asr.hf.space/v1/audio/speech'
         headers = {
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {hf_token}',
         }
+        
+        # Exact voice mapping for RevealIQ Space
         payload = {
             'model': model,
             'input': text,
@@ -51,7 +102,7 @@ def reveal_iq_synthesize():
             'speed': float(speed),
         }
         
-        print(f"[RevealIQ] Synthesis request: Model={model}, Voice={voice}")
+        print(f"[RevealIQ] Synthesis request: URL={url} | Model={model} | Voice={voice}")
         
         response = requests.post(url, headers=headers, json=payload, timeout=45)
         

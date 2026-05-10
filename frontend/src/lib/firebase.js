@@ -13,23 +13,38 @@ export const initFirebase = async () => {
 
   const sanitizeConfig = (raw) => {
     if (!raw) return null;
+    const trimmed = raw.trim();
     try {
       // If it's already a clean JSON string
-      if (raw.trim().startsWith('{')) return JSON.parse(raw);
+      if (trimmed.startsWith('{')) return JSON.parse(trimmed);
       
       // If it contains "const firebaseConfig =" or similar JS junk
-      const match = raw.match(/\{[\s\S]*\}/);
-      if (match) {
-        // Attempt to convert JS object-like string to valid JSON
-        let jsonStr = match[0]
-          .replace(/(\w+):/g, '"$1":') // Quote keys
-          .replace(/'/g, '"')         // Replace single quotes with double quotes
-          .replace(/,\s*}/g, '}')     // Remove trailing commas
-          .replace(/,\s*]/g, ']');    // Remove trailing commas in arrays
-        return JSON.parse(jsonStr);
+      // We look for everything between the first '{' and the last '}'
+      const firstBrace = raw.indexOf('{');
+      const lastBrace = raw.lastIndexOf('}');
+      
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        let content = raw.substring(firstBrace, lastBrace + 1);
+        
+        // Clean up common JS object syntax to make it valid JSON
+        let clean = content
+          .replace(/(\/\/.*)/g, "") // Remove comments
+          .replace(/(\/\*[\s\S]*?\*\/)/g, "") // Remove multi-line comments
+          .replace(/([{,])\s*(\w+):/g, '$1"$2":') // Quote keys
+          .replace(/'/g, '"') // Replace single quotes with double quotes
+          .replace(/,\s*([}\]])/g, '$1'); // Remove trailing commas
+          
+        return JSON.parse(clean);
       }
     } catch (e) {
-      console.warn("Firebase: Sanitize failed, returning null", e);
+      console.warn("Firebase: Deep sanitize failed, attempting lenient parse...", e);
+      // Last ditch effort: try to evaluate the string if it looks like a JS object
+      try {
+        const evalConfig = new Function(`return ${raw.substring(raw.indexOf('{'))}`)();
+        if (evalConfig && evalConfig.apiKey) return evalConfig;
+      } catch (innerE) {
+        console.error("Firebase: All sanitize methods failed", innerE);
+      }
     }
     return null;
   };
