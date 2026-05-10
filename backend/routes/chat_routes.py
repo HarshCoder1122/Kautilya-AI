@@ -178,11 +178,42 @@ def jarvis_stream():
         else:
             sys_prompt = build_personalized_prompt(SYSTEM_PROMPT, user_email, user_memories, user_email, settings)
 
+        # --- ENHANCEMENT: Infinite Memory & User Personalization ---
+        history = []
+        user_context = ""
+        try:
+            # 1. Load User Identity from Firestore
+            user_ref = db.collection('users').document(uid)
+            user_doc = user_ref.get()
+            if user_doc.exists:
+                user_data = user_doc.to_dict()
+                name = user_data.get('displayName', 'User')
+                memories = user_data.get('memories', '')
+                user_context = f"User Name: {name}. Memories: {memories}. Address the user as {name} occasionally."
+
+            # 2. Load Last 15 messages for Context
+            if session_id:
+                chat_ref = db.collection('users').document(uid).collection('conversations').document(session_id)
+                messages_ref = chat_ref.collection('messages').order_by('timestamp', direction='DESCENDING').limit(15)
+                past_msgs = messages_ref.get()
+                for m in reversed(past_msgs):
+                    history.append({"role": m.get('role'), "content": m.get('content')})
+        except Exception as e:
+            logger.error(f"Context Loading Error: {e}")
+
+        # 3. Inject into Prompt
+        base_system_prompt = f"You are KAUTILYA AI — a frontier strategic intelligence. {user_context} Use deep reasoning like Claude Opus. Always maintain context of previous chat history: {history}"
+        
+        # Construct final payload
+        full_messages = [{"role": "system", "content": base_system_prompt}]
+        full_messages.extend(history)
+        full_messages.append({"role": "user", "content": message})
+
         user_id = uid or "guest"
         if user_id not in conversations:
             conversations[user_id] = {}
         conv = {
-            'messages': [{"role": "system", "content": sys_prompt}],
+            'messages': full_messages,
             'last_active': time.time(),
             'uid': uid,
             'created_at': time.time(),

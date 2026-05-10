@@ -70,31 +70,6 @@ export function ChatMessage({ message, onOpenArtifact }) {
               <a
                 key={cite.id}
                 href={cite.url}
-                data-testid={`citation-${cite.id}`}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-[var(--k-border)] hover:bg-accent transition-all duration-200 text-xs group"
-              >
-                <span className="citation-badge">{cite.id}</span>
-                <span className="text-foreground font-medium">{cite.title}</span>
-                <span className="text-muted-foreground/60">{cite.source}</span>
-                <ArrowSquareOut className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
-              </a>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Artifact Button */}
-      {message.hasArtifact && (
-        <button
-          data-testid="open-artifact-btn"
-          onClick={onOpenArtifact}
-          className="mt-4 flex items-center gap-2 px-4 py-2.5 rounded-md border border-[var(--k-brand)]/30 bg-[var(--k-brand)]/5 hover:bg-[var(--k-brand)]/10 transition-all duration-200 text-sm text-[var(--k-brand)] font-medium"
-        >
-          <ArrowSquareOut className="w-4 h-4" />
-          View in Canvas
-        </button>
-      )}
-
       <div className="text-[10px] text-muted-foreground/50 mt-2">{message.timestamp}</div>
     </div>
   );

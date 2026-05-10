@@ -156,31 +156,38 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, canvasOpen, onTogg
 
         updateAssistant({
           content: fullContent.replace(/<artifact[\s\S]*?<\/artifact>/g, '').trim(),
-          thinkingDone: true,
-          artifactType: artifactData?.type,
-          artifactTitle: artifactData?.title,
-          artifactCode: artifactData?.code,
-          hasArtifact: !!artifactData,
+        setMessages(prev => {
+          const index = prev.findIndex(m => m.id === aiMsgId);
+          if (index === -1) return prev;
+          const updated = [...prev];
+          const existing = updated[index];
+          
+          // ATOMIC TRANSITION: If we get content, we MUST stop thinking
+          const newPatch = { ...patch };
+          if (newPatch.content) {
+            newPatch.thinking = '';
+            setIsThinking(false);
+          }
+          
+          updated[index] = { ...existing, ...newPatch };
+          return updated;
         });
       };
+
+      // CLAUDE OPUS STYLE THINKING START
+      updateAssistant({ thinking: "Initializing strategic intelligence protocol... Analyzing session context... Preparing multidimensional response..." });
+      
+      let fullContent = '';
+      let currentThinking = '';
+      let buffer = '';
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         
         buffer += decoder.decode(value, { stream: true });
-        const parsedBuffer = parseSSELines(buffer);
-        buffer = parsedBuffer.remainder;
-        
-        for (const line of parsedBuffer.completeLines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') {
-              setIsStreaming(false);
-              break;
-            }
-            
-            try {
               const parsed = JSON.parse(data);
               if (parsed.event === 'agent') {
                 updateAssistant({ agentType: parsed.agent || aiMsg.agentType });
