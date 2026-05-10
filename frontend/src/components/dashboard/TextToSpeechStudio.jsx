@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Play, Pause, VolumeHigh, Gear, Sparkle, Download, Waveform, SpeakerHigh, Activity } from "@phosphor-icons/react";
+import { Play, Pause, VolumeHigh, Gear, Sparkle, Download, Waveform, SpeakerHigh, Pulse } from "@phosphor-icons/react";
 import { ttsAPI } from "../../lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -274,7 +274,7 @@ export default function TextToSpeechStudio() {
                   disabled={loading || !text.trim()}
                   className="flex-1 h-14 flex items-center justify-center gap-3 rounded-2xl bg-[var(--k-brand)] hover:bg-[var(--k-brand-hover)] text-white font-bold transition-all duration-300 shadow-lg shadow-[var(--k-brand)]/20 active:scale-[0.98] disabled:opacity-30 disabled:grayscale"
                 >
-                  {loading ? <Activity className="w-6 h-6 animate-spin" /> : <Sparkle className="w-6 h-6" weight="fill" />}
+                  {loading ? <Pulse className="w-6 h-6 animate-spin" /> : <Sparkle className="w-6 h-6" weight="fill" />}
                   <span className="uppercase tracking-widest text-sm">Generate Voice</span>
                 </button>
 
