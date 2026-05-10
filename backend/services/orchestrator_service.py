@@ -66,7 +66,7 @@ AGENT_REGISTRY: Dict[str, Dict] = {
     "general": {
         "label": "General",
         "emoji": "💬",
-        "model": "pro",
+        "model": "daily",
         "prompt": PRO_SYSTEM_PROMPT,
         "description": "Default Kautilya voice.",
     },
@@ -85,6 +85,9 @@ def classify_intent(question: str) -> str:
         return "sales"
     if re.search(r'\b(not working|broken|won\'?t|error message|crash|refund|complain|frustrated|angry|issue|problem)\b', q):
         return "support"
+    if re.search(r'\b(analyze deep|philosophy|strategy|complex|logic|reasoning|step by step)\b', q):
+        # Allow pro model only for very complex reasoning requests
+        return "general" # In registry, general is now daily, but we can add a 'pro' agent
 
     # LLM classifier fallback
     try:
