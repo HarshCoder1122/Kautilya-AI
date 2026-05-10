@@ -1,11 +1,11 @@
-"""
-Kautilya AI — TTS Routes Blueprint
-Handles /api/tts/* endpoints for Text-to-Speech synthesis.
-"""
 import os
 import requests
+import json
+import logging
 from flask import Blueprint, request, send_file, jsonify
 from flask_cors import cross_origin
+
+logger = logging.getLogger(__name__)
 
 tts_bp = Blueprint('tts', __name__)
 
@@ -22,14 +22,19 @@ def reveal_iq_synthesize():
         text = data.get('text', '')
         # Standardize model names for Kokoro engine
         raw_model = data.get('model', 'kokoro-en')
-        model = 'kokoro' if 'kokoro' in raw_model.lower() else raw_model
+        
+        # FIX: The RevealIQ Space expects 'kokoro-en' or 'kokoro-hi'
+        model = 'kokoro-en'
+        if 'hi' in raw_model.lower():
+            model = 'kokoro-hi'
+            
         voice = data.get('voice', 'af_heart')
         speed = data.get('speed', 1.0)
         
         if not text:
             return jsonify({"error": "Text is required"}), 400
         
-        hf_token = os.environ.get('REVEALIQ_HF_TOKEN')
+        hf_token = os.environ.get('REVEALIQ_HF_TOKEN') or os.environ.get('HF_TOKEN')
         if not hf_token:
             return jsonify({"error": "RevealIQ HF token not configured"}), 500
         
@@ -46,15 +51,14 @@ def reveal_iq_synthesize():
             'speed': float(speed),
         }
         
-        print(f"[RevealIQ] Attempting synthesis | URL: {url} | Model: {model} | Voice: {voice}")
-        print(f"[RevealIQ] Payload: {json.dumps(payload)}")
+        print(f"[RevealIQ] Synthesis request: Model={model}, Voice={voice}")
         
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response = requests.post(url, headers=headers, json=payload, timeout=45)
         
         if not response.ok:
+            print(f"[RevealIQ] Synthesis failed: {response.text}")
             return jsonify({"error": f"TTS synthesis failed: {response.text}"}), 500
         
-        # Return audio blob
         from flask import Response
         return Response(
             response.content,
