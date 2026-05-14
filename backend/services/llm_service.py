@@ -181,6 +181,10 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
             payload["tools"] = tools
         if tool_choice:
             payload["tool_choice"] = tool_choice
+        # Enable extended thinking for reasoning-capable models (Nemotron, Qwen3)
+        # Only if reasoning_budget is explicitly provided — no hardcoded fallback
+        if reasoning_budget and reasoning_budget > 0 and expose_thinking:
+            payload["chat_template_kwargs"] = {"thinking": {"type": "enabled", "budget_tokens": reasoning_budget}}
         resp = requests.post(
             "https://integrate.api.nvidia.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {NVIDIA_API_KEY}",

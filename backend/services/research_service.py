@@ -219,13 +219,15 @@ def deep_research_stream(question: str) -> Iterator[Dict[str, Any]]:
         ctx_lines.append(f"SOURCE [{i}]: {s['title']} ({s['url']})\nCONTENT: {body[:MAX_DOC_CHARS]}")
     context = "\n\n".join(ctx_lines)
 
-    # PHASE 1: Initial Synthesis (Extraction & Drafting)
-    # We use GPT-OSS to quickly pull key facts and draft a preliminary report.
-    yield {"event": "status", "message": "Drafting initial synthesis with GPT-OSS..."}
-    
+    # PHASE 1: Initial Synthesis using GPT-OSS-120B (OpenAI's open-weight 120B MoE, available on Groq)
+    # Best for: structured extraction, reasoning, tool-use-style analysis at low cost
+    yield {"event": "status", "message": "🔬 Phase 1 — GPT-OSS-120B extracting key facts…"}
+
     draft_system = (
-        "You are a Research Assistant. Extract key facts and draft a preliminary report from the sources provided. "
-        "Your draft will be reviewed by a Lead Analyst for deep reasoning and refinement."
+        "You are a Senior Research Analyst. Your job is to extract key facts, data points, and arguments from the provided sources "
+        "and produce a structured preliminary report. Use chain-of-thought reasoning. "
+        "Organize your output under: Background, Key Data Points, Arguments For/Against, and Open Questions. "
+        "This draft will be refined into a final report by a Lead Analyst."
     )
     draft_messages = [
         {"role": "system", "content": draft_system},
@@ -234,10 +236,12 @@ def deep_research_stream(question: str) -> Iterator[Dict[str, Any]]:
 
     draft_parts = []
     try:
+        # openai/gpt-oss-120b: OpenAI's open-weight 120B MoE model on Groq (day-zero support)
         draft_gen = call_groq(draft_messages, stream=True, model="openai/gpt-oss-120b",
                              temperature=0.7, max_tokens=2048)
         if not draft_gen:
-            draft_gen = call_groq(draft_messages, stream=True, model="llama-3.3-70b-versatile")
+            draft_gen = call_groq(draft_messages, stream=True, model="llama-3.3-70b-versatile",
+                                 temperature=0.7, max_tokens=2048)
         
         if draft_gen:
             for item in draft_gen:
@@ -283,39 +287,50 @@ def deep_research_stream(question: str) -> Iterator[Dict[str, Any]]:
 
     full_report_content = []
     try:
-        # Final Reasoning & Synthesis: NVIDIA Nemotron
+        # Final Reasoning & Synthesis: NVIDIA Nemotron (with fallback to Groq)
         gen = call_nvidia(
-            messages, 
+            messages,
             model="nvidia/nemotron-3-super-120b-a12b",
-            temperature=0.7, 
+            temperature=0.7,
             stream=True,
             expose_thinking=True,
             max_tokens=6000
         )
-        
+
+        if not gen:
+            # Fallback to Groq Llama for synthesis
+            gen = call_groq(messages, stream=True, model="llama-3.3-70b-versatile",
+                           temperature=0.7, max_tokens=4096)
+
         if gen:
             for item in gen:
-                if "thinking" in item:
-                    yield {"thinking": item["thinking"]}
-                if "thinking_done" in item:
-                    yield {"thinking_done": True}
-                if "chunk" in item:
-                    # Sanitize any weird characters
-                    chunk = item["chunk"].replace("\ufffd", "")
+                if isinstance(item, dict):
+                    if "thinking" in item:
+                        yield {"thinking": item["thinking"]}
+                        continue
+                    if "thinking_done" in item:
+                        yield {"thinking_done": True}
+                        continue
+                    chunk = item.get("chunk", "")
+                else:
+                    chunk = item
+
+                if chunk:
+                    chunk = chunk.replace("\ufffd", "")
                     full_report_content.append(chunk)
                     yield {"event": "chunk", "chunk": chunk}
-            
-            # AUTOMATIC ARTIFACT GENERATION
-            # If the report is substantial, wrap it in a document artifact for the Canvas
+
+            # ARTIFACT GENERATION \u2014 send a special artifact marker (no content duplication)
+            # The frontend will detect this tag and open the Canvas with the full collected content.
             final_report = "".join(full_report_content)
-            if len(final_report) > 500:
-                artifact_title = f"Deep Research: {question[:40]}..."
-                artifact_tag = f'\n\n<artifact type="document" title="{artifact_title}">{final_report}</artifact>'
-                yield {"event": "chunk", "chunk": artifact_tag}
+            if len(final_report) > 300:
+                artifact_title = f"Deep Research: {question[:50]}..."
+                # Send a lightweight artifact open-tag so frontend knows to display in canvas
+                # The actual content is already in fullContent on the frontend side
+                yield {"event": "artifact", "artifactType": "document", "artifactTitle": artifact_title}
         else:
-            # Fallback
-            yield {"event": "chunk", "chunk": "Research refinement failed. Returning initial draft.\n\n" + initial_draft}
-            
+            yield {"event": "chunk", "chunk": "Research refinement unavailable. Here is the initial draft:\n\n" + initial_draft}
+
     except Exception as e:
         yield {"event": "chunk", "chunk": f"\n\n[Reasoning Error: {e}]"}
 

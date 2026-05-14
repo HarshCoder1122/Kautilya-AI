@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import ReactMarkdown from 'react-markdown';
 import { X, Code, ChartBar, FileText, Copy, Download, ArrowsOutSimple, Check } from "@phosphor-icons/react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -8,15 +8,40 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 export function CanvasPane({ content, onClose, activeMode }) {
-  const [activeTab, setActiveTab] = useState(content?.type === 'code' ? 'code' : content?.type === 'document' ? 'document' : 'dashboard');
+  const getInitialTab = (c) => {
+    if (c?.type === 'code') return 'code';
+    if (c?.type === 'document') return 'document';
+    if (c?.type === 'dashboard') return 'dashboard';
+    return 'document';
+  };
+
+  const [activeTab, setActiveTab] = useState(getInitialTab(content));
   const [copied, setCopied] = useState(false);
+
+  // Sync tab when content changes (new artifact opened)
+  useEffect(() => {
+    setActiveTab(getInitialTab(content));
+  }, [content?.type, content?.title]);
 
   const handleCopy = () => {
     if (content?.code) {
-      navigator.clipboard.writeText(content.code);
+      navigator.clipboard.writeText(content.code).catch(() => {});
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
+  };
+
+  const handleDownload = () => {
+    if (!content?.code) return;
+    const ext = activeTab === 'code' ? (content.language || 'txt') : 'md';
+    const filename = `${(content.title || 'kautilya-artifact').replace(/[^a-z0-9]/gi, '-').toLowerCase()}.${ext}`;
+    const blob = new Blob([content.code], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const getDynamicData = () => {
@@ -55,14 +80,18 @@ export function CanvasPane({ content, onClose, activeMode }) {
           </div>
         </div>
         <div className="flex items-center gap-1">
-          <button 
+          <button
             onClick={handleCopy}
-            className="p-2 rounded-md hover:bg-accent transition-all duration-200" 
-            title="Copy"
+            className="p-2 rounded-md hover:bg-accent transition-all duration-200"
+            title="Copy content"
           >
             {copied ? <Check className="w-4 h-4 text-[var(--k-green)]" /> : <Copy className="w-4 h-4 text-muted-foreground" />}
           </button>
-          <button className="p-2 rounded-md hover:bg-accent transition-all duration-200" title="Download">
+          <button
+            onClick={handleDownload}
+            className="p-2 rounded-md hover:bg-accent transition-all duration-200"
+            title="Download"
+          >
             <Download className="w-4 h-4 text-muted-foreground" />
           </button>
           <div className="w-px h-4 bg-[var(--k-border)] mx-1" />
@@ -76,7 +105,7 @@ export function CanvasPane({ content, onClose, activeMode }) {
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
         <div className="px-4 bg-[var(--k-surface)] border-b border-[var(--k-border)]">
           <TabsList className="bg-transparent h-10 p-0 gap-6">
-            {['dashboard', 'code', 'document', 'preview'].map((tab) => (
+            {['document', 'code', 'dashboard', 'preview'].map((tab) => (
               <TabsTrigger
                 key={tab}
                 value={tab}
@@ -87,6 +116,54 @@ export function CanvasPane({ content, onClose, activeMode }) {
             ))}
           </TabsList>
         </div>
+
+        <TabsContent value="document" className="flex-1 overflow-hidden m-0">
+          <ScrollArea className="h-full bg-[#fcfcfc] dark:bg-[#0f1115]">
+            <div className="min-h-full p-8 md:p-16 max-w-4xl mx-auto">
+              <div className="bg-white dark:bg-[#1a1d23] shadow-[0_0_50px_rgba(0,0,0,0.05)] dark:shadow-none border border-[var(--k-border)] rounded-sm p-10 md:p-20 min-h-[1100px]">
+                {/* Document Header Decoration */}
+                <div className="w-12 h-1 bg-[var(--k-brand)] mb-12" />
+
+                <div className="prose prose-sm md:prose-base dark:prose-invert max-w-none font-sans text-[#2c3e50] dark:text-[#e1e1e1] leading-[1.8]">
+                  {content?.code ? (
+                    <ReactMarkdown>{content.code}</ReactMarkdown>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-20 text-center text-muted-foreground">
+                      <FileText className="w-12 h-12 mb-4 opacity-10" />
+                      <p>No document content generated yet.</p>
+                      <p className="text-xs mt-2 opacity-60">Use Deep Research or ask Kautilya to write a document.</p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Document Footer Decoration */}
+                <div className="mt-20 pt-8 border-t border-[var(--k-border)] flex justify-between items-center text-[10px] uppercase tracking-widest text-muted-foreground font-bold">
+                  <span>Kautilya Deep Research Intelligence</span>
+                  <span>Confidential / Internal</span>
+                </div>
+              </div>
+            </div>
+          </ScrollArea>
+        </TabsContent>
+
+        <TabsContent value="code" className="flex-1 overflow-hidden m-0">
+          <div className="h-full bg-[#1e1e1e]">
+            <SyntaxHighlighter
+              language={content?.language || 'javascript'}
+              style={vscDarkPlus}
+              customStyle={{
+                margin: 0,
+                padding: '1.5rem',
+                fontSize: '0.85rem',
+                height: '100%',
+                background: 'transparent',
+              }}
+              showLineNumbers
+            >
+              {content?.code || "// No code available"}
+            </SyntaxHighlighter>
+          </div>
+        </TabsContent>
 
         <TabsContent value="dashboard" className="flex-1 overflow-hidden m-0">
           <ScrollArea className="h-full">
@@ -101,7 +178,6 @@ export function CanvasPane({ content, onClose, activeMode }) {
                 </div>
               ) : (
                 <>
-                  {/* KPIs */}
                   {kpis.length > 0 && (
                     <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                       {kpis.map((kpi, i) => (
@@ -118,7 +194,6 @@ export function CanvasPane({ content, onClose, activeMode }) {
                     </div>
                   )}
 
-                  {/* Revenue Chart */}
                   {revenueData.length > 0 && (
                     <div className="p-6 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] shadow-sm">
                       <div className="text-sm font-bold text-foreground mb-6 flex items-center gap-2">
@@ -136,7 +211,7 @@ export function CanvasPane({ content, onClose, activeMode }) {
                           <CartesianGrid strokeDasharray="3 3" stroke="var(--k-border)" vertical={false} />
                           <XAxis dataKey="label" tick={{ fontSize: 10, fill: 'var(--k-text-secondary)', fontWeight: 600 }} axisLine={false} tickLine={false} />
                           <YAxis tick={{ fontSize: 10, fill: 'var(--k-text-secondary)', fontWeight: 600 }} axisLine={false} tickLine={false} />
-                          <Tooltip 
+                          <Tooltip
                             contentStyle={{ background: 'var(--k-surface)', border: '1px solid var(--k-border)', borderRadius: '12px', fontSize: '12px', fontWeight: 600, boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }}
                             cursor={{ stroke: 'var(--k-brand)', strokeWidth: 1 }}
                           />
@@ -146,7 +221,6 @@ export function CanvasPane({ content, onClose, activeMode }) {
                     </div>
                   )}
 
-                  {/* Sales by Region */}
                   {salesByRegion.length > 0 && (
                     <div className="p-6 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] shadow-sm">
                       <div className="text-sm font-bold text-foreground mb-6 flex items-center gap-2">
@@ -170,53 +244,6 @@ export function CanvasPane({ content, onClose, activeMode }) {
                   )}
                 </>
               )}
-            </div>
-          </ScrollArea>
-        </TabsContent>
-
-        <TabsContent value="code" className="flex-1 overflow-hidden m-0">
-          <div className="h-full bg-[#1e1e1e]">
-            <SyntaxHighlighter
-              language={content?.language || 'javascript'}
-              style={vscDarkPlus}
-              customStyle={{
-                margin: 0,
-                padding: '1.5rem',
-                fontSize: '0.85rem',
-                height: '100%',
-                background: 'transparent',
-              }}
-              showLineNumbers
-            >
-              {content?.code || "No code available"}
-            </SyntaxHighlighter>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="document" className="flex-1 overflow-hidden m-0">
-          <ScrollArea className="h-full bg-[#fcfcfc] dark:bg-[#0f1115]">
-            <div className="min-h-full p-8 md:p-16 max-w-4xl mx-auto">
-              <div className="bg-white dark:bg-[#1a1d23] shadow-[0_0_50px_rgba(0,0,0,0.05)] dark:shadow-none border border-[var(--k-border)] rounded-sm p-10 md:p-20 min-h-[1100px]">
-                {/* Document Header Decoration */}
-                <div className="w-12 h-1 bg-[var(--k-brand)] mb-12" />
-                
-                <div className="prose prose-sm md:prose-base dark:prose-invert max-w-none font-sans text-[#2c3e50] dark:text-[#e1e1e1] leading-[1.8]">
-                  {content?.code && !dynamicData ? (
-                    <ReactMarkdown>{content.code}</ReactMarkdown>
-                  ) : (
-                    <div className="flex flex-col items-center justify-center py-20 text-center text-muted-foreground">
-                      <FileText className="w-12 h-12 mb-4 opacity-10" />
-                      <p>No document content generated</p>
-                    </div>
-                  )}
-                </div>
-                
-                {/* Document Footer Decoration */}
-                <div className="mt-20 pt-8 border-t border-[var(--k-border)] flex justify-between items-center text-[10px] uppercase tracking-widest text-muted-foreground font-bold">
-                  <span>Kautilya Deep Research Intelligence</span>
-                  <span>Confidential / Internal</span>
-                </div>
-              </div>
             </div>
           </ScrollArea>
         </TabsContent>
