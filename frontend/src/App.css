@@ -141,3 +141,64 @@
   overflow-y: auto;
   background: var(--k-bg);
 }
+
+/* Mobile sidebar overlay */
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 40;
+  backdrop-filter: blur(2px);
+}
+
+.sidebar-overlay.active {
+  display: block;
+}
+
+@media (max-width: 768px) {
+  .chat-sidebar {
+    position: fixed;
+    left: -100%;
+    top: 0;
+    z-index: 50;
+    transition: left 0.25s ease;
+    box-shadow: 4px 0 24px rgba(0,0,0,0.15);
+  }
+
+  .chat-sidebar.open {
+    left: 0;
+  }
+
+  .chat-layout.sidebar-collapsed .chat-sidebar,
+  .chat-layout .chat-sidebar {
+    display: flex;
+  }
+
+  .canvas-pane {
+    position: fixed;
+    right: 0;
+    top: 0;
+    width: 100vw !important;
+    min-width: unset !important;
+    z-index: 30;
+  }
+}
+
+/* Sidebar collapsed state */
+.chat-layout.sidebar-collapsed .chat-sidebar {
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
+  border: none;
+}
+
+/* Animations */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.25s ease forwards;
+}

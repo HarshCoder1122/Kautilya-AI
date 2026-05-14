@@ -158,8 +158,9 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             if isinstance(last_mc, list) and any(p.get("type") == "image_url" for p in last_mc):
                 has_image = True
 
+        reasoning_budget = _estimate_reasoning_budget(max_tokens, max_thinking)
+
         if model_choice == 'coder':
-            # Coder = DeepSeek-v4-Pro via NVIDIA NIM
             from config import NVIDIA_API_KEY
             label, model_id = _MODEL_LABELS['coder']
             if not NVIDIA_API_KEY:
@@ -170,19 +171,19 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 yield json.dumps({"event": "status", "message": f"🧠 Connecting to {label}…"})
                 response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
                                            model=model_id, tools=tools, tool_choice=tool_choice,
-                                           temperature=1.0, top_p=0.95, max_thinking=max_thinking)
+                                           temperature=1.0, top_p=0.95, max_thinking=max_thinking,
+                                           reasoning_budget=reasoning_budget)
                 if not response_gen:
-                    # Retry once
                     yield json.dumps({"event": "status", "message": f"⚡ Retrying {label}…"})
                     response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
-                                               model=model_id, temperature=1.0, top_p=0.95, max_thinking=max_thinking)
+                                               model=model_id, temperature=1.0, top_p=0.95,
+                                               max_thinking=max_thinking, reasoning_budget=reasoning_budget)
                 if not response_gen:
                     yield json.dumps({"event": "status", "message": f"⚡ {label} unavailable — using fast model…"})
                     response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
                                              model='llama-3.3-70b-versatile', temperature=0.6)
 
         elif model_choice == 'pro':
-            # Pro = Nemotron-3-Super-120B via NVIDIA NIM
             from config import NVIDIA_API_KEY
             label, model_id = _MODEL_LABELS['pro']
             if not NVIDIA_API_KEY:
@@ -194,11 +195,12 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
                                            model=model_id, tools=tools, tool_choice=tool_choice,
                                            temperature=1.0, top_p=0.95, max_thinking=max_thinking,
-                                           reasoning_budget=16384 if max_thinking else 1024)
+                                           reasoning_budget=reasoning_budget)
                 if not response_gen:
                     yield json.dumps({"event": "status", "message": f"⚡ Retrying {label}…"})
                     response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
-                                               model=model_id, temperature=1.0, top_p=0.95, max_thinking=max_thinking)
+                                               model=model_id, temperature=1.0, top_p=0.95,
+                                               max_thinking=max_thinking, reasoning_budget=reasoning_budget)
                 if not response_gen:
                     yield json.dumps({"event": "status", "message": f"⚡ {label} unavailable — using fast model…"})
                     print(f"[FALLBACK] {label} failed/unavailable. Switching to Groq.")
@@ -216,7 +218,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         else:
             # Daily = Groq Llama
             response_gen = call_groq(current_messages, stream=True, model='llama-3.3-70b-versatile',
-                                     temperature=0.6, tools=tools, tool_choice=tool_choice)
+                                     temperature=0.6, max_tokens=max_tokens, tools=tools, tool_choice=tool_choice)
 
         # Final fallback: try anything
         if not response_gen:
@@ -295,62 +297,159 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             yield json.dumps({"chunk": f"\n[Stream interrupted: {e}]"})
             return
 
-        # --- Agentic Action Parsing ---
-        # Look for [SEARCH: query] or [CALCULATE: expr]
+        # --- ReAct Action Parsing ---
+        # Detect tool call patterns from the accumulated response and emit
+        # structured react_* events so the frontend can render a step timeline.
         action_found = False
-        
-        # 1. Search Action
+        action_counter = getattr(agent_loop, '_action_counter', 0)
+
+        # 1. [SEARCH: query]
         search_match = re.search(r'\[SEARCH:\s*(.*?)\]', accumulated_response)
         if search_match:
             query = search_match.group(1).strip()
-            yield json.dumps({"event": "query", "queries": [query]})
-            
+            action_counter += 1
+            action_id = str(action_counter)
+
+            # Announce the action visually in the UI
+            yield json.dumps({
+                "event": "react_action",
+                "id": action_id,
+                "tool": "web_search",
+                "input": query,
+                "status": "running"
+            })
+
             from services.research_service import _gather_sources
             try:
                 sources = _gather_sources([query])
                 if sources:
                     obs_text = "SEARCH RESULTS:\n"
-                    for i, s in enumerate(sources[:3], 1):
+                    for i, s in enumerate(sources[:4], 1):
                         obs_text += f"[{i}] {s['title']} ({s['url']}): {s['snippet']}\n"
-                    
+                    yield json.dumps({
+                        "event": "react_action_done",
+                        "id": action_id,
+                        "status": "done",
+                        "preview": f"Found {len(sources)} sources",
+                        "sources": [{"title": s["title"], "url": s["url"]} for s in sources[:4]]
+                    })
                     current_messages.append({"role": "assistant", "content": accumulated_response})
-                    current_messages.append({"role": "user", "content": f"OBSERVATION: {obs_text}\n\nPlease provide a final comprehensive answer based on these findings."})
-                    action_found = True
+                    current_messages.append({"role": "user", "content": f"OBSERVATION: {obs_text}\n\nNow provide a final comprehensive answer using these findings. Do NOT use [SEARCH:] again."})
                 else:
+                    yield json.dumps({
+                        "event": "react_action_done",
+                        "id": action_id,
+                        "status": "empty",
+                        "preview": "No results found"
+                    })
                     current_messages.append({"role": "assistant", "content": accumulated_response})
-                    current_messages.append({"role": "user", "content": "OBSERVATION: No relevant search results found. Please answer based on your internal knowledge or admit if unknown."})
-                    action_found = True
+                    current_messages.append({"role": "user", "content": "OBSERVATION: No relevant results found. Answer from internal knowledge or state that you don't know."})
             except Exception as e:
                 print(f"[Agent] Search failed: {e}")
+                yield json.dumps({
+                    "event": "react_action_done",
+                    "id": action_id,
+                    "status": "error",
+                    "preview": str(e)[:80]
+                })
                 current_messages.append({"role": "assistant", "content": accumulated_response})
-                current_messages.append({"role": "user", "content": f"OBSERVATION: Search service error: {e}"})
-                action_found = True
+                current_messages.append({"role": "user", "content": f"OBSERVATION: Search service error: {e}. Continue without web results."})
+            action_found = True
 
-        # If an action was performed, we continue to the next turn.
+        # 2. [CALCULATE: expression]
+        calc_match = re.search(r'\[CALCULATE:\s*(.*?)\]', accumulated_response)
+        if calc_match and not action_found:
+            expr = calc_match.group(1).strip()
+            action_counter += 1
+            action_id = str(action_counter)
+            yield json.dumps({
+                "event": "react_action",
+                "id": action_id,
+                "tool": "calculator",
+                "input": expr,
+                "status": "running"
+            })
+            try:
+                # Safe eval for math expressions
+                safe_globals = {"__builtins__": {}}
+                import math
+                safe_globals.update({k: getattr(math, k) for k in dir(math) if not k.startswith('_')})
+                result = eval(expr, safe_globals)  # noqa: S307
+                result_str = str(round(float(result), 8)) if isinstance(result, float) else str(result)
+                yield json.dumps({
+                    "event": "react_action_done",
+                    "id": action_id,
+                    "status": "done",
+                    "preview": f"= {result_str}"
+                })
+                obs = f"CALCULATION RESULT: {expr} = {result_str}"
+            except Exception as e:
+                result_str = f"Error: {e}"
+                yield json.dumps({
+                    "event": "react_action_done",
+                    "id": action_id,
+                    "status": "error",
+                    "preview": result_str
+                })
+                obs = f"CALCULATION ERROR: {e}"
+            current_messages.append({"role": "assistant", "content": accumulated_response})
+            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nContinue with your answer."})
+            action_found = True
+
+        # Signal synthesis phase if we just executed actions
+        if action_found:
+            yield json.dumps({"event": "react_synthesizing"})
+
+        # If an action was performed, continue to the next turn for synthesis.
         # Otherwise, we are done.
         if not action_found:
             return
 
 
 def _estimate_tokens(user_msg, mode):
+    """
+    Smart token budget estimator.
+    Scales answer budget proportionally to message complexity and mode.
+    Professional-level: longer/complex queries unlock more tokens for quality output.
+    """
     msg_lower = user_msg.lower().strip()
     msg_len = len(msg_lower)
-    
-    # Base budget for standard models
-    if mode == 'daily':
-        return 4096
-        
-    # Smart Budget for Heavy NVIDIA Models (to avoid RPM/TPM hit)
-    # Formula: 8k base - input_impact, capped between 2k and 6k for stability
-    input_impact = (msg_len // 4)
-    smart_tokens = min(6144, max(2048, 8000 - input_impact))
-    
-    # Greetings/Short queries don't need much
-    greetings = ['hi', 'hello', 'hey', 'yo', 'sup', 'namaste', 'thanks', 'ok', 'bye']
-    if msg_lower in greetings or msg_len < 12:
-        return 512
-        
-    return smart_tokens
+
+    greetings = {'hi', 'hello', 'hey', 'yo', 'sup', 'namaste', 'thanks', 'ok', 'bye', 'okay'}
+    if msg_lower in greetings or msg_len < 10:
+        return 256  # short reply for simple greetings
+
+    # Complexity tiers by message length
+    if msg_len < 80:
+        complexity = 'low'
+    elif msg_len < 400:
+        complexity = 'medium'
+    elif msg_len < 1200:
+        complexity = 'high'
+    else:
+        complexity = 'very_high'
+
+    # Token budgets per mode & complexity
+    budgets = {
+        'daily': {'low': 1024, 'medium': 2048, 'high': 3072, 'very_high': 4096},
+        'coder': {'low': 4096, 'medium': 8192, 'high': 12288, 'very_high': 16384},
+        'pro':   {'low': 4096, 'medium': 8192, 'high': 16384, 'very_high': 16384},
+    }
+
+    mode_key = mode if mode in budgets else 'daily'
+    return budgets[mode_key][complexity]
+
+
+def _estimate_reasoning_budget(max_tokens, max_thinking=False):
+    """
+    Derive a proportional reasoning budget from the answer token budget.
+    Thinking should be ≥ answer budget to allow full deliberation.
+    """
+    if not max_thinking:
+        # Light reasoning for standard calls
+        return min(4096, max_tokens)
+    # Deep thinking: up to 2× the answer budget, capped at 32k
+    return min(32768, max_tokens * 2)
 
 
 def get_llm_response(messages, uid=None, model="daily", user_ip=None, tools=None, tool_choice=None, max_thinking=False):

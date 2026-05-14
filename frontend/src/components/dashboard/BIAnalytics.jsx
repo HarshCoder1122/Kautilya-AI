@@ -22,31 +22,28 @@ export default function BIAnalytics() {
   }, []);
 
   const loadAnalytics = async () => {
+    setLoading(true);
     try {
-      setLoading(true);
-      const [usage, trends] = await Promise.all([
-        analyticsAPI.getUsage(),
-        analyticsAPI.getTrends(),
+      // Run all requests in parallel with individual fallbacks
+      const [usage, trends, leadsRes, campaignsRes, agentsRes] = await Promise.all([
+        analyticsAPI.getUsage().catch(() => ({})),
+        analyticsAPI.getTrends().catch(() => ({})),
+        leadsAPI.list().catch(() => ({ leads: [] })),
+        campaignsAPI.list().catch(() => ({ campaigns: [] })),
+        agentsAPI.list().catch(() => ({ agents: [] })),
       ]);
 
       setUsageData(usage);
       setTrendsData(trends);
 
-      // Build KPIs from real data
-      const totalLeads = await leadsAPI.list();
-      const totalCampaigns = await campaignsAPI.list();
-      const totalAgents = await agentsAPI.list();
-
-      const kpisData = [
-        { label: 'Total Leads', value: totalLeads.leads?.length || 0, change: '+12%', positive: true },
-        { label: 'Active Campaigns', value: totalCampaigns.campaigns?.length || 0, change: '+5%', positive: true },
-        { label: 'AI Agents', value: totalAgents.agents?.length || 0, change: '+2', positive: true },
-        { label: 'Total Calls', value: usage.total_calls || 0, change: '+23%', positive: true },
-        { label: 'Avg Sentiment', value: typeof usage.avg_sentiment === 'number' ? usage.avg_sentiment.toFixed(1) : '0.0', change: '+5%', positive: true },
-        { label: 'Success Rate', value: usage.success_rate || '0%', change: '+8%', positive: true },
-      ];
-      setKpis(kpisData);
-
+      setKpis([
+        { label: 'Total Leads', value: leadsRes.leads?.length || 0, change: '', positive: true },
+        { label: 'Active Campaigns', value: campaignsRes.campaigns?.length || 0, change: '', positive: true },
+        { label: 'AI Agents', value: agentsRes.agents?.length || 0, change: '', positive: true },
+        { label: 'Total Calls', value: usage.total_calls || 0, change: '', positive: true },
+        { label: 'Avg Sentiment', value: typeof usage.avg_sentiment === 'number' ? usage.avg_sentiment.toFixed(1) : '—', change: '', positive: true },
+        { label: 'Success Rate', value: usage.success_rate || '—', change: '', positive: true },
+      ]);
     } catch (error) {
       console.error('Failed to load analytics:', error);
     } finally {

@@ -1,7 +1,8 @@
-import { Brain, Code, ChartBar, ArrowSquareOut, Play, Pause, Copy, Check, ArrowsClockwise, SpeakerHigh } from "@phosphor-icons/react";
+import { Brain, Code, ChartBar, ArrowSquareOut, Play, Pause, Copy, Check, ArrowsClockwise, SpeakerHigh, StopCircle } from "@phosphor-icons/react";
 import React, { useState, useRef } from "react";
 import ReactMarkdown from 'react-markdown';
 import { ThinkingTokens } from "./ThinkingTokens";
+import { ReActSteps } from "./ReActSteps";
 import { ttsAPI } from "../../lib/api";
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -19,47 +20,78 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
   const audioRef = useRef(null);
 
   const handleCopy = (text) => {
-    navigator.clipboard.writeText(text);
+    const copyText = text || message.content || message.responseText || '';
+    if (!copyText) return;
+    navigator.clipboard.writeText(copyText).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handlePlayTTS = async () => {
-    if (isPlaying) {
-      audioRef.current?.pause();
-      setIsPlaying(false);
-      return;
-    }
-
+  const stopAudio = () => {
     if (audioRef.current) {
-      audioRef.current.play();
-      setIsPlaying(true);
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      audioRef.current = null;
+    }
+    setIsPlaying(false);
+  };
+
+  const handlePlayTTS = async () => {
+    // Stop if already playing
+    if (isPlaying) {
+      stopAudio();
+      // Also cancel browser speech if it was used
+      if (window.speechSynthesis) window.speechSynthesis.cancel();
       return;
     }
 
+    const textToSpeak = (message.content || message.responseText || '')
+      .replace(/<think>[\s\S]*?<\/think>/g, '')
+      .replace(/<artifact[\s\S]*?<\/artifact>/g, '')
+      .replace(/```[\s\S]*?```/g, '')
+      .replace(/[#*_~`>]/g, '')
+      .trim();
+
+    if (!textToSpeak) return;
+
+    // Try backend TTS first
     try {
       setIsSynthesizing(true);
       const audioBlob = await ttsAPI.revealIQ.synthesize(
-        message.content.replace(/<think>[\s\S]*?<\/think>/g, '').trim(),
+        textToSpeak.slice(0, 1000), // limit to 1000 chars
         'kokoro-en',
         'af_bella'
       );
-      
+
       const url = URL.createObjectURL(audioBlob);
       const audio = new Audio(url);
       audioRef.current = audio;
-      
+
       audio.onended = () => {
         setIsPlaying(false);
         URL.revokeObjectURL(url);
         audioRef.current = null;
       };
+      audio.onerror = () => {
+        setIsPlaying(false);
+        audioRef.current = null;
+        URL.revokeObjectURL(url);
+      };
 
-      audio.play();
+      await audio.play();
       setIsPlaying(true);
     } catch (error) {
-      console.error('TTS Failed:', error);
-      alert('Voice synthesis failed. Please try again.');
+      console.warn('Backend TTS failed, using browser speech:', error);
+      // Fallback to browser Web Speech API
+      if (window.speechSynthesis) {
+        const utter = new SpeechSynthesisUtterance(textToSpeak.slice(0, 500));
+        utter.rate = 1.0;
+        utter.pitch = 1.0;
+        utter.onend = () => setIsPlaying(false);
+        utter.onerror = () => setIsPlaying(false);
+        window.speechSynthesis.speak(utter);
+        setIsPlaying(true);
+      }
     } finally {
       setIsSynthesizing(false);
     }
@@ -79,6 +111,9 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
   }
 
   const agent = message.agentType ? agentBadge[message.agentType] : null;
+  const displayContent = (message.responseText || message.content || '')
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .trim();
 
   return (
     <div className="message-ai animate-fade-up group" data-testid={`message-${message.id}`}>
@@ -112,6 +147,11 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
         </details>
       )}
 
+      {/* ReAct step timeline (shows when agent used tools) */}
+      {(message.reactSteps?.length > 0) && (
+        <ReActSteps steps={message.reactSteps} isSynthesizing={message.isSynthesizing} />
+      )}
+
       {/* Response with markdown */}
       <div className="text-sm text-foreground leading-relaxed prose prose-invert prose-sm max-w-none prose-pre:bg-transparent prose-pre:p-0 prose-pre:border-none">
         <ReactMarkdown
@@ -120,7 +160,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
               const match = /language-(\w+)/.exec(className || '');
               const lang = match ? match[1] : '';
               const codeString = String(children).replace(/\n$/, '');
-              
+
               if (inline) {
                 return <code className="bg-accent/50 px-1.5 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
               }
@@ -172,7 +212,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
             }
           }}
         >
-          {(message.responseText || message.content || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim()}
+          {displayContent}
         </ReactMarkdown>
       </div>
 
@@ -182,13 +222,17 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
           onClick={handlePlayTTS}
           disabled={isSynthesizing}
           className={`p-2 rounded-md transition-all duration-200 ${isPlaying ? 'bg-[var(--k-brand)]/10 text-[var(--k-brand)]' : 'hover:bg-accent text-muted-foreground hover:text-foreground'}`}
-          title="Play Kautilya Voice"
+          title={isPlaying ? 'Stop voice' : 'Play Kautilya Voice'}
         >
-          {isSynthesizing ? <SpeakerHigh className="w-4 h-4 animate-pulse" /> : isPlaying ? <Pause className="w-4 h-4" weight="bold" /> : <Play className="w-4 h-4" weight="bold" />}
+          {isSynthesizing
+            ? <SpeakerHigh className="w-4 h-4 animate-pulse" />
+            : isPlaying
+            ? <StopCircle className="w-4 h-4" weight="bold" />
+            : <Play className="w-4 h-4" weight="bold" />}
         </button>
-        
+
         <button
-          onClick={handleCopy}
+          onClick={() => handleCopy(displayContent)}
           className="p-2 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-all duration-200"
           title="Copy Message"
         >
@@ -233,14 +277,14 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
       {message.hasArtifact && (
         <button
           data-testid="open-artifact-btn"
-          onClick={onOpenArtifact}
+          onClick={() => onOpenArtifact?.()}
           className="mt-6 flex items-center gap-3 px-5 py-3 rounded-xl border border-[var(--k-brand)]/20 bg-[var(--k-brand)]/5 hover:bg-[var(--k-brand)]/10 transition-all duration-300 text-sm text-[var(--k-brand)] font-bold group/art shadow-sm"
         >
           <div className="w-8 h-8 rounded-lg bg-[var(--k-brand)]/10 flex items-center justify-center group-hover/art:scale-110 transition-transform">
             <Code className="w-4 h-4" weight="bold" />
           </div>
           <div className="flex flex-col items-start">
-            <span className="text-foreground">Interactive Content</span>
+            <span className="text-foreground">{message.artifactTitle || 'Interactive Content'}</span>
             <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">Open in Canvas</span>
           </div>
         </button>

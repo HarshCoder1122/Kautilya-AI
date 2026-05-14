@@ -44,7 +44,13 @@ def verify_firebase_token():
         decoded = firebase_auth.verify_id_token(token)
         print(f"[AUTH] ✅ Firebase token verified for UID: {decoded.get('uid')}")
         fd = decoded.get('firebase', {})
-        return {"uid": decoded.get('uid'), "email": decoded.get('email'), "provider": fd.get('sign_in_provider', 'unknown')}
+        return {
+            "uid": decoded.get('uid'),
+            "email": decoded.get('email'),
+            "name": decoded.get('name') or decoded.get('display_name'),
+            "picture": decoded.get('picture'),
+            "provider": fd.get('sign_in_provider', 'unknown'),
+        }
     except Exception as e:
         print(f"[AUTH] ⚠️ Firebase token verification failed: {e}")
         try:

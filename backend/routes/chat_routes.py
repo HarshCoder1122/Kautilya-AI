@@ -7,6 +7,7 @@ import re
 import json
 import time
 import uuid
+import queue
 import threading
 
 from flask import Blueprint, request, jsonify, Response
@@ -135,6 +136,7 @@ def jarvis_stream():
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
     user_email = token_data.get('email') if token_data else None
+    user_name = token_data.get('name') or token_data.get('display_name') if token_data else None
     client_ip = request.headers.get('X-Forwarded-For', request.remote_addr) or "unknown"
     if ',' in client_ip:
         client_ip = client_ip.split(',')[0].strip()
@@ -176,7 +178,7 @@ def jarvis_stream():
         if model == 'coder':
             sys_prompt = build_cli_system_prompt(CODER_SYSTEM_PROMPT)
         else:
-            sys_prompt = build_personalized_prompt(SYSTEM_PROMPT, user_email, user_memories, user_email, settings)
+            sys_prompt = build_personalized_prompt(SYSTEM_PROMPT, user_name or user_email, user_memories, user_email, settings)
 
         user_id = uid or "guest"
         if user_id not in conversations:
@@ -210,12 +212,38 @@ def jarvis_stream():
         return jsonify({"error": "No message"}), 400
 
     if model == "research":
-        def research_sse():
+        research_queue = queue.Queue()
+        research_content_holder = [""]
+
+        def _run_research():
             try:
                 for event in deep_research_stream(message):
-                    yield f"data: {json.dumps(event)}\n\n"
+                    if event.get("event") == "chunk":
+                        research_content_holder[0] += event.get("chunk", "")
+                    research_queue.put(json.dumps(event))
             except Exception as e:
-                yield f"data: {json.dumps({'event': 'chunk', 'chunk': f'[error: {e}]'})}\n\n"
+                research_queue.put(json.dumps({'event': 'chunk', 'chunk': f'[error: {e}]'}))
+            finally:
+                research_queue.put(None)
+                full_research = research_content_holder[0]
+                if full_research and uid:
+                    try:
+                        save_to_firestore(uid, session_id, "assistant", full_research)
+                        print(f"[Research] Saved {len(full_research)} chars for session {session_id}")
+                    except Exception as e:
+                        print(f"[Research] Firestore save failed: {e}")
+
+        threading.Thread(target=_run_research, daemon=True).start()
+
+        def research_sse():
+            while True:
+                try:
+                    item = research_queue.get(timeout=300)
+                except queue.Empty:
+                    break
+                if item is None:
+                    break
+                yield f"data: {item}\n\n"
             yield "data: [DONE]\n\n"
 
         return Response(research_sse(), mimetype='text/event-stream', headers={
@@ -232,62 +260,94 @@ def jarvis_stream():
         conv['messages'] = [conv['messages'][0]] + conv['messages'][-(MAX_HISTORY * 2):]
 
     def stream():
-        full_response = ""
-        try:
-            gen = get_llm_response(conv['messages'], uid=uid, model=model, user_ip=client_ip, max_thinking=max_thinking)
-            if gen is None:
-                yield f"data: {json.dumps({'chunk': 'Service temporarily unavailable.'})}\n\n"
-                return
-            for item in gen:
-                if isinstance(item, str):
+        """
+        The LLM runs in a background thread — it saves to Firestore when done,
+        regardless of whether the client is still connected. The SSE generator
+        here just reads from a queue. If the user navigates away mid-stream,
+        the thread keeps running and the response is saved for when they return.
+        """
+        chunk_queue = queue.Queue()
+        full_response_holder = [""]  # list so the thread can mutate via closure
+
+        def _run_llm():
+            try:
+                gen = get_llm_response(
+                    conv['messages'], uid=uid, model=model,
+                    user_ip=client_ip, max_thinking=max_thinking
+                )
+                if gen is None:
+                    chunk_queue.put(json.dumps({'chunk': 'Service temporarily unavailable.'}))
+                    return
+
+                for item in gen:
+                    if isinstance(item, str):
+                        try:
+                            parsed = json.loads(item)
+                            if "chunk" in parsed:
+                                full_response_holder[0] += parsed["chunk"]
+                        except json.JSONDecodeError:
+                            full_response_holder[0] += item
+                        chunk_queue.put(item)
+                    elif isinstance(item, dict):
+                        if "chunk" in item:
+                            full_response_holder[0] += item["chunk"]
+                        chunk_queue.put(json.dumps(item))
+            except Exception as e:
+                print(f"[LLM Thread] Error: {e}")
+                chunk_queue.put(json.dumps({'chunk': f'[Error: {e}]'}))
+            finally:
+                chunk_queue.put(None)  # sentinel: stream finished
+
+                # ---- Persist to Firestore (runs even if client disconnected) ----
+                full_response = full_response_holder[0]
+                if full_response:
                     try:
-                        parsed = json.loads(item)
-                        if "chunk" in parsed:
-                            full_response += parsed["chunk"]
-                        yield f"data: {item}\n\n"
-                    except json.JSONDecodeError:
-                        full_response += item
-                        yield f"data: {json.dumps({'chunk': item})}\n\n"
-                elif isinstance(item, dict):
-                    if "chunk" in item:
-                        full_response += item["chunk"]
-                    yield f"data: {json.dumps(item)}\n\n"
-        except Exception as e:
-            print(f"[Stream] Error: {e}")
-            yield f"data: {json.dumps({'chunk': f'[Error: {e}]'})}\n\n"
-
-        # Post-processing
-        if full_response:
-            conv['messages'].append({"role": "assistant", "content": full_response})
-            conv['message_count'] = len(conv['messages'])
-            # Auto-title first assistant response if not set
-            if not conv.get('title') and conv['message_count'] >= 2:
-                title = full_response.strip().split('\n')[0][:60]
-                conv['title'] = title if title else "New Chat"
-            save_to_firestore(uid, session_id, "assistant", full_response)
-
-            # Usage tracking — rough token estimate (4 chars ≈ 1 token)
-            if uid:
-                try:
-                    in_chars = len(str(message or ''))
-                    out_chars = len(full_response)
-                    est_tokens = max(1, (in_chars + out_chars) // 4)
-                    record_usage(uid, 'llm_tokens', est_tokens, model=model)
-                except Exception as e:
-                    print(f"[Usage] llm_tokens record failed: {e}")
-
-            # Background memory extraction
-            if uid and message:
-                def bg_memory():
-                    try:
-                        memories = get_user_memory(uid)
-                        new_facts = extract_memories(message, full_response, memories)
-                        if new_facts:
-                            memories.extend(new_facts)
-                            save_user_memory(uid, memories)
+                        conv['messages'].append({"role": "assistant", "content": full_response})
+                        conv['message_count'] = len(conv['messages'])
+                        if not conv.get('title') and conv['message_count'] >= 2:
+                            title = full_response.strip().split('\n')[0][:60]
+                            conv['title'] = title if title else "New Chat"
+                        save_to_firestore(uid, session_id, "assistant", full_response)
+                        print(f"[Stream] Saved response ({len(full_response)} chars) for session {session_id}")
                     except Exception as e:
-                        print(f"[Memory] Background extraction failed: {e}")
-                threading.Thread(target=bg_memory, daemon=True).start()
+                        print(f"[Stream] Firestore save failed: {e}")
+
+                    # Usage tracking
+                    if uid:
+                        try:
+                            est_tokens = max(1, (len(str(message or '')) + len(full_response)) // 4)
+                            record_usage(uid, 'llm_tokens', est_tokens, model=model)
+                        except Exception as e:
+                            print(f"[Usage] llm_tokens record failed: {e}")
+
+                    # Background memory extraction
+                    if uid and message:
+                        def _bg_memory(fr=full_response):
+                            try:
+                                memories = get_user_memory(uid)
+                                new_facts = extract_memories(message, fr, memories)
+                                if new_facts:
+                                    memories.extend(new_facts)
+                                    save_user_memory(uid, memories)
+                            except Exception as e:
+                                print(f"[Memory] Background extraction failed: {e}")
+                        threading.Thread(target=_bg_memory, daemon=True).start()
+
+        # Launch LLM thread — independent of client connection
+        t = threading.Thread(target=_run_llm, daemon=True)
+        t.start()
+
+        # SSE: read from queue and forward to client
+        # If client disconnects, we stop yielding but the thread keeps running
+        while True:
+            try:
+                item = chunk_queue.get(timeout=180)  # 3-min max wait per chunk
+            except queue.Empty:
+                print(f"[Stream] Queue timeout for session {session_id}")
+                break
+            if item is None:  # sentinel — thread finished
+                break
+            yield f"data: {item}\n\n"
 
         yield "data: [DONE]\n\n"
 

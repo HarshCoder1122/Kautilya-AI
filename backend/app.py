@@ -39,6 +39,7 @@ from routes.integrations_routes import integrations_bp
 from routes.embed_routes import embed_bp
 from routes.artifact_routes import artifact_bp
 from routes.tts_routes import tts_bp
+from routes.analytics_routes import analytics_bp
 
 app = Flask(__name__, static_folder=STATIC_FOLDER)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24).hex())
@@ -72,6 +73,7 @@ app.register_blueprint(integrations_bp, url_prefix='/api')
 app.register_blueprint(embed_bp, url_prefix='/api')
 app.register_blueprint(artifact_bp, url_prefix='/api')
 app.register_blueprint(tts_bp, url_prefix='/api')
+app.register_blueprint(analytics_bp, url_prefix='/api')
 
 # CORS for special endpoints
 CORS(app, resources={r"/v1/*": {"origins": "*"}})
