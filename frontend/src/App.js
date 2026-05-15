@@ -27,18 +27,36 @@ function App() {
 
   useEffect(() => {
     const auth = getAuthInstance();
+    let refreshInterval = null;
+
+    const refreshToken = async (authUser) => {
+      try {
+        const token = await authUser.getIdToken(true);
+        localStorage.setItem('firebase_token', token);
+      } catch (e) {
+        console.warn('[Auth] Token refresh failed:', e);
+      }
+    };
+
     const unsubscribe = onAuthStateChanged(auth, async (authUser) => {
+      if (refreshInterval) clearInterval(refreshInterval);
       if (authUser) {
-        const token = await authUser.getIdToken();
+        const token = await authUser.getIdToken(true);
         localStorage.setItem('firebase_token', token);
         setUser(authUser);
+        // Refresh token every 55 minutes (expires at 60m)
+        refreshInterval = setInterval(() => refreshToken(authUser), 55 * 60 * 1000);
       } else {
         localStorage.removeItem('firebase_token');
         setUser(null);
       }
       setLoading(false);
     });
-    return () => unsubscribe();
+
+    return () => {
+      unsubscribe();
+      if (refreshInterval) clearInterval(refreshInterval);
+    };
   }, []);
 
   const toggleTheme = () => setTheme(t => t === 'dark' ? 'light' : 'dark');
