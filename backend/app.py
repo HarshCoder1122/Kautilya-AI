@@ -65,7 +65,7 @@ app.register_blueprint(agents_bp, url_prefix='/api')
 app.register_blueprint(campaigns_bp, url_prefix='/api')
 app.register_blueprint(telephony_bp, url_prefix='/api')
 app.register_blueprint(webhooks_bp, url_prefix='/api')
-app.register_blueprint(openai_compat_bp) # v1 prefix handled inside
+app.register_blueprint(openai_compat_bp, url_prefix='/api')  # routes: /api/v1/...
 app.register_blueprint(background_bp, url_prefix='/api')
 app.register_blueprint(code_bp, url_prefix='/api')
 app.register_blueprint(research_bp, url_prefix='/api')
@@ -76,7 +76,6 @@ app.register_blueprint(tts_bp, url_prefix='/api')
 app.register_blueprint(analytics_bp, url_prefix='/api')
 
 # CORS for special endpoints
-CORS(app, resources={r"/v1/*": {"origins": "*"}})
 CORS(app, resources={r"/embed/*": {"origins": "*"}, r"/embed.js": {"origins": "*"}})
 
 # Global Security & Cache Headers
