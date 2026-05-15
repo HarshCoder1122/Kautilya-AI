@@ -1,5 +1,4 @@
 import { useState, useEffect, lazy, Suspense } from "react";
-import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { getAuthInstance } from "./lib/firebase.js";
 import { onAuthStateChanged } from "firebase/auth";

@@ -28,7 +28,7 @@ export default function TextToSpeechStudio() {
   const [downloadUrl, setDownloadUrl] = useState(null);
 
   // RevealIQ
-  const [model, setModel] = useState('kokoro-en');
+  const [model, setModel] = useState('swara-en');
   const [voice, setVoice] = useState('af_nicole');
   const [speed, setSpeed] = useState(1.0);
 
@@ -243,11 +243,11 @@ export default function TextToSpeechStudio() {
                       <label className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1 block">Language</label>
                       <select
                         value={model}
-                        onChange={e => { setModel(e.target.value); setVoice(e.target.value === 'kokoro-en' ? 'af_heart' : 'hf_alpha'); }}
+                        onChange={e => { setModel(e.target.value); setVoice(e.target.value.includes('hi') ? 'hf_alpha' : 'af_heart'); }}
                         className="w-full px-3 py-2 bg-background border border-[var(--k-border)] rounded-lg text-sm outline-none focus:border-[var(--k-brand)]"
                       >
-                        <option value="kokoro-en">English (Kokoro)</option>
-                        <option value="kokoro-hi">Hindi (Kokoro)</option>
+                        <option value="swara-en">SWARA EN (English)</option>
+                        <option value="swara-hi">SWARA HI (Hindi)</option>
                       </select>
                     </div>
                     <div>

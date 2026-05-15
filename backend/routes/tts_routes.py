@@ -39,8 +39,8 @@ def reveal_iq_stream():
         text = data.get('text', '').strip()
         if not text:
             return jsonify({"error": "text is required"}), 400
-        raw_model = data.get('model', 'kokoro-en')
-        model = 'kokoro-en' if 'hi' not in raw_model.lower() else 'kokoro-hi'
+        raw_model = data.get('model', 'swara-en')
+        model = 'kokoro-hi' if 'hi' in raw_model.lower() else 'kokoro-en'
         voice = data.get('voice', 'af_nicole')
         speed = data.get('speed', 1.0)
 
@@ -97,12 +97,8 @@ def reveal_iq_synthesize():
         data = request.get_json()
         text = data.get('text', '')
         # Standardize model names for Kokoro engine
-        raw_model = data.get('model', 'kokoro-en')
-        
-        # FIX: The RevealIQ Space expects 'kokoro-en' or 'kokoro-hi'
-        model = 'kokoro-en'
-        if 'hi' in raw_model.lower():
-            model = 'kokoro-hi'
+        raw_model = data.get('model', 'swara-en')
+        model = 'kokoro-hi' if 'hi' in raw_model.lower() else 'kokoro-en'
             
         voice = data.get('voice', 'af_heart')
         speed = data.get('speed', 1.0)

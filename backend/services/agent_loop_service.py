@@ -111,12 +111,24 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             last_user_msg = " ".join([p["text"] for p in content if p.get("type") == "text"])
 
     # Pre-fetch integration data based on intent BEFORE calling the LLM.
-    # This bypasses the unreliable ReAct token approach — the model gets
-    # real live data injected into context and just needs to present it.
+    # Inject into the last USER message (not system prompt) so the model
+    # sees it immediately before generating its response — can't ignore it.
     if uid and last_user_msg:
         integration_context = _pre_fetch_integrations(uid, last_user_msg)
         if integration_context:
-            current_messages[0]["content"] += integration_context
+            last_idx = len(current_messages) - 1
+            if current_messages[last_idx]["role"] == "user":
+                orig = current_messages[last_idx]["content"]
+                if isinstance(orig, str):
+                    current_messages[last_idx]["content"] = (
+                        integration_context
+                        + "\n---\nUser question (answer using the above live data): "
+                        + orig
+                    )
+                elif isinstance(orig, list):
+                    current_messages[last_idx]["content"] = (
+                        [{"type": "text", "text": integration_context + "\n---\n"}] + orig
+                    )
 
     # Banned phrase check
     banned_phrases = ["ignore previous instructions", "system prompt", "reveal api key", "what are your instructions"]
@@ -589,11 +601,26 @@ def _pre_fetch_integrations(uid, user_msg):
     msg = user_msg.lower()
     parts = []
 
+    # ── Integration status check: "are you connected to X" ───────────────
+    if ('connected' in msg or 'integrated' in msg or 'integration' in msg) and 'calendar' in msg:
+        try:
+            cfg = _get_integration_cfg(uid, 'google_calendar')
+            if cfg.get('access_token'):
+                parts.append("\n\n[SYSTEM: Google Calendar IS connected for this user. You CAN access their calendar. Fetch and show their events.]\n")
+            else:
+                parts.append("\n\n[SYSTEM: Google Calendar is NOT connected. Tell user to go to Dashboard → Integrations → Google Calendar.]\n")
+        except:
+            pass
+        return "".join(parts) if parts else ""
+
     # ── Calendar: list/view intent ────────────────────────────────────────
     cal_view_kw  = {'calendar', 'schedule', 'meeting', 'meetings', 'event',
-                    'events', 'appointment', 'appointments', 'agenda', 'remind'}
+                    'events', 'appointment', 'appointments', 'agenda', 'remind',
+                    'reminder', 'reminders', 'call', 'calls', 'slot', 'slots'}
     cal_view_act = {'show', 'what', 'list', 'upcoming', 'check', 'see', 'any',
-                    'today', 'tomorrow', 'week', 'do i have', 'tell me', 'get'}
+                    'today', 'tomorrow', 'week', 'do i have', 'tell me', 'get',
+                    'search', 'find', 'fetch', 'retrieve', 'look', 'view',
+                    'display', 'my', 'are there', 'scheduled', 'coming'}
     if cal_view_kw & set(msg.split()) or any(k in msg for k in cal_view_kw):
         if cal_view_act & set(msg.split()) or any(k in msg for k in cal_view_act):
             try:
