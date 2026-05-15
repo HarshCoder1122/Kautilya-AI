@@ -163,7 +163,11 @@ def connect(provider):
     if client_secret:
         _save_cfg(uid, provider, {"client_id": client_id, "client_secret": client_secret})
 
-    redirect_uri = request.args.get('redirect_uri') or (request.host_url.rstrip('/') + f'/api/integrations/{provider}/callback')
+    # Force https — Flask behind HF Spaces / Render proxy sees http internally
+    _host = request.host_url.rstrip('/')
+    if _host.startswith('http://') and not _host.startswith('http://localhost'):
+        _host = 'https://' + _host[7:]
+    redirect_uri = request.args.get('redirect_uri') or (_host + f'/api/integrations/{provider}/callback')
     state = secrets.token_urlsafe(24)
     # Store state → uid for callback verification
     _save_cfg(uid, provider, {"oauth_state": state, "redirect_uri": redirect_uri})
