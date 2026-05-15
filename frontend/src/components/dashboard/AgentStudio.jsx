@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Plus, PencilSimple, Trash, SpeakerHigh, Brain, Lightning, CheckCircle, Phone, X, UploadSimple, LinkSimple, FileText, ChatCircleText, Clock } from "@phosphor-icons/react";
-import { agentsAPI, telephonyAPI } from "../../lib/api";
+import { agentsAPI, telephonyAPI, ttsAPI } from "../../lib/api";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";

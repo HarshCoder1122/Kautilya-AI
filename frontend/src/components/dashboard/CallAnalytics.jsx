@@ -18,6 +18,25 @@ const sentimentIcons = {
   negative: { icon: SmileyMelting, color: 'text-red-400', bg: 'bg-red-400/10' },
 };
 
+// Safely parse a transcript that may arrive as JSON string, array, or undefined
+function parseTranscript(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    try { const p = JSON.parse(raw); return Array.isArray(p) ? p : []; } catch { return []; }
+  }
+  return [];
+}
+
+// Safely coerce a Firestore Timestamp, ISO string, or number to a Date
+function toDate(val) {
+  if (!val) return null;
+  if (val instanceof Date) return val;
+  if (typeof val === 'object' && typeof val.toDate === 'function') return val.toDate();
+  if (typeof val === 'object' && val.seconds) return new Date(val.seconds * 1000);
+  return new Date(val);
+}
+
 export default function CallAnalytics() {
   const [selectedCall, setSelectedCall] = useState(null);
   const [callVolumeData, setCallVolumeData] = useState([]);
@@ -95,7 +114,7 @@ export default function CallAnalytics() {
                 {[
                   { label: 'Total Calls', val: callStats.total_calls, color: 'text-foreground' },
                   { label: 'Failed Calls', val: callStats.failed_calls, color: 'text-rose-400' },
-                  { label: 'Avg Sentiment', val: callStats.avg_sentiment.toFixed(1), color: 'text-[var(--k-brand)]' },
+                  { label: 'Avg Sentiment', val: (parseFloat(callStats.avg_sentiment) || 0).toFixed(1), color: 'text-[var(--k-brand)]' },
                   { label: 'Active Agents', val: agents.length, color: 'text-foreground' }
                 ].map((stat, i) => (
                   <div key={i} className="p-6 rounded-2xl border border-[var(--k-border)] bg-[var(--k-surface)] shadow-sm">
@@ -165,7 +184,8 @@ export default function CallAnalytics() {
                   <div className="grid grid-cols-1 gap-3">
                     {agentLogs.map((log) => {
                       const sent = sentimentIcons[log.sentiment] || sentimentIcons.neutral;
-                      const callDate = log.created_at ? new Date(log.created_at).toLocaleString('en-IN', {
+                      const _d = toDate(log.created_at);
+                      const callDate = _d ? _d.toLocaleString('en-IN', {
                         day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'
                       }) : 'Unknown';
                       
@@ -232,7 +252,7 @@ export default function CallAnalytics() {
                      <div>
                         <h3 className="text-base font-bold text-foreground k-heading">{selectedCall.to_number || 'Incoming Session'}</h3>
                         <div className="flex items-center gap-2 mt-0.5">
-                           <span className="text-[10px] text-muted-foreground uppercase font-bold">{new Date(selectedCall.created_at).toLocaleString()}</span>
+                           <span className="text-[10px] text-muted-foreground uppercase font-bold">{toDate(selectedCall.created_at)?.toLocaleString() ?? ''}</span>
                            <div className="w-1 h-1 rounded-full bg-muted-foreground/30" />
                            <span className="text-[10px] text-[var(--k-brand)] font-bold uppercase">{selectedCall.duration || '0:00'}</span>
                         </div>
@@ -289,8 +309,8 @@ export default function CallAnalytics() {
                         </div>
                         
                         <div className="space-y-4 font-sans">
-                           {selectedCall.transcript && selectedCall.transcript.length > 0 ? (
-                             selectedCall.transcript.map((t, i) => (
+                           {(() => { const tr = parseTranscript(selectedCall.transcript); return tr.length > 0 ? (
+                             tr.map((t, i) => (
                                <div key={i} className={`flex ${t.role === 'agent' ? 'justify-start' : 'justify-end'}`}>
                                   <div className={`max-w-[80%] rounded-2xl p-4 text-sm ${
                                     t.role === 'agent' 
@@ -306,7 +326,7 @@ export default function CallAnalytics() {
                              <div className="p-6 rounded-2xl border border-dashed border-[var(--k-border)] text-center">
                                 <p className="text-sm text-muted-foreground">Transcript data unavailable for this call ID.</p>
                              </div>
-                           )}
+                           ); })()
                         </div>
                      </div>
                   </div>
