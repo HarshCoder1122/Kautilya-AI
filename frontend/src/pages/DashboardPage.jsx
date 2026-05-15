@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
 import {
   Robot, Users, Megaphone, Phone, ChartBar, ChatCircleDots,
-  Gear, SignOut, CaretLeft, SpeakerHigh, PlugsConnected, Terminal
+  Gear, SignOut, CaretLeft, SpeakerHigh, PlugsConnected, Terminal, List
 } from "@phosphor-icons/react";
 import { ThemeToggle } from "@/components/shared/ThemeToggle";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -35,15 +35,24 @@ const navItems = [
 export default function DashboardPage({ theme, toggleTheme, user }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   const activeItem = navItems.find(item =>
     item.path === location.pathname
   ) || navItems[0];
 
+  const handleNavClick = (path) => {
+    navigate(path);
+    setMobileSidebarOpen(false);
+  };
+
   return (
     <div className="dashboard-layout" data-testid="dashboard-page">
+      {/* Mobile overlay */}
+      <div className={`sidebar-overlay ${mobileSidebarOpen ? 'active' : ''}`} onClick={() => setMobileSidebarOpen(false)} />
+
       {/* Sidebar */}
-      <div className="dashboard-sidebar" data-testid="dashboard-sidebar">
+      <div className={`dashboard-sidebar ${mobileSidebarOpen ? 'open' : ''}`} data-testid="dashboard-sidebar">
         {/* Logo */}
         <div className="p-4 flex items-center justify-between border-b border-[var(--k-border)]">
           <div className="flex items-center gap-2">
@@ -58,6 +67,8 @@ export default function DashboardPage({ theme, toggleTheme, user }) {
           <ThemeToggle theme={theme} toggleTheme={toggleTheme} />
         </div>
 
+        {/* Mobile close button area — tap outside closes sidebar via overlay */}
+
         {/* Navigation */}
         <ScrollArea className="flex-1 py-3">
           <div className="px-3 mb-2">
@@ -68,7 +79,7 @@ export default function DashboardPage({ theme, toggleTheme, user }) {
               <button
                 key={item.id}
                 data-testid={`nav-${item.id}`}
-                onClick={() => navigate(item.path)}
+                onClick={() => handleNavClick(item.path)}
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md transition-all duration-200 text-left ${
                   activeItem.id === item.id
                     ? 'bg-[var(--k-brand)]/10 text-[var(--k-brand)]'
@@ -86,7 +97,7 @@ export default function DashboardPage({ theme, toggleTheme, user }) {
         <div className="p-3 border-t border-[var(--k-border)] space-y-0.5">
           <button
             data-testid="back-to-chat-btn"
-            onClick={() => navigate('/')}
+            onClick={() => { navigate('/'); setMobileSidebarOpen(false); }}
             className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors text-sm"
           >
             <CaretLeft className="w-4 h-4" />
@@ -94,7 +105,7 @@ export default function DashboardPage({ theme, toggleTheme, user }) {
           </button>
           <button
             data-testid="settings-btn"
-            onClick={() => navigate('/dashboard/settings')}
+            onClick={() => handleNavClick('/dashboard/settings')}
             className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition-colors text-sm ${
               activeItem.id === 'settings'
                 ? 'bg-[var(--k-brand)]/10 text-[var(--k-brand)]'
@@ -131,6 +142,16 @@ export default function DashboardPage({ theme, toggleTheme, user }) {
 
       {/* Content */}
       <div className="dashboard-content" data-testid="dashboard-content">
+        {/* Mobile top bar */}
+        <div className="md:hidden flex items-center gap-3 px-4 py-3 border-b border-[var(--k-border)] bg-[var(--k-surface)] sticky top-0 z-20">
+          <button
+            onClick={() => setMobileSidebarOpen(true)}
+            className="p-2 rounded-md hover:bg-accent transition-colors"
+          >
+            <List className="w-5 h-5 text-muted-foreground" />
+          </button>
+          <span className="text-sm font-semibold k-heading text-foreground">{activeItem.label}</span>
+        </div>
         <Routes>
           <Route index element={<AgentStudio />} />
           <Route path="leads" element={<LeadManagement />} />

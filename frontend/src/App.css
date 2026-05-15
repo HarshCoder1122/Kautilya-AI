@@ -157,6 +157,7 @@
 }
 
 @media (max-width: 768px) {
+  /* ── Chat layout ── */
   .chat-sidebar {
     position: fixed;
     left: -100%;
@@ -170,9 +171,14 @@
     left: 0;
   }
 
+  /* Always show the chat-main on mobile (sidebar is overlay) */
   .chat-layout.sidebar-collapsed .chat-sidebar,
   .chat-layout .chat-sidebar {
     display: flex;
+  }
+
+  .chat-main {
+    width: 100%;
   }
 
   .canvas-pane {
@@ -182,6 +188,34 @@
     width: 100vw !important;
     min-width: unset !important;
     z-index: 30;
+  }
+
+  /* Prevent messages from overflowing viewport */
+  .message-user,
+  .message-ai {
+    max-width: 100%;
+  }
+
+  /* ── Dashboard layout ── */
+  .dashboard-sidebar {
+    position: fixed;
+    left: -100%;
+    top: 0;
+    z-index: 50;
+    width: 260px !important;
+    min-width: 260px !important;
+    height: 100vh;
+    transition: left 0.25s ease;
+    box-shadow: 4px 0 24px rgba(0,0,0,0.15);
+  }
+
+  .dashboard-sidebar.open {
+    left: 0;
+  }
+
+  .dashboard-content {
+    width: 100%;
+    overflow-x: hidden;
   }
 }
 

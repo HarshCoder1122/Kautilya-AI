@@ -1,4 +1,4 @@
-import { Brain, Code, ChartBar, ArrowSquareOut, Play, Pause, Copy, Check, ArrowsClockwise, SpeakerHigh, StopCircle } from "@phosphor-icons/react";
+import { Brain, Code, ChartBar, ArrowSquareOut, Play, Pause, Copy, Check, ArrowsClockwise, SpeakerHigh, StopCircle, CalendarCheck, VideoCamera, Link } from "@phosphor-icons/react";
 import React, { useState, useRef } from "react";
 import ReactMarkdown from 'react-markdown';
 import { ThinkingTokens } from "./ThinkingTokens";
@@ -6,6 +6,51 @@ import { ReActSteps } from "./ReActSteps";
 import { ttsAPI } from "../../lib/api";
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+
+const CALENDAR_RE = /https?:\/\/(calendar\.google\.com|meet\.google\.com|zoom\.us|teams\.microsoft\.com)[^\s\)\]"<]*/g;
+
+function linkifyContent(text) {
+  return text.replace(/(https?:\/\/[^\s\)\]"<]+)/g, '[$1]($1)');
+}
+
+function LinkCard({ href }) {
+  const isCalendar = href.includes('calendar.google.com');
+  const isMeet = href.includes('meet.google.com');
+  const isZoom = href.includes('zoom.us');
+  const isTeams = href.includes('teams.microsoft.com');
+  const isEventLink = isCalendar || isMeet || isZoom || isTeams;
+
+  if (!isEventLink) {
+    return (
+      <a href={href} target="_blank" rel="noopener noreferrer"
+        className="inline-flex items-center gap-1 text-[var(--k-brand)] underline underline-offset-2 hover:opacity-80 break-all"
+      >{href}</a>
+    );
+  }
+
+  const label = isCalendar ? 'View in Google Calendar'
+    : isMeet ? 'Join Google Meet'
+    : isZoom ? 'Join Zoom Meeting'
+    : 'Join Teams Meeting';
+  const Icon = isMeet || isZoom || isTeams ? VideoCamera : CalendarCheck;
+  const color = isMeet || isZoom || isTeams ? 'text-emerald-400' : 'text-[var(--k-brand)]';
+  const bg = isMeet || isZoom || isTeams ? 'bg-emerald-400/10 border-emerald-400/20' : 'bg-[var(--k-brand)]/10 border-[var(--k-brand)]/20';
+
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer"
+      className={`my-2 flex items-center gap-3 px-4 py-3 rounded-xl border ${bg} hover:opacity-90 transition-opacity no-underline w-full max-w-sm`}
+    >
+      <div className={`w-9 h-9 rounded-lg ${bg} flex items-center justify-center shrink-0`}>
+        <Icon className={`w-5 h-5 ${color}`} weight="duotone" />
+      </div>
+      <div className="min-w-0">
+        <div className={`text-sm font-semibold ${color}`}>{label}</div>
+        <div className="text-[11px] text-muted-foreground truncate">{href.split('?')[0]}</div>
+      </div>
+      <ArrowSquareOut className="w-4 h-4 text-muted-foreground ml-auto shrink-0" />
+    </a>
+  );
+}
 
 const agentBadge = {
   researcher: { icon: Brain, label: 'Researcher', color: 'text-blue-400', bg: 'bg-blue-400/10' },
@@ -53,7 +98,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
       .replace(/```[\s\S]*?```/g, '')
       .replace(/[#*_~`>]/g, '')
       .trim()
-      .slice(0, 600); // keep short for fast first-byte
+      .slice(0, 600);
 
     if (!textToSpeak) return;
 
@@ -128,9 +173,10 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
   }
 
   const agent = message.agentType ? agentBadge[message.agentType] : null;
-  const displayContent = (message.responseText || message.content || '')
+  const rawContent = (message.responseText || message.content || '')
     .replace(/<think>[\s\S]*?<\/think>/g, '')
     .trim();
+  const displayContent = linkifyContent(rawContent);
 
   return (
     <div className="message-ai animate-fade-up group" data-testid={`message-${message.id}`}>
@@ -173,6 +219,9 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
       <div className="text-sm text-foreground leading-relaxed prose prose-invert prose-sm max-w-none prose-pre:bg-transparent prose-pre:p-0 prose-pre:border-none">
         <ReactMarkdown
           components={{
+            a({ href, children }) {
+              return <LinkCard href={href} />;
+            },
             code({ node, inline, className, children, ...props }) {
               const match = /language-(\w+)/.exec(className || '');
               const lang = match ? match[1] : '';
@@ -249,7 +298,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
         </button>
 
         <button
-          onClick={() => handleCopy(displayContent)}
+          onClick={() => handleCopy(rawContent)}
           className="p-2 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-all duration-200"
           title="Copy Message"
         >
