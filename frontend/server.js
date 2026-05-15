@@ -12,23 +12,21 @@ const app = express();
 const PORT = process.env.PORT || 8000;
 const BACKEND_URL = process.env.BACKEND_URL || 'https://harshsharma1212-kautilyabackend.hf.space';
 
-// Proxy /api/* and /v1/* → Flask backend (streaming-safe)
-const proxyOpts = {
+// Proxy /api/*, /embed/* → Flask backend (full path preserved, streaming-safe)
+app.use(createProxyMiddleware({
   target: BACKEND_URL,
   changeOrigin: true,
+  pathFilter: ['/api/**', '/embed/**'],
   on: {
     error: (err, req, res) => {
       console.error('[Proxy] Error:', err.message);
       if (!res.headersSent) res.status(502).json({ error: 'Backend unavailable' });
     },
+    proxyReq: (proxyReq, req) => {
+      console.log(`[Proxy] ${req.method} ${req.url} → ${BACKEND_URL}${req.url}`);
+    },
   },
-  // Required for SSE streaming (don't buffer)
-  selfHandleResponse: false,
-};
-
-app.use('/api', createProxyMiddleware(proxyOpts));
-app.use('/v1', createProxyMiddleware(proxyOpts));
-app.use('/embed', createProxyMiddleware(proxyOpts));
+}));
 
 // Serve React static build
 const BUILD = path.join(__dirname, 'build');
