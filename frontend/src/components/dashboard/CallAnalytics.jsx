@@ -326,7 +326,7 @@ export default function CallAnalytics() {
                              <div className="p-6 rounded-2xl border border-dashed border-[var(--k-border)] text-center">
                                 <p className="text-sm text-muted-foreground">Transcript data unavailable for this call ID.</p>
                              </div>
-                           ); })()
+                           ); })()}
                         </div>
                      </div>
                   </div>
