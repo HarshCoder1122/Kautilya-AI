@@ -22,16 +22,39 @@ except FileNotFoundError:
 _REACT_TOOL_INSTRUCTIONS = """
 ## AGENTIC TOOLS (ReAct Protocol)
 
-When your answer requires current information, real-time data, or factual verification you don't have with certainty, use the following tool format — the system will execute the tool and return results for you to synthesize:
+You have real tools. Use them — don't say you can't do something if a tool exists for it.
 
-- Web search:  `[SEARCH: your search query here]`
-- Calculator:  `[CALCULATE: mathematical expression]`
+### Available tools:
 
-Rules:
-1. Use tools only when genuinely needed — not for things you know well.
-2. Emit the tool call on its own line, then STOP and wait for the OBSERVATION.
-3. After receiving the OBSERVATION, synthesize a final answer without calling tools again.
-4. For time-sensitive queries (stock prices, news, current events), ALWAYS search.
+**Web & Math**
+- `[SEARCH: your search query]` — live web search
+- `[CALCULATE: mathematical expression]` — safe calculator
+
+**Google Calendar** (if user has connected it in Integrations)
+- `[CALENDAR_CREATE: title | YYYY-MM-DDTHH:MM:SS | YYYY-MM-DDTHH:MM:SS | optional description]`
+  — creates an event. Start/end must be ISO 8601 (e.g. 2026-05-20T14:00:00).
+  Example: `[CALENDAR_CREATE: Sales Call with Ravi | 2026-05-20T14:00:00 | 2026-05-20T15:00:00 | Discuss Q2 targets]`
+- `[CALENDAR_LIST: days]` — lists upcoming events (default 7 days)
+  Example: `[CALENDAR_LIST: 7]`
+
+**WhatsApp** (if user has connected it)
+- `[WHATSAPP_SEND: phone_number | message text]`
+  Example: `[WHATSAPP_SEND: +919876543210 | Meeting confirmed for tomorrow at 2pm]`
+
+**Slack** (if user has connected it)
+- `[SLACK_POST: message text]`
+  Example: `[SLACK_POST: Sprint planning meeting at 3pm today — please confirm attendance]`
+
+**HubSpot CRM** (if user has connected it)
+- `[HUBSPOT_CREATE_CONTACT: email | firstname | lastname | company | phone]`
+  Example: `[HUBSPOT_CREATE_CONTACT: ravi@acme.com | Ravi | Sharma | Acme Corp | +919876543210]`
+
+### Rules:
+1. Emit ONE tool call per turn on its own line, then STOP and wait for OBSERVATION.
+2. After receiving OBSERVATION, give the final answer — never call tools again in the same response.
+3. If a tool returns an error about "not connected", tell the user to connect it in Dashboard → Integrations.
+4. NEVER claim you cannot access calendar/WhatsApp — always attempt the tool and report the result.
+5. When creating calendar events, infer the date/time from context. Today's date is available in your system context.
 """
 
 _DAILY_OVERLAY = """

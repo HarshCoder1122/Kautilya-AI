@@ -301,7 +301,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         # Detect tool call patterns from the accumulated response and emit
         # structured react_* events so the frontend can render a step timeline.
         action_found = False
-        action_counter = getattr(agent_loop, '_action_counter', 0)
+        action_counter = 0  # reset per-conversation-turn, not per-call
 
         # 1. [SEARCH: query]
         search_match = re.search(r'\[SEARCH:\s*(.*?)\]', accumulated_response)
@@ -396,6 +396,121 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nContinue with your answer."})
             action_found = True
 
+        # 3. [CALENDAR_CREATE: title | start | end | description?]
+        cal_create_match = re.search(r'\[CALENDAR_CREATE:\s*(.*?)\]', accumulated_response, re.DOTALL)
+        if cal_create_match and not action_found:
+            parts = [p.strip() for p in cal_create_match.group(1).split('|')]
+            title       = parts[0] if len(parts) > 0 else 'New Event'
+            start_dt    = parts[1] if len(parts) > 1 else None
+            end_dt      = parts[2] if len(parts) > 2 else None
+            description = parts[3] if len(parts) > 3 else ''
+            action_counter += 1
+            action_id = str(action_counter)
+            yield json.dumps({"event": "react_action", "id": action_id, "tool": "calendar", "input": title, "status": "running"})
+            try:
+                result = _calendar_create(uid, title, start_dt, end_dt, description)
+                event_link = result.get('htmlLink', '')
+                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done",
+                                  "preview": f"Created: {title}", "sources": [{"title": "Open in Calendar", "url": event_link}] if event_link else []})
+                obs = f"CALENDAR: Event '{title}' created successfully for {start_dt}. Link: {event_link}"
+            except Exception as e:
+                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
+                obs = f"CALENDAR ERROR: {e}"
+            current_messages.append({"role": "assistant", "content": accumulated_response})
+            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nConfirm the result to the user."})
+            action_found = True
+
+        # 4. [CALENDAR_LIST: days]
+        cal_list_match = re.search(r'\[CALENDAR_LIST:\s*(\d*)\]', accumulated_response)
+        if cal_list_match and not action_found:
+            days = int(cal_list_match.group(1) or 7)
+            action_counter += 1
+            action_id = str(action_counter)
+            yield json.dumps({"event": "react_action", "id": action_id, "tool": "calendar", "input": f"Next {days} days", "status": "running"})
+            try:
+                events = _calendar_list(uid, days)
+                if events:
+                    lines = []
+                    for e in events:
+                        start = e.get('start', {}).get('dateTime') or e.get('start', {}).get('date', '')
+                        lines.append(f"- {e.get('summary','Untitled')} at {start}")
+                    obs = f"CALENDAR EVENTS (next {days} days):\n" + "\n".join(lines)
+                    yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done",
+                                      "preview": f"{len(events)} event(s) found"})
+                else:
+                    obs = f"CALENDAR: No events found in the next {days} days."
+                    yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done", "preview": "No events"})
+            except Exception as e:
+                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
+                obs = f"CALENDAR ERROR: {e}"
+            current_messages.append({"role": "assistant", "content": accumulated_response})
+            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nReport the events to the user."})
+            action_found = True
+
+        # 5. [WHATSAPP_SEND: number | message]
+        wa_match = re.search(r'\[WHATSAPP_SEND:\s*(.*?)\]', accumulated_response, re.DOTALL)
+        if wa_match and not action_found:
+            wa_parts = [p.strip() for p in wa_match.group(1).split('|', 1)]
+            wa_to  = wa_parts[0] if len(wa_parts) > 0 else ''
+            wa_msg = wa_parts[1] if len(wa_parts) > 1 else ''
+            action_counter += 1
+            action_id = str(action_counter)
+            yield json.dumps({"event": "react_action", "id": action_id, "tool": "web_search", "input": f"WhatsApp → {wa_to}", "status": "running"})
+            try:
+                _whatsapp_send(uid, wa_to, wa_msg)
+                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done", "preview": f"Sent to {wa_to}"})
+                obs = f"WHATSAPP: Message sent to {wa_to}."
+            except Exception as e:
+                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
+                obs = f"WHATSAPP ERROR: {e}"
+            current_messages.append({"role": "assistant", "content": accumulated_response})
+            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nConfirm to the user."})
+            action_found = True
+
+        # 6. [SLACK_POST: message]
+        slack_match = re.search(r'\[SLACK_POST:\s*(.*?)\]', accumulated_response, re.DOTALL)
+        if slack_match and not action_found:
+            sl_msg = slack_match.group(1).strip()
+            action_counter += 1
+            action_id = str(action_counter)
+            yield json.dumps({"event": "react_action", "id": action_id, "tool": "web_search", "input": "Slack message", "status": "running"})
+            try:
+                _slack_post(uid, sl_msg)
+                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done", "preview": "Message posted"})
+                obs = "SLACK: Message posted successfully."
+            except Exception as e:
+                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
+                obs = f"SLACK ERROR: {e}"
+            current_messages.append({"role": "assistant", "content": accumulated_response})
+            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nConfirm to the user."})
+            action_found = True
+
+        # 7. [HUBSPOT_CREATE_CONTACT: email | firstname | lastname | company | phone]
+        hs_match = re.search(r'\[HUBSPOT_CREATE_CONTACT:\s*(.*?)\]', accumulated_response, re.DOTALL)
+        if hs_match and not action_found:
+            hs_parts = [p.strip() for p in hs_match.group(1).split('|')]
+            hs_email = hs_parts[0] if len(hs_parts) > 0 else ''
+            hs_first = hs_parts[1] if len(hs_parts) > 1 else ''
+            hs_last  = hs_parts[2] if len(hs_parts) > 2 else ''
+            hs_co    = hs_parts[3] if len(hs_parts) > 3 else ''
+            hs_ph    = hs_parts[4] if len(hs_parts) > 4 else ''
+            action_counter += 1
+            action_id = str(action_counter)
+            yield json.dumps({"event": "react_action", "id": action_id, "tool": "web_search", "input": f"HubSpot contact: {hs_email}", "status": "running"})
+            try:
+                result = _hubspot_create_contact(uid, hs_email, hs_first, hs_last, hs_co, hs_ph)
+                contact_id = result.get('id', '')
+                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done", "preview": f"Contact created: {hs_email}"})
+                obs = f"HUBSPOT: Contact '{hs_email}' created (id: {contact_id})."
+            except Exception as e:
+                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
+                obs = f"HUBSPOT ERROR: {e}"
+            current_messages.append({"role": "assistant", "content": accumulated_response})
+            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nConfirm to the user."})
+            action_found = True
+
+        agent_loop._action_counter = action_counter
+
         # Signal synthesis phase if we just executed actions
         if action_found:
             yield json.dumps({"event": "react_synthesizing"})
@@ -450,6 +565,128 @@ def _estimate_reasoning_budget(max_tokens, max_thinking=False):
         return min(4096, max_tokens)
     # Deep thinking: up to 2× the answer budget, capped at 32k
     return min(32768, max_tokens * 2)
+
+
+# ──────────────────────────────────────────────
+# Integration helpers called by the agent loop
+# ──────────────────────────────────────────────
+
+def _get_integration_cfg(uid, provider):
+    from extensions import db
+    if not db or not uid:
+        return {}
+    try:
+        doc = db.collection('users').document(uid).collection('integrations').document(provider).get()
+        return doc.to_dict() or {} if doc.exists else {}
+    except Exception:
+        return {}
+
+
+def _calendar_create(uid, title, start_dt, end_dt, description='', tz='Asia/Kolkata'):
+    import requests as _req
+    cfg = _get_integration_cfg(uid, 'google_calendar')
+    token = cfg.get('access_token')
+    if not token:
+        raise Exception("Google Calendar not connected — go to Dashboard → Integrations to connect it.")
+    if not start_dt or not end_dt:
+        raise Exception("Start and end datetime are required (ISO 8601 format).")
+    body = {
+        "summary": title,
+        "description": description,
+        "start": {"dateTime": start_dt, "timeZone": tz},
+        "end":   {"dateTime": end_dt,   "timeZone": tz},
+    }
+    r = _req.post(
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=body, timeout=15,
+    )
+    if r.status_code == 401:
+        raise Exception("Google Calendar token expired — please reconnect in Dashboard → Integrations.")
+    if not r.ok:
+        raise Exception(f"Calendar API error {r.status_code}: {r.text[:200]}")
+    return r.json()
+
+
+def _calendar_list(uid, days=7, tz='Asia/Kolkata'):
+    import requests as _req
+    from datetime import datetime, timedelta, timezone as _tz
+    cfg = _get_integration_cfg(uid, 'google_calendar')
+    token = cfg.get('access_token')
+    if not token:
+        raise Exception("Google Calendar not connected — go to Dashboard → Integrations to connect it.")
+    now = datetime.now(_tz.utc)
+    r = _req.get(
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+        headers={"Authorization": f"Bearer {token}"},
+        params={
+            "timeMin": now.isoformat(),
+            "timeMax": (now + timedelta(days=days)).isoformat(),
+            "orderBy": "startTime",
+            "singleEvents": "true",
+            "maxResults": 15,
+        },
+        timeout=15,
+    )
+    if r.status_code == 401:
+        raise Exception("Google Calendar token expired — please reconnect in Dashboard → Integrations.")
+    if not r.ok:
+        raise Exception(f"Calendar API error {r.status_code}")
+    return r.json().get('items', [])
+
+
+def _whatsapp_send(uid, to, message):
+    import requests as _req
+    cfg = _get_integration_cfg(uid, 'whatsapp')
+    token    = cfg.get('access_token')
+    phone_id = cfg.get('phone_number_id')
+    if not token or not phone_id:
+        raise Exception("WhatsApp not connected — go to Dashboard → Integrations to add your access_token and phone_number_id.")
+    r = _req.post(
+        f"https://graph.facebook.com/v20.0/{phone_id}/messages",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": message}},
+        timeout=15,
+    )
+    if not r.ok:
+        raise Exception(f"WhatsApp API error {r.status_code}: {r.text[:200]}")
+    return r.json()
+
+
+def _slack_post(uid, message, channel=None):
+    import requests as _req
+    cfg = _get_integration_cfg(uid, 'slack')
+    webhook = cfg.get('webhook_url')
+    if not webhook:
+        raise Exception("Slack not connected — go to Dashboard → Integrations to add your webhook URL.")
+    body = {"text": message}
+    if channel:
+        body["channel"] = channel
+    r = _req.post(webhook, json=body, timeout=10)
+    if not r.ok:
+        raise Exception(f"Slack error {r.status_code}: {r.text[:100]}")
+    return True
+
+
+def _hubspot_create_contact(uid, email, firstname='', lastname='', company='', phone=''):
+    import requests as _req
+    cfg = _get_integration_cfg(uid, 'hubspot')
+    token = cfg.get('access_token')
+    if not token:
+        raise Exception("HubSpot not connected — go to Dashboard → Integrations.")
+    props = {"email": email}
+    if firstname: props["firstname"] = firstname
+    if lastname:  props["lastname"]  = lastname
+    if company:   props["company"]   = company
+    if phone:     props["phone"]     = phone
+    r = _req.post(
+        "https://api.hubapi.com/crm/v3/objects/contacts",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"properties": props}, timeout=15,
+    )
+    if not r.ok:
+        raise Exception(f"HubSpot error {r.status_code}: {r.text[:200]}")
+    return r.json()
 
 
 def get_llm_response(messages, uid=None, model="daily", user_ip=None, tools=None, tool_choice=None, max_thinking=False):
