@@ -64,11 +64,13 @@ def verify_firebase_token():
 
 
 def verify_api_key():
-    """Verify API key from Authorization header."""
+    """Verify API key from X-Kautilya-Auth header (proxy-injected) or Authorization header."""
     from extensions import db, limit_manager
     if not db:
         return None
-    auth_header = request.headers.get('Authorization', '')
+    # X-Kautilya-Auth is set by the Koyeb proxy when forwarding to a private HF Space
+    # (the real Authorization header carries the HF gateway token in that case).
+    auth_header = request.headers.get('X-Kautilya-Auth') or request.headers.get('Authorization', '')
     if not auth_header.startswith('Bearer ' + API_KEY_PREFIX):
         return None
     raw_key = auth_header.split('Bearer ', 1)[1]
