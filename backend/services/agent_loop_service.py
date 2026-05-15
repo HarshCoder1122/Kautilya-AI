@@ -710,12 +710,69 @@ def _get_integration_cfg(uid, provider):
         return {}
 
 
+def _refresh_oauth_token(uid, provider):
+    """Refresh an expired OAuth access token using the stored refresh_token.
+    Returns updated config dict, or raises Exception on failure."""
+    import requests as _req
+    cfg = _get_integration_cfg(uid, provider)
+    refresh_token = cfg.get('refresh_token')
+    client_id = cfg.get('client_id')
+    client_secret = cfg.get('client_secret')
+    if not refresh_token or not client_id or not client_secret:
+        raise Exception(f"{provider} not connected or missing credentials — reconnect in Dashboard → Integrations.")
+
+    token_urls = {
+        'google_calendar': 'https://oauth2.googleapis.com/token',
+        'hubspot': 'https://api.hubapi.com/oauth/v1/token',
+    }
+    token_url = token_urls.get(provider)
+    if not token_url:
+        raise Exception(f"Token refresh not supported for {provider}")
+
+    r = _req.post(token_url, data={
+        'grant_type': 'refresh_token',
+        'refresh_token': refresh_token,
+        'client_id': client_id,
+        'client_secret': client_secret,
+    }, timeout=15)
+    if not r.ok:
+        raise Exception(f"{provider} token refresh failed: {r.text[:200]}")
+    data = r.json()
+    new_token = data.get('access_token')
+    if not new_token:
+        raise Exception(f"{provider} refresh returned no access_token")
+    # Persist updated token
+    from extensions import db
+    db.collection('users').document(uid).collection('integrations').document(provider).set({
+        'access_token': new_token,
+        'obtained_at': int(time.time()),
+        'expires_in': data.get('expires_in', 3600),
+    }, merge=True)
+    cfg['access_token'] = new_token
+    cfg['obtained_at'] = int(time.time())
+    return cfg
+
+
+def _get_valid_token(uid, provider):
+    """Get a valid access token, auto-refreshing if expired (1hr TTL)."""
+    cfg = _get_integration_cfg(uid, provider)
+    if not cfg.get('access_token'):
+        raise Exception(f"{provider} not connected — go to Dashboard → Integrations to connect it.")
+    obtained_at = cfg.get('obtained_at', 0)
+    expires_in = cfg.get('expires_in', 3600)
+    # Refresh if within 5 minutes of expiry
+    if time.time() > obtained_at + expires_in - 300:
+        try:
+            cfg = _refresh_oauth_token(uid, provider)
+        except Exception as e:
+            # If refresh fails but token might still work, continue with it
+            print(f"[OAuth] Refresh failed for {provider}: {e}")
+    return cfg.get('access_token')
+
+
 def _calendar_create(uid, title, start_dt, end_dt, description='', tz='Asia/Kolkata'):
     import requests as _req
-    cfg = _get_integration_cfg(uid, 'google_calendar')
-    token = cfg.get('access_token')
-    if not token:
-        raise Exception("Google Calendar not connected — go to Dashboard → Integrations to connect it.")
+    token = _get_valid_token(uid, 'google_calendar')
     if not start_dt or not end_dt:
         raise Exception("Start and end datetime are required (ISO 8601 format).")
     body = {
@@ -730,6 +787,7 @@ def _calendar_create(uid, title, start_dt, end_dt, description='', tz='Asia/Kolk
         json=body, timeout=15,
     )
     if r.status_code == 401:
+        # Token refresh might have failed — tell user to reconnect
         raise Exception("Google Calendar token expired — please reconnect in Dashboard → Integrations.")
     if not r.ok:
         raise Exception(f"Calendar API error {r.status_code}: {r.text[:200]}")
@@ -739,10 +797,7 @@ def _calendar_create(uid, title, start_dt, end_dt, description='', tz='Asia/Kolk
 def _calendar_list(uid, days=7, tz='Asia/Kolkata'):
     import requests as _req
     from datetime import datetime, timedelta, timezone as _tz
-    cfg = _get_integration_cfg(uid, 'google_calendar')
-    token = cfg.get('access_token')
-    if not token:
-        raise Exception("Google Calendar not connected — go to Dashboard → Integrations to connect it.")
+    token = _get_valid_token(uid, 'google_calendar')
     now = datetime.now(_tz.utc)
     r = _req.get(
         "https://www.googleapis.com/calendar/v3/calendars/primary/events",
@@ -757,7 +812,24 @@ def _calendar_list(uid, days=7, tz='Asia/Kolkata'):
         timeout=15,
     )
     if r.status_code == 401:
-        raise Exception("Google Calendar token expired — please reconnect in Dashboard → Integrations.")
+        # Try one explicit refresh then retry
+        try:
+            cfg = _refresh_oauth_token(uid, 'google_calendar')
+            token = cfg['access_token']
+            r = _req.get(
+                "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+                headers={"Authorization": f"Bearer {token}"},
+                params={
+                    "timeMin": now.isoformat(),
+                    "timeMax": (now + timedelta(days=days)).isoformat(),
+                    "orderBy": "startTime",
+                    "singleEvents": "true",
+                    "maxResults": 15,
+                },
+                timeout=15,
+            )
+        except Exception:
+            raise Exception("Google Calendar token expired — please reconnect in Dashboard → Integrations.")
     if not r.ok:
         raise Exception(f"Calendar API error {r.status_code}")
     return r.json().get('items', [])
@@ -798,10 +870,7 @@ def _slack_post(uid, message, channel=None):
 
 def _hubspot_create_contact(uid, email, firstname='', lastname='', company='', phone=''):
     import requests as _req
-    cfg = _get_integration_cfg(uid, 'hubspot')
-    token = cfg.get('access_token')
-    if not token:
-        raise Exception("HubSpot not connected — go to Dashboard → Integrations.")
+    token = _get_valid_token(uid, 'hubspot')
     props = {"email": email}
     if firstname: props["firstname"] = firstname
     if lastname:  props["lastname"]  = lastname
