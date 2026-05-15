@@ -56,7 +56,7 @@ def _get_conversation(uid, session_id):
                               .collection('messages')
                               .order_by('timestamp')
                               .limit_to_last(MAX_HISTORY * 2))
-                docs = list(msgs_ref.stream())
+                docs = list(msgs_ref.get())
                 if docs:
                     restored = []
                     for doc in docs:
