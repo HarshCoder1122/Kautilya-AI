@@ -181,7 +181,11 @@ def chat_completions():
     mlow = upstream_model.lower()
     if 'nemotron' in mlow:
         payload["chat_template_kwargs"] = {"enable_thinking": bool(max_thinking)}
-        payload["reasoning_budget"] = reasoning_budget or (16384 if max_thinking else 1024)
+        # Only set a reasoning budget when thinking is explicitly requested,
+        # otherwise Nemotron silently burns through 1024 thinking tokens before
+        # producing any visible output (looks like a slow / non-streaming model).
+        if max_thinking:
+            payload["reasoning_budget"] = reasoning_budget or 16384
     elif 'deepseek' in mlow:
         payload["chat_template_kwargs"] = {"thinking": bool(max_thinking)}
         if max_thinking and reasoning_budget:
