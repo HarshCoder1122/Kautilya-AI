@@ -102,16 +102,30 @@ def chat_completions():
     )
     reasoning_budget = extra.get('reasoning_budget') or body.get('reasoning_budget')
 
+    print(f"[OpenAI Compat] {requested_model} → {upstream_model} | stream={stream} | uid={uid}")
+
     # ---- Groq path for daily / llama models ----
     if 'llama' in upstream_model.lower() and 'nemotron' not in upstream_model.lower():
         gen = call_groq(messages, stream=stream, model=upstream_model,
                         temperature=temperature, max_tokens=max_tokens,
                         tools=tools, tool_choice=tool_choice)
         if gen is None:
-            return jsonify({"error": {"message": "Upstream unavailable", "type": "upstream_error"}}), 503
+            print(f"[OpenAI Compat] Groq returned None for {upstream_model}")
+            return jsonify({"error": {"message": "Upstream unavailable — Groq keys exhausted or model error", "type": "upstream_error"}}), 503
         if not stream:
-            content = gen if isinstance(gen, str) else ""
-            return jsonify(_openai_completion_envelope(requested_model, content))
+            # gen can be a str (plain content) or dict (when tools are used)
+            if isinstance(gen, str):
+                content = gen
+                tool_calls_out = None
+            elif isinstance(gen, dict):
+                content = gen.get("content") or ""
+                tool_calls_out = gen.get("tool_calls")
+            else:
+                content = ""
+                tool_calls_out = None
+            envelope = _openai_completion_envelope(requested_model, content, tool_calls=tool_calls_out)
+            print(f"[OpenAI Compat] Non-stream response: {len(content)} chars")
+            return jsonify(envelope)
 
         def sse():
             cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
@@ -253,7 +267,10 @@ def chat_completions():
 
 
 # ---------- helpers ----------
-def _openai_completion_envelope(model, content):
+def _openai_completion_envelope(model, content, tool_calls=None):
+    msg = {"role": "assistant", "content": content}
+    if tool_calls:
+        msg["tool_calls"] = tool_calls
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
         "object": "chat.completion",
@@ -261,8 +278,8 @@ def _openai_completion_envelope(model, content):
         "model": model,
         "choices": [{
             "index": 0,
-            "message": {"role": "assistant", "content": content},
-            "finish_reason": "stop",
+            "message": msg,
+            "finish_reason": "tool_calls" if tool_calls else "stop",
         }],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }

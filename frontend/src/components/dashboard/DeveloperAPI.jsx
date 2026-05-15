@@ -15,7 +15,7 @@ const API_BASE_URL =
     ? "http://localhost:5000"
     : window.location.origin;
 
-const V1_BASE = `${API_BASE_URL}/v1`;
+const V1_BASE = `${API_BASE_URL}/api/v1`;
 const BACKEND = API_BASE_URL;
 
 const MODELS = [
