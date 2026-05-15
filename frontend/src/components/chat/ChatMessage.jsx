@@ -62,7 +62,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
     try {
       // Streaming PCM playback — first audio arrives within ~1s instead of waiting for full synthesis
       const SAMPLE_RATE = 24000;
-      const response = await ttsAPI.revealIQ.stream(textToSpeak, 'kokoro-en', 'af_bella', 1.0);
+      const response = await ttsAPI.revealIQ.stream(textToSpeak, 'swara-en', 'af_bella', 1.0);
       if (!response.ok) throw new Error(`TTS ${response.status}`);
 
       const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });

@@ -31,6 +31,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isLiveVoice, setIsLiveVoice] = useState(false);
+  const [staleTimeout, setStaleTimeout] = useState(false); // true when thinking >90s with no response
   const fileInputRef = useRef(null);
   const inputRef = useRef(null);
   const messagesEndRef = useRef(null);
@@ -40,6 +41,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   const pendingSessionRef = useRef(null);
   // Track whether we left mid-stream (user navigated away during generation)
   const leftMidStreamRef = useRef(false);
+  const staleTimerRef = useRef(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -75,6 +77,20 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     }
     loadHistory(sessionId);
   }, [sessionId]);
+
+  // Stale-response detector: if thinking with no first chunk for 90s, surface a recovery button
+  useEffect(() => {
+    if (isThinking && !isStreaming) {
+      staleTimerRef.current = setTimeout(() => {
+        setIsThinking(false);
+        setStaleTimeout(true);
+      }, 90000);
+    } else {
+      clearTimeout(staleTimerRef.current);
+      if (!isThinking) setStaleTimeout(false);
+    }
+    return () => clearTimeout(staleTimerRef.current);
+  }, [isThinking, isStreaming]);
 
   const loadHistory = async (sid) => {
     try {
@@ -221,6 +237,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
 
       setIsThinking(false);
       setIsStreaming(true);
+      setStaleTimeout(false);
       leftMidStreamRef.current = true; // Mark in-progress so tab-return triggers reload
 
       const aiMsg = {
@@ -248,6 +265,26 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       };
 
       const updateContent = () => {
+        // Multi-file workspace: detect complete <file>...</file> blocks (coder mode)
+        if (/<\/file>/.test(fullContent)) {
+          const cleanContent = fullContent.replace(/<file[\s\S]*?<\/file>/g, '').trim();
+          updateAssistant({
+            content: cleanContent || 'Here are the project files:',
+            thinkingDone: true,
+            isSynthesizing: false,
+            hasArtifact: true,
+            artifactType: 'multifile',
+            artifactTitle: 'Project Files',
+            artifactCode: fullContent,
+          });
+          // Update canvas on every chunk so file tree stays current during streaming
+          if (onOpenCanvas) {
+            if (!canvasOpened) canvasOpened = true;
+            onOpenCanvas({ type: 'multifile', code: fullContent, title: 'Project Files' });
+          }
+          return;
+        }
+
         const artifactMatch = fullContent.match(/<artifact\s+type="([^"]+)"(?:\s+title="([^"]+)")?>([\s\S]*?)<\/artifact>/);
         const artifactData = artifactMatch ? {
           type: artifactMatch[1],
@@ -605,6 +642,23 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
             <ThinkingTokens
               text="Analyzing your request... Routing to specialized agent... Gathering context..."
             />
+          )}
+
+          {staleTimeout && (
+            <div className="flex items-start gap-3 animate-fade-up">
+              <div className="w-8 h-8 rounded-full bg-[var(--k-brand)]/10 flex items-center justify-center flex-shrink-0 mt-0.5">
+                <span className="text-[var(--k-brand)] text-xs font-bold k-heading">K</span>
+              </div>
+              <div className="flex-1 max-w-2xl bg-[var(--k-surface)] border border-[var(--k-border)] rounded-xl px-4 py-3 text-sm text-muted-foreground">
+                <p className="mb-2">The model is still processing your request in the background. This can happen when the server is busy or starting up.</p>
+                <button
+                  onClick={() => { setStaleTimeout(false); loadHistory(sessionId); }}
+                  className="px-3 py-1.5 rounded-md bg-[var(--k-brand)] text-white text-xs font-semibold hover:opacity-90 transition-opacity"
+                >
+                  Check for response
+                </button>
+              </div>
+            </div>
           )}
 
           <div ref={messagesEndRef} />

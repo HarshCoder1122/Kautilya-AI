@@ -19,11 +19,14 @@ static_bp = Blueprint('static_routes', __name__)
 @static_bp.route('/dashboard/<path:subpath>')
 @static_bp.route('/login')
 def home(subpath=None):
-    """Serve the main React SPA.
-    Both the root (/) and /dashboard routes serve the same index.html.
-    React Router handles the client-side navigation.
-    """
-    return send_from_directory(STATIC_FOLDER, 'index.html')
+    """Serve the React SPA with no-cache so browsers always load the latest
+    index.html. Hashed JS/CSS filenames handle long-term asset caching."""
+    from flask import make_response
+    resp = make_response(send_from_directory(STATIC_FOLDER, 'index.html'))
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+    return resp
 
 
 @static_bp.route('/favicon.ico')

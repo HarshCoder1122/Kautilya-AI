@@ -1,11 +1,147 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import ReactMarkdown from 'react-markdown';
-import { X, Code, ChartBar, FileText, Copy, Download, ArrowsOutSimple, Check } from "@phosphor-icons/react";
+import { X, Code, ChartBar, FileText, Copy, Download, ArrowsOutSimple, Check, FolderOpen, Eye, File } from "@phosphor-icons/react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Area, AreaChart } from "recharts";
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+
+/** Parse <file name="..." language="...">...</file> blocks from model output */
+function parseFileBlocks(code) {
+  if (!code) return [];
+  const regex = /<file\s+name="([^"]+)"(?:\s+language="([^"]+)")?>([\s\S]*?)<\/file>/g;
+  const files = [];
+  let m;
+  while ((m = regex.exec(code)) !== null) {
+    files.push({ name: m[1], language: m[2] || inferLang(m[1]), content: m[3].trim() });
+  }
+  return files;
+}
+
+function inferLang(filename) {
+  const ext = filename.split('.').pop().toLowerCase();
+  const map = { js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
+    py: 'python', html: 'html', css: 'css', json: 'json', md: 'markdown',
+    txt: 'text', sh: 'bash', yml: 'yaml', yaml: 'yaml' };
+  return map[ext] || 'text';
+}
+
+function buildHtmlPreview(files) {
+  const html = files.find(f => f.name.endsWith('.html') || f.name === 'index.html');
+  if (!html) return null;
+  let src = html.content;
+  // Inline CSS files referenced by filename
+  files.filter(f => f.language === 'css').forEach(f => {
+    src = src.replace(
+      new RegExp(`<link[^>]*href=["']${f.name}["'][^>]*>`, 'gi'),
+      `<style>${f.content}</style>`
+    );
+  });
+  // Inline JS files referenced by filename
+  files.filter(f => f.language === 'javascript' && !f.name.endsWith('.jsx')).forEach(f => {
+    src = src.replace(
+      new RegExp(`<script[^>]*src=["']${f.name}["'][^>]*></script>`, 'gi'),
+      `<script>${f.content}</script>`
+    );
+  });
+  return src;
+}
+
+function downloadFile(filename, content) {
+  const blob = new Blob([content], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function MultiFileWorkspace({ files, title }) {
+  const [activeFile, setActiveFile] = useState(files[0]?.name || '');
+  const [viewMode, setViewMode] = useState('code'); // 'code' | 'preview'
+  const [copied, setCopied] = useState(false);
+
+  const currentFile = files.find(f => f.name === activeFile) || files[0];
+  const htmlPreview = useMemo(() => buildHtmlPreview(files), [files]);
+
+  const handleCopy = () => {
+    if (currentFile) {
+      navigator.clipboard.writeText(currentFile.content).catch(() => {});
+      setCopied(true); setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--k-border)] bg-[var(--k-surface)] flex-shrink-0">
+        <div className="flex items-center gap-1">
+          <FolderOpen className="w-4 h-4 text-[var(--k-brand)]" />
+          <span className="text-xs font-bold text-foreground ml-1 truncate max-w-[160px]">{title}</span>
+          <span className="text-[10px] text-muted-foreground ml-2">{files.length} file{files.length !== 1 ? 's' : ''}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          {htmlPreview && (
+            <button
+              onClick={() => setViewMode(v => v === 'preview' ? 'code' : 'preview')}
+              className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-bold transition-all ${viewMode === 'preview' ? 'bg-[var(--k-brand)] text-white' : 'bg-accent text-muted-foreground hover:text-foreground'}`}
+            >
+              <Eye className="w-3 h-3" />{viewMode === 'preview' ? 'Code' : 'Preview'}
+            </button>
+          )}
+          <button onClick={handleCopy} className="p-1.5 rounded hover:bg-accent" title="Copy file">
+            {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5 text-muted-foreground" />}
+          </button>
+          <button onClick={() => currentFile && downloadFile(currentFile.name, currentFile.content)} className="p-1.5 rounded hover:bg-accent" title="Download file">
+            <Download className="w-3.5 h-3.5 text-muted-foreground" />
+          </button>
+        </div>
+      </div>
+
+      <div className="flex flex-1 min-h-0">
+        {/* File tree */}
+        <div className="w-44 border-r border-[var(--k-border)] bg-[var(--k-surface)] flex-shrink-0 overflow-y-auto">
+          {files.map(f => (
+            <button
+              key={f.name}
+              onClick={() => { setActiveFile(f.name); setViewMode('code'); }}
+              className={`w-full flex items-center gap-2 px-3 py-2 text-left text-xs transition-all ${
+                activeFile === f.name
+                  ? 'bg-[var(--k-brand)]/10 text-[var(--k-brand)] font-semibold border-r-2 border-[var(--k-brand)]'
+                  : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+              }`}
+            >
+              <File className="w-3 h-3 flex-shrink-0" />
+              <span className="truncate">{f.name}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Editor / Preview */}
+        <div className="flex-1 min-w-0 overflow-hidden">
+          {viewMode === 'preview' && htmlPreview ? (
+            <iframe
+              srcDoc={htmlPreview}
+              sandbox="allow-scripts"
+              className="w-full h-full border-none bg-white"
+              title="Live Preview"
+            />
+          ) : currentFile ? (
+            <ScrollArea className="h-full">
+              <SyntaxHighlighter
+                language={currentFile.language || 'text'}
+                style={vscDarkPlus}
+                customStyle={{ margin: 0, borderRadius: 0, fontSize: '12px', minHeight: '100%', background: 'var(--k-bg)' }}
+                showLineNumbers
+              >
+                {currentFile.content}
+              </SyntaxHighlighter>
+            </ScrollArea>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export function CanvasPane({ content, onClose, activeMode }) {
   const getInitialTab = (c) => {
@@ -17,6 +153,10 @@ export function CanvasPane({ content, onClose, activeMode }) {
 
   const [activeTab, setActiveTab] = useState(getInitialTab(content));
   const [copied, setCopied] = useState(false);
+
+  // Parse multi-file blocks from content
+  const fileBlocks = useMemo(() => parseFileBlocks(content?.code), [content?.code]);
+  const isMultiFile = fileBlocks.length > 0;
 
   // Sync tab when content changes (new artifact opened)
   useEffect(() => {
@@ -68,14 +208,14 @@ export function CanvasPane({ content, onClose, activeMode }) {
       <div className="h-14 min-h-[56px] flex items-center justify-between px-4 border-b border-[var(--k-border)] bg-[var(--k-surface)]">
         <div className="flex items-center gap-3 overflow-hidden">
           <div className="w-8 h-8 rounded-lg bg-[var(--k-brand)]/10 flex items-center justify-center text-[var(--k-brand)] flex-shrink-0">
-            {activeTab === 'code' ? <Code className="w-4 h-4" /> : activeTab === 'dashboard' ? <ChartBar className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
+            {isMultiFile ? <FolderOpen className="w-4 h-4" /> : activeTab === 'code' ? <Code className="w-4 h-4" /> : activeTab === 'dashboard' ? <ChartBar className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
           </div>
           <div className="flex flex-col overflow-hidden">
             <span className="text-sm font-semibold truncate text-foreground leading-tight">
               {content?.title || 'Canvas'}
             </span>
             <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">
-              {activeTab} View
+              {isMultiFile ? `${fileBlocks.length} Files` : `${activeTab} View`}
             </span>
           </div>
         </div>
@@ -101,7 +241,11 @@ export function CanvasPane({ content, onClose, activeMode }) {
         </div>
       </div>
 
-      {/* Tab Navigation */}
+      {isMultiFile ? (
+        <div className="flex-1 min-h-0">
+          <MultiFileWorkspace files={fileBlocks} title={content?.title || 'Project'} />
+        </div>
+      ) : (
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
         <div className="px-4 bg-[var(--k-surface)] border-b border-[var(--k-border)]">
           <TabsList className="bg-transparent h-10 p-0 gap-6">
@@ -265,6 +409,7 @@ export function CanvasPane({ content, onClose, activeMode }) {
           )}
         </TabsContent>
       </Tabs>
+      )}
     </div>
   );
 }

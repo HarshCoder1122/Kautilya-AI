@@ -128,16 +128,16 @@ export default function AgentStudio() {
 
       {/* Agent Edit/Detail Dialog */}
       <Dialog open={!!selectedAgent} onOpenChange={(open) => { if (!open) setSelectedAgent(null); }}>
-        <DialogContent className="sm:max-w-[750px] max-h-[90vh] p-0 overflow-hidden bg-[var(--k-surface)] border-[var(--k-border)] shadow-2xl">
+        <DialogContent className="sm:max-w-[780px] p-0 bg-[var(--k-surface)] border-[var(--k-border)] shadow-2xl" style={{height: '88vh', maxHeight: '88vh', display: 'flex', flexDirection: 'column'}}>
           <DialogHeader className="sr-only">
             <DialogTitle>Agent Details</DialogTitle>
             <DialogDescription>View and manage agent settings and performance.</DialogDescription>
           </DialogHeader>
           {selectedAgent && (
-            <AgentDetail 
-              agent={selectedAgent} 
-              onClose={() => setSelectedAgent(null)} 
-              onUpdate={loadAgents} 
+            <AgentDetail
+              agent={selectedAgent}
+              onClose={() => setSelectedAgent(null)}
+              onUpdate={loadAgents}
             />
           )}
         </DialogContent>
@@ -242,17 +242,18 @@ function AgentDetail({ agent, onClose, onUpdate }) {
   };
 
   const handleTestCall = async () => {
-    if (!testNumber) return alert("Enter a phone number to test");
+    if (!testNumber) return alert("Enter a phone number to test (e.g. +919876543210)");
     try {
       setIsTesting(true);
-      await telephonyAPI.outbound({
-        to: testNumber,
-        agent_id: agent.agent_id
-      });
-      alert(`Test call initiated to ${testNumber}!`);
+      const result = await telephonyAPI.outbound({ to: testNumber, agent_id: agent.agent_id });
+      alert(`✅ Call initiated to ${testNumber}!\nCall ID: ${result?.call_id || 'pending'}`);
     } catch (error) {
-      console.error('Test call failed:', error);
-      alert('Failed to initiate test call');
+      const msg = error.response?.data?.error || error.message || 'Call failed';
+      if (msg.includes('telephony') || msg.includes('provider') || msg.includes('config') || msg.includes('Vobiz') || msg.includes('Exotel')) {
+        alert(`📞 Telephony not configured.\n\nTo enable calls:\n1. Go to Dashboard → Settings → Telephony\n2. Add your Exotel or Vobiz credentials\n3. Then retry the call.\n\nError: ${msg}`);
+      } else {
+        alert(`Call failed: ${msg}`);
+      }
     } finally {
       setIsTesting(false);
     }
@@ -406,8 +407,8 @@ function AgentDetail({ agent, onClose, onUpdate }) {
   };
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="px-6 py-4 border-b border-[var(--k-border)] flex items-center justify-between bg-[var(--k-surface-elevated)]">
+    <div className="flex flex-col" style={{height: '100%', minHeight: 0}}>
+      <div className="px-6 py-4 border-b border-[var(--k-border)] flex items-center justify-between bg-[var(--k-surface-elevated)] flex-shrink-0">
          <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-[var(--k-brand)] flex items-center justify-center text-white">
                <Brain className="w-5 h-5" weight="bold" />
@@ -422,7 +423,8 @@ function AgentDetail({ agent, onClose, onUpdate }) {
          </button>
       </div>
 
-      <ScrollArea className="flex-1 p-6">
+      <ScrollArea className="flex-1 overflow-auto" style={{minHeight: 0}}>
+        <div className="p-6">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="bg-accent/50 h-10 p-1 mb-6 rounded-lg w-full max-w-2xl">
             <TabsTrigger value="config" className="flex-1 rounded-md text-xs font-semibold data-[state=active]:bg-background data-[state=active]:text-[var(--k-brand)]">Instruction</TabsTrigger>
@@ -709,9 +711,10 @@ function AgentDetail({ agent, onClose, onUpdate }) {
             )}
           </TabsContent>
         </Tabs>
+        </div>
       </ScrollArea>
 
-      <div className="px-6 py-4 border-t border-[var(--k-border)] bg-[var(--k-surface-elevated)] flex justify-end gap-3">
+      <div className="px-6 py-4 border-t border-[var(--k-border)] bg-[var(--k-surface-elevated)] flex justify-end gap-3 flex-shrink-0">
         <button
           onClick={onClose}
           className="px-6 py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
