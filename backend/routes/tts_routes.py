@@ -2,12 +2,29 @@ import os
 import requests
 import json
 import logging
+import threading
+import time
 from flask import Blueprint, request, send_file, jsonify
 from flask_cors import cross_origin
 
 logger = logging.getLogger(__name__)
 
 tts_bp = Blueprint('tts', __name__)
+
+REVEALIQ_BASE = 'https://harshsharma1212-revealiq-asr.hf.space'
+
+def _warmup_revealiq():
+    """Ping the RevealIQ Space every 4 minutes to prevent cold starts."""
+    hf_token = os.environ.get('REVEALIQ_HF_TOKEN') or os.environ.get('HF_TOKEN')
+    headers = {'Authorization': f'Bearer {hf_token}'} if hf_token else {}
+    while True:
+        try:
+            requests.get(f'{REVEALIQ_BASE}/health', headers=headers, timeout=10)
+        except Exception:
+            pass
+        time.sleep(240)
+
+threading.Thread(target=_warmup_revealiq, daemon=True).start()
 
 
 @tts_bp.route('/tts/revealiq/stream', methods=['POST', 'OPTIONS'])
@@ -26,8 +43,8 @@ def reveal_iq_stream():
         speed = data.get('speed', 1.0)
         
         hf_token = os.environ.get('REVEALIQ_HF_TOKEN') or os.environ.get('HF_TOKEN')
-        url = 'https://harshsharma1212-revealiq-asr.hf.space/v1/audio/stream'
-        
+        url = f'{REVEALIQ_BASE}/v1/audio/stream'
+
         headers = {
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {hf_token}',
@@ -41,18 +58,26 @@ def reveal_iq_stream():
 
         # Request streaming from Space
         resp = requests.post(url, headers=headers, json=payload, stream=True, timeout=60)
-        
+
         if not resp.ok:
             return jsonify({"error": f"Streaming failed: {resp.text}"}), 500
 
-        # Proxy chunks to client
         from flask import Response
         def generate():
-            for chunk in resp.iter_content(chunk_size=4096):
+            for chunk in resp.iter_content(chunk_size=2048):  # smaller = lower latency
                 if chunk:
                     yield chunk
 
-        return Response(generate(), mimetype='application/octet-stream')
+        return Response(
+            generate(),
+            mimetype='application/octet-stream',
+            headers={
+                'X-Sample-Rate': '24000',
+                'X-Channels': '1',
+                'X-Bit-Depth': '16',
+                'Cache-Control': 'no-cache',
+            }
+        )
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -88,7 +113,7 @@ def reveal_iq_synthesize():
         
         # Call RevealIQ Hugging Face Space (Universal URL format)
         # Using the NEW high-performance endpoints
-        url = 'https://harshsharma1212-revealiq-asr.hf.space/v1/audio/speech'
+        url = f'{REVEALIQ_BASE}/v1/audio/speech'
         headers = {
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {hf_token}',
