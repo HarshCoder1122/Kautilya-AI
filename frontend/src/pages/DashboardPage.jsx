@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
 import {
   Robot, Users, Megaphone, Phone, ChartBar, ChatCircleDots,
-  Gear, SignOut, CaretLeft, SpeakerHigh
+  Gear, SignOut, CaretLeft, SpeakerHigh, PlugsConnected
 } from "@phosphor-icons/react";
 import { ThemeToggle } from "@/components/shared/ThemeToggle";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -16,6 +16,7 @@ import BIAnalytics from "@/components/dashboard/BIAnalytics";
 import WidgetPreview from "@/components/dashboard/WidgetPreview";
 import TextToSpeechStudio from "@/components/dashboard/TextToSpeechStudio";
 import UserSettings from "@/components/dashboard/UserSettings";
+import Integrations from "@/components/dashboard/Integrations";
 
 const navItems = [
   { id: 'agents', label: 'Agent Studio', icon: Robot, path: '/dashboard' },
@@ -25,6 +26,7 @@ const navItems = [
   { id: 'analytics', label: 'BI Analytics', icon: ChartBar, path: '/dashboard/analytics' },
   { id: 'widgets', label: 'Widgets', icon: ChatCircleDots, path: '/dashboard/widgets' },
   { id: 'tts', label: 'TTS Studio', icon: SpeakerHigh, path: '/dashboard/tts' },
+  { id: 'integrations', label: 'Integrations', icon: PlugsConnected, path: '/dashboard/integrations' },
   { id: 'settings', label: 'Settings', icon: Gear, path: '/dashboard/settings' },
 ];
 
@@ -135,6 +137,7 @@ export default function DashboardPage({ theme, toggleTheme, user }) {
           <Route path="analytics" element={<BIAnalytics />} />
           <Route path="widgets" element={<WidgetPreview />} />
           <Route path="tts" element={<TextToSpeechStudio />} />
+          <Route path="integrations" element={<Integrations />} />
           <Route path="settings" element={<UserSettings user={user} />} />
         </Routes>
       </div>

@@ -40,6 +40,31 @@ api.interceptors.request.use(async (config) => {
   return Promise.reject(error);
 });
 
+// On 401, force-refresh the Firebase token and retry once
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const original = error.config;
+    if (error.response?.status === 401 && !original._retried) {
+      original._retried = true;
+      try {
+        const { getAuthInstance } = await import('./firebase.js');
+        const auth = getAuthInstance();
+        const user = auth.currentUser;
+        if (user) {
+          const token = await user.getIdToken(true);
+          localStorage.setItem('firebase_token', token);
+          original.headers['Authorization'] = `Bearer ${token}`;
+          return api(original);
+        }
+      } catch (e) {
+        console.warn('[Auth] Token refresh on 401 failed:', e);
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 // Chat API
 export const chatAPI = {
   // Stream chat message
@@ -480,6 +505,26 @@ export const ttsAPI = {
       { id: 'te-IN', name: 'Telugu' },
       { id: 'gu-IN', name: 'Gujarati' },
     ]
+  },
+};
+
+// Integrations API
+export const integrationsAPI = {
+  list: async () => {
+    const res = await api.get('/api/integrations');
+    return res.data;
+  },
+  save: async (provider, data) => {
+    const res = await api.post(`/api/integrations/${provider}/save`, data);
+    return res.data;
+  },
+  disconnect: async (provider) => {
+    const res = await api.post(`/api/integrations/${provider}/disconnect`);
+    return res.data;
+  },
+  connectOAuth: async (provider) => {
+    const res = await api.get(`/api/integrations/${provider}/connect`);
+    return res.data;
   },
 };
 
