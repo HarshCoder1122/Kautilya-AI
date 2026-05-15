@@ -29,18 +29,20 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
 
   const stopAudio = () => {
     if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
+      try {
+        // Could be AudioContext (streaming) or Audio element
+        if (typeof audioRef.current.close === 'function') audioRef.current.close();
+        else { audioRef.current.pause(); audioRef.current.currentTime = 0; }
+      } catch {}
       audioRef.current = null;
     }
     setIsPlaying(false);
+    setIsSynthesizing(false);
   };
 
   const handlePlayTTS = async () => {
-    // Stop if already playing
     if (isPlaying) {
       stopAudio();
-      // Also cancel browser speech if it was used
       if (window.speechSynthesis) window.speechSynthesis.cancel();
       return;
     }
@@ -50,50 +52,65 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
       .replace(/<artifact[\s\S]*?<\/artifact>/g, '')
       .replace(/```[\s\S]*?```/g, '')
       .replace(/[#*_~`>]/g, '')
-      .trim();
+      .trim()
+      .slice(0, 600); // keep short for fast first-byte
 
     if (!textToSpeak) return;
 
-    // Try backend TTS first
+    setIsSynthesizing(true);
+
     try {
-      setIsSynthesizing(true);
-      const audioBlob = await ttsAPI.revealIQ.synthesize(
-        textToSpeak.slice(0, 1000), // limit to 1000 chars
-        'kokoro-en',
-        'af_bella'
-      );
+      // Streaming PCM playback — first audio arrives within ~1s instead of waiting for full synthesis
+      const SAMPLE_RATE = 24000;
+      const response = await ttsAPI.revealIQ.stream(textToSpeak, 'kokoro-en', 'af_bella', 1.0);
+      if (!response.ok) throw new Error(`TTS ${response.status}`);
 
-      const url = URL.createObjectURL(audioBlob);
-      const audio = new Audio(url);
-      audioRef.current = audio;
-
-      audio.onended = () => {
-        setIsPlaying(false);
-        URL.revokeObjectURL(url);
-        audioRef.current = null;
-      };
-      audio.onerror = () => {
-        setIsPlaying(false);
-        audioRef.current = null;
-        URL.revokeObjectURL(url);
-      };
-
-      await audio.play();
+      const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+      audioRef.current = ctx;
+      let nextTime = ctx.currentTime + 0.05;
+      let leftover = null;
+      const reader = response.body.getReader();
+      setIsSynthesizing(false);
       setIsPlaying(true);
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          let combined = value;
+          if (leftover) {
+            const merged = new Uint8Array(leftover.length + value.length);
+            merged.set(leftover); merged.set(value, leftover.length);
+            combined = merged; leftover = null;
+          }
+          let len = combined.length;
+          if (len % 2 !== 0) { leftover = combined.slice(len - 1); len -= 1; }
+          if (len === 0) continue;
+          const int16 = new Int16Array(combined.buffer, combined.byteOffset, len / 2);
+          const float32 = new Float32Array(int16.length);
+          for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0;
+          const buf = ctx.createBuffer(1, float32.length, SAMPLE_RATE);
+          buf.getChannelData(0).set(float32);
+          const src = ctx.createBufferSource();
+          src.buffer = buf; src.connect(ctx.destination);
+          const t = Math.max(nextTime, ctx.currentTime + 0.01);
+          src.start(t); nextTime = t + buf.duration;
+        }
+      } finally {
+        reader.cancel().catch(() => {});
+        setTimeout(() => { try { ctx.close(); } catch {} audioRef.current = null; setIsPlaying(false); }, (nextTime - ctx.currentTime + 0.5) * 1000);
+      }
     } catch (error) {
-      console.warn('Backend TTS failed, using browser speech:', error);
-      // Fallback to browser Web Speech API
+      console.warn('Streaming TTS failed, falling back to browser speech:', error);
+      setIsSynthesizing(false);
       if (window.speechSynthesis) {
-        const utter = new SpeechSynthesisUtterance(textToSpeak.slice(0, 500));
-        utter.rate = 1.0;
-        utter.pitch = 1.0;
+        const utter = new SpeechSynthesisUtterance(textToSpeak.slice(0, 400));
+        utter.rate = 1.1;
         utter.onend = () => setIsPlaying(false);
         utter.onerror = () => setIsPlaying(false);
         window.speechSynthesis.speak(utter);
         setIsPlaying(true);
       }
-    } finally {
-      setIsSynthesizing(false);
     }
   };
 

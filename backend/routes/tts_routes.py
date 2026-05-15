@@ -35,20 +35,22 @@ def reveal_iq_stream():
         return '', 200
     
     try:
-        data = request.get_json()
-        text = data.get('text', '')
+        data = request.get_json(silent=True) or {}
+        text = data.get('text', '').strip()
+        if not text:
+            return jsonify({"error": "text is required"}), 400
         raw_model = data.get('model', 'kokoro-en')
         model = 'kokoro-en' if 'hi' not in raw_model.lower() else 'kokoro-hi'
         voice = data.get('voice', 'af_nicole')
         speed = data.get('speed', 1.0)
-        
+
         hf_token = os.environ.get('REVEALIQ_HF_TOKEN') or os.environ.get('HF_TOKEN')
         url = f'{REVEALIQ_BASE}/v1/audio/stream'
 
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {hf_token}',
-        }
+        headers = {'Content-Type': 'application/json'}
+        if hf_token:
+            headers['Authorization'] = f'Bearer {hf_token}'
+
         payload = {
             'model': model,
             'input': text,
@@ -60,7 +62,8 @@ def reveal_iq_stream():
         resp = requests.post(url, headers=headers, json=payload, stream=True, timeout=60)
 
         if not resp.ok:
-            return jsonify({"error": f"Streaming failed: {resp.text}"}), 500
+            logger.error(f"[TTS Stream] RevealIQ returned {resp.status_code}: {resp.text[:200]}")
+            return jsonify({"error": f"Streaming failed ({resp.status_code}): {resp.text[:200]}"}), 502
 
         from flask import Response
         def generate():
