@@ -12,7 +12,7 @@ import threading
 
 from flask import Blueprint, request, jsonify, Response
 
-from config import SYSTEM_PROMPT, CODER_SYSTEM_PROMPT
+from config import SYSTEM_PROMPT, CODER_SYSTEM_PROMPT, PRO_SYSTEM_PROMPT, RESEARCH_SYSTEM_PROMPT
 from services.auth_service import verify_firebase_token, record_usage
 from services.memory_service import (
     get_user_chat_dir, get_user_memory, save_user_memory,
@@ -36,19 +36,42 @@ MAX_INMEM_CONVERSATIONS_PER_USER = 20
 def _get_conversation(uid, session_id):
     user_id = uid or "guest"
     sid = session_id
-    if user_id not in conversations:
-        return None
-    user_convs = conversations[user_id]
-    if sid in user_convs:
-        conv = user_convs[sid]
+    # Check in-memory first
+    if user_id in conversations and sid in conversations[user_id]:
+        conv = conversations[user_id][sid]
         if time.time() - conv.get('last_active', 0) > CONVERSATION_TTL:
-            del user_convs[sid]
-            return None
-        # User isolation: ensure the requesting uid matches stored uid
-        stored_uid = conv.get('uid')
-        if stored_uid and uid and stored_uid != uid:
-            return None
-        return conv
+            del conversations[user_id][sid]
+        else:
+            stored_uid = conv.get('uid')
+            if stored_uid and uid and stored_uid != uid:
+                return None
+            return conv
+    # Not in memory — try to restore from Firestore (survives HF Spaces restarts)
+    if uid:
+        try:
+            from extensions import db
+            if db:
+                msgs_ref = (db.collection('users').document(uid)
+                              .collection('conversations').document(sid)
+                              .collection('messages')
+                              .order_by('timestamp')
+                              .limit_to_last(MAX_HISTORY * 2))
+                docs = list(msgs_ref.stream())
+                if docs:
+                    restored = []
+                    for doc in docs:
+                        d = doc.to_dict()
+                        content = d.get('content', '')
+                        try:
+                            content = json.loads(content) if isinstance(content, str) and content.startswith('[') else content
+                        except:
+                            pass
+                        restored.append({"role": d.get('role', 'user'), "content": content})
+                    if restored:
+                        print(f"[Conversation] Restored {len(restored)} messages for session {sid[:8]}")
+                        return {"messages_to_restore": restored, "uid": uid, "session_id": sid}
+        except Exception as e:
+            print(f"[Conversation] Firestore restore failed: {e}")
     return None
 
 
@@ -163,6 +186,12 @@ def jarvis_stream():
 
     # Build conversation (user-scoped)
     conv = _get_conversation(uid, session_id)
+    restored_messages = None
+    if conv and 'messages_to_restore' in conv:
+        # Firestore-restored session — rebuild in-memory conv with history
+        restored_messages = conv['messages_to_restore']
+        conv = None  # trigger full build below
+
     if not conv:
         _cleanup_expired_conversations()
         user_memories = get_user_memory(uid) if uid else []
@@ -177,14 +206,24 @@ def jarvis_stream():
 
         if model == 'coder':
             sys_prompt = build_cli_system_prompt(CODER_SYSTEM_PROMPT)
+        elif model == 'pro':
+            sys_prompt = build_personalized_prompt(PRO_SYSTEM_PROMPT, user_name, user_memories, user_email, settings, uid=uid)
+        elif model == 'research':
+            sys_prompt = build_personalized_prompt(RESEARCH_SYSTEM_PROMPT, user_name, user_memories, user_email, settings, uid=uid)
         else:
-            sys_prompt = build_personalized_prompt(SYSTEM_PROMPT, user_name or user_email, user_memories, user_email, settings)
+            sys_prompt = build_personalized_prompt(SYSTEM_PROMPT, user_name, user_memories, user_email, settings, uid=uid)
 
         user_id = uid or "guest"
         if user_id not in conversations:
             conversations[user_id] = {}
+
+        base_messages = [{"role": "system", "content": sys_prompt}]
+        if restored_messages:
+            # Re-attach Firestore history so context is preserved across restarts
+            base_messages.extend(restored_messages)
+
         conv = {
-            'messages': [{"role": "system", "content": sys_prompt}],
+            'messages': base_messages,
             'last_active': time.time(),
             'uid': uid,
             'created_at': time.time(),

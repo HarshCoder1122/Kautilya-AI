@@ -163,6 +163,64 @@ def generate_api_key():
         return jsonify({"error": str(e)}), 500
 
 
+@user_bp.route('/memory', methods=['GET'])
+def get_user_memory_endpoint():
+    """Return all stored memories for the authenticated user."""
+    from extensions import db
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
+    try:
+        from services.memory_service import get_user_memory
+        facts = get_user_memory(uid)
+        # Count vector memories too
+        vector_count = 0
+        profile = {}
+        if db:
+            try:
+                pdoc = db.collection('users').document(uid).collection('settings').document('profile').get()
+                if pdoc.exists:
+                    profile = pdoc.to_dict() or {}
+                vector_count = len(list(db.collection('users').document(uid).collection('memories').limit(200).stream()))
+            except:
+                pass
+        return jsonify({
+            "memories": facts,
+            "count": len(facts),
+            "vector_memory_count": vector_count,
+            "profile": {
+                "display_name": profile.get('preferred_name') or profile.get('display_name') or token_data.get('name', ''),
+                "email": token_data.get('email', ''),
+                "plan": profile.get('plan', 'free'),
+            }
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@user_bp.route('/memory', methods=['DELETE'])
+def delete_memory_item():
+    """Delete a specific memory fact by index."""
+    from extensions import db
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    index = data.get('index')
+    try:
+        from services.memory_service import get_user_memory, save_user_memory
+        facts = get_user_memory(uid)
+        if index is not None and 0 <= int(index) < len(facts):
+            facts.pop(int(index))
+            save_user_memory(uid, facts)
+            return jsonify({"status": "ok", "remaining": len(facts)})
+        return jsonify({"error": "Invalid index"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @user_bp.route('/memory/clear', methods=['POST'])
 def clear_user_memory():
     """Clear all user memories from Firestore."""
@@ -174,22 +232,24 @@ def clear_user_memory():
     if not db:
         return jsonify({"error": "Database not available"}), 503
     try:
-        # Clear memory collection
+        count = 0
+        # Clear vector memories (embeddings)
         mem_ref = db.collection('users').document(uid).collection('memories')
         batch = db.batch()
-        count = 0
         for doc in mem_ref.limit(200).stream():
             batch.delete(doc.reference)
             count += 1
         if count > 0:
             batch.commit()
-        # Also clear conversation context memory if it exists
+        # Clear simple facts memory (separate collection)
+        db.collection('users').document(uid).collection('user_memory').document('facts').delete()
+        # Clear conversation context memory if it exists
         ctx_ref = db.collection('users').document(uid).collection('context_memory')
         batch2 = db.batch()
         for doc in ctx_ref.limit(200).stream():
             batch2.delete(doc.reference)
         batch2.commit()
-        return jsonify({"status": "ok", "message": f"Memory cleared ({count} items removed)"})
+        return jsonify({"status": "ok", "message": f"Memory cleared ({count} vector memories + facts removed)"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

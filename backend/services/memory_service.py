@@ -26,8 +26,20 @@ def get_user_chat_dir(uid):
 
 
 def get_user_memory(uid):
+    """Load user memories — Firestore-first (user_memory collection), local file fallback.
+    NOTE: Uses 'user_memory' collection, NOT 'memories' (that's the vector store)."""
     if not uid:
         return []
+    # Primary: Firestore — separate 'user_memory' collection to avoid collision with VectorStore
+    try:
+        from extensions import db, FIREBASE_AVAILABLE
+        if FIREBASE_AVAILABLE and db:
+            doc = db.collection('users').document(uid).collection('user_memory').document('facts').get()
+            if doc.exists:
+                return doc.to_dict().get('facts', [])
+    except Exception as e:
+        print(f"[Memory] Firestore read failed: {e}")
+    # Fallback: local file
     mem_file = os.path.join(get_user_chat_dir(uid), 'memory.json')
     if os.path.exists(mem_file):
         try:
@@ -39,12 +51,26 @@ def get_user_memory(uid):
 
 
 def save_user_memory(uid, facts):
+    """Save user memories — writes to Firestore 'user_memory' collection and local file."""
     if not uid:
         return
-    mem_file = os.path.join(get_user_chat_dir(uid), 'memory.json')
     capped = facts[-MAX_MEMORIES:]
-    with open(mem_file, 'w', encoding='utf-8') as f:
-        json.dump({'facts': capped, 'updated': time.time()}, f, ensure_ascii=False)
+    # Primary: Firestore — separate collection from VectorStore's 'memories'
+    try:
+        from extensions import db, FIREBASE_AVAILABLE
+        if FIREBASE_AVAILABLE and db:
+            db.collection('users').document(uid).collection('user_memory').document('facts').set(
+                {'facts': capped, 'updated': time.time()}, merge=True
+            )
+    except Exception as e:
+        print(f"[Memory] Firestore write failed: {e}")
+    # Also keep local file as backup
+    try:
+        mem_file = os.path.join(get_user_chat_dir(uid), 'memory.json')
+        with open(mem_file, 'w', encoding='utf-8') as f:
+            json.dump({'facts': capped, 'updated': time.time()}, f, ensure_ascii=False)
+    except:
+        pass
 
 
 def extract_memories(user_msg, assistant_msg, existing_memories):
@@ -98,15 +124,33 @@ def extract_memories(user_msg, assistant_msg, existing_memories):
         return []
 
 
-def build_personalized_prompt(base_prompt, user_name=None, memories=None, user_email=None, settings=None):
+def build_personalized_prompt(base_prompt, user_name=None, memories=None, user_email=None, settings=None, uid=None):
     current_time = time.strftime("%A, %d %B %Y, %I:%M %p %Z")
     system_context = f"\n\nCURRENT SYSTEM CONTEXT:\n- Current Date and Time: {current_time}\n"
     system_context += "- CRITICAL IDENTITY RULE: You are KAUTILYA AI, created solely by Harsh (CEO of RevealIQ). NEVER identify as OpenAI, ChatGPT, GPT, Anthropic, Claude, Meta, or Llama.\n"
+
+    # Resolve display name: settings > Firestore profile > token name > email prefix
+    display_name = (settings or {}).get('preferred_name') or (settings or {}).get('display_name') or user_name
+    if not display_name and uid:
+        try:
+            from extensions import db, FIREBASE_AVAILABLE
+            if FIREBASE_AVAILABLE and db:
+                pdoc = db.collection('users').document(uid).collection('settings').document('profile').get()
+                if pdoc.exists:
+                    pdata = pdoc.to_dict() or {}
+                    display_name = pdata.get('preferred_name') or pdata.get('display_name')
+        except:
+            pass
+    if not display_name and user_email:
+        display_name = user_email.split('@')[0]
+    if not display_name:
+        display_name = 'Friend'
+
     personalization = "\n\nPERSONALIZATION:\n"
-    display_name = (settings or {}).get('preferred_name') or user_name or (user_email.split('@')[0] if user_email else 'Friend')
-    personalization += f"- User: {display_name}\n"
+    personalization += f"- User's name: {display_name}\n"
+    personalization += f"- Address the user as '{display_name}' — never call them 'Sir/Ma'am' generically.\n"
     if memories:
-        personalization += "- Memories:\n  " + "\n  ".join([f"• {m}" for m in memories[:20]]) + "\n"
+        personalization += "- Known facts about this user:\n  " + "\n  ".join([f"• {m}" for m in memories[:20]]) + "\n"
     return base_prompt + system_context + personalization
 
 

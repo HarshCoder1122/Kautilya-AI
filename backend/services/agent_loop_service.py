@@ -710,22 +710,5 @@ def get_llm_response(messages, uid=None, model="daily", user_ip=None, tools=None
     if model in ('pro', 'coder'):
         return agent_loop(messages, uid, model_choice=model, user_ip=user_ip, tools=tools, tool_choice=tool_choice, max_thinking=max_thinking)
 
-    # Fast-path for Daily model (Groq)
-    if model == "daily" and "image" not in user_input_text.lower() and "picture" not in user_input_text.lower():
-        def fast_generator():
-            try:
-                response_gen = call_groq(messages, stream=True, model='llama-3.3-70b-versatile',
-                                         temperature=0.6, tools=tools, tool_choice=tool_choice)
-                if not response_gen:
-                    yield json.dumps({"chunk": "I am currently overloaded. Please try again."})
-                    return
-                for chunk in response_gen:
-                    if isinstance(chunk, str):
-                        yield json.dumps({"chunk": chunk})
-                    elif isinstance(chunk, dict):
-                        yield json.dumps(chunk)
-            except Exception as e:
-                yield json.dumps({"chunk": f" [Error: {str(e)}]"})
-        return fast_generator()
-
+    # All models (including daily) go through agent_loop so ReAct tools are processed
     return agent_loop(messages, uid, model_choice=model, user_ip=user_ip, tools=tools, tool_choice=tool_choice, max_thinking=max_thinking)
