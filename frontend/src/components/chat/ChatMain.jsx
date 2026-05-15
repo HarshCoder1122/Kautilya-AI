@@ -587,7 +587,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       <ScrollArea className="flex-1">
         <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
           {messages.length === 0 && !isThinking && (
-            <div className="flex flex-col items-center justify-center h-[60vh] animate-fade-up">
+            <div className="flex flex-col items-center justify-center h-[60vh] animate-fade-up px-4 text-center">
               <div className="w-14 h-14 rounded-xl bg-[var(--k-brand)] flex items-center justify-center mb-6">
                 <span className="text-white text-xl font-bold k-heading">K</span>
               </div>
@@ -597,7 +597,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
               <p className="text-sm text-muted-foreground mb-8">
                 Research, analyze data, generate reports, or write code
               </p>
-              <div className="grid grid-cols-2 gap-3 max-w-md">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-md w-full px-2">
                 {[
                   'Analyze my Q3 sales data',
                   'Research Indian fintech market',

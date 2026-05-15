@@ -11,10 +11,9 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 const API_BASE_URL =
-  process.env.REACT_APP_API_URL ||
-  (window.location.hostname === "localhost"
+  window.location.hostname === "localhost"
     ? "http://localhost:5000"
-    : window.location.origin);
+    : window.location.origin;
 
 const V1_BASE = `${API_BASE_URL}/v1`;
 const BACKEND = API_BASE_URL;

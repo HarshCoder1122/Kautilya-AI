@@ -448,12 +448,10 @@ export const ttsAPI = {
     },
 
     getVoices: (model) => {
-      if (model === 'kokoro-en') {
-        return ['af_heart', 'af_bella', 'af_nicole', 'af_sky', 'am_adam', 'am_michael'];
-      } else if (model === 'kokoro-hi') {
+      if (model && model.includes('hi')) {
         return ['hf_alpha', 'hf_beta'];
       }
-      return [];
+      return ['af_heart', 'af_bella', 'af_nicole', 'af_sky', 'am_adam', 'am_michael'];
     },
   },
 
