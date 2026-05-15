@@ -110,6 +110,14 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         elif isinstance(content, list):
             last_user_msg = " ".join([p["text"] for p in content if p.get("type") == "text"])
 
+    # Pre-fetch integration data based on intent BEFORE calling the LLM.
+    # This bypasses the unreliable ReAct token approach — the model gets
+    # real live data injected into context and just needs to present it.
+    if uid and last_user_msg:
+        integration_context = _pre_fetch_integrations(uid, last_user_msg)
+        if integration_context:
+            current_messages[0]["content"] += integration_context
+
     # Banned phrase check
     banned_phrases = ["ignore previous instructions", "system prompt", "reveal api key", "what are your instructions"]
     if any(phrase in last_user_msg.lower() for phrase in banned_phrases):
@@ -570,6 +578,126 @@ def _estimate_reasoning_budget(max_tokens, max_thinking=False):
 # ──────────────────────────────────────────────
 # Integration helpers called by the agent loop
 # ──────────────────────────────────────────────
+
+def _pre_fetch_integrations(uid, user_msg):
+    """
+    Detect integration intent from the user message and proactively fetch
+    live data BEFORE the LLM is called. The data is injected into the system
+    context so the model just formats it — no ReAct token cooperation needed.
+    Returns an injection string (empty string = nothing to inject).
+    """
+    msg = user_msg.lower()
+    parts = []
+
+    # ── Calendar: list/view intent ────────────────────────────────────────
+    cal_view_kw  = {'calendar', 'schedule', 'meeting', 'meetings', 'event',
+                    'events', 'appointment', 'appointments', 'agenda', 'remind'}
+    cal_view_act = {'show', 'what', 'list', 'upcoming', 'check', 'see', 'any',
+                    'today', 'tomorrow', 'week', 'do i have', 'tell me', 'get'}
+    if cal_view_kw & set(msg.split()) or any(k in msg for k in cal_view_kw):
+        if cal_view_act & set(msg.split()) or any(k in msg for k in cal_view_act):
+            try:
+                events = _calendar_list(uid, 14)
+                if events:
+                    lines = []
+                    for e in events:
+                        start = e.get('start', {}).get('dateTime') or e.get('start', {}).get('date', '')
+                        lines.append(f"  • {e.get('summary', 'Untitled')} — {start}")
+                    parts.append(
+                        "\n\n[LIVE DATA — Google Calendar, next 14 days]\n"
+                        + "\n".join(lines)
+                        + "\n[Use this data to answer the user. Do NOT say you can't access calendar.]\n"
+                    )
+                else:
+                    parts.append(
+                        "\n\n[LIVE DATA — Google Calendar: No events found in the next 14 days.]\n"
+                    )
+            except Exception as e:
+                err = str(e)
+                if "not connected" in err.lower():
+                    parts.append(
+                        "\n\n[SYSTEM: Google Calendar is NOT connected for this user. "
+                        "Tell them to go to Dashboard → Integrations → Google Calendar to connect it.]\n"
+                    )
+                # token expired or API error — surface it naturally
+                elif "expired" in err.lower():
+                    parts.append(
+                        "\n\n[SYSTEM: Google Calendar token expired. Tell the user to reconnect in Dashboard → Integrations.]\n"
+                    )
+
+    # ── Calendar: create/schedule intent ─────────────────────────────────
+    cal_create_kw = {'schedule', 'book', 'create', 'add', 'set', 'remind', 'block'}
+    cal_create_tgt = {'meeting', 'call', 'event', 'appointment', 'reminder', 'slot'}
+    if (cal_create_kw & set(msg.split())) and (cal_create_tgt & set(msg.split())):
+        # Let the model extract and emit [CALENDAR_CREATE: ...] — this intent
+        # needs user-supplied title/time so we can't pre-fetch; just confirm capability.
+        try:
+            cfg = _get_integration_cfg(uid, 'google_calendar')
+            if cfg.get('access_token'):
+                parts.append(
+                    "\n\n[SYSTEM: Google Calendar IS connected. "
+                    "Extract the event title and datetime from the user's message, "
+                    "then output ONLY: [CALENDAR_CREATE: title | YYYY-MM-DDTHH:MM:SS | YYYY-MM-DDTHH:MM:SS | description]]\n"
+                )
+            else:
+                parts.append(
+                    "\n\n[SYSTEM: Google Calendar NOT connected. Tell user to connect in Dashboard → Integrations.]\n"
+                )
+        except:
+            pass
+
+    # ── WhatsApp send intent ──────────────────────────────────────────────
+    if 'whatsapp' in msg or ('send' in msg and ('message' in msg or 'text' in msg or 'msg' in msg)):
+        try:
+            cfg = _get_integration_cfg(uid, 'whatsapp')
+            if cfg.get('access_token') and cfg.get('phone_number_id'):
+                parts.append(
+                    "\n\n[SYSTEM: WhatsApp IS connected. "
+                    "Extract phone number and message text, then output ONLY: "
+                    "[WHATSAPP_SEND: +phonenumber | message text]]\n"
+                )
+            else:
+                parts.append(
+                    "\n\n[SYSTEM: WhatsApp NOT connected. Tell user to connect in Dashboard → Integrations.]\n"
+                )
+        except:
+            pass
+
+    # ── Slack post intent ─────────────────────────────────────────────────
+    if 'slack' in msg:
+        try:
+            cfg = _get_integration_cfg(uid, 'slack')
+            if cfg.get('webhook_url'):
+                parts.append(
+                    "\n\n[SYSTEM: Slack IS connected. "
+                    "Extract the message to post, then output ONLY: [SLACK_POST: message text]]\n"
+                )
+            else:
+                parts.append(
+                    "\n\n[SYSTEM: Slack NOT connected. Tell user to connect in Dashboard → Integrations.]\n"
+                )
+        except:
+            pass
+
+    # ── HubSpot create contact intent ─────────────────────────────────────
+    if 'hubspot' in msg or ('contact' in msg and ('add' in msg or 'create' in msg or 'save' in msg)):
+        try:
+            cfg = _get_integration_cfg(uid, 'hubspot')
+            if cfg.get('access_token'):
+                parts.append(
+                    "\n\n[SYSTEM: HubSpot IS connected. "
+                    "Extract contact details, then output ONLY: "
+                    "[HUBSPOT_CREATE_CONTACT: email | firstname | lastname | company | phone]]\n"
+                )
+            else:
+                parts.append(
+                    "\n\n[SYSTEM: HubSpot NOT connected. Tell user to connect in Dashboard → Integrations.]\n"
+                )
+        except:
+            pass
+
+    return "".join(parts)
+
 
 def _get_integration_cfg(uid, provider):
     from extensions import db
