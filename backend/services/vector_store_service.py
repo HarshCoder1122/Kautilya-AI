@@ -159,14 +159,28 @@ class VectorStore:
             return []
 
         query_vec = self.get_embedding(query)
-        if query_vec is None:
-            return []
+        if query_vec is not None:
+            # Cosine similarity search
+            results = []
+            for mid, data in vectors.items():
+                db_vec = data["embedding"]
+                norm_q = np.linalg.norm(query_vec)
+                norm_d = np.linalg.norm(db_vec)
+                if norm_q == 0 or norm_d == 0:
+                    continue
+                similarity = np.dot(query_vec, db_vec) / (norm_q * norm_d)
+                results.append((float(similarity), data["text"], data["metadata"]))
+            results.sort(key=lambda x: x[0], reverse=True)
+            return results[:top_k]
 
+        # Fallback: keyword overlap search when Gemini embeddings unavailable
+        query_words = set(query.lower().split())
         results = []
         for mid, data in vectors.items():
-            db_vec = data["embedding"]
-            similarity = np.dot(query_vec, db_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(db_vec))
-            results.append((similarity, data["text"], data["metadata"]))
-
+            text = data["text"]
+            text_words = set(text.lower().split())
+            overlap = len(query_words & text_words)
+            if overlap > 0:
+                results.append((overlap, text, data["metadata"]))
         results.sort(key=lambda x: x[0], reverse=True)
-        return results[:top_k]
+        return [(1.0, r[1], r[2]) for r in results[:top_k]]
