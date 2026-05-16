@@ -22,7 +22,7 @@ const modes = [
   { id: 'code', label: 'Code Interpreter', icon: Code, desc: 'Execute & analyze code' },
 ];
 
-export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSidebar, canvasOpen, onToggleCanvas, onOpenCanvas, activeMode, onSetMode, theme, toggleTheme, sessionId, onSessionChange }) {
+export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSidebar, canvasOpen, onToggleCanvas, onOpenCanvas, activeMode, onSetMode, theme, toggleTheme, sessionId, onSessionChange, onNewSession, onStreamComplete }) {
   const [messages, setMessages] = useState([]);
   const [inputValue, setInputValue] = useState("");
   const [selectedFiles, setSelectedFiles] = useState([]);
@@ -210,9 +210,18 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
 
     // Create new session if needed — mark it as pending so useEffect won't reload empty history
     const currentSessionId = sessionId || `session-${Date.now()}`;
-    if (!sessionId && onSessionChange) {
+    const isNewSession = !sessionId;
+    if (isNewSession && onSessionChange) {
       pendingSessionRef.current = currentSessionId;
       onSessionChange(currentSessionId);
+      // Optimistically add to sidebar so it shows up immediately (Claude-like UX)
+      if (onNewSession) {
+        onNewSession({
+          id: currentSessionId,
+          title: currentInput.slice(0, 40) || 'New Chat',
+          preview: currentInput.slice(0, 80),
+        });
+      }
     }
 
     try {
@@ -454,6 +463,10 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
 
       setIsStreaming(false);
       leftMidStreamRef.current = false; // Stream completed normally — no reload needed
+      // Refresh sidebar so the AI-generated title replaces the optimistic preview.
+      if (onStreamComplete) {
+        setTimeout(() => onStreamComplete(), 800);
+      }
     } catch (error) {
       console.error('Failed to send message:', error);
       setIsThinking(false);
