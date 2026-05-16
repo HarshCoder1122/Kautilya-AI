@@ -1,10 +1,19 @@
-import { MagnifyingGlass, Calculator, Code, Globe, Spinner, CheckCircle, WarningCircle, ArrowSquareOut } from "@phosphor-icons/react";
+import {
+  MagnifyingGlass, Calculator, Code, Globe, Spinner, CheckCircle,
+  WarningCircle, ArrowSquareOut, EnvelopeSimple, Calendar,
+  WhatsappLogo, SlackLogo, Lightning
+} from "@phosphor-icons/react";
 
 const TOOL_META = {
   web_search:  { icon: MagnifyingGlass, label: "Web Search",  color: "text-blue-400",   bg: "bg-blue-400/10",   border: "border-blue-400/20" },
   calculator:  { icon: Calculator,      label: "Calculator",  color: "text-emerald-400", bg: "bg-emerald-400/10", border: "border-emerald-400/20" },
   code_run:    { icon: Code,            label: "Code",         color: "text-violet-400",  bg: "bg-violet-400/10",  border: "border-violet-400/20" },
   scrape:      { icon: Globe,           label: "Web Scrape",  color: "text-amber-400",   bg: "bg-amber-400/10",   border: "border-amber-400/20" },
+  gmail:       { icon: EnvelopeSimple,  label: "Gmail",       color: "text-rose-400",    bg: "bg-rose-400/10",    border: "border-rose-400/20" },
+  calendar:    { icon: Calendar,        label: "Calendar",    color: "text-rose-400",    bg: "bg-rose-400/10",    border: "border-rose-400/20" },
+  whatsapp:    { icon: WhatsappLogo,    label: "WhatsApp",    color: "text-emerald-400", bg: "bg-emerald-400/10", border: "border-emerald-400/20" },
+  slack:       { icon: SlackLogo,       label: "Slack",       color: "text-purple-400",  bg: "bg-purple-400/10",  border: "border-purple-400/20" },
+  hubspot:     { icon: Lightning,       label: "HubSpot",     color: "text-orange-400",  bg: "bg-orange-400/10",  border: "border-orange-400/20" },
 };
 
 const DEFAULT_TOOL = { icon: Globe, label: "Tool", color: "text-muted-foreground", bg: "bg-accent", border: "border-border" };

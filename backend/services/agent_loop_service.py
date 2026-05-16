@@ -501,7 +501,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             gm_body = gm_parts[2] if len(gm_parts) > 2 else ''
             action_counter += 1
             action_id = str(action_counter)
-            yield json.dumps({"event": "react_action", "id": action_id, "tool": "calendar", "input": f"Email → {gm_to}", "status": "running"})
+            yield json.dumps({"event": "react_action", "id": action_id, "tool": "gmail", "input": f"Email → {gm_to}", "status": "running"})
             try:
                 _gmail_send(uid, gm_to, gm_subj, gm_body)
                 yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done",
@@ -522,7 +522,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             gm_q   = gm_parts[1] if len(gm_parts) > 1 else ''
             action_counter += 1
             action_id = str(action_counter)
-            yield json.dumps({"event": "react_action", "id": action_id, "tool": "calendar", "input": f"Inbox (last {gm_max})", "status": "running"})
+            yield json.dumps({"event": "react_action", "id": action_id, "tool": "gmail", "input": f"Inbox (last {gm_max})", "status": "running"})
             try:
                 emails = _gmail_list(uid, gm_max, gm_q)
                 if emails:
@@ -550,7 +550,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             wa_msg = wa_parts[1] if len(wa_parts) > 1 else ''
             action_counter += 1
             action_id = str(action_counter)
-            yield json.dumps({"event": "react_action", "id": action_id, "tool": "web_search", "input": f"WhatsApp → {wa_to}", "status": "running"})
+            yield json.dumps({"event": "react_action", "id": action_id, "tool": "whatsapp", "input": f"WhatsApp → {wa_to}", "status": "running"})
             try:
                 _whatsapp_send(uid, wa_to, wa_msg)
                 yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done", "preview": f"Sent to {wa_to}"})
@@ -568,7 +568,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             sl_msg = slack_match.group(1).strip()
             action_counter += 1
             action_id = str(action_counter)
-            yield json.dumps({"event": "react_action", "id": action_id, "tool": "web_search", "input": "Slack message", "status": "running"})
+            yield json.dumps({"event": "react_action", "id": action_id, "tool": "slack", "input": "Slack message", "status": "running"})
             try:
                 _slack_post(uid, sl_msg)
                 yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done", "preview": "Message posted"})
@@ -591,7 +591,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             hs_ph    = hs_parts[4] if len(hs_parts) > 4 else ''
             action_counter += 1
             action_id = str(action_counter)
-            yield json.dumps({"event": "react_action", "id": action_id, "tool": "web_search", "input": f"HubSpot contact: {hs_email}", "status": "running"})
+            yield json.dumps({"event": "react_action", "id": action_id, "tool": "hubspot", "input": f"HubSpot contact: {hs_email}", "status": "running"})
             try:
                 result = _hubspot_create_contact(uid, hs_email, hs_first, hs_last, hs_co, hs_ph)
                 contact_id = result.get('id', '')
