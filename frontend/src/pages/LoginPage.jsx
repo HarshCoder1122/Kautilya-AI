@@ -114,7 +114,7 @@ export default function LoginPage() {
 
         {/* Bottom tagline */}
         <div className="relative text-[11px] text-white/25 font-medium tracking-wide">
-          Trusted by teams across India · Powered by NVIDIA NIM & Groq
+          Trusted by teams across India
         </div>
       </div>
 
@@ -174,13 +174,12 @@ export default function LoginPage() {
           {/* Trust badges */}
           <div className="mt-8 grid grid-cols-3 gap-3">
             {[
-              { label: 'Secure Auth', sub: 'Firebase' },
-              { label: 'AI Reasoning', sub: 'NVIDIA NIM' },
-              { label: 'Fast', sub: 'Groq Infra' },
+              { label: 'Secure Auth' },
+              { label: 'AI Reasoning' },
+              { label: 'Fast' },
             ].map((b) => (
               <div key={b.label} className="text-center p-3 rounded-xl bg-white/[0.03] border border-white/[0.06]">
                 <div className="text-[11px] font-semibold text-white/70">{b.label}</div>
-                <div className="text-[10px] text-white/30 mt-0.5">{b.sub}</div>
               </div>
             ))}
           </div>

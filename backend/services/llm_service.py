@@ -198,10 +198,13 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                 def generate():
                     try:
                         thinking_active = False
-                        for line in resp.iter_lines():
+                        # chunk_size=1 + decode_unicode=True keeps reasoning_content deltas
+                        # arriving live instead of batching with default 512B buffer.
+                        for line in resp.iter_lines(chunk_size=1, decode_unicode=True):
                             if not line:
                                 continue
-                            line = line.decode('utf-8')
+                            if isinstance(line, bytes):
+                                line = line.decode('utf-8', errors='replace')
                             if not line.startswith('data: '):
                                 continue
                             json_str = line[6:]

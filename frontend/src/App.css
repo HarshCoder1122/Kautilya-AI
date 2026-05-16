@@ -59,10 +59,10 @@
 .message-ai pre {
   background: var(--k-surface-elevated);
   border: 1px solid var(--k-border);
-  border-radius: 6px;
+  border-radius: 12px;
   padding: 16px;
   overflow-x: auto;
-  margin: 12px 0;
+  margin: 1.5rem 0;
 }
 
 .message-ai code {
@@ -71,23 +71,99 @@
 }
 
 .message-ai p {
-  margin-bottom: 8px;
-  line-height: 1.7;
+  margin-bottom: 1rem;
+  line-height: 1.6;
+  color: var(--k-text-secondary);
+}
+
+.message-ai p:last-child {
+  margin-bottom: 0;
+}
+
+.message-ai strong {
+  color: var(--k-text);
+  font-weight: 600;
 }
 
 .message-ai ul, .message-ai ol {
-  margin: 8px 0;
-  padding-left: 24px;
+  margin: 1rem 0;
+  padding-left: 1.5rem;
 }
 
 .message-ai li {
-  margin-bottom: 4px;
+  margin-bottom: 0.5rem;
+  color: var(--k-text-secondary);
+  line-height: 1.6;
 }
 
 .message-ai h1, .message-ai h2, .message-ai h3 {
   font-family: 'Cabinet Grotesk', sans-serif;
-  margin-top: 16px;
-  margin-bottom: 8px;
+  color: var(--k-text);
+  font-weight: 700;
+  margin-top: 2rem;
+  margin-bottom: 1rem;
+  line-height: 1.2;
+}
+
+.message-ai h1 { font-size: 1.5rem; }
+.message-ai h2 { font-size: 1.25rem; }
+.message-ai h3 { font-size: 1.1rem; }
+
+/* Premium Table Styling */
+.message-ai table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.message-ai thead {
+  background: var(--k-surface-elevated);
+}
+
+.message-ai th {
+  padding: 12px 16px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  text-align: left;
+  border-bottom: 1px solid var(--k-border);
+  color: var(--k-text);
+}
+
+.message-ai td {
+  padding: 12px 16px;
+  font-size: 0.875rem;
+  border-bottom: 1px solid var(--k-border);
+  color: var(--k-text-secondary);
+  vertical-align: top;
+  line-height: 1.5;
+}
+
+.message-ai tr:last-child td {
+  border-bottom: none;
+}
+
+.message-ai tr:nth-child(even) {
+  background: var(--k-surface-elevated)/30;
+}
+
+.message-ai tr:hover {
+  background: var(--k-surface-elevated);
+}
+
+.message-ai blockquote {
+  border-left: 4px solid var(--k-brand);
+  padding: 0.5rem 0 0.5rem 1.5rem;
+  font-style: italic;
+  margin: 1.5rem 0;
+  background: var(--k-brand)/5;
+  border-radius: 0 8px 8px 0;
+}
+
+.message-ai hr {
+  margin: 2rem 0;
+  border: 0;
+  border-top: 1px solid var(--k-border);
 }
 
 /* Canvas code editor theme */

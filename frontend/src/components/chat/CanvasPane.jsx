@@ -1,6 +1,7 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import ReactMarkdown from 'react-markdown';
-import { X, Code, ChartBar, FileText, Copy, Download, ArrowsOutSimple, Check, FolderOpen, Eye, File } from "@phosphor-icons/react";
+import JSZip from 'jszip';
+import { X, Code, ChartBar, FileText, Copy, Download, ArrowsOutSimple, Check, FolderOpen, Eye, File, ArrowSquareOut, Archive } from "@phosphor-icons/react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Area, AreaChart } from "recharts";
@@ -28,23 +29,34 @@ function inferLang(filename) {
 }
 
 function buildHtmlPreview(files) {
-  const html = files.find(f => f.name.endsWith('.html') || f.name === 'index.html');
+  // Prefer index.html; fall back to any .html file.
+  const html = files.find(f => f.name === 'index.html')
+            || files.find(f => f.name.toLowerCase().endsWith('.html'));
   if (!html) return null;
   let src = html.content;
-  // Inline CSS files referenced by filename
-  files.filter(f => f.language === 'css').forEach(f => {
-    src = src.replace(
-      new RegExp(`<link[^>]*href=["']${f.name}["'][^>]*>`, 'gi'),
-      `<style>${f.content}</style>`
-    );
+
+  // Escape regex metachars in filenames before building patterns.
+  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  // Inline CSS files: match <link href="name"> with or without ./ prefix.
+  files.filter(f => f.language === 'css' || f.name.toLowerCase().endsWith('.css')).forEach(f => {
+    const n = escapeRe(f.name);
+    const re = new RegExp(`<link[^>]*href=["'](?:\\./)?${n}["'][^>]*/?>`, 'gi');
+    src = src.replace(re, `<style data-file="${f.name}">\n${f.content}\n</style>`);
   });
-  // Inline JS files referenced by filename
-  files.filter(f => f.language === 'javascript' && !f.name.endsWith('.jsx')).forEach(f => {
-    src = src.replace(
-      new RegExp(`<script[^>]*src=["']${f.name}["'][^>]*></script>`, 'gi'),
-      `<script>${f.content}</script>`
-    );
+
+  // Inline JS files: match <script src="name"></script> with or without ./ prefix.
+  files.filter(f => (f.language === 'javascript' || f.name.toLowerCase().endsWith('.js')) && !f.name.endsWith('.jsx')).forEach(f => {
+    const n = escapeRe(f.name);
+    const re = new RegExp(`<script[^>]*src=["'](?:\\./)?${n}["'][^>]*></script>`, 'gi');
+    src = src.replace(re, `<script data-file="${f.name}">\n${f.content}\n</script>`);
   });
+
+  // If model emitted index.html with NO <head> wrapping, give it a basic shell
+  // so styles + viewport meta work even when AI forgets them.
+  if (!/<html[\s>]/i.test(src)) {
+    src = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Preview</title></head><body>${src}</body></html>`;
+  }
   return src;
 }
 
@@ -53,6 +65,34 @@ function downloadFile(filename, content) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
+}
+
+/** Download every file as a single ZIP. Preserves directory structure (a/b/c.js). */
+async function downloadFilesAsZip(files, zipName) {
+  const zip = new JSZip();
+  for (const f of files) {
+    if (f && f.name) zip.file(f.name, f.content || '');
+  }
+  const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+  const safe = (zipName || 'kautilya-project').replace(/[^a-z0-9-_]/gi, '-').toLowerCase();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${safe}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/** Open the preview in a new browser tab (works as fullscreen). */
+function openPreviewInNewTab(htmlString) {
+  if (!htmlString) return;
+  const blob = new Blob([htmlString], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener,noreferrer');
+  // Note: do not revoke immediately — the new tab needs the URL.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 /** Strip backend tags + research sources blob so the canvas shows clean prose. */
@@ -101,6 +141,8 @@ function MultiFileWorkspace({ files, title }) {
   const [activeFile, setActiveFile] = useState(files[0]?.name || '');
   const [viewMode, setViewMode] = useState('code'); // 'code' | 'preview'
   const [copied, setCopied] = useState(false);
+  const [zipping, setZipping] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
 
   const currentFile = files.find(f => f.name === activeFile) || files[0];
   const htmlPreview = useMemo(() => buildHtmlPreview(files), [files]);
@@ -112,29 +154,79 @@ function MultiFileWorkspace({ files, title }) {
     }
   };
 
+  const handleDownloadZip = async () => {
+    if (zipping || !files.length) return;
+    setZipping(true);
+    try {
+      await downloadFilesAsZip(files, title);
+    } catch (e) {
+      console.error('[Zip] failed:', e);
+    } finally {
+      setZipping(false);
+    }
+  };
+
+  // ESC closes fullscreen preview
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e) => { if (e.key === 'Escape') setFullscreen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [fullscreen]);
+
   return (
     <div className="flex flex-col h-full">
       {/* Toolbar */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--k-border)] bg-[var(--k-surface)] flex-shrink-0">
-        <div className="flex items-center gap-1">
-          <FolderOpen className="w-4 h-4 text-[var(--k-brand)]" />
+        <div className="flex items-center gap-1 min-w-0">
+          <FolderOpen className="w-4 h-4 text-[var(--k-brand)] shrink-0" />
           <span className="text-xs font-bold text-foreground ml-1 truncate max-w-[160px]">{title}</span>
-          <span className="text-[10px] text-muted-foreground ml-2">{files.length} file{files.length !== 1 ? 's' : ''}</span>
+          <span className="text-[10px] text-muted-foreground ml-2 shrink-0">{files.length} file{files.length !== 1 ? 's' : ''}</span>
         </div>
         <div className="flex items-center gap-1">
           {htmlPreview && (
-            <button
-              onClick={() => setViewMode(v => v === 'preview' ? 'code' : 'preview')}
-              className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-bold transition-all ${viewMode === 'preview' ? 'bg-[var(--k-brand)] text-white' : 'bg-accent text-muted-foreground hover:text-foreground'}`}
-            >
-              <Eye className="w-3 h-3" />{viewMode === 'preview' ? 'Code' : 'Preview'}
-            </button>
+            <>
+              <button
+                onClick={() => setViewMode(v => v === 'preview' ? 'code' : 'preview')}
+                className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-bold transition-all ${viewMode === 'preview' ? 'bg-[var(--k-brand)] text-white' : 'bg-accent text-muted-foreground hover:text-foreground'}`}
+                title={viewMode === 'preview' ? 'Show code' : 'Show preview'}
+              >
+                <Eye className="w-3 h-3" />{viewMode === 'preview' ? 'Code' : 'Preview'}
+              </button>
+              {viewMode === 'preview' && (
+                <>
+                  <button
+                    onClick={() => setFullscreen(true)}
+                    className="p-1.5 rounded hover:bg-accent"
+                    title="Fullscreen preview"
+                  >
+                    <ArrowsOutSimple className="w-3.5 h-3.5 text-muted-foreground" />
+                  </button>
+                  <button
+                    onClick={() => openPreviewInNewTab(htmlPreview)}
+                    className="p-1.5 rounded hover:bg-accent"
+                    title="Open preview in new tab"
+                  >
+                    <ArrowSquareOut className="w-3.5 h-3.5 text-muted-foreground" />
+                  </button>
+                </>
+              )}
+            </>
           )}
-          <button onClick={handleCopy} className="p-1.5 rounded hover:bg-accent" title="Copy file">
+          <button onClick={handleCopy} className="p-1.5 rounded hover:bg-accent" title="Copy current file">
             {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5 text-muted-foreground" />}
           </button>
-          <button onClick={() => currentFile && downloadFile(currentFile.name, currentFile.content)} className="p-1.5 rounded hover:bg-accent" title="Download file">
+          <button onClick={() => currentFile && downloadFile(currentFile.name, currentFile.content)} className="p-1.5 rounded hover:bg-accent" title="Download current file">
             <Download className="w-3.5 h-3.5 text-muted-foreground" />
+          </button>
+          <button
+            onClick={handleDownloadZip}
+            disabled={zipping}
+            className="flex items-center gap-1 px-2 py-1 rounded bg-[var(--k-brand)]/10 hover:bg-[var(--k-brand)]/20 text-[var(--k-brand)] text-[10px] font-bold transition-all disabled:opacity-50"
+            title="Download all files as ZIP"
+          >
+            <Archive className="w-3 h-3" />
+            {zipping ? '...' : 'ZIP'}
           </button>
         </div>
       </div>
@@ -163,7 +255,7 @@ function MultiFileWorkspace({ files, title }) {
           {viewMode === 'preview' && htmlPreview ? (
             <iframe
               srcDoc={htmlPreview}
-              sandbox="allow-scripts"
+              sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
               className="w-full h-full border-none bg-white"
               title="Live Preview"
             />
@@ -181,6 +273,41 @@ function MultiFileWorkspace({ files, title }) {
           ) : null}
         </div>
       </div>
+
+      {/* Fullscreen preview overlay */}
+      {fullscreen && htmlPreview && (
+        <div className="fixed inset-0 z-[100] bg-black/95 flex flex-col">
+          <div className="h-12 flex items-center justify-between px-4 border-b border-white/10 bg-[var(--k-surface)]">
+            <div className="flex items-center gap-2">
+              <Eye className="w-4 h-4 text-[var(--k-brand)]" />
+              <span className="text-sm font-bold text-foreground truncate max-w-[60vw]">{title} — Live Preview</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => openPreviewInNewTab(htmlPreview)}
+                className="flex items-center gap-1 px-3 py-1.5 rounded bg-accent text-foreground hover:bg-accent/80 text-xs font-semibold"
+                title="Open in new tab"
+              >
+                <ArrowSquareOut className="w-3.5 h-3.5" />
+                New Tab
+              </button>
+              <button
+                onClick={() => setFullscreen(false)}
+                className="p-2 rounded hover:bg-accent text-muted-foreground hover:text-foreground"
+                title="Close (Esc)"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+          <iframe
+            srcDoc={htmlPreview}
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+            className="flex-1 w-full border-none bg-white"
+            title="Fullscreen Preview"
+          />
+        </div>
+      )}
     </div>
   );
 }
