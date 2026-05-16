@@ -51,21 +51,22 @@ def create_billing_order():
 
 @billing_bp.route('/billing/verify-payment', methods=['POST'])
 def verify_payment():
-    from extensions import razorpay_client, limit_manager
+    """Browser-side payment confirmation. Idempotent — safe if webhook also fires."""
+    from extensions import razorpay_client, limit_manager, db
     try:
         token_data = verify_firebase_token()
         uid = token_data.get("uid") if token_data else None
         if not uid: return jsonify({"error": "Unauthorized"}), 401
-        
-        data = request.json
+
+        data = request.json or {}
         razorpay_order_id = data.get('razorpay_order_id')
         razorpay_payment_id = data.get('razorpay_payment_id')
         razorpay_signature = data.get('razorpay_signature')
         plan_type = data.get('plan_type')
         amount = float(data.get('amount', 0))
-        
+
         if not razorpay_client: return jsonify({"error": "Razorpay not configured"}), 500
-        
+
         try:
             razorpay_client.utility.verify_payment_signature({
                 'razorpay_order_id': razorpay_order_id,
@@ -73,48 +74,189 @@ def verify_payment():
                 'razorpay_signature': razorpay_signature
             })
         except Exception as e:
+            print(f"[Verify] Signature mismatch uid={uid} payment_id={razorpay_payment_id} err={e}")
             return jsonify({"error": "Invalid payment signature", "details": str(e)}), 400
-            
+
+        # Idempotency — if the webhook already credited this payment, do nothing here.
+        if db and razorpay_payment_id:
+            proc_ref = db.collection('processed_payments').document(razorpay_payment_id)
+            if proc_ref.get().exists:
+                print(f"[Verify] payment {razorpay_payment_id} already processed by webhook — skip")
+                return jsonify({"success": True, "already_processed": True})
+
         limit_manager.add_transaction(uid, amount, plan_type, razorpay_order_id, razorpay_payment_id)
-        
+
         if plan_type in ['pro', 'pro_subscription']:
             limit_manager.add_pro_user(uid)
-            return jsonify({"success": True, "message": "Successfully upgraded to Pro!"})
+            msg = "Successfully upgraded to Pro!"
         elif plan_type == 'pay_as_you_go':
             limit_manager.add_credits(uid, amount)
-            return jsonify({"success": True, "message": f"Successfully added {amount} credits!"})
-            
-        return jsonify({"error": "Unknown plan type"}), 400
+            msg = f"Successfully added ₹{amount:.2f} credits!"
+        else:
+            return jsonify({"error": f"Unknown plan type: {plan_type}"}), 400
+
+        if db and razorpay_payment_id:
+            from datetime import datetime
+            db.collection('processed_payments').document(razorpay_payment_id).set({
+                'uid': uid, 'amount': amount, 'plan_type': plan_type,
+                'order_id': razorpay_order_id,
+                'processed_at': datetime.now().isoformat(),
+                'source': 'verify-payment',
+            })
+
+        print(f"[Verify] credited uid={uid} amount=₹{amount} plan={plan_type}")
+        return jsonify({"success": True, "message": msg})
     except Exception as e:
+        print(f"[Verify] Error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
 @billing_bp.route('/billing/razorpay-webhook', methods=['POST'])
 def razorpay_webhook():
-    from extensions import razorpay_client, limit_manager
+    """Server-side source of truth for billing events.
+
+    Handles both subscription lifecycle (Pro) AND payment.captured for PAYG —
+    the webhook is the ONLY reliable signal because the browser-side
+    handler in checkout can fail (network drop, tab closed, ad blocker).
+    Idempotent via payment_id deduplication in Firestore.
+    """
+    from extensions import razorpay_client, limit_manager, db
     webhook_secret = os.environ.get('RAZORPAY_WEBHOOK_SECRET')
     if not webhook_secret: return "Secret Missing", 400
     try:
         payload = request.data
         signature = request.headers.get('X-Razorpay-Signature')
         razorpay_client.utility.verify_webhook_signature(payload.decode('utf-8'), signature, webhook_secret)
-        
+
         data = request.json
         event = data.get('event')
-        uid = data.get('payload', {}).get('subscription', {}).get('entity', {}).get('notes', {}).get('uid')
-        if not uid:
-            uid = data.get('payload', {}).get('payment', {}).get('entity', {}).get('notes', {}).get('uid')
-        if not uid: return "OK", 200
-        
+        sub_entity = data.get('payload', {}).get('subscription', {}).get('entity', {}) or {}
+        pay_entity = data.get('payload', {}).get('payment', {}).get('entity', {}) or {}
+        uid = sub_entity.get('notes', {}).get('uid') or pay_entity.get('notes', {}).get('uid')
+        print(f"[Webhook] event={event} uid={uid} payment_id={pay_entity.get('id')}")
+
+        # Subscription lifecycle (Pro plan)
         if event in ['subscription.authenticated', 'subscription.active', 'subscription.charged']:
-            limit_manager.add_pro_user(uid)
-        elif event in ['subscription.cancelled', 'subscription.halted', 'subscription.expired']:
-            limit_manager.remove_pro_user(uid)
-            
+            if uid: limit_manager.add_pro_user(uid)
+            return "OK", 200
+        if event in ['subscription.cancelled', 'subscription.halted', 'subscription.expired']:
+            if uid: limit_manager.remove_pro_user(uid)
+            return "OK", 200
+
+        # PAYG and one-off payments — credit the user once per payment_id.
+        if event == 'payment.captured':
+            payment_id = pay_entity.get('id')
+            amount_paise = pay_entity.get('amount', 0)
+            plan_type = (pay_entity.get('notes') or {}).get('plan_type', 'pay_as_you_go')
+            order_id  = pay_entity.get('order_id')
+
+            if not uid or not payment_id:
+                print(f"[Webhook] payment.captured missing uid/payment_id — skip")
+                return "OK", 200
+
+            amount = float(amount_paise) / 100.0
+
+            # Idempotency: skip if we've already processed this payment
+            if db:
+                proc_ref = db.collection('processed_payments').document(payment_id)
+                if proc_ref.get().exists:
+                    print(f"[Webhook] payment {payment_id} already processed — skip")
+                    return "OK", 200
+
+            # Apply the credit / pro grant
+            if plan_type in ('pro', 'pro_subscription'):
+                limit_manager.add_pro_user(uid)
+            else:
+                limit_manager.add_credits(uid, amount)
+
+            limit_manager.add_transaction(uid, amount, plan_type, order_id or '', payment_id)
+            if db:
+                from datetime import datetime
+                db.collection('processed_payments').document(payment_id).set({
+                    'uid': uid, 'amount': amount, 'plan_type': plan_type,
+                    'order_id': order_id, 'processed_at': datetime.now().isoformat(),
+                    'source': 'webhook',
+                })
+            print(f"[Webhook] credited uid={uid} amount=₹{amount} plan={plan_type}")
+
         return "OK", 200
     except Exception as e:
         print(f"[Webhook] Error: {e}")
         return "Internal Error", 500
+
+
+@billing_bp.route('/billing/reconcile-payment', methods=['POST'])
+def reconcile_payment():
+    """Manually credit a payment that Razorpay captured but our system missed.
+
+    Auth: requires the calling user's Firebase token, AND the payment's
+    `notes.uid` must match — so a user can only reconcile their own payments.
+    Body: { "razorpay_payment_id": "pay_XXX" }
+    Idempotent via the processed_payments collection.
+    """
+    from extensions import razorpay_client, limit_manager, db
+    if not razorpay_client:
+        return jsonify({"error": "Razorpay not configured"}), 500
+
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    body = request.get_json(silent=True) or {}
+    payment_id = body.get('razorpay_payment_id')
+    if not payment_id:
+        return jsonify({"error": "razorpay_payment_id required"}), 400
+
+    try:
+        payment = razorpay_client.payment.fetch(payment_id)
+    except Exception as e:
+        return jsonify({"error": f"Razorpay fetch failed: {e}"}), 400
+
+    if payment.get('status') != 'captured':
+        return jsonify({
+            "error": f"Payment status is '{payment.get('status')}', not captured",
+            "payment": payment,
+        }), 400
+
+    notes = payment.get('notes') or {}
+    payment_uid = notes.get('uid')
+    # Admins (no uid restriction) can reconcile any payment via the master key,
+    # but normal users can only reconcile their own.
+    if payment_uid and payment_uid != uid:
+        return jsonify({"error": "Payment does not belong to this user"}), 403
+
+    if db:
+        proc_ref = db.collection('processed_payments').document(payment_id)
+        if proc_ref.get().exists:
+            return jsonify({"success": True, "already_processed": True, "message": "Already credited"}), 200
+
+    amount = float(payment.get('amount', 0)) / 100.0
+    plan_type = notes.get('plan_type', 'pay_as_you_go')
+    target_uid = payment_uid or uid
+
+    if plan_type in ('pro', 'pro_subscription'):
+        limit_manager.add_pro_user(target_uid)
+    else:
+        limit_manager.add_credits(target_uid, amount)
+
+    limit_manager.add_transaction(target_uid, amount, plan_type, payment.get('order_id', ''), payment_id)
+    if db:
+        from datetime import datetime
+        db.collection('processed_payments').document(payment_id).set({
+            'uid': target_uid, 'amount': amount, 'plan_type': plan_type,
+            'order_id': payment.get('order_id'),
+            'processed_at': datetime.now().isoformat(),
+            'source': 'manual_reconcile',
+        })
+
+    return jsonify({
+        "success": True,
+        "credited": amount,
+        "plan_type": plan_type,
+        "uid": target_uid,
+        "new_balance": limit_manager.get_credits(target_uid),
+    })
 
 
 @billing_bp.route('/billing/transactions', methods=['GET'])

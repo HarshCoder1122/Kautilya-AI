@@ -373,7 +373,13 @@ export const billingAPI = {
   verifyPayment: async (paymentData) => {
     const response = await api.post('/api/billing/verify-payment', paymentData);
     return response.data;
-  }
+  },
+
+  // Recover a payment that Razorpay captured but our system missed
+  reconcilePayment: async (razorpayPaymentId) => {
+    const response = await api.post('/api/billing/reconcile-payment', { razorpay_payment_id: razorpayPaymentId });
+    return response.data;
+  },
 };
 
 // Leads API

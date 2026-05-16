@@ -11,6 +11,8 @@ export default function Billing({ user }) {
   const [busy, setBusy] = useState(false);
   const [customAmount, setCustomAmount] = useState("");
   const [scriptLoaded, setScriptLoaded] = useState(false);
+  const [recoverId, setRecoverId] = useState("");
+  const [recoverMsg, setRecoverMsg] = useState(null);
 
   useEffect(() => {
     loadConfig();
@@ -84,6 +86,34 @@ export default function Billing({ user }) {
       openCheckout({ order, amount: 599, planType: "pro", description: "Kautilya Pro — Monthly" });
     } catch (e) {
       alert("Failed to start upgrade. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRecover = async () => {
+    const pid = recoverId.trim();
+    if (!pid.startsWith("pay_")) {
+      setRecoverMsg({ ok: false, text: "Payment ID should start with 'pay_' (e.g. pay_NXabc123)." });
+      return;
+    }
+    try {
+      setBusy(true);
+      setRecoverMsg(null);
+      const res = await billingAPI.reconcilePayment(pid);
+      if (res.already_processed) {
+        setRecoverMsg({ ok: true, text: "This payment was already credited." });
+      } else {
+        setRecoverMsg({
+          ok: true,
+          text: `✅ Credited ₹${Number(res.credited).toFixed(2)}. New balance: ₹${Number(res.new_balance).toFixed(2)}.`,
+        });
+      }
+      await loadConfig();
+      setRecoverId("");
+    } catch (e) {
+      const detail = e?.response?.data?.error || e?.message || "Unknown error";
+      setRecoverMsg({ ok: false, text: `Failed: ${detail}` });
     } finally {
       setBusy(false);
     }
@@ -304,6 +334,40 @@ export default function Billing({ user }) {
                     Add Credits
                   </button>
                 </div>
+              </section>
+
+              {/* Recover missing payment */}
+              <section className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-6 md:p-8">
+                <div className="flex items-center gap-2 text-amber-400 mb-1">
+                  <Wallet weight="fill" className="w-5 h-5" />
+                  <span className="text-xs font-semibold uppercase tracking-widest">Payment didn't reflect?</span>
+                </div>
+                <p className="text-sm text-muted-foreground mt-1">
+                  If Razorpay charged you but credits/Pro didn't show up, paste your <strong>Payment ID</strong>
+                  {" "}(from the Razorpay confirmation email or SMS — starts with <span className="k-mono">pay_</span>)
+                  below and we'll reconcile it instantly.
+                </p>
+                <div className="mt-4 flex flex-col md:flex-row gap-3">
+                  <input
+                    type="text"
+                    placeholder="pay_NXabc123..."
+                    value={recoverId}
+                    onChange={(e) => setRecoverId(e.target.value)}
+                    className="flex-1 px-3 py-2.5 rounded-lg border border-[var(--k-border)] bg-background text-sm text-foreground outline-none focus:border-amber-400 k-mono"
+                  />
+                  <button
+                    onClick={handleRecover}
+                    disabled={busy || !recoverId.trim()}
+                    className="px-5 py-2.5 rounded-lg bg-amber-500 text-white text-sm font-semibold hover:bg-amber-600 transition-colors disabled:opacity-50"
+                  >
+                    Recover Payment
+                  </button>
+                </div>
+                {recoverMsg && (
+                  <div className={`mt-3 text-sm ${recoverMsg.ok ? "text-emerald-400" : "text-rose-400"}`}>
+                    {recoverMsg.text}
+                  </div>
+                )}
               </section>
 
               {/* FAQ */}
