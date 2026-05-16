@@ -1,7 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Plus, MagnifyingGlass, ChatCircleDots, SidebarSimple, Brain, Code, ChartBar, SignOut, UserCircle } from "@phosphor-icons/react";
 import { ThemeToggle } from "@/components/shared/ThemeToggle";
-import { chatAPI } from "../../lib/api";
 import { logout } from "../../lib/firebase";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useNavigate } from "react-router-dom";
@@ -20,28 +19,9 @@ const agentColors = {
   daily: 'text-purple-400',
 };
 
-export function ChatSidebar({ selectedConversation, onSelectConversation, onCollapse, theme, toggleTheme, user, isOpen, onClose }) {
+export function ChatSidebar({ selectedConversation, onSelectConversation, onCollapse, theme, toggleTheme, user, isOpen, onClose, conversations = [], loading = false, onRefresh }) {
   const [searchQuery, setSearchQuery] = useState('');
-  const [conversations, setConversations] = useState([]);
-  const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
-
-  useEffect(() => {
-    loadConversations();
-  }, []);
-
-  const loadConversations = async () => {
-    try {
-      setLoading(true);
-      const data = await chatAPI.getHistory();
-      setConversations(data.chats || []);
-    } catch (error) {
-      console.error('Failed to load conversations:', error);
-      setConversations([]);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const filtered = conversations.filter(c =>
     (c.title || c.preview || 'Untitled').toLowerCase().includes(searchQuery.toLowerCase())

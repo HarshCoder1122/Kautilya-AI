@@ -24,7 +24,7 @@ const MODELS = [
     label: "Kautilya Daily",
     icon: Lightning,
     color: "var(--k-yellow)",
-    backing: "Llama 3.3 70B (Groq)",
+    tier: "Fast · Streaming",
     ctx: "128k",
     desc: "Fast general-purpose chat. Best for high-throughput apps, chatbots, and quick Q&A.",
   },
@@ -33,7 +33,7 @@ const MODELS = [
     label: "Kautilya Pro",
     icon: Brain,
     color: "var(--k-brand)",
-    backing: "Nemotron-3 Super 120B",
+    tier: "Reasoning · Strategic",
     ctx: "128k",
     desc: "Deep strategic reasoning with toggleable thinking. Best for analysis, research, and complex tasks.",
   },
@@ -42,7 +42,7 @@ const MODELS = [
     label: "Kautilya Coder",
     icon: Robot,
     color: "#10b981",
-    backing: "DeepSeek V4 Pro",
+    tier: "Code · Frontier",
     ctx: "128k",
     desc: "Frontier code generation with extended thinking. Best for software development and architecture.",
   },
@@ -454,7 +454,7 @@ export default function DeveloperAPI() {
                     </button>
                   </div>
                   <div className="font-mono text-xs font-bold text-foreground mb-1">{m.id}</div>
-                  <div className="text-[10px] text-muted-foreground mb-2">{m.backing} · {m.ctx} context</div>
+                  <div className="text-[10px] text-muted-foreground mb-2">{m.tier} · {m.ctx} context</div>
                   <div className="text-[11px] text-muted-foreground leading-relaxed">{m.desc}</div>
                 </div>
               ))}

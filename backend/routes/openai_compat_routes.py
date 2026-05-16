@@ -24,34 +24,31 @@ The `max_thinking` toggle can be requested via:
 import json
 import time
 import uuid
-import requests
 
 from flask import Blueprint, request, jsonify, Response
 
 from config import NVIDIA_API_KEY
 from services.auth_service import verify_api_key, record_usage
-from services.llm_service import call_groq
+from services.llm_service import call_groq, call_nvidia
 
 openai_compat_bp = Blueprint('openai_compat', __name__)
 
 
 # ---------- model registry ----------
+# These are the same backing models the dashboard chat uses (agent_loop_service.py).
 KAUTILYA_MODEL_MAP = {
-    "kautilya-coder":   "deepseek-ai/deepseek-v4-pro",
+    "kautilya-coder":   "qwen/qwen3-coder-480b-a35b-instruct",
     "kautilya-pro":     "nvidia/nemotron-3-super-120b-a12b",
     "kautilya-daily":   "llama-3.3-70b-versatile",  # Groq
-    # Raw passthroughs
-    "deepseek-ai/deepseek-v4-pro":        "deepseek-ai/deepseek-v4-pro",
-    "nvidia/nemotron-3-super-120b-a12b":  "nvidia/nemotron-3-super-120b-a12b",
 }
 
 PUBLIC_MODELS = [
     {"id": "kautilya-coder",  "object": "model", "owned_by": "kautilya",
-     "description": "DeepSeek V4 Pro — frontier code generation, 128k context, toggleable thinking."},
+     "description": "Frontier code generation with extended thinking."},
     {"id": "kautilya-pro",    "object": "model", "owned_by": "kautilya",
-     "description": "Nemotron-3 Super 120B — strategic reasoning + Indian-context tuning."},
+     "description": "Strategic reasoning + Indian-context tuning."},
     {"id": "kautilya-daily",  "object": "model", "owned_by": "kautilya",
-     "description": "Llama 3.3 70B — fast general chat, optimized for low latency."},
+     "description": "Fast general chat, low latency."},
 ]
 
 
@@ -77,8 +74,11 @@ def chat_completions():
 
     uid = key_info.get('uid')
     body = request.get_json(silent=True) or {}
-    requested_model = body.get('model') or 'kautilya-pro'
-    upstream_model = KAUTILYA_MODEL_MAP.get(requested_model, requested_model)
+    requested_model = body.get('model') or 'kautilya-daily'
+    # Only allow our published Kautilya model IDs — block raw passthrough.
+    if requested_model not in KAUTILYA_MODEL_MAP:
+        return jsonify({"error": {"message": f"Unknown model '{requested_model}'. Use kautilya-daily, kautilya-pro, or kautilya-coder.", "type": "invalid_request_error"}}), 400
+    upstream_model = KAUTILYA_MODEL_MAP[requested_model]
 
     messages = body.get('messages') or []
     if not messages:
@@ -153,128 +153,97 @@ def chat_completions():
         return Response(sse(), mimetype='text/event-stream',
                         headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
-    # ---- NVIDIA path (deepseek / nemotron) ----
+    # ---- NVIDIA path (qwen-coder / nemotron) ----
     if not NVIDIA_API_KEY:
         return jsonify({"error": {"message": "NVIDIA backend not configured", "type": "upstream_error"}}), 503
 
-    clean_messages = []
-    for m in messages:
-        content = m.get('content', '')
-        if isinstance(content, list):
-            text_parts = [p.get('text', '') for p in content if isinstance(p, dict) and p.get('type') == 'text']
-            content = "\n".join(text_parts)
-        clean_messages.append({"role": m.get('role', 'user'), "content": str(content)})
-
-    payload = {
-        "model": upstream_model,
-        "messages": clean_messages,
-        "temperature": temperature,
-        "top_p": top_p,
-        "max_tokens": max_tokens,
-        "stream": stream,
-    }
-    if tools:
-        payload["tools"] = tools
-    if tool_choice:
-        payload["tool_choice"] = tool_choice
-
-    mlow = upstream_model.lower()
-    if 'nemotron' in mlow:
-        payload["chat_template_kwargs"] = {"enable_thinking": bool(max_thinking)}
-        # Only set a reasoning budget when thinking is explicitly requested,
-        # otherwise Nemotron silently burns through 1024 thinking tokens before
-        # producing any visible output (looks like a slow / non-streaming model).
-        if max_thinking:
-            payload["reasoning_budget"] = reasoning_budget or 16384
-    elif 'deepseek' in mlow:
-        payload["chat_template_kwargs"] = {"thinking": bool(max_thinking)}
-        if max_thinking and reasoning_budget:
-            payload["reasoning_budget"] = reasoning_budget
-
-    headers = {
-        "Authorization": f"Bearer {NVIDIA_API_KEY}",
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream" if stream else "application/json",
-    }
-
-    try:
-        upstream = requests.post(
-            "https://integrate.api.nvidia.com/v1/chat/completions",
-            headers=headers, json=payload, timeout=600, stream=stream,
-        )
-    except Exception as e:
-        return jsonify({"error": {"message": f"Upstream error: {e}", "type": "upstream_error"}}), 502
-
-    if upstream.status_code != 200:
-        detail = upstream.text[:500]
-        return jsonify({"error": {"message": f"Upstream {upstream.status_code}: {detail}",
-                                   "type": "upstream_error"}}), upstream.status_code
+    # Same path the dashboard chat uses — call_nvidia handles streaming with
+    # proper thinking/content separation for both qwen-coder and nemotron.
+    rb = reasoning_budget if max_thinking else 0
+    gen = call_nvidia(
+        messages, stream=True, max_tokens=max_tokens,
+        model=upstream_model, tools=tools, tool_choice=tool_choice,
+        temperature=temperature, top_p=top_p,
+        max_thinking=max_thinking, reasoning_budget=rb,
+        expose_thinking=True,
+    )
+    if gen is None:
+        return jsonify({"error": {"message": "Upstream unavailable", "type": "upstream_error"}}), 503
 
     if not stream:
-        data = upstream.json()
-        try:
-            data["model"] = requested_model  # present Kautilya id to caller
-        except Exception:
-            pass
+        # Buffer the stream into a single completion envelope.
+        full_content = ""
+        full_thinking = ""
+        tool_calls_out = None
+        for ev in gen:
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("chunk"):
+                full_content += ev["chunk"]
+            elif ev.get("thinking"):
+                full_thinking += ev["thinking"]
+            elif ev.get("tool_calls"):
+                tool_calls_out = ev["tool_calls"]
+        envelope = _openai_completion_envelope(requested_model, full_content,
+                                               tool_calls=tool_calls_out,
+                                               reasoning=full_thinking or None)
         if uid:
             try:
-                usage = data.get('usage') or {}
-                total = int(usage.get('total_tokens') or 0)
-                if total:
-                    record_usage(uid, 'llm_tokens', total, model=requested_model)
+                approx = max(1, (len(full_content) + len(full_thinking) + sum(len(str(m.get('content',''))) for m in messages)) // 4)
+                record_usage(uid, 'llm_tokens', approx, model=requested_model)
             except Exception:
                 pass
-        return jsonify(data)
+        return jsonify(envelope)
 
-    # streaming — forward SSE with minimal rewriting (hide upstream model id)
-    def passthrough():
+    # Streaming: convert call_nvidia events → OpenAI SSE chunks.
+    def sse():
+        cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+        created = int(time.time())
+        first = True
         full_text = ""
-        try:
-            for raw in upstream.iter_lines():
-                if not raw:
-                    # preserve SSE empty separator lines
-                    yield "\n"
-                    continue
-                line = raw.decode('utf-8', errors='replace')
-                if not line.startswith('data: '):
-                    yield line + "\n"
-                    continue
-                json_str = line[6:]
-                if json_str.strip() == '[DONE]':
-                    yield "data: [DONE]\n\n"
-                    break
-                try:
-                    obj = json.loads(json_str)
-                    obj['model'] = requested_model
-                    # track chunk text for usage estimation
-                    try:
-                        d = obj.get('choices', [{}])[0].get('delta', {})
-                        c = d.get('content')
-                        if c:
-                            full_text += c
-                    except Exception:
-                        pass
-                    yield f"data: {json.dumps(obj)}\n\n"
-                except Exception:
-                    yield line + "\n"
-        finally:
-            upstream.close()
-            if uid and full_text:
-                try:
-                    approx = max(1, (len(full_text) + sum(len(m.get('content', '')) for m in clean_messages)) // 4)
-                    record_usage(uid, 'llm_tokens', approx, model=requested_model)
-                except Exception:
-                    pass
+        full_think = ""
+        finish = "stop"
+        for ev in gen:
+            if not isinstance(ev, dict):
+                continue
+            delta = {}
+            if ev.get("thinking"):
+                delta["reasoning_content"] = ev["thinking"]
+                full_think += ev["thinking"]
+            elif ev.get("chunk"):
+                delta["content"] = ev["chunk"]
+                full_text += ev["chunk"]
+            elif ev.get("tool_calls"):
+                delta["tool_calls"] = ev["tool_calls"]
+                finish = "tool_calls"
+            elif ev.get("thinking_done"):
+                continue  # internal signal, not surfaced to OpenAI clients
+            else:
+                continue
+            if first:
+                delta["role"] = "assistant"
+                first = False
+            yield _openai_stream_chunk(cid, created, requested_model, delta)
+        yield _openai_stream_chunk(cid, created, requested_model, {}, finish_reason=finish)
+        yield "data: [DONE]\n\n"
+        if uid and (full_text or full_think):
+            try:
+                approx = max(1, (len(full_text) + len(full_think) + sum(len(str(m.get('content',''))) for m in messages)) // 4)
+                record_usage(uid, 'llm_tokens', approx, model=requested_model)
+            except Exception:
+                pass
 
-    return Response(passthrough(), mimetype='text/event-stream',
+    return Response(sse(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'})
 
 
 # ---------- helpers ----------
-def _openai_completion_envelope(model, content, tool_calls=None):
+def _openai_completion_envelope(model, content, tool_calls=None, reasoning=None):
     msg = {"role": "assistant", "content": content}
     if tool_calls:
         msg["tool_calls"] = tool_calls
+    if reasoning:
+        msg["reasoning_content"] = reasoning
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
         "object": "chat.completion",
