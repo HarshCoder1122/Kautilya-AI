@@ -228,7 +228,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       const model = activeMode === 'code' ? 'coder' : 'auto';
 
       const response = activeMode === 'research'
-        ? await chatAPI.streamResearch(currentInput)
+        ? await chatAPI.streamResearch(currentInput, currentSessionId)
         : await chatAPI.streamMessage(currentInput, currentSessionId, model, currentFiles, {
             maxThinking: activeMode === 'code',
           });

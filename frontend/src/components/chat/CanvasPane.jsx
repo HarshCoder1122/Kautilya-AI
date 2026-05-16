@@ -55,6 +55,48 @@ function downloadFile(filename, content) {
   URL.revokeObjectURL(url);
 }
 
+/** Strip backend tags + research sources blob so the canvas shows clean prose. */
+function cleanDocumentContent(raw) {
+  if (!raw) return { body: '', sources: [] };
+  let text = String(raw)
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .replace(/<artifact[\s\S]*?<\/artifact>/g, '')
+    .replace(/<file\s+name="[^"]+"[\s\S]*?<\/file>/g, '')
+    .trim();
+
+  let sources = [];
+  const sIdx = text.indexOf('__sources__:');
+  if (sIdx >= 0) {
+    const after = text.slice(sIdx + '__sources__:'.length).trim();
+    try { sources = JSON.parse(after); } catch { sources = []; }
+    text = text.slice(0, sIdx).trim();
+  }
+  return { body: text, sources };
+}
+
+/** Custom ReactMarkdown components for document-style rendering. */
+const DOC_COMPONENTS = {
+  h1: ({ children }) => <h1 className="k-heading text-3xl md:text-4xl font-bold mb-6 mt-2 text-foreground tracking-tight">{children}</h1>,
+  h2: ({ children }) => <h2 className="k-heading text-2xl font-semibold mb-4 mt-10 text-foreground border-b border-[var(--k-border)] pb-2">{children}</h2>,
+  h3: ({ children }) => <h3 className="k-heading text-xl font-semibold mb-3 mt-8 text-foreground">{children}</h3>,
+  h4: ({ children }) => <h4 className="k-heading text-lg font-semibold mb-2 mt-6 text-foreground">{children}</h4>,
+  p: ({ children }) => <p className="text-base leading-[1.85] mb-4 text-foreground/90">{children}</p>,
+  ul: ({ children }) => <ul className="list-disc pl-6 mb-4 space-y-1.5 text-foreground/90">{children}</ul>,
+  ol: ({ children }) => <ol className="list-decimal pl-6 mb-4 space-y-1.5 text-foreground/90">{children}</ol>,
+  li: ({ children }) => <li className="leading-[1.7]">{children}</li>,
+  blockquote: ({ children }) => <blockquote className="border-l-4 border-[var(--k-brand)] pl-4 italic my-6 text-foreground/80">{children}</blockquote>,
+  a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer" className="text-[var(--k-brand)] underline underline-offset-2 hover:opacity-80 break-all">{children}</a>,
+  table: ({ children }) => <div className="overflow-x-auto my-6"><table className="min-w-full border border-[var(--k-border)] rounded-md text-sm">{children}</table></div>,
+  thead: ({ children }) => <thead className="bg-[var(--k-surface)]">{children}</thead>,
+  th: ({ children }) => <th className="px-4 py-2 text-left font-semibold border-b border-[var(--k-border)]">{children}</th>,
+  td: ({ children }) => <td className="px-4 py-2 border-b border-[var(--k-border)]">{children}</td>,
+  code: ({ inline, children }) => inline
+    ? <code className="bg-accent/50 px-1.5 py-0.5 rounded text-[0.85em] font-mono">{children}</code>
+    : <pre className="bg-[var(--k-surface)] border border-[var(--k-border)] rounded-md p-4 overflow-x-auto my-4 text-sm font-mono"><code>{children}</code></pre>,
+  hr: () => <hr className="my-8 border-[var(--k-border)]" />,
+  strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
+};
+
 function MultiFileWorkspace({ files, title }) {
   const [activeFile, setActiveFile] = useState(files[0]?.name || '');
   const [viewMode, setViewMode] = useState('code'); // 'code' | 'preview'
@@ -263,27 +305,54 @@ export function CanvasPane({ content, onClose, activeMode }) {
 
         <TabsContent value="document" className="flex-1 overflow-hidden m-0">
           <ScrollArea className="h-full bg-[#fcfcfc] dark:bg-[#0f1115]">
-            <div className="min-h-full p-8 md:p-16 max-w-4xl mx-auto">
-              <div className="bg-white dark:bg-[#1a1d23] shadow-[0_0_50px_rgba(0,0,0,0.05)] dark:shadow-none border border-[var(--k-border)] rounded-sm p-10 md:p-20 min-h-[1100px]">
-                {/* Document Header Decoration */}
-                <div className="w-12 h-1 bg-[var(--k-brand)] mb-12" />
-
-                <div className="prose prose-sm md:prose-base dark:prose-invert max-w-none font-sans text-[#2c3e50] dark:text-[#e1e1e1] leading-[1.8]">
-                  {content?.code ? (
-                    <ReactMarkdown>{content.code}</ReactMarkdown>
-                  ) : (
-                    <div className="flex flex-col items-center justify-center py-20 text-center text-muted-foreground">
-                      <FileText className="w-12 h-12 mb-4 opacity-10" />
-                      <p>No document content generated yet.</p>
-                      <p className="text-xs mt-2 opacity-60">Use Deep Research or ask Kautilya to write a document.</p>
-                    </div>
-                  )}
+            <div className="min-h-full p-6 md:p-12 max-w-4xl mx-auto">
+              <div className="bg-white dark:bg-[#16181d] shadow-[0_0_50px_rgba(0,0,0,0.04)] dark:shadow-none border border-[var(--k-border)] rounded-lg p-8 md:p-14 min-h-[800px]">
+                {/* Document Title Bar */}
+                <div className="mb-10">
+                  <div className="w-12 h-1 bg-[var(--k-brand)] mb-4" />
+                  <div className="text-[10px] uppercase tracking-[0.25em] text-muted-foreground font-bold mb-1">Kautilya Document</div>
+                  <h1 className="k-heading text-2xl md:text-3xl font-bold text-foreground">{content?.title || 'Untitled Document'}</h1>
                 </div>
 
-                {/* Document Footer Decoration */}
+                {(() => {
+                  const { body, sources } = cleanDocumentContent(content?.code);
+                  if (!body) {
+                    return (
+                      <div className="flex flex-col items-center justify-center py-20 text-center text-muted-foreground">
+                        <FileText className="w-12 h-12 mb-4 opacity-10" />
+                        <p>No document content generated yet.</p>
+                        <p className="text-xs mt-2 opacity-60">Use Deep Research or ask Kautilya to write a document.</p>
+                      </div>
+                    );
+                  }
+                  return (
+                    <>
+                      <div className="font-sans">
+                        <ReactMarkdown components={DOC_COMPONENTS}>{body}</ReactMarkdown>
+                      </div>
+                      {sources?.length > 0 && (
+                        <div className="mt-12 pt-6 border-t border-[var(--k-border)]">
+                          <div className="text-[10px] uppercase tracking-[0.25em] text-muted-foreground font-bold mb-4">Sources</div>
+                          <ol className="space-y-2 text-sm">
+                            {sources.map((s, i) => (
+                              <li key={i} className="flex items-start gap-3">
+                                <span className="text-[var(--k-brand)] font-bold min-w-[24px]">[{i + 1}]</span>
+                                <a href={s.url} target="_blank" rel="noopener noreferrer" className="text-[var(--k-brand)] underline underline-offset-2 hover:opacity-80 break-all">
+                                  {s.title || s.url}
+                                </a>
+                              </li>
+                            ))}
+                          </ol>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+
+                {/* Footer */}
                 <div className="mt-20 pt-8 border-t border-[var(--k-border)] flex justify-between items-center text-[10px] uppercase tracking-widest text-muted-foreground font-bold">
-                  <span>Kautilya Deep Research Intelligence</span>
-                  <span>Confidential / Internal</span>
+                  <span>Kautilya AI · Deep Research</span>
+                  <span>Confidential</span>
                 </div>
               </div>
             </div>

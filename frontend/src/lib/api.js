@@ -104,14 +104,14 @@ export const chatAPI = {
 
   // Stream deep research; this hits the backend research pipeline
   // so SerpAPI/source gathering is actually used.
-  streamResearch: async (question) => {
+  streamResearch: async (question, sessionId) => {
     const response = await fetch(`${API_BASE_URL}/api/research/stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...getAuthHeaders(),
       },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, session_id: sessionId }),
     });
     return response;
   },
