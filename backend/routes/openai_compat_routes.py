@@ -30,6 +30,38 @@ from flask import Blueprint, request, jsonify, Response
 from config import NVIDIA_API_KEY
 from services.auth_service import verify_api_key, record_usage
 from services.llm_service import call_groq, call_nvidia
+from system_prompts import DAILY_SYSTEM_PROMPT, PRO_SYSTEM_PROMPT, CODER_SYSTEM_PROMPT_PRO
+
+
+# Per-model system prompts so external API callers get the Kautilya identity
+# (same brand voice as the dashboard chat). The user's own system message,
+# if any, is preserved and appended after the Kautilya master prompt.
+_KAUTILYA_SYSTEM_PROMPTS = {
+    "kautilya-daily": DAILY_SYSTEM_PROMPT,
+    "kautilya-pro":   PRO_SYSTEM_PROMPT,
+    "kautilya-coder": CODER_SYSTEM_PROMPT_PRO,
+}
+
+
+def _inject_kautilya_prompt(requested_model, messages):
+    """Prepend the Kautilya system prompt for the requested model.
+    If the caller already sent a system message, keep its content as an
+    additional system message AFTER ours so user instructions still apply,
+    but identity-leak prompts ('what model are you') return Kautilya."""
+    base = _KAUTILYA_SYSTEM_PROMPTS.get(requested_model)
+    if not base:
+        return messages
+    out = [{"role": "system", "content": base}]
+    for m in messages:
+        if m.get("role") == "system":
+            content = m.get("content", "")
+            if isinstance(content, list):
+                content = "\n".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
+            if str(content).strip():
+                out.append({"role": "system", "content": str(content)})
+        else:
+            out.append(m)
+    return out
 
 openai_compat_bp = Blueprint('openai_compat', __name__)
 
@@ -83,6 +115,9 @@ def chat_completions():
     messages = body.get('messages') or []
     if not messages:
         return jsonify({"error": {"message": "messages is required", "type": "invalid_request_error"}}), 400
+
+    # Inject Kautilya identity so model doesn't reveal Qwen/Nemotron underneath.
+    messages = _inject_kautilya_prompt(requested_model, messages)
 
     stream = bool(body.get('stream', False))
     temperature = body.get('temperature', 0.7)
