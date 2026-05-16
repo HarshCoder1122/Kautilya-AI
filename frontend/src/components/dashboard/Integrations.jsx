@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import {
   Link, WhatsappLogo, SlackLogo, GoogleLogo,
   Lightning, CheckCircle, XCircle, ArrowSquareOut,
-  PlugsConnected, Spinner
+  PlugsConnected, Spinner, EnvelopeSimple
 } from "@phosphor-icons/react";
 import api from "../../lib/api";
 
@@ -14,6 +14,7 @@ const PROVIDER_ICONS = {
   whatsapp:        { icon: WhatsappLogo,  color: "text-emerald-400", bg: "bg-emerald-400/10"},
   slack:           { icon: SlackLogo,     color: "text-purple-400",  bg: "bg-purple-400/10" },
   zapier:          { icon: Lightning,     color: "text-amber-400",   bg: "bg-amber-400/10"  },
+  gmail:           { icon: EnvelopeSimple, color: "text-rose-400",    bg: "bg-rose-400/10"   },
 };
 
 const CATEGORY_LABELS = { crm: "CRM", messaging: "Messaging", calendar: "Calendar", automation: "Automation" };
@@ -31,6 +32,8 @@ const MANUAL_FIELDS = {
   zoho:            [{ key: "client_id", label: "Client ID", type: "text" },
                     { key: "client_secret", label: "Client Secret", type: "password" }],
   google_calendar: [{ key: "client_id", label: "Client ID", type: "text" },
+                    { key: "client_secret", label: "Client Secret", type: "password" }],
+  gmail:           [{ key: "client_id", label: "Client ID", type: "text" },
                     { key: "client_secret", label: "Client Secret", type: "password" }],
 };
 
