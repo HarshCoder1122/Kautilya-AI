@@ -70,6 +70,12 @@ PROVIDERS = {
         "token_url": "https://oauth2.googleapis.com/token",
         "scopes": "https://www.googleapis.com/auth/calendar.events",
     },
+    "gmail": {
+        "label": "Gmail", "category": "email",
+        "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_url": "https://oauth2.googleapis.com/token",
+        "scopes": "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly",
+    },
     "whatsapp": {
         "label": "WhatsApp Business", "category": "messaging",
         "api_manual": True,  # API-key based (Meta Business API), no OAuth
@@ -262,6 +268,7 @@ def save_manual(provider):
         "salesforce":{"client_id", "client_secret"},
         "zoho":      {"client_id", "client_secret"},
         "google_calendar": {"client_id", "client_secret"},
+        "gmail":           {"client_id", "client_secret"},
     }.get(provider)
     if allowed is None:
         return jsonify({"error": "unknown provider"}), 400

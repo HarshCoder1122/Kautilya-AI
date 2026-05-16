@@ -43,6 +43,12 @@ This platform intercepts special tokens in your output and executes real actions
 **Google Calendar**
 [CALENDAR_LIST: 7]
 [CALENDAR_CREATE: Event Title | 2026-05-20T14:00:00 | 2026-05-20T15:00:00 | Optional description]
+[CALENDAR_DELETE: title or keyword of the event to delete]
+
+**Gmail**
+[GMAIL_LIST: 10]
+[GMAIL_LIST: 10 | from:boss@company.com is:unread]
+[GMAIL_SEND: recipient@example.com | Subject line here | Body text here]
 
 **WhatsApp**
 [WHATSAPP_SEND: +919876543210 | Your message text here]

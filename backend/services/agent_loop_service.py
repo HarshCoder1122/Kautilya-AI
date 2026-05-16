@@ -440,6 +440,31 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nConfirm the result to the user."})
             action_found = True
 
+        # 3.5 [CALENDAR_DELETE: event_id_or_title_keyword]
+        cal_del_match = re.search(r'\[CALENDAR_DELETE:\s*(.*?)\]', accumulated_response, re.DOTALL)
+        if cal_del_match and not action_found:
+            q = cal_del_match.group(1).strip()
+            action_counter += 1
+            action_id = str(action_counter)
+            yield json.dumps({"event": "react_action", "id": action_id, "tool": "calendar", "input": f"Delete: {q}", "status": "running"})
+            try:
+                result = _calendar_delete(uid, q)
+                deleted = result.get('deleted', [])
+                if deleted:
+                    obs = f"CALENDAR: Deleted {len(deleted)} event(s): {', '.join(deleted)}"
+                    yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done",
+                                      "preview": f"Deleted: {', '.join(deleted)[:80]}"})
+                else:
+                    obs = f"CALENDAR: No event found matching '{q}' in the next 60 days."
+                    yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done",
+                                      "preview": f"No match for '{q}'"})
+            except Exception as e:
+                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
+                obs = f"CALENDAR ERROR: {e}"
+            current_messages.append({"role": "assistant", "content": accumulated_response})
+            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nConfirm the result to the user."})
+            action_found = True
+
         # 4. [CALENDAR_LIST: days]
         cal_list_match = re.search(r'\[CALENDAR_LIST:\s*(\d*)\]', accumulated_response)
         if cal_list_match and not action_found:
@@ -465,6 +490,56 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 obs = f"CALENDAR ERROR: {e}"
             current_messages.append({"role": "assistant", "content": accumulated_response})
             current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nReport the events to the user."})
+            action_found = True
+
+        # 4.5 [GMAIL_SEND: to@email.com | Subject | Body]
+        gm_send_match = re.search(r'\[GMAIL_SEND:\s*(.*?)\]', accumulated_response, re.DOTALL)
+        if gm_send_match and not action_found:
+            gm_parts = [p.strip() for p in gm_send_match.group(1).split('|', 2)]
+            gm_to   = gm_parts[0] if len(gm_parts) > 0 else ''
+            gm_subj = gm_parts[1] if len(gm_parts) > 1 else ''
+            gm_body = gm_parts[2] if len(gm_parts) > 2 else ''
+            action_counter += 1
+            action_id = str(action_counter)
+            yield json.dumps({"event": "react_action", "id": action_id, "tool": "calendar", "input": f"Email → {gm_to}", "status": "running"})
+            try:
+                _gmail_send(uid, gm_to, gm_subj, gm_body)
+                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done",
+                                  "preview": f"Sent to {gm_to}"})
+                obs = f"GMAIL: Email sent to {gm_to} with subject '{gm_subj}'."
+            except Exception as e:
+                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
+                obs = f"GMAIL ERROR: {e}"
+            current_messages.append({"role": "assistant", "content": accumulated_response})
+            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nConfirm to the user."})
+            action_found = True
+
+        # 4.6 [GMAIL_LIST: max | optional_search_query]
+        gm_list_match = re.search(r'\[GMAIL_LIST:\s*(.*?)\]', accumulated_response)
+        if gm_list_match and not action_found:
+            gm_parts = [p.strip() for p in gm_list_match.group(1).split('|', 1)]
+            gm_max = int(gm_parts[0]) if gm_parts and gm_parts[0].isdigit() else 10
+            gm_q   = gm_parts[1] if len(gm_parts) > 1 else ''
+            action_counter += 1
+            action_id = str(action_counter)
+            yield json.dumps({"event": "react_action", "id": action_id, "tool": "calendar", "input": f"Inbox (last {gm_max})", "status": "running"})
+            try:
+                emails = _gmail_list(uid, gm_max, gm_q)
+                if emails:
+                    lines = []
+                    for e in emails:
+                        lines.append(f"- From: {e['from']} | Subject: {e['subject']} | {e['date']}\n  Snippet: {e['snippet']}")
+                    obs = f"GMAIL INBOX ({len(emails)} message(s)):\n" + "\n".join(lines)
+                    yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done",
+                                      "preview": f"{len(emails)} email(s)"})
+                else:
+                    obs = "GMAIL: No emails found."
+                    yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done", "preview": "Empty inbox"})
+            except Exception as e:
+                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
+                obs = f"GMAIL ERROR: {e}"
+            current_messages.append({"role": "assistant", "content": accumulated_response})
+            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nSummarize the inbox for the user."})
             action_found = True
 
         # 5. [WHATSAPP_SEND: number | message]
@@ -652,6 +727,25 @@ def _pre_fetch_integrations(uid, user_msg):
                         "\n\n[SYSTEM: Google Calendar token expired. Tell the user to reconnect in Dashboard → Integrations.]\n"
                     )
 
+    # ── Calendar: delete/cancel intent ───────────────────────────────────
+    cal_del_kw  = {'delete', 'remove', 'cancel', 'clear', 'drop'}
+    cal_del_tgt = {'meeting', 'call', 'event', 'appointment', 'reminder', 'slot'}
+    if (cal_del_kw & set(msg.split())) and (cal_del_tgt & set(msg.split())):
+        try:
+            cfg = _get_integration_cfg(uid, 'google_calendar')
+            if cfg.get('access_token'):
+                parts.append(
+                    "\n\n[SYSTEM: Google Calendar IS connected. User wants to DELETE/CANCEL an event. "
+                    "Extract the event title/keyword from the user's message and output ONLY: "
+                    "[CALENDAR_DELETE: title_or_keyword]]\n"
+                )
+            else:
+                parts.append(
+                    "\n\n[SYSTEM: Google Calendar NOT connected. Tell user to connect in Dashboard → Integrations.]\n"
+                )
+        except:
+            pass
+
     # ── Calendar: create/schedule intent ─────────────────────────────────
     cal_create_kw = {'schedule', 'book', 'create', 'add', 'set', 'remind', 'block'}
     cal_create_tgt = {'meeting', 'call', 'event', 'appointment', 'reminder', 'slot'}
@@ -670,6 +764,51 @@ def _pre_fetch_integrations(uid, user_msg):
                 parts.append(
                     "\n\n[SYSTEM: Google Calendar NOT connected. Tell user to connect in Dashboard → Integrations.]\n"
                 )
+        except:
+            pass
+
+    # ── Gmail: read/list inbox intent ─────────────────────────────────────
+    gm_read_kw = {'email', 'emails', 'inbox', 'mail', 'mails', 'gmail'}
+    gm_read_act = {'show', 'list', 'check', 'see', 'read', 'any', 'new', 'recent',
+                   'unread', 'fetch', 'get', 'today', 'latest', 'have'}
+    if (gm_read_kw & set(msg.split())) and (gm_read_act & set(msg.split())):
+        try:
+            cfg = _get_integration_cfg(uid, 'gmail')
+            if cfg.get('access_token'):
+                try:
+                    emails = _gmail_list(uid, 10)
+                    if emails:
+                        lines = [f"  • From: {e['from']} | Subject: {e['subject']} | Date: {e['date']}"
+                                 + (f"\n    Snippet: {e['snippet']}" if e.get('snippet') else '')
+                                 for e in emails]
+                        parts.append(
+                            "\n\n[LIVE DATA — Gmail inbox, last 10 messages]\n"
+                            + "\n".join(lines)
+                            + "\n[Use this data to answer the user. Do NOT say you can't access email.]\n"
+                        )
+                    else:
+                        parts.append("\n\n[LIVE DATA — Gmail: inbox is empty.]\n")
+                except Exception as e:
+                    parts.append(f"\n\n[SYSTEM: Gmail fetch failed: {e}]\n")
+            else:
+                parts.append("\n\n[SYSTEM: Gmail NOT connected. Tell user to connect in Dashboard → Integrations → Gmail.]\n")
+        except:
+            pass
+
+    # ── Gmail: send email intent ──────────────────────────────────────────
+    gm_send_kw = {'send', 'email', 'mail', 'compose', 'write'}
+    gm_send_tgt_idx = msg.find('email')
+    if (gm_send_kw & set(msg.split())) and ('send' in msg or 'email' in msg) and ('@' in msg or 'to ' in msg):
+        try:
+            cfg = _get_integration_cfg(uid, 'gmail')
+            if cfg.get('access_token'):
+                parts.append(
+                    "\n\n[SYSTEM: Gmail IS connected. User wants to SEND an email. "
+                    "Extract recipient email, subject, and body from the user's message, "
+                    "then output ONLY: [GMAIL_SEND: recipient@email.com | Subject | Body text]]\n"
+                )
+            else:
+                parts.append("\n\n[SYSTEM: Gmail NOT connected. Tell user to connect in Dashboard → Integrations → Gmail.]\n")
         except:
             pass
 
@@ -750,6 +889,7 @@ def _refresh_oauth_token(uid, provider):
 
     token_urls = {
         'google_calendar': 'https://oauth2.googleapis.com/token',
+        'gmail': 'https://oauth2.googleapis.com/token',
         'hubspot': 'https://api.hubapi.com/oauth/v1/token',
     }
     token_url = token_urls.get(provider)
@@ -860,6 +1000,137 @@ def _calendar_list(uid, days=7, tz='Asia/Kolkata'):
     if not r.ok:
         raise Exception(f"Calendar API error {r.status_code}")
     return r.json().get('items', [])
+
+
+def _calendar_delete(uid, query, tz='Asia/Kolkata'):
+    """Delete a calendar event. `query` is either:
+      - An event ID (starts with hex/alphanumeric, no spaces), OR
+      - A keyword/title to search for (case-insensitive match against summary).
+    Returns dict with 'deleted' (list of deleted titles) and 'matched_count'.
+    """
+    import requests as _req
+    from datetime import datetime, timedelta, timezone as _tz
+    token = _get_valid_token(uid, 'google_calendar')
+    q = (query or '').strip()
+    if not q:
+        raise Exception("Event title or ID required.")
+
+    deleted = []
+    # First, list upcoming events to find the one(s) matching the query.
+    now = datetime.now(_tz.utc)
+    r = _req.get(
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+        headers={"Authorization": f"Bearer {token}"},
+        params={
+            "timeMin": (now - timedelta(days=1)).isoformat(),
+            "timeMax": (now + timedelta(days=60)).isoformat(),
+            "orderBy": "startTime",
+            "singleEvents": "true",
+            "maxResults": 50,
+            "q": q,  # Google Calendar text search
+        },
+        timeout=15,
+    )
+    if r.status_code == 401:
+        raise Exception("Google Calendar token expired — please reconnect in Dashboard → Integrations.")
+    if not r.ok:
+        raise Exception(f"Calendar API error {r.status_code}: {r.text[:200]}")
+    events = r.json().get('items', [])
+
+    # Filter: prefer events whose summary contains the query (case-insensitive).
+    q_lower = q.lower()
+    matches = [e for e in events if q_lower in (e.get('summary', '') or '').lower()]
+    if not matches:
+        matches = events  # Fall back to whatever Google's text search returned.
+
+    if not matches:
+        return {"deleted": [], "matched_count": 0}
+
+    for ev in matches[:5]:  # Safety cap at 5 deletions per call
+        eid = ev.get('id')
+        title = ev.get('summary', 'Untitled')
+        if not eid:
+            continue
+        dr = _req.delete(
+            f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{eid}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
+        )
+        if dr.status_code in (200, 204):
+            deleted.append(title)
+        elif dr.status_code == 410:
+            deleted.append(title)  # Already gone
+        else:
+            print(f"[Calendar Delete] {eid} failed: {dr.status_code} {dr.text[:120]}")
+
+    return {"deleted": deleted, "matched_count": len(matches)}
+
+
+def _gmail_send(uid, to, subject, body):
+    """Send an email via Gmail API. Body is plain text."""
+    import requests as _req
+    import base64
+    from email.mime.text import MIMEText
+    token = _get_valid_token(uid, 'gmail')
+    if not to or not subject:
+        raise Exception("Recipient and subject are required.")
+    msg = MIMEText(body or '', 'plain', 'utf-8')
+    msg['to'] = to
+    msg['subject'] = subject
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode('utf-8')
+    r = _req.post(
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"raw": raw}, timeout=15,
+    )
+    if r.status_code == 401:
+        raise Exception("Gmail token expired — please reconnect in Dashboard → Integrations.")
+    if not r.ok:
+        raise Exception(f"Gmail API error {r.status_code}: {r.text[:200]}")
+    return r.json()
+
+
+def _gmail_list(uid, max_results=10, query=''):
+    """List recent emails. Returns list of {from, subject, snippet, date, id}."""
+    import requests as _req
+    token = _get_valid_token(uid, 'gmail')
+    params = {"maxResults": min(int(max_results or 10), 25)}
+    if query:
+        params["q"] = query
+    r = _req.get(
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+        headers={"Authorization": f"Bearer {token}"},
+        params=params, timeout=15,
+    )
+    if r.status_code == 401:
+        raise Exception("Gmail token expired — please reconnect in Dashboard → Integrations.")
+    if not r.ok:
+        raise Exception(f"Gmail API error {r.status_code}: {r.text[:200]}")
+    items = r.json().get('messages', [])
+    out = []
+    for m in items[:max_results]:
+        try:
+            mid = m['id']
+            dr = _req.get(
+                f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{mid}",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]},
+                timeout=10,
+            )
+            if not dr.ok:
+                continue
+            md = dr.json()
+            headers = {h['name']: h['value'] for h in md.get('payload', {}).get('headers', [])}
+            out.append({
+                "id": mid,
+                "from": headers.get('From', ''),
+                "subject": headers.get('Subject', '(no subject)'),
+                "date": headers.get('Date', ''),
+                "snippet": md.get('snippet', '')[:160],
+            })
+        except Exception:
+            continue
+    return out
 
 
 def _whatsapp_send(uid, to, message):
