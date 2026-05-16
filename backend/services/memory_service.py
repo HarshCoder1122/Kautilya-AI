@@ -129,7 +129,7 @@ def build_personalized_prompt(base_prompt, user_name=None, memories=None, user_e
     system_context = f"\n\nCURRENT SYSTEM CONTEXT:\n- Current Date and Time: {current_time}\n"
     system_context += "- CRITICAL IDENTITY RULE: You are KAUTILYA AI, created solely by Harsh (CEO of RevealIQ). NEVER identify as OpenAI, ChatGPT, GPT, Anthropic, Claude, Meta, or Llama.\n"
 
-    # Resolve display name: settings > Firestore profile > token name > email prefix
+    # Resolve display name: settings > Firestore profile > Firebase Auth record > token name
     display_name = (settings or {}).get('preferred_name') or (settings or {}).get('display_name') or user_name
     if not display_name and uid:
         try:
@@ -141,14 +141,40 @@ def build_personalized_prompt(base_prompt, user_name=None, memories=None, user_e
                     display_name = pdata.get('preferred_name') or pdata.get('display_name')
         except:
             pass
-    if not display_name and user_email:
-        display_name = user_email.split('@')[0]
-    if not display_name:
-        display_name = 'Friend'
+    # Try Firebase Auth user record for proper displayName (set during signup)
+    if not display_name and uid:
+        try:
+            from firebase_admin import auth as fb_auth
+            user_record = fb_auth.get_user(uid)
+            display_name = user_record.display_name
+        except:
+            pass
+
+    # If display_name still looks like an email prefix / username (lowercase, digits,
+    # underscores) rather than a real human name, treat it as unknown — the model
+    # should not address the user by a machine-y username.
+    def _looks_like_real_name(n):
+        if not n or len(n) < 2:
+            return False
+        # Real names typically have a capitalized first letter, no digits, no underscores.
+        if any(c.isdigit() for c in n):
+            return False
+        if '_' in n or '.' in n:
+            return False
+        if n == n.lower() and len(n) > 12:  # long lowercase blob = probably handle
+            return False
+        return True
 
     personalization = "\n\nPERSONALIZATION:\n"
-    personalization += f"- User's name: {display_name}\n"
-    personalization += f"- Address the user as '{display_name}' — never call them 'Sir/Ma'am' generically.\n"
+    if display_name and _looks_like_real_name(display_name):
+        personalization += f"- User's name: {display_name}\n"
+        personalization += f"- Address the user as '{display_name}' when natural — never use generic 'Sir/Ma'am'.\n"
+    else:
+        # No proper name available. Tell the model to skip generic salutations
+        # and wait for the user to introduce themselves.
+        personalization += "- User's name is not on file yet. Do NOT address them by username, email-prefix, or generic 'Sir/Ma'am'. Use a friendly conversational tone. If asked, mention they can set their name in Dashboard → Settings.\n"
+    if user_email:
+        personalization += f"- User email (for reference, do not greet with it): {user_email}\n"
     if memories:
         personalization += "- Known facts about this user:\n  " + "\n  ".join([f"• {m}" for m in memories[:20]]) + "\n"
     return base_prompt + system_context + personalization
