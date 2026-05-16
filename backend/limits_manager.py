@@ -152,16 +152,16 @@ class LimitManager:
     def _get_daily_usage(self, user_id):
         """Fetch daily usage document from Firestore, caching it locally in memory."""
         if not user_id: return {}
-        
+
         today = datetime.now().strftime("%Y-%m-%d")
-        
+
         if user_id in self.usage_data:
             local_record = self.usage_data[user_id]
             if local_record.get('date') == today:
                 return local_record
-        
+
         # Cache miss or new day -> Fetch from Firestore
-        record = {'date': today, 'chat_count': 0, 'image_count': 0}
+        record = {'date': today, 'chat_count': 0, 'image_count': 0, 'api_count': 0}
         if self.db:
             try:
                 doc = self.db.collection('api_usage').document(user_id).collection('daily').document(today).get()
@@ -169,12 +169,13 @@ class LimitManager:
                     data = doc.to_dict()
                     record['chat_count'] = data.get('chat_count', 0)
                     record['image_count'] = data.get('image_count', 0)
+                    record['api_count']   = data.get('api_count', 0)
             except Exception as e:
                 pass # Fail open for read if Firestore is down momentarily, rely on local
-                
+
         self.usage_data[user_id] = record
         return record
-        
+
     def _save_daily_usage(self, user_id, record):
         """Save the updated daily usage to Firestore."""
         self.usage_data[user_id] = record
@@ -184,10 +185,55 @@ class LimitManager:
                 self.db.collection('api_usage').document(user_id).collection('daily').document(today).set({
                     'chat_count': record.get('chat_count', 0),
                     'image_count': record.get('image_count', 0),
+                    'api_count':   record.get('api_count', 0),
                     'updated_at': datetime.now().isoformat()
                 }, merge=True)
             except Exception as e:
                 print(f"[LimitManager] Firestore save daily usage failed: {e}")
+
+    # ================= DEVELOPER API LIMITS =================
+    def check_developer_api_call(self, user_id, is_pro=False):
+        """
+        Atomic check-and-increment for /api/v1/chat/completions usage.
+
+        Returns: (allowed: bool, used_credits: bool, info: dict)
+          info = {"daily_limit", "api_count", "balance", "price"}
+        """
+        from config import _DEVELOPER_API_LIMITS, DEVELOPER_API_PAYG_PRICE
+
+        tier = "pro" if is_pro else "free"
+        daily_limit = _DEVELOPER_API_LIMITS.get(tier, _DEVELOPER_API_LIMITS["free"])["per_day"]
+        record = self._get_daily_usage(user_id) if user_id else {}
+        api_count = record.get('api_count', 0) if record else 0
+
+        info = {
+            "daily_limit": daily_limit,
+            "api_count": api_count,
+            "balance": self.get_credits(user_id) if user_id else 0.0,
+            "price": DEVELOPER_API_PAYG_PRICE,
+        }
+
+        if not user_id:
+            return False, False, info  # Developer API requires auth
+
+        # Under daily cap → free call
+        if api_count < daily_limit:
+            record['api_count'] = api_count + 1
+            self._save_daily_usage(user_id, record)
+            info["api_count"] = record['api_count']
+            return True, False, info
+
+        # Over daily cap → try PAYG fallback
+        if info["balance"] >= DEVELOPER_API_PAYG_PRICE:
+            if self.deduct_credits(user_id, DEVELOPER_API_PAYG_PRICE):
+                # Still bump api_count so usage stats reflect actual calls
+                record['api_count'] = api_count + 1
+                self._save_daily_usage(user_id, record)
+                info["api_count"] = record['api_count']
+                info["balance"] = self.get_credits(user_id)
+                return True, True, info
+
+        return False, False, info
 
     # ================= IMAGE LIMITS =================
     def check_image_limit(self, user_id, limit_per_day=3):
@@ -206,8 +252,10 @@ class LimitManager:
 
     # ================= CHAT LIMITS =================
     def check_chat_limit(self, user_id, is_pro=False, limit_per_day=30):
-        if not user_id or is_pro: return True 
-        
+        # Note: is_pro is accepted for backwards compatibility but no longer
+        # short-circuits — Pro now has its own daily cap (handled by caller).
+        if not user_id: return True
+
         record = self._get_daily_usage(user_id)
         if record.get('chat_count', 0) >= limit_per_day:
             return False

@@ -112,8 +112,17 @@ API_RATE_LIMITS = {
 _MESSAGE_RATE_LIMITS = {
     "guest":  {"per_minute": 2,  "per_day": 10},
     "free":   {"per_minute": 5,  "per_day": 30},
-    "pro":    {"per_minute": 20, "per_day": None},  # None = unlimited
+    "pro":    {"per_minute": 20, "per_day": None},  # in-app: unlimited for Pro
 }
+
+# Developer API (/api/v1/chat/completions) — third-party tools like Cline.
+# These caps are separate from the in-app chat caps above.
+# Beyond the daily cap the request falls through to PAYG credits.
+_DEVELOPER_API_LIMITS = {
+    "free": {"per_minute": 10, "per_day": 50},
+    "pro":  {"per_minute": 60, "per_day": 500},
+}
+DEVELOPER_API_PAYG_PRICE = 1.00  # INR per API call after daily cap
 
 # ============== Edge TTS Voice Mapping ==============
 EDGE_TTS_VOICES = {
