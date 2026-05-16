@@ -1,6 +1,7 @@
 import { Brain, Code, ChartBar, ArrowSquareOut, Play, Pause, Copy, Check, ArrowsClockwise, SpeakerHigh, StopCircle, CalendarCheck, VideoCamera, Link } from "@phosphor-icons/react";
 import React, { useState, useRef } from "react";
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { ThinkingTokens } from "./ThinkingTokens";
 import { ReActSteps } from "./ReActSteps";
 import { ttsAPI } from "../../lib/api";
@@ -10,7 +11,21 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 const CALENDAR_RE = /https?:\/\/(calendar\.google\.com|meet\.google\.com|zoom\.us|teams\.microsoft\.com)[^\s\)\]"<]*/g;
 
 function linkifyContent(text) {
-  return text.replace(/(https?:\/\/[^\s\)\]"<]+)/g, '[$1]($1)');
+  // Don't linkify inside the sources JSON block if it still exists
+  return text.replace(/(?<!sources:\s*\[[\s\S]*)(https?:\/\/[^\s\)\]"<]+)/g, '[$1]($1)');
+}
+
+function extractSources(text) {
+  const match = text.match(/sources:\s*(\[[\s\S]*?\])/);
+  if (!match) return { sources: null, cleanText: text };
+
+  try {
+    const sources = JSON.parse(match[1]);
+    const cleanText = text.replace(/sources:\s*\[[\s\S]*?\]/, '').trim();
+    return { sources, cleanText };
+  } catch (e) {
+    return { sources: null, cleanText: text };
+  }
 }
 
 function LinkCard({ href }) {
@@ -21,10 +36,20 @@ function LinkCard({ href }) {
   const isEventLink = isCalendar || isMeet || isZoom || isTeams;
 
   if (!isEventLink) {
+    let displayLabel = href;
+    try {
+      const url = new URL(href);
+      displayLabel = url.hostname.replace('www.', '');
+    } catch {}
+
     return (
       <a href={href} target="_blank" rel="noopener noreferrer"
-        className="inline-flex items-center gap-1 text-[var(--k-brand)] underline underline-offset-2 hover:opacity-80 break-all"
-      >{href}</a>
+        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-accent/40 border border-[var(--k-border)] text-[var(--k-brand)] hover:bg-accent hover:border-[var(--k-brand)]/30 transition-all duration-200 no-underline text-xs font-medium my-1"
+      >
+        <Link className="w-3.5 h-3.5" weight="bold" />
+        <span className="truncate max-w-[180px]">{displayLabel}</span>
+        <ArrowSquareOut className="w-3 h-3 text-muted-foreground/50" />
+      </a>
     );
   }
 
@@ -172,11 +197,28 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
     );
   }
 
+  const { sources: extractedSources, cleanText } = extractSources(message.responseText || message.content || '');
+  
   const agent = message.agentType ? agentBadge[message.agentType] : null;
-  const rawContent = (message.responseText || message.content || '')
+  const rawContent = cleanText
     .replace(/<think>[\s\S]*?<\/think>/g, '')
     .trim();
   const displayContent = linkifyContent(rawContent);
+
+  // Merge citations
+  const allCitations = [...(message.citations || [])];
+  if (extractedSources && Array.isArray(extractedSources)) {
+    extractedSources.forEach(s => {
+      if (!allCitations.find(c => c.url === s.url)) {
+        allCitations.push({
+          id: allCitations.length + 1,
+          title: s.title || s.site || s.url,
+          url: s.url,
+          source: s.site || ''
+        });
+      }
+    });
+  }
 
   return (
     <div className="message-ai animate-fade-up group" data-testid={`message-${message.id}`}>
@@ -216,11 +258,21 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
       )}
 
       {/* Response with markdown */}
-      <div className="text-sm text-foreground leading-relaxed prose prose-invert prose-sm max-w-none prose-pre:bg-transparent prose-pre:p-0 prose-pre:border-none">
+      <div className="message-content animate-fade-up">
         <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
           components={{
             a({ href, children }) {
               return <LinkCard href={href} />;
+            },
+            table({ children }) {
+              return (
+                <div className="overflow-x-auto my-6 rounded-xl border border-[var(--k-border)] bg-white/5 shadow-sm">
+                  <table className="min-w-full divide-y divide-[var(--k-border)]">
+                    {children}
+                  </table>
+                </div>
+              );
             },
             code({ node, inline, className, children, ...props }) {
               const match = /language-(\w+)/.exec(className || '');
@@ -315,11 +367,11 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
       </div>
 
       {/* Citations */}
-      {message.citations && message.citations.length > 0 && (
+      {allCitations.length > 0 && (
         <div className="mt-6 space-y-2" data-testid="citations-panel">
           <span className="text-[9px] tracking-[0.25em] uppercase font-bold text-muted-foreground/40">Knowledge Sources</span>
           <div className="flex flex-wrap gap-2">
-            {message.citations.map((cite) => (
+            {allCitations.map((cite) => (
               <a
                 key={cite.id}
                 href={cite.url}
