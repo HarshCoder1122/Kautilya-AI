@@ -105,12 +105,34 @@ def chat_completions():
         return jsonify({"error": {"message": "Invalid API key", "type": "authentication_error"}}), 401
 
     uid = key_info.get('uid')
+    is_pro = bool(key_info.get('is_pro'))
     body = request.get_json(silent=True) or {}
     requested_model = body.get('model') or 'kautilya-daily'
     # Only allow our published Kautilya model IDs — block raw passthrough.
     if requested_model not in KAUTILYA_MODEL_MAP:
         return jsonify({"error": {"message": f"Unknown model '{requested_model}'. Use kautilya-daily, kautilya-pro, or kautilya-coder.", "type": "invalid_request_error"}}), 400
     upstream_model = KAUTILYA_MODEL_MAP[requested_model]
+
+    # ---- Developer API daily-limit + PAYG credit fallback ----
+    if uid and uid != "admin":
+        from extensions import limit_manager
+        allowed, used_credits, info = limit_manager.check_developer_api_call(uid, is_pro=is_pro)
+        if not allowed:
+            tier_label = "Pro" if is_pro else "Free"
+            return jsonify({"error": {
+                "message": (
+                    f"Daily Developer API limit reached ({info['daily_limit']} calls/day on {tier_label}). "
+                    f"Your Pay-As-You-Go balance is ₹{info['balance']:.2f} but each API call costs ₹{info['price']:.2f}. "
+                    "Top-up from Dashboard → Billing to keep going."
+                ),
+                "type": "rate_limit_exceeded",
+                "code": "daily_api_limit",
+                "daily_limit": info["daily_limit"],
+                "api_count": info["api_count"],
+                "balance": info["balance"],
+            }}), 429
+        if used_credits:
+            print(f"[OpenAI Compat] PAYG charged ₹{info['price']:.2f} for uid={uid} (balance left: ₹{info['balance']:.2f})")
 
     messages = body.get('messages') or []
     if not messages:

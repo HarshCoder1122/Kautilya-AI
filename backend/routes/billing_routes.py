@@ -154,9 +154,39 @@ def billing_config():
     except Exception as e:
         print(f"[Billing Config] Auth lookup failed: {e}")
 
+    # Build usage snapshot so the Billing UI can show today's consumption
+    usage = {"chat_count": 0, "image_count": 0, "daily_limit": 30}
+    api_usage = {"api_count": 0, "daily_limit": 50, "price_per_call": 1.0}
+    try:
+        from config import _MESSAGE_RATE_LIMITS, _DEVELOPER_API_LIMITS, DEVELOPER_API_PAYG_PRICE
+        from services.auth_service import verify_firebase_token as _v
+        td = _v()
+        u = td.get('uid') if td else None
+        if u and limit_manager:
+            record = limit_manager._get_daily_usage(u)
+            tier = "pro" if is_pro else "free"
+            daily = _MESSAGE_RATE_LIMITS.get(tier, _MESSAGE_RATE_LIMITS["free"]).get("per_day")
+            usage = {
+                "chat_count": int(record.get("chat_count", 0)),
+                "image_count": int(record.get("image_count", 0)),
+                "daily_limit": daily if daily is not None else -1,  # -1 = unlimited
+            }
+            api_daily = _DEVELOPER_API_LIMITS.get(tier, _DEVELOPER_API_LIMITS["free"])["per_day"]
+            api_usage = {
+                "api_count": int(record.get("api_count", 0)),
+                "daily_limit": api_daily,
+                "price_per_call": DEVELOPER_API_PAYG_PRICE,
+            }
+    except Exception as e:
+        print(f"[Billing Config] usage snapshot failed: {e}")
+
     return jsonify({
         "razorpay_key_id": RAZORPAY_KEY_ID or os.environ.get('RAZORPAY_KEY_ID', ''),
         "is_pro": is_pro,
         "tier": "pro" if is_pro else "free",
         "credits": credits,
+        "usage": usage,
+        "api_usage": api_usage,
+        "payg_price_per_message": 0.50,
+        "pro_price_inr": 599,
     })

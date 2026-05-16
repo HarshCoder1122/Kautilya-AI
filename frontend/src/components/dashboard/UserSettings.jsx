@@ -1,13 +1,14 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { User, Key, Bell, Shield, Palette, CaretRight, CheckCircle, Warning, GoogleLogo, Crown } from "@phosphor-icons/react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { billingAPI } from "../../lib/api";
 import ApiKeySettings from "./ApiKeySettings";
 
 export default function UserSettings({ user }) {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('profile');
   const [billingConfig, setBillingConfig] = useState(null);
-  const [isUpgrading, setIsUpgrading] = useState(false);
 
   useEffect(() => {
     loadBillingStatus();
@@ -22,53 +23,7 @@ export default function UserSettings({ user }) {
     }
   };
 
-  const handleUpgrade = async () => {
-    if (!billingConfig) return;
-    try {
-      setIsUpgrading(true);
-      const amount = 599; // Default Pro Price
-      const order = await billingAPI.createOrder(amount, 'pro_subscription');
-      
-      const options = {
-        key: billingConfig.razorpay_key_id,
-        amount: order.amount,
-        currency: order.currency,
-        name: "Kautilya AI",
-        description: "Pro Subscription",
-        subscription_id: order.id,
-        handler: async function (response) {
-          try {
-            await billingAPI.verifyPayment({
-              razorpay_order_id: order.id,
-              razorpay_payment_id: response.razorpay_payment_id,
-              razorpay_signature: response.razorpay_signature,
-              plan_type: 'pro',
-              amount: amount
-            });
-            await loadBillingStatus();
-            alert("Upgrade successful! Welcome to Pro.");
-          } catch (e) {
-            alert("Payment verification failed. Please contact support.");
-          }
-        },
-        prefill: {
-          name: user?.displayName || "",
-          email: user?.email || "",
-        },
-        theme: {
-          color: "#FF6D3F",
-        },
-      };
-
-      const rzp = new window.Razorpay(options);
-      rzp.open();
-    } catch (error) {
-      console.error("Upgrade failed:", error);
-      alert("Failed to initialize payment.");
-    } finally {
-      setIsUpgrading(false);
-    }
-  };
+  const goToBilling = () => navigate('/dashboard/billing');
 
   const tabs = [
     { id: 'profile', label: 'Profile', icon: User },
@@ -159,15 +114,12 @@ export default function UserSettings({ user }) {
                             : 'Access to base models and limited daily tokens.'}
                         </div>
                       </div>
-                      {!isPro && (
-                        <button 
-                          onClick={handleUpgrade}
-                          disabled={isUpgrading}
-                          className="px-4 py-1.5 rounded-md bg-[var(--k-brand)] text-white text-xs font-semibold hover:bg-[var(--k-brand-hover)] transition-colors disabled:opacity-50"
-                        >
-                          {isUpgrading ? 'Processing...' : 'Upgrade to Pro'}
-                        </button>
-                      )}
+                      <button
+                        onClick={goToBilling}
+                        className="px-4 py-1.5 rounded-md bg-[var(--k-brand)] text-white text-xs font-semibold hover:bg-[var(--k-brand-hover)] transition-colors"
+                      >
+                        {isPro ? 'Manage Plan' : 'Upgrade / Top-up'}
+                      </button>
                     </div>
                   </section>
                 </div>
