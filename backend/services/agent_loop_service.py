@@ -166,9 +166,48 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     }
     DAILY_MODEL = 'mistralai/mistral-medium-3.5-128b'
 
+    def _wrap_with_placeholder_thinking(inner_gen):
+        """Mistral on the daily tier has higher time-to-first-token than Groq.
+        We can't emit real reasoning_content (reasoning_effort='none') so we
+        synthesize a short 'thinking' placeholder that streams while the user
+        waits, then flip thinking_done as soon as real content arrives."""
+        import time as _t
+        phrases = [
+            "Reading your question…",
+            "Pulling the relevant context…",
+            "Drafting a response…",
+        ]
+        phrase_idx = 0
+        # Emit the first thinking line immediately so the bubble appears
+        yield {"thinking": phrases[phrase_idx]}
+        last_emit = _t.time()
+        thinking_closed = False
+        for item in inner_gen:
+            # Detect first content delta
+            is_content = (
+                isinstance(item, dict) and (
+                    "chunk" in item or "tool_calls" in item
+                )
+            ) or isinstance(item, str)
+            if is_content and not thinking_closed:
+                yield {"thinking_done": True}
+                thinking_closed = True
+            # If still in thinking phase and >1.2s passed, emit next phrase
+            if not thinking_closed and _t.time() - last_emit > 1.2 and phrase_idx + 1 < len(phrases):
+                phrase_idx += 1
+                yield {"thinking": " " + phrases[phrase_idx]}
+                last_emit = _t.time()
+            yield item
+        if not thinking_closed:
+            # Stream ended without producing content; close anyway so the
+            # frontend doesn't keep the bubble open forever
+            yield {"thinking_done": True}
+
     def _call_daily(msgs, **kw):
-        """Daily tier: NVIDIA Mistral Medium 3.5 with low reasoning effort.
-        Groq Llama is still the last-resort fallback if NVIDIA is unreachable."""
+        """Daily tier: NVIDIA Mistral Medium 3.5 with no reasoning effort.
+        Groq Llama is still the last-resort fallback if NVIDIA is unreachable.
+        Output is wrapped with a placeholder-thinking stream so the UI shows
+        the thinking bubble during Mistral's time-to-first-token wait."""
         from config import NVIDIA_API_KEY
         if NVIDIA_API_KEY:
             r = call_nvidia(msgs, stream=True, model=DAILY_MODEL,
@@ -176,15 +215,16 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                             top_p=kw.get('top_p', 1.0),
                             max_tokens=kw.get('max_tokens', 16384),
                             tools=kw.get('tools'), tool_choice=kw.get('tool_choice'),
-                            expose_thinking=False,  # daily tier hides thinking
-                            # Mistral only accepts 'none' or 'high'; daily uses 'none' for speed.
+                            expose_thinking=False,
+                            # Mistral only accepts 'none' or 'high'; 'none' = fastest.
                             reasoning_effort='none')
             if r:
-                return r
-        return call_groq(msgs, stream=True, model='llama-3.3-70b-versatile',
-                         temperature=kw.get('temperature', 0.6),
-                         max_tokens=kw.get('max_tokens', 16384),
-                         tools=kw.get('tools'), tool_choice=kw.get('tool_choice'))
+                return _wrap_with_placeholder_thinking(r)
+        groq_gen = call_groq(msgs, stream=True, model='llama-3.3-70b-versatile',
+                             temperature=kw.get('temperature', 0.6),
+                             max_tokens=kw.get('max_tokens', 16384),
+                             tools=kw.get('tools'), tool_choice=kw.get('tool_choice'))
+        return _wrap_with_placeholder_thinking(groq_gen) if groq_gen else None
 
     for turn in range(MAX_TURNS):
         print(f"[Agent] Turn {turn+1}/{MAX_TURNS}")
