@@ -51,7 +51,16 @@ def create_billing_order():
 
 @billing_bp.route('/billing/verify-payment', methods=['POST'])
 def verify_payment():
-    """Browser-side payment confirmation. Idempotent — safe if webhook also fires."""
+    """Browser-side payment confirmation. Idempotent — safe if webhook also fires.
+
+    Resilient flow:
+      1. If payment_id already processed (by webhook / earlier call), short-circuit OK.
+      2. Try signature verification (cheap, no API call).
+      3. If signature fails, fall back to Razorpay-as-source-of-truth:
+         fetch the payment, confirm status=captured AND notes.uid matches
+         the caller. This avoids silently losing money on UPI / wallet flows
+         where signature mismatches are a known issue.
+    """
     from extensions import razorpay_client, limit_manager, db
     try:
         token_data = verify_firebase_token()
@@ -66,24 +75,56 @@ def verify_payment():
         amount = float(data.get('amount', 0))
 
         if not razorpay_client: return jsonify({"error": "Razorpay not configured"}), 500
+        if not razorpay_payment_id:
+            return jsonify({"error": "razorpay_payment_id required"}), 400
 
+        # 1. Idempotency check FIRST — handles the webhook-already-credited race.
+        if db:
+            proc_ref = db.collection('processed_payments').document(razorpay_payment_id)
+            if proc_ref.get().exists:
+                print(f"[Verify] payment {razorpay_payment_id} already processed — skip")
+                return jsonify({"success": True, "already_processed": True})
+
+        # 2. Try signature verification.
+        signature_ok = False
+        sig_error = None
         try:
             razorpay_client.utility.verify_payment_signature({
                 'razorpay_order_id': razorpay_order_id,
                 'razorpay_payment_id': razorpay_payment_id,
                 'razorpay_signature': razorpay_signature
             })
+            signature_ok = True
         except Exception as e:
+            sig_error = str(e)
             print(f"[Verify] Signature mismatch uid={uid} payment_id={razorpay_payment_id} err={e}")
-            return jsonify({"error": "Invalid payment signature", "details": str(e)}), 400
 
-        # Idempotency — if the webhook already credited this payment, do nothing here.
-        if db and razorpay_payment_id:
-            proc_ref = db.collection('processed_payments').document(razorpay_payment_id)
-            if proc_ref.get().exists:
-                print(f"[Verify] payment {razorpay_payment_id} already processed by webhook — skip")
-                return jsonify({"success": True, "already_processed": True})
+        # 3. If signature failed, fall back to fetching the payment from Razorpay.
+        if not signature_ok:
+            try:
+                payment = razorpay_client.payment.fetch(razorpay_payment_id)
+            except Exception as e:
+                return jsonify({
+                    "error": "Could not verify payment with Razorpay",
+                    "details": str(e), "signature_error": sig_error,
+                }), 400
 
+            if payment.get('status') != 'captured':
+                return jsonify({
+                    "error": f"Payment status is '{payment.get('status')}', not captured",
+                    "signature_error": sig_error,
+                }), 400
+
+            # Confirm the payment belongs to this user (via notes.uid we set on create)
+            payment_uid = (payment.get('notes') or {}).get('uid')
+            if payment_uid and payment_uid != uid:
+                return jsonify({"error": "Payment does not belong to this user"}), 403
+
+            # Trust Razorpay's reported amount, not the client's claim
+            amount = float(payment.get('amount', 0)) / 100.0
+            print(f"[Verify] Signature failed but Razorpay confirms capture — crediting via fallback. payment={razorpay_payment_id} amount=₹{amount}")
+
+        # 4. Credit the account (whichever path got us here).
         limit_manager.add_transaction(uid, amount, plan_type, razorpay_order_id, razorpay_payment_id)
 
         if plan_type in ['pro', 'pro_subscription']:
@@ -95,17 +136,18 @@ def verify_payment():
         else:
             return jsonify({"error": f"Unknown plan type: {plan_type}"}), 400
 
-        if db and razorpay_payment_id:
+        if db:
             from datetime import datetime
             db.collection('processed_payments').document(razorpay_payment_id).set({
                 'uid': uid, 'amount': amount, 'plan_type': plan_type,
                 'order_id': razorpay_order_id,
                 'processed_at': datetime.now().isoformat(),
-                'source': 'verify-payment',
+                'source': 'verify-payment' if signature_ok else 'verify-payment-fallback',
+                'signature_ok': signature_ok,
             })
 
-        print(f"[Verify] credited uid={uid} amount=₹{amount} plan={plan_type}")
-        return jsonify({"success": True, "message": msg})
+        print(f"[Verify] credited uid={uid} amount=₹{amount} plan={plan_type} signature_ok={signature_ok}")
+        return jsonify({"success": True, "message": msg, "signature_ok": signature_ok})
     except Exception as e:
         print(f"[Verify] Error: {e}")
         return jsonify({"error": str(e)}), 500

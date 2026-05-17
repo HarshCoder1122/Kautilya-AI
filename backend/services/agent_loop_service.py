@@ -798,10 +798,13 @@ def _estimate_tokens(user_msg, mode):
         complexity = 'very_high'
 
     # Token budgets per mode & complexity
+    # Generous budgets — Mistral / Nemotron / Qwen all accept up to 32K output.
+    # Truncated responses are a worse UX than slightly slower streaming, and
+    # the model decides when to stop anyway. These are upper bounds, not targets.
     budgets = {
-        'daily': {'low': 1024, 'medium': 2048, 'high': 3072, 'very_high': 4096},
-        'coder': {'low': 4096, 'medium': 8192, 'high': 12288, 'very_high': 16384},
-        'pro':   {'low': 4096, 'medium': 8192, 'high': 16384, 'very_high': 16384},
+        'daily': {'low': 2048, 'medium': 6144, 'high': 12288, 'very_high': 16384},
+        'coder': {'low': 4096, 'medium': 12288, 'high': 24576, 'very_high': 32768},
+        'pro':   {'low': 4096, 'medium': 12288, 'high': 24576, 'very_high': 32768},
     }
 
     mode_key = mode if mode in budgets else 'daily'

@@ -104,9 +104,12 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
         })));
         // If the server is still generating the last assistant message
         // (user closed/reloaded the app mid-stream), poll for live updates
-        // until the streaming flag flips off.
+        // until the streaming flag flips off. Keep "thinking" UI active so
+        // the user always sees a live indicator — never a dead screen.
         if (data.streaming) {
+          setIsStreaming(true);          // shows the bottom "streaming" pulse
           pollStreamingMessage(sid);
+          return;                          // skip the finally setIsThinking(false)
         }
       }
     } catch (error) {
@@ -121,9 +124,11 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   const pollStreamingMessage = async (sid) => {
     let lastLen = 0;
     let stableTicks = 0;
+    setIsThinking(false);                 // we have a "generating" placeholder now
     setIsStreaming(true);
-    for (let i = 0; i < 150; i++) { // 150 * 2s = 5 min hard cap
-      await new Promise(r => setTimeout(r, 2000));
+    // Tight 1.2s polling — partial Firestore writes land every 1.5s
+    for (let i = 0; i < 250; i++) { // 250 * 1.2s = 5 min hard cap
+      await new Promise(r => setTimeout(r, 1200));
       try {
         const data = await chatAPI.getConversation(sid);
         if (!data || !data.messages) continue;
@@ -137,7 +142,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
         if (!data.streaming) break;          // Backend finished
         if (lastContent.length === lastLen) {
           stableTicks++;
-          if (stableTicks >= 30) break;       // 1 min with no growth — stop
+          if (stableTicks >= 50) break;       // 1 min with no growth — stop
         } else {
           stableTicks = 0;
           lastLen = lastContent.length;
