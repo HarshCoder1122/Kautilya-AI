@@ -100,10 +100,16 @@ def _enforce_user_limit(uid):
         del user_convs[sid]
 
 
-def save_to_firestore(uid, session_id, role, content):
+def save_to_firestore(uid, session_id, role, content, message_id=None, streaming=False):
+    """Save a chat message.
+    - If `message_id` is provided, the message doc is updated (used for live
+      streaming so reopening the app reveals in-progress responses).
+    - `streaming=True` marks the message as still generating; the frontend
+      polls until this flips false.
+    """
     from extensions import db
     if not db or not uid:
-        return
+        return None
     try:
         from firebase_admin import firestore
         conv_ref = db.collection('users').document(uid).collection('conversations').document(session_id)
@@ -118,11 +124,34 @@ def save_to_firestore(uid, session_id, role, content):
                     break
             if not preview:
                 preview = "[Media Message]"
-        conv_ref.set({'last_updated': firestore.SERVER_TIMESTAMP, 'preview': preview, 'session_id': session_id}, merge=True)
+        conv_ref.set({
+            'last_updated': firestore.SERVER_TIMESTAMP,
+            'preview': preview,
+            'session_id': session_id,
+            'streaming': bool(streaming),
+        }, merge=True)
         saved_content = json.dumps(content) if isinstance(content, list) else content
-        conv_ref.collection('messages').document().set({'role': role, 'content': saved_content, 'timestamp': firestore.SERVER_TIMESTAMP})
+        msgs = conv_ref.collection('messages')
+        if message_id:
+            msg_ref = msgs.document(message_id)
+            msg_ref.set({
+                'role': role,
+                'content': saved_content,
+                'streaming': bool(streaming),
+                'timestamp': firestore.SERVER_TIMESTAMP,
+            }, merge=True)
+            return message_id
+        new_ref = msgs.document()
+        new_ref.set({
+            'role': role,
+            'content': saved_content,
+            'streaming': bool(streaming),
+            'timestamp': firestore.SERVER_TIMESTAMP,
+        })
+        return new_ref.id
     except Exception as e:
         print(f"[History] Save failed: {e}")
+        return None
 
 
 @chat_bp.route('/jarvis/stream', methods=['POST'])
@@ -253,21 +282,37 @@ def jarvis_stream():
     if model == "research":
         research_queue = queue.Queue()
         research_content_holder = [""]
+        # Save user query first so reopening shows what they asked
+        save_to_firestore(uid, session_id, "user", message)
+        # Streaming placeholder so reopened tabs see deep-research progress
+        research_msg_id = save_to_firestore(uid, session_id, "assistant", "", streaming=True)
+        research_flush_ts = [time.time()]
 
         def _run_research():
             try:
                 for event in deep_research_stream(message):
                     if event.get("event") == "chunk":
                         research_content_holder[0] += event.get("chunk", "")
+                        # Flush every 1.5s so it's visible after reopen
+                        if research_msg_id and time.time() - research_flush_ts[0] >= 1.5:
+                            try:
+                                save_to_firestore(uid, session_id, "assistant",
+                                                  research_content_holder[0],
+                                                  message_id=research_msg_id, streaming=True)
+                                research_flush_ts[0] = time.time()
+                            except Exception:
+                                pass
                     research_queue.put(json.dumps(event))
             except Exception as e:
                 research_queue.put(json.dumps({'event': 'chunk', 'chunk': f'[error: {e}]'}))
             finally:
                 research_queue.put(None)
                 full_research = research_content_holder[0]
-                if full_research and uid:
+                if uid:
                     try:
-                        save_to_firestore(uid, session_id, "assistant", full_research)
+                        save_to_firestore(uid, session_id, "assistant",
+                                          full_research or "[no response]",
+                                          message_id=research_msg_id, streaming=False)
                         print(f"[Research] Saved {len(full_research)} chars for session {session_id}")
                     except Exception as e:
                         print(f"[Research] Firestore save failed: {e}")
@@ -304,9 +349,32 @@ def jarvis_stream():
         regardless of whether the client is still connected. The SSE generator
         here just reads from a queue. If the user navigates away mid-stream,
         the thread keeps running and the response is saved for when they return.
+
+        A placeholder assistant message is created in Firestore at the start
+        and updated every ~1.5s with the partial response so reopening the
+        app reveals the in-progress generation (no more "dead UI" feeling).
         """
         chunk_queue = queue.Queue()
         full_response_holder = [""]  # list so the thread can mutate via closure
+        # Reserve a streaming-message doc id up-front; the LLM thread flushes into it.
+        assistant_msg_id = save_to_firestore(uid, session_id, "assistant", "", streaming=True)
+        last_flush_ts = [time.time()]
+        FLUSH_INTERVAL_SEC = 1.5
+
+        def _maybe_flush_partial(force=False):
+            """Periodically write the current partial response back to Firestore."""
+            if not assistant_msg_id or not uid:
+                return
+            now = time.time()
+            if not force and now - last_flush_ts[0] < FLUSH_INTERVAL_SEC:
+                return
+            try:
+                save_to_firestore(uid, session_id, "assistant",
+                                  full_response_holder[0],
+                                  message_id=assistant_msg_id, streaming=True)
+                last_flush_ts[0] = now
+            except Exception as e:
+                print(f"[Stream] partial flush failed: {e}")
 
         def _run_llm():
             try:
@@ -331,6 +399,8 @@ def jarvis_stream():
                         if "chunk" in item:
                             full_response_holder[0] += item["chunk"]
                         chunk_queue.put(json.dumps(item))
+                    # Periodic Firestore flush so reopening the app shows progress
+                    _maybe_flush_partial()
             except Exception as e:
                 print(f"[LLM Thread] Error: {e}")
                 chunk_queue.put(json.dumps({'chunk': f'[Error: {e}]'}))
@@ -346,10 +416,21 @@ def jarvis_stream():
                         if not conv.get('title') and conv['message_count'] >= 2:
                             title = full_response.strip().split('\n')[0][:60]
                             conv['title'] = title if title else "New Chat"
-                        save_to_firestore(uid, session_id, "assistant", full_response)
+                        # Final write — flip streaming flag off so the frontend stops polling.
+                        save_to_firestore(uid, session_id, "assistant", full_response,
+                                          message_id=assistant_msg_id, streaming=False)
                         print(f"[Stream] Saved response ({len(full_response)} chars) for session {session_id}")
                     except Exception as e:
                         print(f"[Stream] Firestore save failed: {e}")
+                else:
+                    # No content produced — clear the placeholder so it doesn't loop forever
+                    if assistant_msg_id and uid:
+                        try:
+                            save_to_firestore(uid, session_id, "assistant",
+                                              "[no response]",
+                                              message_id=assistant_msg_id, streaming=False)
+                        except Exception:
+                            pass
 
                     # Usage tracking
                     if uid:
@@ -474,6 +555,7 @@ def get_chat_history(session_id):
         docs = db.collection('users').document(uid).collection('conversations').document(session_id) \
                  .collection('messages').order_by('timestamp').stream()
         messages = []
+        streaming_any = False
         for doc in docs:
             data = doc.to_dict()
             content = data.get("content")
@@ -483,8 +565,20 @@ def get_chat_history(session_id):
                         content = json.loads(content)
                 except:
                     pass
-            messages.append({"role": data.get("role"), "content": content})
-        return jsonify({"messages": messages, "session_id": session_id})
+            is_streaming = bool(data.get("streaming", False))
+            if is_streaming:
+                streaming_any = True
+            messages.append({
+                "id": doc.id,
+                "role": data.get("role"),
+                "content": content,
+                "streaming": is_streaming,
+            })
+        return jsonify({
+            "messages": messages,
+            "session_id": session_id,
+            "streaming": streaming_any,
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

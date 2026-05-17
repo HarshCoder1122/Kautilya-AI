@@ -71,7 +71,7 @@ openai_compat_bp = Blueprint('openai_compat', __name__)
 KAUTILYA_MODEL_MAP = {
     "kautilya-coder":   "qwen/qwen3-coder-480b-a35b-instruct",
     "kautilya-pro":     "nvidia/nemotron-3-super-120b-a12b",
-    "kautilya-daily":   "llama-3.3-70b-versatile",  # Groq
+    "kautilya-daily":   "mistralai/mistral-medium-3.5-128b",  # NVIDIA (reasoning_effort=low)
 }
 
 PUBLIC_MODELS = [
@@ -210,19 +210,22 @@ def chat_completions():
         return Response(sse(), mimetype='text/event-stream',
                         headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
-    # ---- NVIDIA path (qwen-coder / nemotron) ----
+    # ---- NVIDIA path (qwen-coder / nemotron / mistral-daily) ----
     if not NVIDIA_API_KEY:
         return jsonify({"error": {"message": "NVIDIA backend not configured", "type": "upstream_error"}}), 503
 
     # Same path the dashboard chat uses — call_nvidia handles streaming with
-    # proper thinking/content separation for both qwen-coder and nemotron.
-    rb = reasoning_budget if max_thinking else 0
+    # proper thinking/content separation for nemotron/qwen, and reasoning_effort
+    # for Mistral (kautilya-daily). Daily tier hides thinking and uses low effort.
+    is_daily = 'mistral' in upstream_model.lower()
+    rb = reasoning_budget if (max_thinking and not is_daily) else 0
     gen = call_nvidia(
         messages, stream=True, max_tokens=max_tokens,
         model=upstream_model, tools=tools, tool_choice=tool_choice,
         temperature=temperature, top_p=top_p,
-        max_thinking=max_thinking, reasoning_budget=rb,
-        expose_thinking=True,
+        max_thinking=(max_thinking and not is_daily), reasoning_budget=rb,
+        expose_thinking=(not is_daily),
+        reasoning_effort=('low' if is_daily else None),
     )
     if gen is None:
         return jsonify({"error": {"message": "Upstream unavailable", "type": "upstream_error"}}), 503

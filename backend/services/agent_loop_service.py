@@ -162,8 +162,28 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     _MODEL_LABELS = {
         'coder': ('Kautilya Coder', 'qwen/qwen3-coder-480b-a35b-instruct'),
         'pro':   ('Kautilya Pro', 'nvidia/nemotron-3-super-120b-a12b'),
-        'daily': ('Kautilya Daily', 'llama-3.3-70b-versatile'),
+        'daily': ('Kautilya Daily', 'mistralai/mistral-medium-3.5-128b'),
     }
+    DAILY_MODEL = 'mistralai/mistral-medium-3.5-128b'
+
+    def _call_daily(msgs, **kw):
+        """Daily tier: NVIDIA Mistral Medium 3.5 with low reasoning effort.
+        Groq Llama is still the last-resort fallback if NVIDIA is unreachable."""
+        from config import NVIDIA_API_KEY
+        if NVIDIA_API_KEY:
+            r = call_nvidia(msgs, stream=True, model=DAILY_MODEL,
+                            temperature=kw.get('temperature', 0.6),
+                            top_p=kw.get('top_p', 1.0),
+                            max_tokens=kw.get('max_tokens', 16384),
+                            tools=kw.get('tools'), tool_choice=kw.get('tool_choice'),
+                            expose_thinking=False,  # daily tier hides thinking
+                            reasoning_effort='low')
+            if r:
+                return r
+        return call_groq(msgs, stream=True, model='llama-3.3-70b-versatile',
+                         temperature=kw.get('temperature', 0.6),
+                         max_tokens=kw.get('max_tokens', 16384),
+                         tools=kw.get('tools'), tool_choice=kw.get('tool_choice'))
 
     for turn in range(MAX_TURNS):
         print(f"[Agent] Turn {turn+1}/{MAX_TURNS}")
@@ -185,8 +205,8 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             label, model_id = _MODEL_LABELS['coder']
             if not NVIDIA_API_KEY:
                 yield json.dumps({"event": "status", "message": f"⚡ {label} requires NVIDIA API key — using fast model…"})
-                response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
-                                         model='llama-3.3-70b-versatile', temperature=0.6)
+                response_gen = _call_daily(current_messages, max_tokens=max_tokens,
+                                           tools=tools, tool_choice=tool_choice)
             else:
                 yield json.dumps({"event": "status", "message": f"🧠 Connecting to {label}…"})
                 response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
@@ -200,16 +220,16 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                                                max_thinking=max_thinking, reasoning_budget=reasoning_budget)
                 if not response_gen:
                     yield json.dumps({"event": "status", "message": f"⚡ {label} unavailable — using fast model…"})
-                    response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
-                                             model='llama-3.3-70b-versatile', temperature=0.6)
+                    response_gen = _call_daily(current_messages, max_tokens=max_tokens,
+                                               tools=tools, tool_choice=tool_choice)
 
         elif model_choice == 'pro':
             from config import NVIDIA_API_KEY
             label, model_id = _MODEL_LABELS['pro']
             if not NVIDIA_API_KEY:
                 yield json.dumps({"event": "status", "message": f"⚡ {label} requires NVIDIA API key — using fast model…"})
-                response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
-                                         model='llama-3.3-70b-versatile', temperature=0.6)
+                response_gen = _call_daily(current_messages, max_tokens=max_tokens,
+                                           tools=tools, tool_choice=tool_choice)
             else:
                 yield json.dumps({"event": "status", "message": f"💎 Connecting to {label}…"})
                 response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
@@ -223,22 +243,21 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                                                max_thinking=max_thinking, reasoning_budget=reasoning_budget)
                 if not response_gen:
                     yield json.dumps({"event": "status", "message": f"⚡ {label} unavailable — using fast model…"})
-                    print(f"[FALLBACK] {label} failed/unavailable. Switching to Groq.")
-                    response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
-                                             model='llama-3.3-70b-versatile', temperature=0.6)
+                    print(f"[FALLBACK] {label} failed/unavailable. Switching to Daily.")
+                    response_gen = _call_daily(current_messages, max_tokens=max_tokens,
+                                               tools=tools, tool_choice=tool_choice)
 
         elif has_image:
-            # Vision model
+            # Vision model — Groq is still our vision provider
             yield json.dumps({"event": "status", "message": "👁️ Analyzing image…"})
             response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
                                      model='llama-3.2-11b-vision-preview', temperature=0.6)
             if not response_gen:
-                response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
-                                         model='llama-3.3-70b-versatile', temperature=0.6)
+                response_gen = _call_daily(current_messages, max_tokens=max_tokens)
         else:
-            # Daily = Groq Llama
-            response_gen = call_groq(current_messages, stream=True, model='llama-3.3-70b-versatile',
-                                     temperature=0.6, max_tokens=max_tokens, tools=tools, tool_choice=tool_choice)
+            # Daily = NVIDIA Mistral Medium 3.5 (low reasoning), Groq llama as fallback
+            response_gen = _call_daily(current_messages, max_tokens=max_tokens,
+                                       tools=tools, tool_choice=tool_choice)
 
         # Final fallback: try anything
         if not response_gen:

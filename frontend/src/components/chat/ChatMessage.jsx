@@ -17,15 +17,31 @@ function linkifyContent(text) {
 
 function extractSources(text) {
   const match = text.match(/sources:\s*(\[[\s\S]*?\])/);
-  if (!match) return { sources: null, cleanText: text };
+  if (!match) return { sources: null, cleanText: stripToolTags(text) };
 
   try {
     const sources = JSON.parse(match[1]);
-    const cleanText = text.replace(/sources:\s*\[[\s\S]*?\]/, '').trim();
+    const cleanText = stripToolTags(text.replace(/sources:\s*\[[\s\S]*?\]/, '').trim());
     return { sources, cleanText };
   } catch (e) {
-    return { sources: null, cleanText: text };
+    return { sources: null, cleanText: stripToolTags(text) };
   }
+}
+
+// Strip raw agent-loop tool tokens so they don't leak into the rendered
+// message. The agent-loop service already executes the tool and renders
+// its own result block; the raw "[TOOL_NAME: args]" line that triggered
+// the call is purely internal plumbing.
+function stripToolTags(text) {
+  if (!text || typeof text !== 'string') return text;
+  return text
+    // [TOOL_NAME: ...] on its own line — drop the line entirely
+    .replace(/^\s*\[(SEARCH|MATH|CALENDAR_(?:LIST|CREATE|DELETE)|GMAIL_(?:LIST|SEND|READ)|EMAIL|MEMORY|TOOL|RUN_PYTHON|PYTHON|FETCH_URL|CODE)[^\]]*\]\s*$/gim, '')
+    // OBSERVATION:/THOUGHT:/ACTION: scaffolding lines from ReAct
+    .replace(/^\s*(OBSERVATION|THOUGHT|ACTION|FINAL ANSWER)\s*:.*$/gim, '')
+    // Collapse multiple blank lines left behind
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function LinkCard({ href }) {

@@ -149,7 +149,7 @@ def call_openrouter(messages, temperature=0.7, max_tokens=16384, stream=True, mo
 def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                 model="nvidia/nemotron-3-super-120b-a12b", tools=None, tool_choice=None,
                 expose_thinking=True, max_thinking=False, top_p=0.9,
-                reasoning_budget=None):
+                reasoning_budget=None, reasoning_effort=None):
     """Call NVIDIA NIM API with tool support.
 
     Streaming protocol:
@@ -185,6 +185,9 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
         # Only if reasoning_budget is explicitly provided — no hardcoded fallback
         if reasoning_budget and reasoning_budget > 0 and expose_thinking:
             payload["chat_template_kwargs"] = {"thinking": {"type": "enabled", "budget_tokens": reasoning_budget}}
+        # Mistral-style top-level reasoning toggle (low|medium|high)
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
         resp = requests.post(
             "https://integrate.api.nvidia.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {NVIDIA_API_KEY}",

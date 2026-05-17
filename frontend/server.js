@@ -27,6 +27,62 @@ try {
   console.warn('[Kautilya] compression module not installed — skipping');
 }
 
+// ── Razorpay webhook async forwarder ──────────────────────────────────
+// Razorpay times out the webhook after ~5s. If HF Space is sleeping a cold
+// start can take 30-60s, so we accept the webhook here, ACK 200 immediately,
+// and forward to HF in the background with retries. Raw bytes are preserved
+// so the signature verifies on the Flask side. This runs BEFORE the proxy.
+app.post('/api/billing/razorpay-webhook',
+  express.raw({ type: '*/*', limit: '2mb' }),
+  (req, res) => {
+    // ACK Razorpay immediately so they don't retry/timeout
+    res.status(200).send('OK');
+
+    const body = req.body;
+    const signature = req.headers['x-razorpay-signature'];
+    const eventName = (() => {
+      try { return JSON.parse(body.toString('utf8')).event; } catch { return 'unknown'; }
+    })();
+    console.log(`[Webhook] Forwarding event=${eventName} bytes=${body.length}`);
+
+    const target = new URL(BACKEND_URL + '/api/billing/razorpay-webhook');
+    const lib = target.protocol === 'https:' ? https : http;
+
+    const forward = (attempt = 1) => {
+      const req2 = lib.request({
+        method: 'POST',
+        hostname: target.hostname,
+        port: target.port || (target.protocol === 'https:' ? 443 : 80),
+        path: target.pathname,
+        headers: {
+          'Content-Type': req.headers['content-type'] || 'application/json',
+          'Content-Length': body.length,
+          'X-Razorpay-Signature': signature || '',
+          ...(HF_TOKEN ? { 'Authorization': `Bearer ${HF_TOKEN}` } : {}),
+        },
+        timeout: 60000,
+      }, (r) => {
+        let chunks = '';
+        r.on('data', (c) => { chunks += c; });
+        r.on('end', () => {
+          console.log(`[Webhook] HF returned ${r.statusCode} (attempt ${attempt}) body=${chunks.slice(0, 200)}`);
+          if (r.statusCode >= 500 && attempt < 4) {
+            setTimeout(() => forward(attempt + 1), attempt * 5000);
+          }
+        });
+      });
+      req2.on('error', (err) => {
+        console.warn(`[Webhook] forward error attempt ${attempt}: ${err.message}`);
+        if (attempt < 4) setTimeout(() => forward(attempt + 1), attempt * 5000);
+      });
+      req2.on('timeout', () => { req2.destroy(); });
+      req2.write(body);
+      req2.end();
+    };
+    forward();
+  }
+);
+
 // ── Proxy /api/*, /embed/* → Flask backend (streaming-safe) ───────────
 // HF Space is private → inject HF_TOKEN as Authorization for the gateway,
 // move user's original Authorization to X-Kautilya-Auth so Flask still sees it.
