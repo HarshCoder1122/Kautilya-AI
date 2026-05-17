@@ -12,8 +12,28 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 const CALENDAR_RE = /https?:\/\/(calendar\.google\.com|meet\.google\.com|zoom\.us|teams\.microsoft\.com)[^\s\)\]"<]*/g;
 
 function linkifyContent(text) {
-  // Don't linkify inside the sources JSON block if it still exists
-  return text.replace(/(?<!sources:\s*\[[\s\S]*)(https?:\/\/[^\s\)\]"<]+)/g, '[$1]($1)');
+  if (!text) return text;
+  // Skip URLs that are already part of a markdown link/image:
+  //   [text](url)  or  ![alt](url)  or  <url>
+  // We only autolink BARE URLs that appear after whitespace / start-of-string.
+  return text.replace(
+    /(^|[\s(])(https?:\/\/[^\s\)\]"<>]+)/g,
+    (full, pre, url) => `${pre}[${url}](${url})`
+  );
+}
+
+/** Normalize an href so plain `youtube.com/abc` doesn't get treated as a
+ * path relative to ai.revealiq.in. Adds https:// when the model forgets it. */
+function normalizeHref(href) {
+  if (!href || typeof href !== 'string') return '#';
+  const s = href.trim();
+  if (!s) return '#';
+  // Allow legitimately scheme-d / in-app / anchor / mailto / tel
+  if (/^(https?:|ftp:|mailto:|tel:|sms:|#|\/)/i.test(s)) return s;
+  if (s.startsWith('//')) return `https:${s}`;
+  // Bare domain like "youtube.com/abc" → add https://
+  if (/^[a-z0-9.-]+\.[a-z]{2,}(\/|$)/i.test(s)) return `https://${s}`;
+  return s;
 }
 
 function extractSources(text) {
@@ -30,22 +50,40 @@ function extractSources(text) {
 }
 
 // Strip raw agent-loop tool tokens so they don't leak into the rendered
-// message. The agent-loop service already executes the tool and renders
-// its own result block; the raw "[TOOL_NAME: args]" line that triggered
-// the call is purely internal plumbing.
+// message. The agent-loop already executes the tool and emits its own
+// structured result; the raw "[TOOL_NAME: args]" token is internal plumbing.
+const TOOL_NAMES = [
+  'SEARCH', 'MATH', 'CALCULATE',
+  'CALENDAR_LIST', 'CALENDAR_CREATE', 'CALENDAR_DELETE',
+  'GMAIL_LIST', 'GMAIL_SEND', 'GMAIL_READ',
+  'EMAIL', 'MEMORY', 'TOOL',
+  'RUN_PYTHON', 'PYTHON', 'FETCH_URL', 'CODE',
+  'WHATSAPP_SEND', 'SLACK_POST', 'HUBSPOT_CREATE_CONTACT',
+].join('|');
+// Matches the token anywhere — on its own line OR inline with prose, and
+// across multiple lines if the args contain newlines (e.g. CALENDAR_CREATE
+// with a multi-line description). `[\s\S]*?` lets the body cross newlines
+// without being greedy.
+const TOOL_TAG_RE = new RegExp(`\\[(?:${TOOL_NAMES})\\s*:[\\s\\S]*?\\]`, 'gi');
+
 function stripToolTags(text) {
   if (!text || typeof text !== 'string') return text;
   return text
-    // [TOOL_NAME: ...] on its own line — drop the line entirely
-    .replace(/^\s*\[(SEARCH|MATH|CALENDAR_(?:LIST|CREATE|DELETE)|GMAIL_(?:LIST|SEND|READ)|EMAIL|MEMORY|TOOL|RUN_PYTHON|PYTHON|FETCH_URL|CODE)[^\]]*\]\s*$/gim, '')
-    // OBSERVATION:/THOUGHT:/ACTION: scaffolding lines from ReAct
+    .replace(TOOL_TAG_RE, '')                       // remove the token itself
+    .replace(/^[ \t]+$/gm, '')                       // trailing whitespace on lines
     .replace(/^\s*(OBSERVATION|THOUGHT|ACTION|FINAL ANSWER)\s*:.*$/gim, '')
-    // Collapse multiple blank lines left behind
-    .replace(/\n{3,}/g, '\n\n')
+    .replace(/\n{3,}/g, '\n\n')                      // collapse blank-line runs
     .trim();
 }
 
-function LinkCard({ href }) {
+function LinkCard({ href: rawHref, children }) {
+  const href = normalizeHref(rawHref);
+  // If normalization produced something we can't safely link out to, fall
+  // back to plain text so the user never gets accidentally routed in-app.
+  if (!href || href === '#') {
+    return <span>{children || rawHref}</span>;
+  }
+
   const isCalendar = href.includes('calendar.google.com');
   const isMeet = href.includes('meet.google.com');
   const isZoom = href.includes('zoom.us');
