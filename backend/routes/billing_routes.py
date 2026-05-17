@@ -12,6 +12,33 @@ from services.auth_service import verify_firebase_token
 billing_bp = Blueprint('billing', __name__)
 
 
+def _ensure_captured(razorpay_client, payment):
+    """If a payment is `authorized` but not yet `captured`, capture it now.
+
+    Why: some UPI / netbanking / wallet flows land in 'authorized' state when
+    auto-capture didn't fire (older orders without payment_capture=1, or a
+    Razorpay-side glitch). Money is held but never transferred until we
+    explicitly call payment.capture. Returns the (possibly refreshed) payment.
+    """
+    if not payment: return payment
+    status = payment.get('status')
+    if status == 'captured':
+        return payment
+    if status != 'authorized':
+        return payment  # failed/refunded/created — caller decides
+    try:
+        payment_id = payment.get('id')
+        amount_paise = int(payment.get('amount', 0))
+        currency = payment.get('currency', 'INR')
+        print(f"[Capture] auto-capturing authorized payment {payment_id} amount={amount_paise} paise")
+        razorpay_client.payment.capture(payment_id, amount_paise, {'currency': currency})
+        # Re-fetch to confirm new status
+        return razorpay_client.payment.fetch(payment_id)
+    except Exception as e:
+        print(f"[Capture] FAILED for {payment.get('id')}: {e}")
+        return payment
+
+
 @billing_bp.route('/billing/create-order', methods=['POST'])
 def create_billing_order():
     from extensions import razorpay_client, db
@@ -39,9 +66,13 @@ def create_billing_order():
                 })
             return jsonify(subscription)
         else:
+            # payment_capture=1 → Razorpay auto-captures on successful authorization,
+            # so funds actually move instead of sitting in "authorized" limbo (which
+            # auto-voids after ~5 days and silently refunds the customer).
             order = razorpay_client.order.create({
                 'amount': int(amount * 100), 'currency': 'INR',
                 'receipt': f"receipt_{uuid.uuid4().hex[:8]}",
+                'payment_capture': 1,
                 'notes': {'plan_type': plan_type, 'uid': uid}
             })
             return jsonify(order)
@@ -95,6 +126,19 @@ def verify_payment():
                 'razorpay_signature': razorpay_signature
             })
             signature_ok = True
+            # Even with a valid signature, double-check Razorpay status —
+            # the browser's "success" callback can fire on authorization too.
+            try:
+                payment = razorpay_client.payment.fetch(razorpay_payment_id)
+                if payment.get('status') == 'authorized':
+                    payment = _ensure_captured(razorpay_client, payment)
+                if payment.get('status') != 'captured':
+                    return jsonify({
+                        "error": f"Payment status is '{payment.get('status')}', not captured",
+                        "hint": "Authorization held but not captured. Retry via Reconcile in a moment.",
+                    }), 400
+            except Exception as fetch_err:
+                print(f"[Verify] post-signature fetch failed (non-fatal): {fetch_err}")
         except Exception as e:
             sig_error = str(e)
             print(f"[Verify] Signature mismatch uid={uid} payment_id={razorpay_payment_id} err={e}")
@@ -109,10 +153,16 @@ def verify_payment():
                     "details": str(e), "signature_error": sig_error,
                 }), 400
 
+            # If Razorpay only authorized (held funds) but didn't capture,
+            # capture it now so the money actually moves.
+            if payment.get('status') == 'authorized':
+                payment = _ensure_captured(razorpay_client, payment)
+
             if payment.get('status') != 'captured':
                 return jsonify({
                     "error": f"Payment status is '{payment.get('status')}', not captured",
                     "signature_error": sig_error,
+                    "hint": "Funds may be held in authorization. Try Reconcile after a minute, or contact support.",
                 }), 400
 
             # Confirm the payment belongs to this user (via notes.uid we set on create)
@@ -185,6 +235,20 @@ def razorpay_webhook():
             if uid: limit_manager.remove_pro_user(uid)
             return "OK", 200
 
+        # Razorpay authorized the payment but didn't capture — capture it
+        # ourselves so funds actually transfer. The subsequent payment.captured
+        # event will then credit the user.
+        if event == 'payment.authorized':
+            payment_id = pay_entity.get('id')
+            if payment_id:
+                try:
+                    refreshed = razorpay_client.payment.fetch(payment_id)
+                    if refreshed.get('status') == 'authorized':
+                        _ensure_captured(razorpay_client, refreshed)
+                except Exception as e:
+                    print(f"[Webhook] payment.authorized capture failed: {e}")
+            return "OK", 200
+
         # PAYG and one-off payments — credit the user once per payment_id.
         if event == 'payment.captured':
             payment_id = pay_entity.get('id')
@@ -255,10 +319,15 @@ def reconcile_payment():
     except Exception as e:
         return jsonify({"error": f"Razorpay fetch failed: {e}"}), 400
 
+    # If only authorized, capture it now so reconciliation actually works.
+    if payment.get('status') == 'authorized':
+        payment = _ensure_captured(razorpay_client, payment)
+
     if payment.get('status') != 'captured':
         return jsonify({
             "error": f"Payment status is '{payment.get('status')}', not captured",
             "payment": payment,
+            "hint": "Razorpay still has this payment in a non-captured state. If status is 'authorized', it should auto-capture shortly — please retry in a minute.",
         }), 400
 
     notes = payment.get('notes') or {}

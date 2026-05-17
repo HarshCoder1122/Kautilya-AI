@@ -262,7 +262,13 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             if isinstance(last_mc, list) and any(p.get("type") == "image_url" for p in last_mc):
                 has_image = True
 
-        reasoning_budget = _estimate_reasoning_budget(max_tokens, max_thinking)
+        # Auto-toggle thinking: if the user didn't explicitly request max_thinking,
+        # decide based on prompt complexity. Keeps simple questions fast and
+        # routes hard questions into the reasoning path.
+        effective_max_thinking = max_thinking or _should_auto_think(last_user_msg, model_choice)
+        if effective_max_thinking and not max_thinking:
+            print(f"[Agent] Auto-thinking enabled (heuristic match on prompt)")
+        reasoning_budget = _estimate_reasoning_budget(max_tokens, effective_max_thinking)
 
         if model_choice == 'coder':
             from config import NVIDIA_API_KEY
@@ -275,13 +281,13 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 yield json.dumps({"event": "status", "message": f"🧠 Connecting to {label}…"})
                 response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
                                            model=model_id, tools=tools, tool_choice=tool_choice,
-                                           temperature=1.0, top_p=0.95, max_thinking=max_thinking,
+                                           temperature=1.0, top_p=0.95, max_thinking=effective_max_thinking,
                                            reasoning_budget=reasoning_budget)
                 if not response_gen:
                     yield json.dumps({"event": "status", "message": f"⚡ Retrying {label}…"})
                     response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
                                                model=model_id, temperature=1.0, top_p=0.95,
-                                               max_thinking=max_thinking, reasoning_budget=reasoning_budget)
+                                               max_thinking=effective_max_thinking, reasoning_budget=reasoning_budget)
                 if not response_gen:
                     yield json.dumps({"event": "status", "message": f"⚡ {label} unavailable — using fast model…"})
                     response_gen = _call_daily(current_messages, max_tokens=max_tokens,
@@ -298,13 +304,13 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 yield json.dumps({"event": "status", "message": f"💎 Connecting to {label}…"})
                 response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
                                            model=model_id, tools=tools, tool_choice=tool_choice,
-                                           temperature=1.0, top_p=0.95, max_thinking=max_thinking,
+                                           temperature=1.0, top_p=0.95, max_thinking=effective_max_thinking,
                                            reasoning_budget=reasoning_budget)
                 if not response_gen:
                     yield json.dumps({"event": "status", "message": f"⚡ Retrying {label}…"})
                     response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
                                                model=model_id, temperature=1.0, top_p=0.95,
-                                               max_thinking=max_thinking, reasoning_budget=reasoning_budget)
+                                               max_thinking=effective_max_thinking, reasoning_budget=reasoning_budget)
                 if not response_gen:
                     yield json.dumps({"event": "status", "message": f"⚡ {label} unavailable — using fast model…"})
                     print(f"[FALLBACK] {label} failed/unavailable. Switching to Daily.")
@@ -821,6 +827,48 @@ def _estimate_reasoning_budget(max_tokens, max_thinking=False):
         return min(4096, max_tokens)
     # Deep thinking: up to 2× the answer budget, capped at 32k
     return min(32768, max_tokens * 2)
+
+
+# Heuristic auto-thinking. Triggers when the prompt looks hard enough that
+# reasoning tokens pay off (math, multi-step, code debugging, analysis).
+# Cheap chitchat and lookups stay fast.
+_AUTO_THINK_KEYWORDS = (
+    "why", "how does", "how do", "explain", "analyze", "compare", "debug",
+    "optimize", "refactor", "prove", "derive", "design", "architect",
+    "step by step", "step-by-step", "reason", "trade-off", "tradeoff",
+    "complex", "deep dive", "walk me through", "root cause", "edge case",
+    "algorithm", "complexity", "big-o", "big o",
+)
+_AUTO_THINK_CODE_HINTS = (
+    "bug", "stack trace", "traceback", "exception", "segfault",
+    "race condition", "deadlock", "memory leak", "performance",
+    "regex", "recursion", "concurrency",
+)
+
+
+def _should_auto_think(user_msg: str, model_choice: str) -> bool:
+    """Decide whether to flip on deep thinking based on the prompt itself.
+    Only applies to reasoning-capable modes (pro / coder). Daily stays fast.
+    """
+    if model_choice not in ('pro', 'coder'):
+        return False
+    if not user_msg:
+        return False
+    text = user_msg.lower()
+    # Long prompts almost always need real reasoning.
+    if len(text) > 400:
+        return True
+    # Multi-question prompts ("X? Y? Z?")
+    if text.count("?") >= 2:
+        return True
+    # Code presence + a "why/bug/explain" signal → think
+    has_code_block = "```" in user_msg or user_msg.count("\n") >= 6
+    if has_code_block and any(k in text for k in _AUTO_THINK_CODE_HINTS + _AUTO_THINK_KEYWORDS):
+        return True
+    # Plain keyword match anywhere
+    if any(k in text for k in _AUTO_THINK_KEYWORDS):
+        return True
+    return False
 
 
 # ──────────────────────────────────────────────

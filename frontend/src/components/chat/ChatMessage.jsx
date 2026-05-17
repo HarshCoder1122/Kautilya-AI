@@ -394,11 +394,22 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
                 return <code className="bg-accent/50 px-1.5 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
               }
 
+              const lineCount = codeString.split('\n').length;
               return (
-                <div className="relative group/code my-4 rounded-xl overflow-hidden border border-[var(--k-border)] bg-black/40">
-                  <div className="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">{lang || 'code'}</span>
-                    <div className="flex items-center gap-1">
+                <div className="relative group/code my-4 rounded-xl overflow-hidden border border-[var(--k-border)] bg-black/40 max-w-full min-w-0">
+                  <div className="flex items-center justify-between px-4 py-2 bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-pink-500/10 border-b border-white/5">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="flex items-center gap-1.5">
+                        <span className="w-2.5 h-2.5 rounded-full bg-red-400/70"></span>
+                        <span className="w-2.5 h-2.5 rounded-full bg-yellow-400/70"></span>
+                        <span className="w-2.5 h-2.5 rounded-full bg-green-400/70"></span>
+                      </span>
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-indigo-300 to-pink-300 truncate">
+                        {lang || 'code'}
+                      </span>
+                      <span className="text-[10px] text-muted-foreground/50 hidden sm:inline">· {lineCount} {lineCount === 1 ? 'line' : 'lines'}</span>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
                       <button
                         onClick={() => handleCopy(codeString)}
                         className="p-1.5 rounded hover:bg-white/10 text-muted-foreground hover:text-foreground transition-all"
@@ -409,7 +420,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
                       <button
                         onClick={() => onOpenArtifact?.({
                           type: 'code',
-                          title: `${lang.toUpperCase()} Implementation`,
+                          title: `${(lang || 'code').toUpperCase()} Implementation`,
                           code: codeString,
                           language: lang
                         })}
@@ -420,22 +431,35 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
                       </button>
                     </div>
                   </div>
-                  <SyntaxHighlighter
-                    language={lang}
-                    style={vscDarkPlus}
-                    customStyle={{
-                      margin: 0,
-                      padding: '1rem',
-                      fontSize: '0.8rem',
-                      lineHeight: '1.5',
-                      background: 'transparent',
-                    }}
-                    codeTagProps={{
-                      style: { fontFamily: 'inherit' }
-                    }}
-                  >
-                    {codeString}
-                  </SyntaxHighlighter>
+                  <div className="overflow-x-auto max-w-full">
+                    <SyntaxHighlighter
+                      language={lang}
+                      style={vscDarkPlus}
+                      showLineNumbers={lineCount > 4}
+                      wrapLongLines={false}
+                      customStyle={{
+                        margin: 0,
+                        padding: '1rem',
+                        fontSize: '0.8rem',
+                        lineHeight: '1.55',
+                        background: 'transparent',
+                        maxWidth: '100%',
+                      }}
+                      lineNumberStyle={{
+                        minWidth: '2.25em',
+                        paddingRight: '1em',
+                        color: 'rgba(148,163,184,0.35)',
+                        userSelect: 'none',
+                        borderRight: '1px solid rgba(148,163,184,0.08)',
+                        marginRight: '0.75em',
+                      }}
+                      codeTagProps={{
+                        style: { fontFamily: 'inherit' }
+                      }}
+                    >
+                      {codeString}
+                    </SyntaxHighlighter>
+                  </div>
                 </div>
               );
             }
