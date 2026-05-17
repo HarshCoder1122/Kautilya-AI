@@ -8,16 +8,45 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
-/** Parse <file name="..." language="...">...</file> blocks from model output */
+/** Parse `<file ...>...</file>` blocks from model output.
+ *
+ * Tolerates the variations the model emits in practice:
+ *   - attribute can be `name=`, `path=`, or `filename=`
+ *   - quotes can be "double", 'single', or unquoted
+ *   - optional `language=`
+ *   - body may be wrapped in ```fenced``` code blocks (we strip the fence)
+ *   - `</file>` may be on the same line as the closing fence
+ */
 function parseFileBlocks(code) {
   if (!code) return [];
-  const regex = /<file\s+name="([^"]+)"(?:\s+language="([^"]+)")?>([\s\S]*?)<\/file>/g;
+  const re = /<file\s+([^>]+?)>([\s\S]*?)<\/file>/gi;
   const files = [];
   let m;
-  while ((m = regex.exec(code)) !== null) {
-    files.push({ name: m[1], language: m[2] || inferLang(m[1]), content: m[3].trim() });
+  while ((m = re.exec(code)) !== null) {
+    const attrs = parseAttrs(m[1]);
+    const filename = attrs.name || attrs.path || attrs.filename || attrs.file;
+    if (!filename) continue;
+    let body = m[2];
+    // Strip a leading/trailing ```lang ... ``` fence (model often wraps the code)
+    body = body.replace(/^\s*```[a-zA-Z0-9_+-]*\s*\n/, '').replace(/\n\s*```\s*$/, '');
+    files.push({
+      name: filename,
+      language: attrs.language || attrs.lang || inferLang(filename),
+      content: body.replace(/^\n+|\n+$/g, ''),  // trim leading/trailing newlines, keep internal whitespace
+    });
   }
   return files;
+}
+
+/** Tiny attribute parser for the `<file ...>` open tag. */
+function parseAttrs(s) {
+  const out = {};
+  const re = /([a-zA-Z_:][\w:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    out[m[1].toLowerCase()] = m[2] ?? m[3] ?? m[4] ?? '';
+  }
+  return out;
 }
 
 function inferLang(filename) {
@@ -101,7 +130,7 @@ function cleanDocumentContent(raw) {
   let text = String(raw)
     .replace(/<think>[\s\S]*?<\/think>/g, '')
     .replace(/<artifact[\s\S]*?<\/artifact>/g, '')
-    .replace(/<file\s+name="[^"]+"[\s\S]*?<\/file>/g, '')
+    .replace(/<file\s+[^>]*?>[\s\S]*?<\/file>/gi, '')
     .trim();
 
   let sources = [];

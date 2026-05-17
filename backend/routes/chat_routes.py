@@ -100,6 +100,61 @@ def _enforce_user_limit(uid):
         del user_convs[sid]
 
 
+def _generate_chat_title(uid, session_id, user_msg, assistant_msg):
+    """Background job: ask a tiny LLM for a 3-5 word title and save it to the
+    conversation doc so the sidebar shows something meaningful instead of the
+    raw first line of the last message."""
+    from extensions import db
+    if not db or not uid:
+        return
+
+    def _worker():
+        try:
+            # Skip if a non-default title already exists for this session
+            ref = db.collection('users').document(uid).collection('conversations').document(session_id)
+            snap = ref.get()
+            if snap.exists:
+                existing = (snap.to_dict() or {}).get('title')
+                if existing and len(existing) > 0 and len(existing) < 60 and not existing.startswith('New Chat'):
+                    return  # leave intact
+
+            from services.llm_service import call_groq
+            um = (user_msg or '')[:600] if isinstance(user_msg, str) else str(user_msg)[:600]
+            am = (assistant_msg or '')[:600]
+            prompt = (
+                "Summarize this conversation in 3-5 words for a chat history sidebar. "
+                "No quotes, no punctuation at the end, no model names, just the topic. "
+                "Examples: 'React date picker bug', 'Marketing budget Q3', 'Sanskrit grammar help'.\n\n"
+                f"User: {um}\n\nAssistant: {am}\n\nTitle:"
+            )
+            raw = call_groq(
+                [{"role": "user", "content": prompt}],
+                model='llama-3.3-70b-versatile',
+                temperature=0.3, max_tokens=20, stream=False,
+            )
+            if not raw or not isinstance(raw, str):
+                return
+            title = raw.strip().strip('"').strip("'").strip()
+            # First line only; drop "Title:" prefix some models add
+            title = title.split('\n')[0]
+            if title.lower().startswith('title:'):
+                title = title[6:].strip()
+            # Clamp length / word count
+            words = title.split()
+            if len(words) > 7:
+                title = ' '.join(words[:7])
+            if len(title) > 60:
+                title = title[:60].rsplit(' ', 1)[0]
+            if not title:
+                return
+            ref.set({'title': title}, merge=True)
+            print(f"[Title] Generated for {session_id[:8]}: {title}")
+        except Exception as e:
+            print(f"[Title] Generation failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 def save_to_firestore(uid, session_id, role, content, message_id=None, streaming=False):
     """Save a chat message.
     - If `message_id` is provided, the message doc is updated (used for live
@@ -420,6 +475,8 @@ def jarvis_stream():
                         save_to_firestore(uid, session_id, "assistant", full_response,
                                           message_id=assistant_msg_id, streaming=False)
                         print(f"[Stream] Saved response ({len(full_response)} chars) for session {session_id}")
+                        # AI-generated 3-4 word title for the sidebar (background job)
+                        _generate_chat_title(uid, session_id, message, full_response)
                     except Exception as e:
                         print(f"[Stream] Firestore save failed: {e}")
                 else:
