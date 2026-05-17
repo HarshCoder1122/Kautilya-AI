@@ -5,6 +5,7 @@ Unified LLM call interface: Groq, NVIDIA NIM, OpenRouter, Gemini.
 import json
 import time
 import requests
+from requests.adapters import HTTPAdapter
 from config import (
     GROQ_API_KEYS, GROQ_COOLDOWN_SECONDS,
     OPENROUTER_API_KEY, NVIDIA_API_KEY,
@@ -15,6 +16,27 @@ from config import (
 _groq_key_index = 0
 _groq_key_cooldowns = {}
 _gemini_key_index = 0
+
+
+def _make_pooled_session(pool_connections=20, pool_maxsize=50):
+    """Session with connection pooling so we reuse TLS + TCP across calls.
+    Saves the ~150-300ms handshake on every LLM request.
+    """
+    s = requests.Session()
+    adapter = HTTPAdapter(
+        pool_connections=pool_connections,
+        pool_maxsize=pool_maxsize,
+        max_retries=0,  # we handle retries upstream
+    )
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    return s
+
+
+# Shared session — module-level so all NVIDIA calls reuse the same TLS pool.
+_NVIDIA_SESSION = _make_pooled_session()
+_GROQ_SESSION = _make_pooled_session()
+_OPENROUTER_SESSION = _make_pooled_session()
 
 
 def get_gemini_key():
@@ -112,12 +134,20 @@ def call_openrouter(messages, temperature=0.7, max_tokens=16384, stream=True, mo
                 clean_messages.append({"role": m["role"], "content": content})
             else:
                 clean_messages.append({"role": m["role"], "content": str(content)})
-        resp = requests.post(
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://jarvis-ai.onrender.com",
+            "X-Title": "KAUTILYA AI Assistant",
+            "Connection": "keep-alive",
+        }
+        if stream:
+            headers["Accept-Encoding"] = "identity"
+        resp = _OPENROUTER_SESSION.post(
             "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json",
-                     "HTTP-Referer": "https://jarvis-ai.onrender.com", "X-Title": "KAUTILYA AI Assistant"},
+            headers=headers,
             json={"model": model, "messages": clean_messages, "temperature": temperature, "max_tokens": max_tokens, "stream": stream},
-            timeout=60, stream=stream
+            timeout=(5, 60), stream=stream
         )
         if resp.status_code == 200:
             if stream:
@@ -199,12 +229,28 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
         # Mistral-style top-level reasoning toggle (low|medium|high)
         if reasoning_effort:
             payload["reasoning_effort"] = reasoning_effort
-        resp = requests.post(
+        # Latency optimizations:
+        #   • Shared Session keeps TLS handshake amortized across calls
+        #   • Accept-Encoding: identity → no gzip buffering on the SSE stream
+        #     (gzip would batch tokens until enough bytes accumulate for a frame)
+        #   • Connection: keep-alive lets urllib3 hold the socket open
+        #   • Lower connect timeout fails fast if NVIDIA edge is dead
+        headers = {
+            "Authorization": f"Bearer {NVIDIA_API_KEY}",
+            "Content-Type": "application/json",
+            "Connection": "keep-alive",
+        }
+        if stream:
+            headers["Accept"] = "text/event-stream"
+            headers["Accept-Encoding"] = "identity"
+        else:
+            headers["Accept"] = "application/json"
+        resp = _NVIDIA_SESSION.post(
             "https://integrate.api.nvidia.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {NVIDIA_API_KEY}",
-                     "Accept": "text/event-stream" if stream else "application/json",
-                     "Content-Type": "application/json"},
-            json=payload, timeout=600, stream=stream
+            headers=headers,
+            json=payload,
+            timeout=(5, 600),  # (connect, read) — fail fast on connect
+            stream=stream,
         )
         if resp.status_code == 200:
             print(f"[NVIDIA] Success (model: {model})")
@@ -212,9 +258,12 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                 def generate():
                     try:
                         thinking_active = False
-                        # chunk_size=1 + decode_unicode=True keeps reasoning_content deltas
-                        # arriving live instead of batching with default 512B buffer.
-                        for line in resp.iter_lines(chunk_size=1, decode_unicode=True):
+                        # chunk_size=64: small enough that SSE frames flush
+                        # near-instantly, large enough to avoid 1-byte syscalls.
+                        # With Accept-Encoding: identity above, urllib3 returns
+                        # whatever bytes have arrived — it does not block waiting
+                        # for chunk_size bytes.
+                        for line in resp.iter_lines(chunk_size=64, decode_unicode=True):
                             if not line:
                                 continue
                             if isinstance(line, bytes):
@@ -328,10 +377,17 @@ def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False,
                 payload["tools"] = tools
             if tool_choice:
                 payload["tool_choice"] = tool_choice
-            resp = requests.post(
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Connection": "keep-alive",
+            }
+            if stream:
+                headers["Accept-Encoding"] = "identity"
+            resp = _GROQ_SESSION.post(
                 "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json=payload, timeout=120, stream=stream
+                headers=headers,
+                json=payload, timeout=(5, 120), stream=stream
             )
             if resp.status_code == 200:
                 # Distinguish between classifier and regular calls

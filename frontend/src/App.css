@@ -54,6 +54,17 @@
 
 .message-ai {
   max-width: 720px;
+  min-width: 0; /* allow children to shrink instead of forcing parent wider */
+  width: 100%;
+}
+
+/* Anything inside the AI bubble must respect the bubble width so long
+   code lines / wide tables scroll internally rather than expanding the bubble. */
+.message-ai > *,
+.message-content,
+.message-content > * {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .message-ai pre {
@@ -63,11 +74,51 @@
   padding: 16px;
   overflow-x: auto;
   margin: 1.5rem 0;
+  max-width: 100%;
+  width: 100%;
+  white-space: pre;
+}
+
+.message-ai pre code {
+  display: block;
+  min-width: 0;
+  word-break: normal;
+  overflow-wrap: normal;
 }
 
 .message-ai code {
   font-family: 'JetBrains Mono', monospace;
   font-size: 13px;
+}
+
+/* Premium code block — gradient header rail + soft glow.
+   Applied to the wrapper div around SyntaxHighlighter (group/code). */
+.message-ai .group\/code {
+  background: linear-gradient(180deg, rgba(15,17,21,0.85), rgba(10,12,16,0.95));
+  box-shadow:
+    0 0 0 1px var(--k-border),
+    0 8px 24px -12px rgba(0,0,0,0.6),
+    inset 0 1px 0 rgba(255,255,255,0.04);
+  position: relative;
+}
+.message-ai .group\/code::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    rgba(99,102,241,0.5) 20%,
+    rgba(168,85,247,0.5) 50%,
+    rgba(236,72,153,0.5) 80%,
+    transparent 100%);
+}
+.message-ai .group\/code pre,
+.message-ai .group\/code pre code,
+.message-ai .group\/code > div > pre {
+  background: transparent !important;
+  border: 0 !important;
+  margin: 0 !important;
 }
 
 .message-ai p {
