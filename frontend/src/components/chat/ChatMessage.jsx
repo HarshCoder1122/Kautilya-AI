@@ -52,26 +52,28 @@ function extractSources(text) {
 // Strip raw agent-loop tool tokens so they don't leak into the rendered
 // message. The agent-loop already executes the tool and emits its own
 // structured result; the raw "[TOOL_NAME: args]" token is internal plumbing.
+// IMPORTANT: only include tokens the agent_loop ACTUALLY emits. Generic
+// names (CODE, EMAIL, PYTHON, MATH, etc.) would falsely match legit
+// markdown like `[Python: Real Python tutorial](url)` and strip the link.
 const TOOL_NAMES = [
-  'SEARCH', 'MATH', 'CALCULATE',
+  'SEARCH',
+  'CALCULATE',
   'CALENDAR_LIST', 'CALENDAR_CREATE', 'CALENDAR_DELETE',
   'GMAIL_LIST', 'GMAIL_SEND', 'GMAIL_READ',
-  'EMAIL', 'MEMORY', 'TOOL',
-  'RUN_PYTHON', 'PYTHON', 'FETCH_URL', 'CODE',
+  'RUN_PYTHON', 'FETCH_URL',
   'WHATSAPP_SEND', 'SLACK_POST', 'HUBSPOT_CREATE_CONTACT',
 ].join('|');
-// Matches the token anywhere — on its own line OR inline with prose, and
-// across multiple lines if the args contain newlines (e.g. CALENDAR_CREATE
-// with a multi-line description). `[\s\S]*?` lets the body cross newlines
-// without being greedy.
-const TOOL_TAG_RE = new RegExp(`\\[(?:${TOOL_NAMES})\\s*:[\\s\\S]*?\\]`, 'gi');
+// Case-sensitive (no /i flag) so lowercase headers like "[email: foo]" inside
+// natural prose are preserved. Real tokens are always ALL_CAPS_WITH_UNDERSCORES.
+const TOOL_TAG_RE = new RegExp(`\\[(?:${TOOL_NAMES})\\s*:[\\s\\S]*?\\]`, 'g');
 
 function stripToolTags(text) {
   if (!text || typeof text !== 'string') return text;
   return text
     .replace(TOOL_TAG_RE, '')                       // remove the token itself
     .replace(/^[ \t]+$/gm, '')                       // trailing whitespace on lines
-    .replace(/^\s*(OBSERVATION|THOUGHT|ACTION|FINAL ANSWER)\s*:.*$/gim, '')
+    // ReAct scaffolding — case-sensitive so we don't mangle prose like "Action:"
+    .replace(/^\s*(OBSERVATION|THOUGHT|ACTION|FINAL ANSWER)\s*:.*$/gm, '')
     .replace(/\n{3,}/g, '\n\n')                      // collapse blank-line runs
     .trim();
 }
@@ -301,6 +303,14 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
     });
   }
 
+  // Streaming-resume indicator: when the backend still has streaming=true on
+  // the message (typical after a screen lock / hard reload mid-generation),
+  // show a live "Generating…" pulse so the UI never feels dead.
+  const isLiveStreaming = Boolean(message.streaming);
+  const hasContent = (rawContent && rawContent.length > 0) ||
+                     (message.thinking && message.thinking.length > 0) ||
+                     (message.toolResults && message.toolResults.length > 0);
+
   return (
     <div className="message-ai animate-fade-up group" data-testid={`message-${message.id}`}>
       {/* Agent Badge */}
@@ -310,6 +320,21 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
             <agent.icon className="w-3 h-3" weight="duotone" />
             {agent.label}
           </div>
+        </div>
+      )}
+
+      {/* Live "generating" pulse — visible whenever the backend is still
+          streaming this message, so reloads/screen-locks don't show a dead UI */}
+      {isLiveStreaming && !hasContent && (
+        <div className="flex items-center gap-2.5 text-xs text-muted-foreground py-2">
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--k-brand)] opacity-60"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-[var(--k-brand)]"></span>
+          </span>
+          <span className="font-medium tracking-wide">Kautilya is thinking…</span>
+          <span className="text-[10px] text-muted-foreground/60">
+            Response will appear here even if you refresh
+          </span>
         </div>
       )}
 
