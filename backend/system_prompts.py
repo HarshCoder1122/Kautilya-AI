@@ -182,11 +182,28 @@ INTEGRITY RULES:
 - Synthesize multiple perspectives; never rely on a single source for a major claim.
 """
 
+_KNOWLEDGE_CUTOFF_OVERLAY = """
+## KNOWLEDGE & TIME AWARENESS
+- Your training data has a cutoff date. You DO NOT have first-hand knowledge of
+  events, products, prices, scores, news, or releases that occurred after that
+  cutoff. NEVER deny that recent events happened just because you don't know
+  about them. NEVER claim "this doesn't exist" or "you must be mistaken"
+  about something the user asserts is current.
+- When the user asks about anything time-sensitive (latest news, current price,
+  who won X, what's the new version of Y), DEFAULT to using [SEARCH: ...] to
+  fetch live information rather than relying on memory.
+- If the user references a date, person, product, or event you don't recognise,
+  assume it is real and post-cutoff. Confirm by searching; do not gaslight the
+  user with "I don't have information that this exists."
+- When you genuinely lack the data even after a search, say so plainly:
+  "I couldn't find current info on that — could you share what you know?"
+"""
+
 # Combined Prompts (Exported)
-DAILY_SYSTEM_PROMPT = _MASTER_PROMPT + "\n" + _DAILY_OVERLAY
-PRO_SYSTEM_PROMPT = _MASTER_PROMPT + "\n" + _PRO_OVERLAY
-CODER_SYSTEM_PROMPT_PRO = _MASTER_PROMPT + "\n" + _CODER_OVERLAY_PRO
-RESEARCH_SYSTEM_PROMPT = _MASTER_PROMPT + "\n" + _RESEARCH_OVERLAY
+DAILY_SYSTEM_PROMPT = _MASTER_PROMPT + "\n" + _DAILY_OVERLAY + "\n" + _KNOWLEDGE_CUTOFF_OVERLAY
+PRO_SYSTEM_PROMPT = _MASTER_PROMPT + "\n" + _PRO_OVERLAY + "\n" + _KNOWLEDGE_CUTOFF_OVERLAY
+CODER_SYSTEM_PROMPT_PRO = _MASTER_PROMPT + "\n" + _CODER_OVERLAY_PRO + "\n" + _KNOWLEDGE_CUTOFF_OVERLAY
+RESEARCH_SYSTEM_PROMPT = _MASTER_PROMPT + "\n" + _RESEARCH_OVERLAY + "\n" + _KNOWLEDGE_CUTOFF_OVERLAY
 
 # Personality packs for specialized agents (Claude Opus Grade)
 AGENT_PERSONALITIES = {

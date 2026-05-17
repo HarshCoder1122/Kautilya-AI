@@ -102,12 +102,51 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
           id: m.id || `msg-${Math.random()}`,
           timestamp: m.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         })));
+        // If the server is still generating the last assistant message
+        // (user closed/reloaded the app mid-stream), poll for live updates
+        // until the streaming flag flips off.
+        if (data.streaming) {
+          pollStreamingMessage(sid);
+        }
       }
     } catch (error) {
       console.error('Failed to load conversation history:', error);
     } finally {
       setIsThinking(false);
     }
+  };
+
+  // Poll Firestore-backed history for in-progress generation. Stops as soon
+  // as the backend flips `streaming` to false (or after 5 min of no growth).
+  const pollStreamingMessage = async (sid) => {
+    let lastLen = 0;
+    let stableTicks = 0;
+    setIsStreaming(true);
+    for (let i = 0; i < 150; i++) { // 150 * 2s = 5 min hard cap
+      await new Promise(r => setTimeout(r, 2000));
+      try {
+        const data = await chatAPI.getConversation(sid);
+        if (!data || !data.messages) continue;
+        setMessages(data.messages.map(m => ({
+          ...m,
+          id: m.id || `msg-${Math.random()}`,
+          timestamp: m.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        })));
+        const lastMsg = data.messages[data.messages.length - 1];
+        const lastContent = typeof lastMsg?.content === 'string' ? lastMsg.content : '';
+        if (!data.streaming) break;          // Backend finished
+        if (lastContent.length === lastLen) {
+          stableTicks++;
+          if (stableTicks >= 30) break;       // 1 min with no growth — stop
+        } else {
+          stableTicks = 0;
+          lastLen = lastContent.length;
+        }
+      } catch (e) {
+        // soft-fail: keep polling
+      }
+    }
+    setIsStreaming(false);
   };
 
   const parseSSELines = (buffer) => {
