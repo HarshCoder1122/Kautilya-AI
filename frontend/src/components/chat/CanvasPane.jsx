@@ -154,7 +154,16 @@ const DOC_COMPONENTS = {
   ol: ({ children }) => <ol className="list-decimal pl-6 mb-4 space-y-1.5 text-foreground/90">{children}</ol>,
   li: ({ children }) => <li className="leading-[1.7]">{children}</li>,
   blockquote: ({ children }) => <blockquote className="border-l-4 border-[var(--k-brand)] pl-4 italic my-6 text-foreground/80">{children}</blockquote>,
-  a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer" className="text-[var(--k-brand)] underline underline-offset-2 hover:opacity-80 break-all">{children}</a>,
+  a: ({ href, children }) => {
+    // Normalize scheme-less hrefs (e.g. "youtube.com/abc") so the browser
+    // doesn't treat them as paths relative to ai.revealiq.in.
+    let safe = (href || '').trim();
+    if (safe && !/^(https?:|ftp:|mailto:|tel:|sms:|#|\/)/i.test(safe)) {
+      if (safe.startsWith('//')) safe = 'https:' + safe;
+      else if (/^[a-z0-9.-]+\.[a-z]{2,}(\/|$)/i.test(safe)) safe = 'https://' + safe;
+    }
+    return <a href={safe || '#'} target="_blank" rel="noopener noreferrer" className="text-[var(--k-brand)] underline underline-offset-2 hover:opacity-80 break-all">{children}</a>;
+  },
   table: ({ children }) => <div className="overflow-x-auto my-6"><table className="min-w-full border border-[var(--k-border)] rounded-md text-sm">{children}</table></div>,
   thead: ({ children }) => <thead className="bg-[var(--k-surface)]">{children}</thead>,
   th: ({ children }) => <th className="px-4 py-2 text-left font-semibold border-b border-[var(--k-border)]">{children}</th>,

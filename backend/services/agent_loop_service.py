@@ -100,6 +100,29 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     if location_context or rag_context:
         current_messages[0]["content"] += location_context + rag_context
 
+    # Always inject a FRESH date/time block — the conversation's cached system
+    # message may have been built days ago, so we can't trust its timestamp.
+    # We append to the existing system message so the model always sees an
+    # up-to-date "today / now" reference and can reason about "tomorrow", etc.
+    try:
+        import time as _t
+        now_str = _t.strftime("%A, %d %B %Y, %I:%M %p %Z").strip()
+        today = _t.strftime("%Y-%m-%d (%A)")
+        tomorrow = _t.strftime("%Y-%m-%d", _t.localtime(_t.time() + 86400)) + f" ({_t.strftime('%A', _t.localtime(_t.time() + 86400))})"
+        time_block = (
+            f"\n\nCURRENT_DATETIME (always trust this — your training cutoff is older):\n"
+            f"- Now: {now_str}\n"
+            f"- Today: {today}\n"
+            f"- Tomorrow: {tomorrow}\n"
+            f"Use this when the user mentions today / tomorrow / next week / etc."
+        )
+        if current_messages and current_messages[0].get("role") == "system":
+            current_messages[0]["content"] = str(current_messages[0].get("content", "")) + time_block
+        else:
+            current_messages.insert(0, {"role": "system", "content": time_block.strip()})
+    except Exception as _e:
+        print(f"[Agent] date injection failed: {_e}")
+
     MAX_TURNS = 3
 
     last_user_msg = ""
