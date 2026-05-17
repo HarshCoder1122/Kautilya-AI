@@ -232,11 +232,27 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     if (!inputValue.trim() && selectedFiles.length === 0) return;
     if (isStreaming) return;
 
+    // Materialize image previews so they survive in the message bubble after send
+    const fileMetas = await Promise.all(selectedFiles.map(async (f) => {
+      const meta = { name: f.name, type: f.type, size: f.size };
+      if (f.type && f.type.startsWith('image/') && f.size < 4 * 1024 * 1024) {
+        try {
+          meta.previewUrl = await new Promise((resolve, reject) => {
+            const r = new FileReader();
+            r.onload = () => resolve(r.result);
+            r.onerror = reject;
+            r.readAsDataURL(f);
+          });
+        } catch { /* skip preview if read fails */ }
+      }
+      return meta;
+    }));
+
     const userMsg = {
       id: `msg-${Date.now()}`,
       role: 'user',
       content: inputValue,
-      files: selectedFiles.map(f => ({ name: f.name, type: f.type })),
+      files: fileMetas,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
     setMessages(prev => [...prev, userMsg]);
@@ -436,6 +452,16 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
               }
               if (parsed.event === 'react_synthesizing') {
                 updateAssistant({ isSynthesizing: true });
+                continue;
+              }
+              // Structured tool output (gmail list, calendar, python sandbox, etc.)
+              if (parsed.event === 'tool_result') {
+                setMessages(prev => prev.map(msg => {
+                  if (msg.id !== aiMsg.id) return msg;
+                  const toolResults = [...(msg.toolResults || [])];
+                  toolResults.push({ tool: parsed.tool, data: parsed.data });
+                  return { ...msg, toolResults };
+                }));
                 continue;
               }
               if (parsed.event === 'artifact') {
@@ -723,15 +749,40 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
           {/* Selected Files Preview */}
           {selectedFiles.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-3">
-              {selectedFiles.map((file, i) => (
-                <div key={i} className="flex items-center gap-2 px-2 py-1 bg-accent/50 rounded-md border border-[var(--k-border)] text-[10px]">
-                  <Paperclip className="w-3 h-3" />
-                  <span className="max-w-[100px] truncate">{file.name}</span>
-                  <button onClick={() => removeFile(i)} className="p-0.5 hover:text-red-400">
-                    <X className="w-2.5 h-2.5" />
-                  </button>
-                </div>
-              ))}
+              {selectedFiles.map((file, i) => {
+                const isImage = file.type && file.type.startsWith('image/');
+                const sizeKb = Math.round(file.size / 1024);
+                return (
+                  <div
+                    key={i}
+                    className="group relative flex items-center gap-2 px-2 py-1 bg-accent/50 rounded-lg border border-[var(--k-border)] text-[11px]"
+                  >
+                    {isImage ? (
+                      <img
+                        src={URL.createObjectURL(file)}
+                        alt={file.name}
+                        className="w-10 h-10 rounded-md object-cover border border-[var(--k-border)]"
+                        onLoad={(e) => URL.revokeObjectURL(e.currentTarget.src)}
+                      />
+                    ) : (
+                      <Paperclip className="w-3.5 h-3.5 text-muted-foreground" />
+                    )}
+                    <div className="flex flex-col">
+                      <span className="max-w-[140px] truncate text-foreground">{file.name}</span>
+                      <span className="text-[10px] text-muted-foreground">
+                        {sizeKb < 1024 ? `${sizeKb} KB` : `${(sizeKb / 1024).toFixed(1)} MB`}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => removeFile(i)}
+                      className="p-1 rounded hover:bg-rose-500/20 hover:text-rose-400 transition-colors"
+                      title="Remove"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
 

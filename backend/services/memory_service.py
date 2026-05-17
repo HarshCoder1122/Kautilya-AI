@@ -214,43 +214,162 @@ def record_user_session(uid, session_id):
         print(f"[Session] Record failed: {e}")
 
 
+MAX_UPLOAD_MB = 25
+MAX_TEXT_CHARS = 60_000  # ~15k tokens — leaves room for the actual chat
+
+
 def process_uploaded_file(file):
-    filename = file.filename.lower()
-    if filename.endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif')):
+    """Convert an uploaded file into a multipart content block for the LLM.
+
+    Handles images (incl. RGBA → RGB, HEIC fallback), text, code, PDFs,
+    DOCX, XLSX/CSV. Skips silently on oversized files instead of corrupting
+    the message payload.
+    """
+    if not file or not getattr(file, 'filename', None):
+        return None
+    fname = file.filename
+    lower = fname.lower()
+
+    # ---- Size guard (Flask may already buffer in memory, so check early) ----
+    try:
+        file.stream.seek(0, 2)        # to end
+        size_bytes = file.stream.tell()
+        file.stream.seek(0)           # rewind for downstream readers
+        if size_bytes > MAX_UPLOAD_MB * 1024 * 1024:
+            print(f"[File] {fname} rejected — {size_bytes / 1024 / 1024:.1f}MB > {MAX_UPLOAD_MB}MB")
+            return {"type": "text", "text": f"\n[File: {fname} skipped — exceeds {MAX_UPLOAD_MB}MB limit]\n"}
+    except Exception:
+        pass  # If we can't measure, let downstream try and fail.
+
+    # ============ IMAGES ============
+    if lower.endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tiff', '.heic')):
         try:
+            file.stream.seek(0)
             img = Image.open(file.stream)
-            img.thumbnail((1024, 1024))
-            buffered = io.BytesIO()
-            fmt = img.format if img.format else 'JPEG'
-            img.save(buffered, format=fmt)
-            img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
-            return {"type": "image_url", "image_url": {"url": f"data:image/{fmt.lower()};base64,{img_str}"}}
+            # GIF/PNG may need conversion; JPEG can't carry alpha
+            target_fmt = 'PNG' if img.mode in ('RGBA', 'LA', 'P') else 'JPEG'
+            if target_fmt == 'JPEG' and img.mode != 'RGB':
+                img = img.convert('RGB')
+            img.thumbnail((1280, 1280))
+            buf = io.BytesIO()
+            img.save(buf, format=target_fmt, quality=88 if target_fmt == 'JPEG' else None,
+                     optimize=True)
+            b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+            mime = 'image/png' if target_fmt == 'PNG' else 'image/jpeg'
+            print(f"[File] Image {fname} → {target_fmt} ({len(buf.getvalue()) // 1024}KB)")
+            return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
         except Exception as e:
-            print(f"[File] Image processing failed: {e}")
-            return None
-    elif filename.endswith(('.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.xml', '.csv')):
+            print(f"[File] Image processing failed for {fname}: {e}")
+            return {"type": "text", "text": f"\n[Image: {fname} — could not decode: {e}]\n"}
+
+    # ============ PLAIN TEXT / CODE ============
+    if lower.endswith(('.txt', '.md', '.markdown', '.py', '.js', '.jsx', '.ts', '.tsx',
+                       '.html', '.htm', '.css', '.scss', '.json', '.xml', '.yaml', '.yml',
+                       '.csv', '.tsv', '.log', '.sh', '.sql', '.go', '.rs', '.java',
+                       '.c', '.cpp', '.h', '.hpp', '.rb', '.php', '.swift', '.kt',
+                       '.toml', '.ini', '.conf', '.env', '.dockerfile')):
         try:
-            text = file.read().decode('utf-8', errors='ignore')
-            return {"type": "text", "text": f"\n[File: {file.filename}]\n{text}\n"}
-        except:
+            file.stream.seek(0)
+            raw = file.stream.read()
+            text = raw.decode('utf-8', errors='ignore').strip()
+            if not text:
+                return {"type": "text", "text": f"\n[File: {fname} is empty]\n"}
+            truncated = ""
+            if len(text) > MAX_TEXT_CHARS:
+                truncated = f"\n\n…[truncated — original was {len(text)} chars, showing first {MAX_TEXT_CHARS}]"
+                text = text[:MAX_TEXT_CHARS]
+            return {"type": "text", "text": f"\n[File: {fname}]\n```\n{text}\n```{truncated}\n"}
+        except Exception as e:
+            print(f"[File] Text read failed for {fname}: {e}")
             return None
-    elif filename.endswith('.pdf'):
+
+    # ============ PDF ============
+    if lower.endswith('.pdf'):
         try:
+            file.stream.seek(0)
             reader = PyPDF2.PdfReader(file.stream)
-            text = "\n".join([page.extract_text() for page in reader.pages])
-            return {"type": "text", "text": f"\n[PDF: {file.filename}]\n{text.strip()}\n"}
+            pages = []
+            for i, page in enumerate(reader.pages):
+                try:
+                    page_text = page.extract_text() or ""
+                except Exception:
+                    page_text = ""
+                if page_text.strip():
+                    pages.append(f"--- Page {i+1} ---\n{page_text.strip()}")
+            text = "\n\n".join(pages).strip()
+            if not text:
+                return {"type": "text", "text": f"\n[PDF: {fname} — no extractable text. It may be a scanned image; OCR is not yet supported.]\n"}
+            truncated = ""
+            if len(text) > MAX_TEXT_CHARS:
+                truncated = f"\n\n…[truncated — full PDF is {len(text)} chars]"
+                text = text[:MAX_TEXT_CHARS]
+            return {"type": "text", "text": f"\n[PDF: {fname} — {len(reader.pages)} pages]\n{text}{truncated}\n"}
         except Exception as e:
-            print(f"[File] PDF processing failed: {e}")
-            return None
-    elif filename.endswith('.docx'):
+            print(f"[File] PDF processing failed for {fname}: {e}")
+            return {"type": "text", "text": f"\n[PDF: {fname} — could not parse: {e}]\n"}
+
+    # ============ DOCX ============
+    if lower.endswith('.docx'):
         try:
+            file.stream.seek(0)
             doc = Document(file.stream)
-            text = "\n".join([para.text for para in doc.paragraphs])
-            return {"type": "text", "text": f"\n[Word Doc: {file.filename}]\n{text.strip()}\n"}
+            parts = []
+            for para in doc.paragraphs:
+                if para.text.strip():
+                    style = (para.style.name or '').lower() if para.style else ''
+                    if 'heading' in style:
+                        parts.append(f"\n## {para.text.strip()}\n")
+                    else:
+                        parts.append(para.text.strip())
+            # Include tables too
+            for table in doc.tables:
+                rows = []
+                for row in table.rows:
+                    cells = [c.text.strip() for c in row.cells]
+                    rows.append(" | ".join(cells))
+                if rows:
+                    parts.append("\n[Table]\n" + "\n".join(rows))
+            text = "\n".join(parts).strip()
+            if not text:
+                return {"type": "text", "text": f"\n[Word Doc: {fname} — empty or unsupported content]\n"}
+            truncated = ""
+            if len(text) > MAX_TEXT_CHARS:
+                truncated = f"\n\n…[truncated]"
+                text = text[:MAX_TEXT_CHARS]
+            return {"type": "text", "text": f"\n[Word Doc: {fname}]\n{text}{truncated}\n"}
         except Exception as e:
-            print(f"[File] DOCX processing failed: {e}")
-            return None
-    return None
+            print(f"[File] DOCX processing failed for {fname}: {e}")
+            return {"type": "text", "text": f"\n[Word Doc: {fname} — could not parse: {e}]\n"}
+
+    # ============ XLSX ============
+    if lower.endswith(('.xlsx', '.xls')):
+        try:
+            from openpyxl import load_workbook
+            file.stream.seek(0)
+            wb = load_workbook(file.stream, data_only=True, read_only=True)
+            sheets_out = []
+            for sheet in wb.worksheets:
+                rows = []
+                for row in sheet.iter_rows(values_only=True):
+                    if any(c is not None for c in row):
+                        rows.append(" | ".join("" if c is None else str(c) for c in row))
+                    if len(rows) > 200:
+                        rows.append("…[truncated — sheet has more rows]")
+                        break
+                if rows:
+                    sheets_out.append(f"### Sheet: {sheet.title}\n" + "\n".join(rows))
+            text = "\n\n".join(sheets_out).strip()
+            if not text:
+                return {"type": "text", "text": f"\n[Excel: {fname} — empty]\n"}
+            return {"type": "text", "text": f"\n[Excel: {fname}]\n{text}\n"}
+        except ImportError:
+            return {"type": "text", "text": f"\n[Excel: {fname} — openpyxl not installed on backend]\n"}
+        except Exception as e:
+            print(f"[File] XLSX processing failed for {fname}: {e}")
+            return {"type": "text", "text": f"\n[Excel: {fname} — could not parse: {e}]\n"}
+
+    print(f"[File] Unsupported type: {fname}")
+    return {"type": "text", "text": f"\n[File: {fname} — unsupported type. Try .pdf, .docx, .xlsx, image, or text/code.]\n"}
 
 
 def generate_semantic_chunks(text, max_chunks=10):

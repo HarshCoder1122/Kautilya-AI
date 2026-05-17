@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ThinkingTokens } from "./ThinkingTokens";
 import { ReActSteps } from "./ReActSteps";
+import { ToolResultCards } from "./ToolResultCards";
 import { ttsAPI } from "../../lib/api";
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -201,12 +202,38 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
   };
 
   if (message.role === 'user') {
+    const attachments = Array.isArray(message.files) ? message.files : [];
     return (
       <div className="message-user flex justify-end animate-fade-up" data-testid={`message-${message.id}`}>
         <div className="max-w-[85%]">
-          <div className="bg-[var(--k-brand)] text-white px-4 py-3 rounded-2xl rounded-br-md text-sm leading-relaxed shadow-lg shadow-[var(--k-brand)]/10">
-            {message.content}
-          </div>
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-2 justify-end">
+              {attachments.map((f, i) => {
+                const isImg = f.previewUrl || (f.type && f.type.startsWith('image/'));
+                if (isImg && f.previewUrl) {
+                  return (
+                    <a key={i} href={f.previewUrl} target="_blank" rel="noopener noreferrer"
+                       className="block rounded-xl overflow-hidden border border-white/10 max-w-[220px]">
+                      <img src={f.previewUrl} alt={f.name}
+                           className="w-full h-auto max-h-[200px] object-cover" />
+                    </a>
+                  );
+                }
+                return (
+                  <div key={i}
+                       className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-white/10 border border-white/10 text-[11px] text-white">
+                    <Code className="w-3.5 h-3.5" weight="bold" />
+                    <span className="max-w-[160px] truncate">{f.name}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {message.content && (
+            <div className="bg-[var(--k-brand)] text-white px-4 py-3 rounded-2xl rounded-br-md text-sm leading-relaxed shadow-lg shadow-[var(--k-brand)]/10 whitespace-pre-wrap">
+              {message.content}
+            </div>
+          )}
           <div className="text-[10px] text-muted-foreground/50 mt-1 text-right font-medium">{message.timestamp}</div>
         </div>
       </div>
@@ -271,6 +298,11 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
       {/* ReAct step timeline (shows when agent used tools) */}
       {(message.reactSteps?.length > 0) && (
         <ReActSteps steps={message.reactSteps} isSynthesizing={message.isSynthesizing} />
+      )}
+
+      {/* Structured tool output (gmail emails, calendar events, python charts) */}
+      {(message.toolResults?.length > 0) && (
+        <ToolResultCards results={message.toolResults} />
       )}
 
       {/* Response with markdown */}

@@ -225,7 +225,8 @@ def chat_completions():
         temperature=temperature, top_p=top_p,
         max_thinking=(max_thinking and not is_daily), reasoning_budget=rb,
         expose_thinking=(not is_daily),
-        reasoning_effort=('low' if is_daily else None),
+        # Mistral daily only accepts 'none' or 'high'; 'none' = fastest.
+        reasoning_effort=('none' if is_daily else None),
     )
     if gen is None:
         return jsonify({"error": {"message": "Upstream unavailable", "type": "upstream_error"}}), 503
