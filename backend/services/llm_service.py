@@ -169,12 +169,23 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
         return None
     try:
         clean_messages = []
+        has_dropped_image = False
         for m in messages:
             content = m.get("content", "")
             if isinstance(content, list):
                 text_parts = [p["text"] for p in content if p.get("type") == "text"]
+                # If user attached an image, NVIDIA's text-only endpoints can't
+                # see it — surface that fact to the model rather than silently
+                # losing it.
+                if any(p.get("type") == "image_url" for p in content):
+                    has_dropped_image = True
+                    text_parts.append("[NOTE: An image was attached but this model is text-only. "
+                                      "Tell the user the image is unavailable on this tier and "
+                                      "suggest they retry — vision routing will pick a vision model.]")
                 content = "\n".join(text_parts)
             clean_messages.append({"role": m["role"], "content": str(content)})
+        if has_dropped_image:
+            print(f"[NVIDIA] Image dropped — model {model} is text-only")
         payload = {"model": model, "messages": clean_messages, "temperature": temperature,
                    "max_tokens": max_tokens, "top_p": top_p, "stream": stream}
         if tools:

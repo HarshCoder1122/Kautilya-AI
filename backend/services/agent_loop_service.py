@@ -177,7 +177,8 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                             max_tokens=kw.get('max_tokens', 16384),
                             tools=kw.get('tools'), tool_choice=kw.get('tool_choice'),
                             expose_thinking=False,  # daily tier hides thinking
-                            reasoning_effort='low')
+                            # Mistral only accepts 'none' or 'high'; daily uses 'none' for speed.
+                            reasoning_effort='none')
             if r:
                 return r
         return call_groq(msgs, stream=True, model='llama-3.3-70b-versatile',
@@ -248,12 +249,32 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                                                tools=tools, tool_choice=tool_choice)
 
         elif has_image:
-            # Vision model — Groq is still our vision provider
+            # Vision: prefer Gemini 2.5 Flash (most reliable for OCR / chart reading),
+            # fall back to Groq llama-4-scout (current vision-capable Groq model).
             yield json.dumps({"event": "status", "message": "👁️ Analyzing image…"})
-            response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
-                                     model='llama-3.2-11b-vision-preview', temperature=0.6)
-            if not response_gen:
-                response_gen = _call_daily(current_messages, max_tokens=max_tokens)
+            from services.llm_service import call_gemini_vision
+            try:
+                gemini_text = call_gemini_vision(current_messages, temperature=0.6, max_tokens=max_tokens)
+            except Exception as e:
+                print(f"[Vision] Gemini exception: {e}")
+                gemini_text = None
+            if gemini_text:
+                # Wrap the single string as a generator so the downstream
+                # streaming loop handles it uniformly.
+                def _wrap(t=gemini_text):
+                    yield {"chunk": t}
+                response_gen = _wrap()
+            else:
+                print("[Vision] Gemini unavailable — falling back to Groq llama-4-scout")
+                response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
+                                         model='meta-llama/llama-4-scout-17b-16e-instruct',
+                                         temperature=0.6)
+                if not response_gen:
+                    response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
+                                             model='meta-llama/llama-4-maverick-17b-128e-instruct',
+                                             temperature=0.6)
+                if not response_gen:
+                    response_gen = _call_daily(current_messages, max_tokens=max_tokens)
         else:
             # Daily = NVIDIA Mistral Medium 3.5 (low reasoning), Groq llama as fallback
             response_gen = _call_daily(current_messages, max_tokens=max_tokens,
@@ -493,14 +514,28 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             yield json.dumps({"event": "react_action", "id": action_id, "tool": "calendar", "input": f"Next {days} days", "status": "running"})
             try:
                 events = _calendar_list(uid, days)
+                # Structured payload for the UI card
+                card_events = []
                 if events:
-                    lines = []
                     for e in events:
                         start = e.get('start', {}).get('dateTime') or e.get('start', {}).get('date', '')
-                        lines.append(f"- {e.get('summary','Untitled')} at {start}")
+                        end   = e.get('end', {}).get('dateTime')   or e.get('end', {}).get('date', '')
+                        card_events.append({
+                            "summary": e.get('summary', 'Untitled'),
+                            "start": start, "end": end,
+                            "location": e.get('location', ''),
+                            "hangoutLink": e.get('hangoutLink', '') or
+                                           (e.get('conferenceData', {}) or {}).get('entryPoints', [{}])[0].get('uri', ''),
+                            "htmlLink": e.get('htmlLink', ''),
+                            "description": (e.get('description') or '')[:240],
+                        })
+                yield json.dumps({"event": "tool_result", "tool": "calendar_list",
+                                  "data": {"events": card_events, "days": days}})
+                if card_events:
+                    lines = [f"- {ev['summary']} at {ev['start']}" for ev in card_events]
                     obs = f"CALENDAR EVENTS (next {days} days):\n" + "\n".join(lines)
                     yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done",
-                                      "preview": f"{len(events)} event(s) found"})
+                                      "preview": f"{len(card_events)} event(s) found"})
                 else:
                     obs = f"CALENDAR: No events found in the next {days} days."
                     yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done", "preview": "No events"})
@@ -508,7 +543,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
                 obs = f"CALENDAR ERROR: {e}"
             current_messages.append({"role": "assistant", "content": accumulated_response})
-            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nReport the events to the user."})
+            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nThe events are already shown to the user as cards — just give a one-line confirmation, no need to list them again."})
             action_found = True
 
         # 4.5 [GMAIL_SEND: to@email.com | Subject | Body]
@@ -544,6 +579,8 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             yield json.dumps({"event": "react_action", "id": action_id, "tool": "gmail", "input": f"Inbox (last {gm_max})", "status": "running"})
             try:
                 emails = _gmail_list(uid, gm_max, gm_q)
+                yield json.dumps({"event": "tool_result", "tool": "gmail_list",
+                                  "data": {"emails": emails or [], "query": gm_q}})
                 if emails:
                     lines = []
                     for e in emails:
@@ -558,7 +595,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
                 obs = f"GMAIL ERROR: {e}"
             current_messages.append({"role": "assistant", "content": accumulated_response})
-            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nSummarize the inbox for the user."})
+            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nThe inbox is already shown to the user as styled email cards — give a one-line summary only, do not re-list emails."})
             action_found = True
 
         # 5. [WHATSAPP_SEND: number | message]
@@ -621,6 +658,45 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 obs = f"HUBSPOT ERROR: {e}"
             current_messages.append({"role": "assistant", "content": accumulated_response})
             current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nConfirm to the user."})
+            action_found = True
+
+        # 11. [RUN_PYTHON: ```code```] — sandboxed Python (pandas / matplotlib charts)
+        py_match = re.search(r'\[RUN_PYTHON:\s*```(?:python)?\s*([\s\S]*?)```\s*\]', accumulated_response)
+        if not py_match:
+            # Permissive fallback: [RUN_PYTHON: ...code...] without fences
+            py_match = re.search(r'\[RUN_PYTHON:\s*([\s\S]+?)\]\s*$', accumulated_response.strip())
+        if py_match and not action_found:
+            code = py_match.group(1).strip()
+            action_counter += 1
+            action_id = str(action_counter)
+            yield json.dumps({"event": "react_action", "id": action_id, "tool": "python",
+                              "input": code[:80] + ("…" if len(code) > 80 else ""), "status": "running"})
+            try:
+                py_res = _python_run(code)
+                yield json.dumps({"event": "tool_result", "tool": "python_run",
+                                  "data": {
+                                      "code": code,
+                                      "stdout": py_res["stdout"],
+                                      "stderr": py_res["stderr"],
+                                      "images": py_res["images"],
+                                      "ok": py_res["ok"],
+                                  }})
+                if py_res["ok"]:
+                    chart_note = f" (+{len(py_res['images'])} chart(s))" if py_res["images"] else ""
+                    yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done",
+                                      "preview": f"Ran successfully{chart_note}"})
+                    # Truncated output for the model's context (full version went to the UI card)
+                    short_out = (py_res["stdout"] or "")[:1500]
+                    obs = f"PYTHON EXECUTED OK.\nStdout (first 1500 chars):\n{short_out}"
+                else:
+                    yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error",
+                                      "preview": (py_res["stderr"] or "error")[:80]})
+                    obs = f"PYTHON ERROR (exit {py_res['exit_code']}):\n{py_res['stderr'][:1500]}"
+            except Exception as e:
+                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
+                obs = f"PYTHON RUNNER ERROR: {e}"
+            current_messages.append({"role": "assistant", "content": accumulated_response})
+            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nThe code + output + any charts are already shown to the user. Give a one-line interpretation; do not re-paste code or output."})
             action_found = True
 
         agent_loop._action_counter = action_counter
@@ -1107,6 +1183,113 @@ def _gmail_send(uid, to, subject, body):
     if not r.ok:
         raise Exception(f"Gmail API error {r.status_code}: {r.text[:200]}")
     return r.json()
+
+
+def _python_run(code, timeout_sec=15):
+    """Execute a Python snippet in a sandboxed subprocess.
+
+    Returns: {"stdout": str, "stderr": str, "images": [data_url, ...], "ok": bool}
+
+    Safety:
+      - 15s hard wall-clock timeout
+      - 256MB RSS limit (Linux only)
+      - Networking restricted via env (HTTPS_PROXY=127.0.0.1:1) — best-effort
+      - Runs in a fresh tempdir; matplotlib PNGs created there are captured
+    """
+    import os as _os, sys as _sys, subprocess, tempfile, base64 as _b64, json as _json, textwrap, glob, shutil
+    result = {"stdout": "", "stderr": "", "images": [], "ok": False, "exit_code": None}
+    if not code or not isinstance(code, str):
+        result["stderr"] = "No code provided"
+        return result
+
+    workdir = tempfile.mkdtemp(prefix="kpy_")
+    try:
+        # Wrap user code: force matplotlib to headless + auto-save figures
+        wrapper = textwrap.dedent(f"""
+            import os, sys, json, traceback
+            os.chdir({workdir!r})
+            try:
+                import matplotlib
+                matplotlib.use('Agg')
+            except Exception:
+                pass
+            try:
+                import pandas as pd
+                pd.set_option('display.max_columns', 30)
+                pd.set_option('display.width', 200)
+            except Exception:
+                pass
+            try:
+{textwrap.indent(code, '                ')}
+            except SystemExit:
+                pass
+            except Exception:
+                print('--- TRACEBACK ---', file=sys.stderr)
+                traceback.print_exc()
+                sys.exit(1)
+            # Auto-save any open matplotlib figures
+            try:
+                import matplotlib.pyplot as plt
+                for i, num in enumerate(plt.get_fignums()):
+                    fig = plt.figure(num)
+                    fig.savefig(f'chart_{{i+1}}.png', dpi=130, bbox_inches='tight')
+                plt.close('all')
+            except Exception:
+                pass
+        """)
+        script_path = _os.path.join(workdir, '_run.py')
+        with open(script_path, 'w', encoding='utf-8') as f:
+            f.write(wrapper)
+
+        env = {
+            "PATH": _os.environ.get("PATH", ""),
+            "HOME": workdir,
+            "TMPDIR": workdir,
+            "MPLBACKEND": "Agg",
+            "HTTPS_PROXY": "127.0.0.1:1",   # best-effort network block
+            "HTTP_PROXY":  "127.0.0.1:1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+
+        # Best-effort Linux resource caps
+        def _preexec():
+            try:
+                import resource
+                resource.setrlimit(resource.RLIMIT_AS, (256 * 1024 * 1024, 256 * 1024 * 1024))
+                resource.setrlimit(resource.RLIMIT_CPU, (timeout_sec, timeout_sec))
+            except Exception:
+                pass
+
+        try:
+            proc = subprocess.run(
+                [_sys.executable, '-I', '-S', script_path],
+                cwd=workdir, env=env,
+                capture_output=True, text=True,
+                timeout=timeout_sec,
+                preexec_fn=_preexec if _os.name == 'posix' else None,
+            )
+            result["stdout"] = (proc.stdout or "")[-12_000:]
+            result["stderr"] = (proc.stderr or "")[-4_000:]
+            result["exit_code"] = proc.returncode
+            result["ok"] = proc.returncode == 0
+        except subprocess.TimeoutExpired:
+            result["stderr"] = f"Execution exceeded {timeout_sec}s timeout."
+            result["exit_code"] = -1
+
+        # Pick up any chart PNGs
+        for png_path in sorted(glob.glob(_os.path.join(workdir, '*.png'))):
+            try:
+                with open(png_path, 'rb') as f:
+                    b64 = _b64.b64encode(f.read()).decode('utf-8')
+                result["images"].append(f"data:image/png;base64,{b64}")
+            except Exception:
+                continue
+    finally:
+        try:
+            shutil.rmtree(workdir, ignore_errors=True)
+        except Exception:
+            pass
+    return result
 
 
 def _gmail_list(uid, max_results=10, query=''):
