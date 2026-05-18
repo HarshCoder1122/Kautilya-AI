@@ -8,7 +8,7 @@ import { ThemeToggle } from "@/components/shared/ThemeToggle";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { logout } from "../lib/firebase";
 import { UserCircle } from "@phosphor-icons/react";
-import AgentStudio from "@/components/dashboard/AgentStudio";
+import AgentStudio, { AgentDetailPage } from "@/components/dashboard/AgentStudio";
 import LeadManagement from "@/components/dashboard/LeadManagement";
 import CampaignDialer from "@/components/dashboard/CampaignDialer";
 import CallAnalytics from "@/components/dashboard/CallAnalytics";
@@ -156,6 +156,7 @@ export default function DashboardPage({ theme, toggleTheme, user }) {
         </div>
         <Routes>
           <Route index element={<AgentStudio />} />
+          <Route path="agents/:agentId" element={<AgentDetailPage />} />
           <Route path="leads" element={<LeadManagement />} />
           <Route path="campaigns" element={<CampaignDialer />} />
           <Route path="calls" element={<CallAnalytics />} />

@@ -43,8 +43,23 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   const leftMidStreamRef = useRef(false);
   const staleTimerRef = useRef(null);
 
+  // Auto-scroll: instant during streaming (smooth would jitter as tokens arrive
+  // faster than the animation finishes), smooth only on quiescent updates.
+  // Skip entirely if the user has scrolled up to read backscroll.
+  const stickToBottomRef = useRef(true);
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const el = messagesEndRef.current;
+    if (!el) return;
+    const scroller = el.parentElement;
+    if (scroller) {
+      const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+      if (distance > 120) {
+        stickToBottomRef.current = false;
+        return;
+      }
+      stickToBottomRef.current = true;
+    }
+    el.scrollIntoView({ behavior: isStreaming ? "auto" : "smooth", block: "end" });
   }, [messages, isThinking, isStreaming]);
 
   // Reload history when user returns to the tab after leaving mid-stream
@@ -124,7 +139,6 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   const pollStreamingMessage = async (sid) => {
     let lastLen = 0;
     let stableTicks = 0;
-    setIsThinking(false);                 // we have a "generating" placeholder now
     setIsStreaming(true);
     // Tight 1.2s polling — partial Firestore writes land every 1.5s
     for (let i = 0; i < 250; i++) { // 250 * 1.2s = 5 min hard cap
@@ -139,6 +153,10 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
         })));
         const lastMsg = data.messages[data.messages.length - 1];
         const lastContent = typeof lastMsg?.content === 'string' ? lastMsg.content : '';
+        // Keep thinking bubble visible while server has nothing to show yet
+        // (deep-search spends 10-60s searching before first token).
+        if (lastContent.length === 0) setIsThinking(true);
+        else setIsThinking(false);
         if (!data.streaming) break;          // Backend finished
         if (lastContent.length === lastLen) {
           stableTicks++;
@@ -152,6 +170,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       }
     }
     setIsStreaming(false);
+    setIsThinking(false);
   };
 
   const parseSSELines = (buffer) => {

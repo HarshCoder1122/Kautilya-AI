@@ -34,14 +34,10 @@ from system_prompts import (
 )
 
 
+# Routing rule: Daily handles everything. Only code is delegated to Coder.
+# Deep Search has its own path (chat_routes when model == 'research') and is
+# not invoked from auto-routing — that's an explicit user toggle.
 AGENT_REGISTRY: Dict[str, Dict] = {
-    "researcher": {
-        "label": "Researcher",
-        "emoji": "🔎",
-        "model": "pro",
-        "prompt": RESEARCH_SYSTEM_PROMPT,
-        "description": "Multi-source research with citations.",
-    },
     "coder": {
         "label": "Coder",
         "emoji": "💻",
@@ -52,7 +48,7 @@ AGENT_REGISTRY: Dict[str, Dict] = {
     "sales": {
         "label": "Sales",
         "emoji": "📈",
-        "model": "pro",
+        "model": "daily",
         "prompt": AGENT_PERSONALITIES.get("sdr", PRO_SYSTEM_PROMPT),
         "description": "Pitch creation, objection handling, lead qualification.",
     },
@@ -75,35 +71,32 @@ AGENT_REGISTRY: Dict[str, Dict] = {
 
 def classify_intent(question: str) -> str:
     """Return an agent id. Small fast LLM classifier with regex fallback."""
-    # Cheap regex fast-path (keeps latency low for obvious cases)
+    # Cheap regex fast-path. Daily-first: only code-shaped queries leave Daily.
+    # Sales/support personalities still kick in for prompt flavor, but stay on Daily.
     q = question.lower()
-    if re.search(r'\b(write|fix|debug|refactor|error|exception|stack ?trace|typescript|python|javascript|java|golang|rust|sql|react|vue|django|flask|fastapi|api)\b', q):
+    if re.search(r'\b(write code|fix|debug|refactor|stack ?trace|typescript|python|javascript|golang|rust|sql|react|vue|django|flask|fastapi|endpoint|function|build (a |an )?(app|api|component|page|script))\b', q):
         return "coder"
-    if re.search(r'\b(research|competitor|market (size|share|trend)|industry|latest|news|report|cite|sources?)\b', q):
-        return "researcher"
     if re.search(r'\b(pitch|cold ?email|objection|lead|prospect|sdr|pipeline|crm|follow[- ]?up|discount|negotiate)\b', q):
         return "sales"
-    if re.search(r'\b(not working|broken|won\'?t|error message|crash|refund|complain|frustrated|angry|issue|problem)\b', q):
+    if re.search(r'\b(not working|broken|won\'?t|error message|crash|refund|complain|frustrated|angry)\b', q):
         return "support"
-    if re.search(r'\b(analyze deep|philosophy|strategy|complex|logic|reasoning|step by step)\b', q):
-        # Allow pro model only for very complex reasoning requests
-        return "general" # In registry, general is now daily, but we can add a 'pro' agent
 
-    # LLM classifier fallback
+    # LLM classifier fallback — narrowed to coder vs general so Daily stays default.
     try:
         msgs = [
             {"role": "system", "content":
-             "Classify the user request into exactly ONE of: researcher, coder, sales, support, general. "
-             "Output only the label. No explanation."},
+             "Classify the user request into exactly ONE of: coder, general. "
+             "Pick 'coder' ONLY for code generation, debugging, or software architecture. "
+             "Everything else (questions, writing, analysis, chat) is 'general'. "
+             "Output only the label."},
             {"role": "user", "content": question[:600]},
         ]
         out = call_groq(msgs, model="llama-3.3-70b-versatile",
-                        temperature=0, max_tokens=10, stream=False)
+                        temperature=0, max_tokens=5, stream=False)
         if isinstance(out, str):
-            label = out.strip().lower().split()[0] if out.strip() else ""
-            label = re.sub(r'[^a-z]', '', label)
-            if label in AGENT_REGISTRY:
-                return label
+            label = re.sub(r'[^a-z]', '', out.strip().lower().split()[0] if out.strip() else "")
+            if label == "coder":
+                return "coder"
     except Exception as e:
         print(f"[Orchestrator] classify err: {e}")
     return "general"

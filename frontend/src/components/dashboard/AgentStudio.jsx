@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
-import { Plus, PencilSimple, Trash, SpeakerHigh, Brain, Lightning, CheckCircle, Phone, X, UploadSimple, LinkSimple, FileText, ChatCircleText, Clock } from "@phosphor-icons/react";
+import { useNavigate, useParams } from "react-router-dom";
+import { Plus, PencilSimple, Trash, SpeakerHigh, Brain, Lightning, CheckCircle, Phone, X, UploadSimple, LinkSimple, FileText, ChatCircleText, Clock, Globe, CaretLeft, Microphone } from "@phosphor-icons/react";
+import { LiveKitVoice } from "@/components/chat/LiveKitVoice";
 import { agentsAPI, telephonyAPI, ttsAPI } from "../../lib/api";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -15,9 +17,9 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 export default function AgentStudio() {
+  const navigate = useNavigate();
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedAgent, setSelectedAgent] = useState(null);
   const [showCreate, setShowCreate] = useState(false);
   const [studioError, setStudioError] = useState("");
 
@@ -42,22 +44,14 @@ export default function AgentStudio() {
     try {
       await agentsAPI.delete(agentId);
       loadAgents();
-      setSelectedAgent(null);
     } catch (error) {
       console.error('Failed to delete agent:', error);
     }
   };
 
-  const handleEditAgent = async (agent) => {
-    try {
-      setStudioError("");
-      const data = await agentsAPI.get(agent.agent_id);
-      setSelectedAgent({ ...agent, ...data });
-    } catch (error) {
-      console.error('Failed to open agent:', error);
-      setStudioError(error.response?.data?.error || error.message || 'Failed to open agent');
-      setSelectedAgent(agent);
-    }
+  const handleEditAgent = (agent) => {
+    setStudioError("");
+    navigate(`/dashboard/agents/${agent.agent_id}`);
   };
 
   return (
@@ -126,22 +120,60 @@ export default function AgentStudio() {
         </div>
       </ScrollArea>
 
-      {/* Agent Edit/Detail Dialog */}
-      <Dialog open={!!selectedAgent} onOpenChange={(open) => { if (!open) setSelectedAgent(null); }}>
-        <DialogContent className="sm:max-w-[780px] p-0 bg-[var(--k-surface)] border-[var(--k-border)] shadow-2xl" style={{height: '88vh', maxHeight: '88vh', display: 'flex', flexDirection: 'column'}}>
-          <DialogHeader className="sr-only">
-            <DialogTitle>Agent Details</DialogTitle>
-            <DialogDescription>View and manage agent settings and performance.</DialogDescription>
-          </DialogHeader>
-          {selectedAgent && (
-            <AgentDetail
-              agent={selectedAgent}
-              onClose={() => setSelectedAgent(null)}
-              onUpdate={loadAgents}
-            />
-          )}
-        </DialogContent>
-      </Dialog>
+    </div>
+  );
+}
+
+// Full-page wrapper rendered at /dashboard/agents/:agentId
+export function AgentDetailPage() {
+  const { agentId } = useParams();
+  const navigate = useNavigate();
+  const [agent, setAgent] = useState(null);
+  const [error, setError] = useState("");
+
+  const fetchAgent = async () => {
+    try {
+      setError("");
+      const data = await agentsAPI.get(agentId);
+      setAgent(data);
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Failed to load agent");
+    }
+  };
+
+  useEffect(() => { fetchAgent(); /* eslint-disable-next-line */ }, [agentId]);
+
+  if (error) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center text-center p-8">
+        <p className="text-sm text-rose-400 mb-4">{error}</p>
+        <button onClick={() => navigate('/dashboard')} className="px-4 py-2 rounded-md bg-accent text-sm">Back to Agents</button>
+      </div>
+    );
+  }
+  if (!agent) {
+    return <div className="h-full flex items-center justify-center text-sm text-muted-foreground">Loading agent…</div>;
+  }
+
+  return (
+    <div className="h-full flex flex-col bg-background">
+      <div className="px-6 py-3 border-b border-[var(--k-border)] flex items-center gap-3">
+        <button
+          onClick={() => navigate('/dashboard')}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md hover:bg-accent text-sm text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <CaretLeft className="w-4 h-4" /> Agents
+        </button>
+        <span className="text-sm text-muted-foreground">/</span>
+        <span className="text-sm font-medium text-foreground">{agent.name}</span>
+      </div>
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <AgentDetail
+          agent={agent}
+          onClose={() => navigate('/dashboard')}
+          onUpdate={fetchAgent}
+        />
+      </div>
     </div>
   );
 }
@@ -206,6 +238,7 @@ function AgentCard({ agent, onEdit, onDelete }) {
 function AgentDetail({ agent, onClose, onUpdate }) {
   const [isSaving, setIsSaving] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
+  const [webCallOpen, setWebCallOpen] = useState(false);
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [testNumber, setTestNumber] = useState("");
   const [editedAgent, setEditedAgent] = useState({ ...agent });
@@ -213,6 +246,7 @@ function AgentDetail({ agent, onClose, onUpdate }) {
   const [kbFiles, setKbFiles] = useState([]);
   const [kbUrl, setKbUrl] = useState("");
   const [kbLoading, setKbLoading] = useState(false);
+  const [crawlMaxPages, setCrawlMaxPages] = useState(50);
   const [logs, setLogs] = useState([]);
   const [logsLoading, setLogsLoading] = useState(false);
   const [testMessages, setTestMessages] = useState([]);
@@ -329,6 +363,23 @@ function AgentDetail({ agent, onClose, onUpdate }) {
       await loadKnowledge();
     } catch (error) {
       alert(error.response?.data?.error || 'Website indexing failed');
+    } finally {
+      setKbLoading(false);
+    }
+  };
+
+  const handleCrawlSite = async () => {
+    const url = kbUrl.trim();
+    if (!url) return;
+    if (!confirm(`Crawl up to ${crawlMaxPages} pages from ${url}? This may take a few minutes.`)) return;
+    try {
+      setKbLoading(true);
+      const result = await agentsAPI.crawlKBSite(agent.agent_id, url, crawlMaxPages);
+      setKbUrl("");
+      alert(`✅ Crawled ${result.pages_added}/${result.pages_attempted} pages (${result.errors} errors).`);
+      await loadKnowledge();
+    } catch (error) {
+      alert(error.response?.data?.error || 'Crawl failed');
     } finally {
       setKbLoading(false);
     }
@@ -562,9 +613,10 @@ function AgentDetail({ agent, onClose, onUpdate }) {
                 <div className="text-xs text-muted-foreground mt-1">PDF, TXT, DOCX knowledge files</div>
               </label>
               <div className="p-6 rounded-xl border border-[var(--k-border)] bg-accent/10">
-                <LinkSimple className="w-8 h-8 mb-3 text-[var(--k-brand)]" />
-                <div className="text-sm font-bold text-foreground mb-3">Index Website</div>
-                <div className="flex gap-2">
+                <Globe className="w-8 h-8 mb-3 text-[var(--k-brand)]" />
+                <div className="text-sm font-bold text-foreground mb-1">Index Website</div>
+                <div className="text-[10px] text-muted-foreground mb-3">Single page or full-site crawl (up to 50 pages, same domain)</div>
+                <div className="flex gap-2 mb-2">
                   <input
                     value={kbUrl}
                     onChange={(e) => setKbUrl(e.target.value)}
@@ -575,9 +627,30 @@ function AgentDetail({ agent, onClose, onUpdate }) {
                   <button
                     onClick={handleAddKbUrl}
                     disabled={kbLoading || !kbUrl.trim()}
-                    className="px-3 py-2 rounded-lg bg-[var(--k-brand)] text-white text-xs font-bold disabled:opacity-50"
+                    className="px-3 py-2 rounded-lg bg-accent text-foreground text-xs font-bold disabled:opacity-50 border border-[var(--k-border)]"
+                    title="Index just this URL"
                   >
-                    Add
+                    +1 Page
+                  </button>
+                </div>
+                <div className="flex gap-2 items-center">
+                  <label className="text-[10px] text-muted-foreground">Crawl up to</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={crawlMaxPages}
+                    onChange={(e) => setCrawlMaxPages(Math.min(50, Math.max(1, parseInt(e.target.value) || 1)))}
+                    className="w-14 px-2 py-1 text-xs bg-background border border-[var(--k-border)] rounded-md text-foreground"
+                  />
+                  <label className="text-[10px] text-muted-foreground flex-1">pages from this URL</label>
+                  <button
+                    onClick={handleCrawlSite}
+                    disabled={kbLoading || !kbUrl.trim()}
+                    className="px-3 py-2 rounded-lg bg-[var(--k-brand)] text-white text-xs font-bold disabled:opacity-50"
+                    title="BFS crawl same-domain links"
+                  >
+                    {kbLoading ? 'Crawling…' : 'Crawl Site'}
                   </button>
                 </div>
               </div>
@@ -643,6 +716,31 @@ function AgentDetail({ agent, onClose, onUpdate }) {
                    Uses master SIP credentials for instantaneous routing.
                 </p>
              </div>
+             {/* Web Call (Browser) — no phone number needed, talks to the agent via LiveKit */}
+             <div className="p-6 rounded-2xl border border-emerald-500/20 bg-emerald-500/5">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 rounded-full bg-emerald-500/20 flex items-center justify-center">
+                    <Microphone className="w-5 h-5 text-emerald-400" weight="duotone" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-foreground">Web Call (Browser)</h4>
+                    <p className="text-xs text-muted-foreground">Talk to this agent live from your browser — no phone needed.</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setWebCallOpen(true)}
+                  className="flex items-center gap-2 px-6 py-3 rounded-xl bg-emerald-500 text-white text-sm font-bold hover:bg-emerald-600 transition-all shadow-lg shadow-emerald-500/20"
+                >
+                  <Microphone className="w-4 h-4" /> Start Web Call
+                </button>
+             </div>
+             {webCallOpen && (
+                <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => setWebCallOpen(false)}>
+                  <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md">
+                    <LiveKitVoice agentId={agent.agent_id} onClose={() => setWebCallOpen(false)} />
+                  </div>
+                </div>
+             )}
              <div className="p-6 rounded-2xl border border-[var(--k-border)] bg-accent/10">
                 <div className="flex items-center gap-3 mb-4">
                   <div className="w-10 h-10 rounded-full bg-emerald-500/10 flex items-center justify-center">
