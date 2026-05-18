@@ -2,6 +2,9 @@ import { Brain, Code, ChartBar, ArrowSquareOut, Play, Pause, Copy, Check, Arrows
 import React, { useState, useRef } from "react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 import { ThinkingTokens } from "./ThinkingTokens";
 import { ReActSteps } from "./ReActSteps";
 import { ToolResultCards } from "./ToolResultCards";
@@ -305,8 +308,15 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
   // Auto-balance by appending a virtual closer. The real closer (when it
   // streams in) just replaces this, so no UX regression.
   const _fenceCount = (rawContent.match(/```/g) || []).length;
-  const balancedContent = _fenceCount % 2 === 1 ? rawContent + '\n```' : rawContent;
-  const displayContent = linkifyContent(balancedContent);
+  let _normalized = _fenceCount % 2 === 1 ? rawContent + '\n```' : rawContent;
+  // Normalize LaTeX delimiters to markdown-math form so remark-math picks
+  // them up. Models routinely emit \[ ... \] and \( ... \) instead of
+  // $$ ... $$ / $ ... $. Convert only OUTSIDE code blocks.
+  _normalized = _normalized.replace(/(```[\s\S]*?```)|\\\[([\s\S]+?)\\\]/g,
+    (m, code, math) => code || `$$${math}$$`);
+  _normalized = _normalized.replace(/(```[\s\S]*?```)|\\\(([\s\S]+?)\\\)/g,
+    (m, code, math) => code || `$${math}$`);
+  const displayContent = linkifyContent(_normalized);
 
   // Merge citations
   const allCitations = [...(message.citations || [])];
@@ -391,7 +401,8 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
       {/* Response with markdown */}
       <div className="message-content animate-fade-up">
         <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
+          remarkPlugins={[remarkGfm, remarkMath]}
+          rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false, output: 'html' }]]}
           components={{
             a({ href, children }) {
               return <LinkCard href={href} />;
