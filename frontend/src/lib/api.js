@@ -208,6 +208,14 @@ export const agentsAPI = {
     return response.data;
   },
 
+  // Crawl up to N pages from a start URL (same-origin BFS, cap 50)
+  crawlKBSite: async (agentId, url, maxPages = 50) => {
+    const response = await api.post(`/api/agents/${agentId}/kb-crawl`, { url, max_pages: maxPages }, {
+      timeout: 300000, // 5 min — crawl can take a while
+    });
+    return response.data;
+  },
+
   // Get knowledge base
   getKB: async (agentId) => {
     const response = await api.get(`/api/agents/${agentId}/kb`);

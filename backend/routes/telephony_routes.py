@@ -13,6 +13,64 @@ from services.telephony_dialer import dial_outbound, load_provider_config
 telephony_bp = Blueprint('telephony', __name__)
 
 
+@telephony_bp.route('/telephony/diagnostic', methods=['GET'])
+def api_telephony_diagnostic():
+    """Reports which env vars are set on the server + which provider creds this
+    user has saved. Use this to self-diagnose 'calls fail before audio' without
+    SSHing into the box. Never returns secret values — only booleans + the host."""
+    from extensions import db
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    env_checks = {k: bool(os.environ.get(k)) for k in [
+        "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "LIVEKIT_SIP_URI",
+        "VOBIZ_MASTER_USER", "VOBIZ_MASTER_PASS", "VOBIZ_MASTER_NUMBER",
+        "NVIDIA_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY",
+        "FIREBASE_SERVICE_ACCOUNT_JSON",
+    ]}
+
+    user_providers = {"exotel": {"saved": False}, "vobiz": {"saved": False}}
+    try:
+        doc = db.collection('users').document(uid).collection('config').document('telephony').get()
+        if doc.exists:
+            for p in (doc.to_dict() or {}).get('providers', []):
+                pt = p.get('type')
+                if pt in user_providers:
+                    user_providers[pt] = {
+                        "saved": True,
+                        "enabled": p.get('enabled') or p.get('status') == 'available',
+                        "has_caller_id": bool(p.get('caller_id') or p.get('exotel_number') or p.get('number')),
+                        "has_creds": bool((p.get('api_key') and p.get('api_token')) or
+                                          (p.get('username') and p.get('password'))),
+                    }
+    except Exception as e:
+        print(f"[Diagnostic] user provider read err: {e}")
+
+    public_url = request.host_url.rstrip('/')
+    is_https = public_url.startswith('https://') or 'localhost' in public_url
+    is_localhost = 'localhost' in public_url or '127.0.0.1' in public_url
+
+    issues = []
+    if not all([env_checks["LIVEKIT_URL"], env_checks["LIVEKIT_API_KEY"], env_checks["LIVEKIT_API_SECRET"]]):
+        issues.append("LiveKit env vars missing — browser web-calls will fail at /api/livekit/token.")
+    if is_localhost:
+        issues.append("Backend reachable as localhost — SIP webhooks from Vobiz/Exotel cannot reach you. Deploy or use ngrok.")
+    if not is_https and not is_localhost:
+        issues.append("Backend served over plain HTTP — webhooks will be rejected by most SIP providers.")
+    if not any(p.get("saved") for p in user_providers.values()) and not env_checks["VOBIZ_MASTER_USER"]:
+        issues.append("No user provider configured AND no master Vobiz creds set — outbound SIP cannot dial.")
+
+    return jsonify({
+        "env": env_checks,
+        "host": public_url,
+        "user_providers": user_providers,
+        "issues": issues,
+        "status": "ok" if not issues else "degraded",
+    })
+
+
 @telephony_bp.route('/telephony/config', methods=['GET'])
 def api_telephony_config():
     from extensions import db
@@ -112,6 +170,28 @@ def api_agent_call_outbound(agent_id):
 
         if not config:
             return jsonify({"error": f"Master Vobiz not set and user provider {provider_type} not configured"}), 400
+
+        # Pre-call CRM lookup: enrich the agent's system_prompt with whatever
+        # the connected CRM knows about this number. Soft-fail: missing CRM
+        # or no match must not block the call.
+        try:
+            from services.integration_tools import _lookup_crm_contact
+            crm = _lookup_crm_contact(uid, {"phone": to_number})
+            if crm.get("ok") and crm.get("contact"):
+                c = crm["contact"]
+                name = c.get("firstname") or c.get("First_Name") or c.get("Full_Name") or ""
+                last = c.get("lastname") or c.get("Last_Name") or ""
+                company = c.get("company") or c.get("Account_Name") or ""
+                title = c.get("jobtitle") or c.get("Title") or ""
+                stage = c.get("lifecyclestage") or c.get("Lead_Status") or ""
+                summary_parts = [f"{name} {last}".strip(), title, company, f"stage: {stage}" if stage else ""]
+                summary = " | ".join(p for p in summary_parts if p)
+                if summary:
+                    extra = f"\n\nCALL CONTEXT (from {crm['source']} CRM): You are calling {summary}. Greet them by name and reference their company where relevant. Stay natural — do not read this verbatim."
+                    agent = {**agent, "system_prompt": (agent.get("system_prompt") or "") + extra}
+                    print(f"[Pre-call] CRM enrichment applied for {to_number}: {summary}")
+        except Exception as e:
+            print(f"[Pre-call] CRM lookup soft-failed: {e}")
 
         base_url = request.host_url.rstrip('/')
         # Ensure base_url is HTTPS in production

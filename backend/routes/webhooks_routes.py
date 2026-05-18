@@ -314,6 +314,79 @@ def _process_post_call(agent_id, payload, call_uuid):
         db.collection('agents').document(agent_id).collection('agent_logs').document(call_uuid).set(log_data, merge=True)
         db.collection('agents').document(agent_id).update({"call_count": firestore.Increment(1)})
         print(f"[NIM] ✅ Saved structured call log for {call_uuid} to agent_logs")
-        
+
+        # ---- Post-call integration dispatch ----
+        # Extract action items from transcript and fire them through the
+        # owner's connected integrations (CRM note, Slack summary, calendar
+        # follow-ups). Soft-fail — analytics save above must remain authoritative.
+        try:
+            agent_doc = db.collection('agents').document(agent_id).get()
+            owner_uid = (agent_doc.to_dict() or {}).get('uid') if agent_doc.exists else None
+            if owner_uid and transcript_text:
+                _dispatch_post_call_integrations(owner_uid, agent_id, log_data, transcript_text)
+        except Exception as e:
+            print(f"[Integrations] post-call dispatch soft-failed: {e}")
+
     except Exception as e:
         print(f"[NIM] ❌ Error in post-call processing: {e}")
+
+
+def _dispatch_post_call_integrations(uid, agent_id, log_data, transcript_text):
+    """Fan call summary + action items into the owner's connected integrations.
+    - Slack: post a brief outcome summary to the configured channel.
+    - CRM: log a note on the matched contact (looked up by from_number).
+    - Calendar: any extracted action item with a due date becomes an event.
+    """
+    from services.integration_tools import execute_tool, _is_connected, _lookup_crm_contact
+    from services.llm_service import call_groq
+
+    summary = log_data.get('summary') or '(no summary)'
+    sentiment = log_data.get('sentiment', 'neutral')
+    from_number = log_data.get('from_number') or log_data.get('to_number') or ''
+
+    # 1. Slack summary
+    if _is_connected(uid, 'slack'):
+        msg = f"*Call wrapped* — Agent `{agent_id}` | {from_number} | sentiment: {sentiment}\n>{summary[:500]}"
+        execute_tool(uid, "post_slack", {"message": msg})
+
+    # 2. CRM note (lookup by phone, then attach activity note)
+    crm = _lookup_crm_contact(uid, {"phone": from_number}) if from_number else {"ok": False}
+    if crm.get("ok"):
+        contact = crm["contact"]
+        cid = contact.get("vid") or contact.get("id") or contact.get("Contact_Id") or contact.get("contact_id")
+        if cid:
+            note = f"Kautilya call summary ({sentiment}):\n{summary}\n\nTopics: {', '.join(log_data.get('topics', []))}"
+            execute_tool(uid, "log_crm_activity", {"contact_id": str(cid), "note": note, "source": crm["source"]})
+
+    # 3. Calendar follow-ups — extract action items with a due date
+    try:
+        prompt = [
+            {"role": "system", "content":
+             "Extract action items from this call transcript that need a calendar follow-up. "
+             "Return JSON array; each item: {title, due (RFC3339), duration_minutes (int, default 30)}. "
+             "Only items the agent explicitly committed to. If none, return []."},
+            {"role": "user", "content": transcript_text[:6000]},
+        ]
+        out = call_groq(prompt, model="llama-3.3-70b-versatile",
+                        temperature=0.1, max_tokens=600, stream=False)
+        import re as _re
+        m = _re.search(r'\[.*\]', out or "", _re.S)
+        items = json.loads(m.group(0)) if m else []
+        if _is_connected(uid, 'google_calendar'):
+            from datetime import datetime, timedelta
+            for it in items[:5]:
+                due = it.get("due")
+                if not due: continue
+                try:
+                    start = datetime.fromisoformat(due.replace('Z', '+00:00'))
+                    end = start + timedelta(minutes=int(it.get("duration_minutes", 30)))
+                    execute_tool(uid, "create_calendar_event", {
+                        "title": it.get("title", "Kautilya follow-up"),
+                        "start": start.isoformat(),
+                        "end": end.isoformat(),
+                        "description": f"Auto-created from call {log_data.get('call_id')}.",
+                    })
+                except Exception as e:
+                    print(f"[Integrations] calendar item skipped: {e}")
+    except Exception as e:
+        print(f"[Integrations] action-item extraction failed: {e}")

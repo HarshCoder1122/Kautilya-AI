@@ -151,6 +151,27 @@ def list_integrations():
     return jsonify({"integrations": out})
 
 
+# ---------- Tool catalog (shared with voice + chat agents) ----------
+@integrations_bp.route('/integrations/tools', methods=['GET'])
+def list_tools():
+    """Returns the LLM tool specs the current user's agents can actually call,
+    based on which integrations they have connected. Frontend uses this in
+    Agent Studio → Tools tab to show 'this agent can: send WhatsApp, log to CRM…'."""
+    uid = _require_auth()
+    if not uid:
+        return jsonify({"error": "Authentication required"}), 401
+    from services.integration_tools import available_tools, REGISTRY
+    specs = available_tools(uid)
+    return jsonify({
+        "tools": [{
+            "name": s["function"]["name"],
+            "description": s["function"]["description"],
+            "provider": next((k for k, v in REGISTRY.items() if v["spec"]["function"]["name"] == s["function"]["name"]), None),
+        } for s in specs],
+        "all_tools": [{"name": k, "provider": v["provider"], "description": v["spec"]["function"]["description"]} for k, v in REGISTRY.items()],
+    })
+
+
 # ---------- OAuth start ----------
 @integrations_bp.route('/integrations/<provider>/connect', methods=['GET'])
 def connect(provider):

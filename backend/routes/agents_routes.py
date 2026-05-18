@@ -396,6 +396,75 @@ def api_agent_kb_url(agent_id):
         return jsonify({"error": str(e)}), 500
 
 
+@agents_bp.route('/agents/<agent_id>/kb-crawl', methods=['POST'])
+def api_agent_kb_crawl(agent_id):
+    """BFS crawl up to N pages from a start URL, same-origin only.
+    Each page becomes its own KB entry so retrieval can score them independently."""
+    from extensions import db
+    from firebase_admin import firestore
+    from urllib.parse import urlparse, urljoin
+    from collections import deque
+    import re as _re
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid: return jsonify({"error": "Authentication required"}), 401
+    try:
+        agent_ref = db.collection('agents').document(agent_id)
+        doc = agent_ref.get()
+        if not doc.exists or doc.to_dict().get('uid') != uid:
+            return jsonify({"error": "Agent not found"}), 404
+        payload = request.get_json() or {}
+        start_url = payload.get('url')
+        max_pages = min(int(payload.get('max_pages', 50)), 50)
+        if not start_url:
+            return jsonify({"error": "URL required"}), 400
+        if not start_url.startswith(('http://', 'https://')):
+            start_url = 'https://' + start_url
+        origin = urlparse(start_url).netloc
+
+        seen, queue = set(), deque([start_url])
+        kb = doc.to_dict().get('knowledge_base', [])
+        added, errors = 0, 0
+        link_pat = _re.compile(r'href=["\']([^"\']+)["\']', _re.I)
+
+        while queue and len(seen) < max_pages:
+            url = queue.popleft()
+            if url in seen: continue
+            seen.add(url)
+            try:
+                import requests as _rq
+                resp = _rq.get(url, timeout=10, headers={"User-Agent": "KautilyaKBCrawler/1.0"})
+                if resp.status_code != 200 or 'text/html' not in resp.headers.get('content-type', ''):
+                    continue
+                text = read_website(url)
+                if not text or len(text) < 200:
+                    continue
+                chunks = generate_semantic_chunks(text)
+                kb.append({
+                    "id": str(uuid.uuid4())[:8],
+                    "name": f"Web: {urlparse(url).path[:40] or '/'}",
+                    "type": "text/html",
+                    "size": len(text),
+                    "created_at": int(time.time()),
+                    "chunks": chunks,
+                    "content": text,
+                    "url": url,
+                })
+                added += 1
+                # Enqueue same-origin links
+                for href in link_pat.findall(resp.text)[:30]:
+                    nxt = urljoin(url, href).split('#')[0]
+                    if urlparse(nxt).netloc == origin and nxt not in seen:
+                        queue.append(nxt)
+            except Exception as e:
+                errors += 1
+                print(f"[KB-Crawl] {url}: {e}")
+        agent_ref.update({"knowledge_base": kb, "updated_at": firestore.SERVER_TIMESTAMP})
+        return jsonify({"status": "ok", "pages_added": added, "pages_attempted": len(seen), "errors": errors})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @agents_bp.route('/agents/<agent_id>/kb/<file_id>/content', methods=['GET'])
 def api_agent_kb_content(agent_id, file_id):
     from extensions import db

@@ -123,6 +123,25 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     except Exception as _e:
         print(f"[Agent] date injection failed: {_e}")
 
+    # Inject available integration tools into the system prompt so the model
+    # knows what it can invoke via [INTEGRATION: name | {args}]. Skipped if
+    # the user has no integrations connected, to keep the prompt lean.
+    if uid:
+        try:
+            from services.integration_tools import available_tools
+            specs = available_tools(uid)
+            if specs:
+                lines = ["\n\nAVAILABLE INTEGRATIONS (call exactly once when the user explicitly asks):"]
+                for s in specs:
+                    fn = s["function"]
+                    req = fn.get("parameters", {}).get("required", [])
+                    lines.append(f"- {fn['name']}({', '.join(req)}): {fn['description']}")
+                lines.append("Syntax: [INTEGRATION: tool_name | {\"arg\": \"value\"}]  — JSON args, single line, double-quoted.")
+                if current_messages and current_messages[0].get("role") == "system":
+                    current_messages[0]["content"] = str(current_messages[0].get("content", "")) + "\n".join(lines)
+        except Exception as _e:
+            print(f"[Agent] integration tool prompt injection failed: {_e}")
+
     MAX_TURNS = 3
 
     last_user_msg = ""
@@ -184,7 +203,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     # NVIDIA NIM model IDs - verified available on https://build.nvidia.com
     _MODEL_LABELS = {
         'coder': ('Kautilya Coder', 'qwen/qwen3-coder-480b-a35b-instruct'),
-        'pro':   ('Kautilya Pro', 'nvidia/nemotron-3-super-120b-a12b'),
+        'pro':   ('Kautilya Pro', 'z-ai/glm-5.1'),
         'daily': ('Kautilya Daily', 'mistralai/mistral-medium-3.5-128b'),
     }
     DAILY_MODEL = 'mistralai/mistral-medium-3.5-128b'
@@ -767,6 +786,42 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             current_messages.append({"role": "assistant", "content": accumulated_response})
             current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nThe code + output + any charts are already shown to the user. Give a one-line interpretation; do not re-paste code or output."})
             action_found = True
+
+        # Generic integration tool dispatch (shared registry with voice agent).
+        # Syntax: [INTEGRATION: tool_name | {"arg":"value",...}]
+        # Tools available: send_whatsapp, post_slack, create_calendar_event,
+        # lookup_crm_contact, log_crm_activity, trigger_zapier — only those whose
+        # provider the user has connected.
+        if not action_found:
+            int_match = re.search(r'\[INTEGRATION:\s*([a-z_]+)\s*\|\s*(\{.*?\})\s*\]', accumulated_response, re.DOTALL)
+            if int_match and uid:
+                tool_name = int_match.group(1).strip()
+                try:
+                    tool_args = json.loads(int_match.group(2))
+                except Exception:
+                    tool_args = {}
+                action_counter += 1
+                action_id = str(action_counter)
+                yield json.dumps({"event": "react_action", "id": action_id, "tool": tool_name,
+                                  "input": json.dumps(tool_args)[:80], "status": "running"})
+                try:
+                    from services.integration_tools import execute_tool
+                    result = execute_tool(uid, tool_name, tool_args)
+                    if result.get("ok"):
+                        yield json.dumps({"event": "react_action_done", "id": action_id,
+                                          "status": "done", "preview": f"{tool_name} succeeded"})
+                        obs = f"INTEGRATION RESULT ({tool_name}): {json.dumps(result)[:800]}"
+                    else:
+                        yield json.dumps({"event": "react_action_done", "id": action_id,
+                                          "status": "error", "preview": result.get("error", "")[:80]})
+                        obs = f"INTEGRATION ERROR ({tool_name}): {result.get('error', 'unknown')}"
+                except Exception as e:
+                    yield json.dumps({"event": "react_action_done", "id": action_id,
+                                      "status": "error", "preview": str(e)[:80]})
+                    obs = f"INTEGRATION EXCEPTION: {e}"
+                current_messages.append({"role": "assistant", "content": accumulated_response})
+                current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nConfirm the result to the user — do not call [INTEGRATION:] again for the same action."})
+                action_found = True
 
         agent_loop._action_counter = action_counter
 
