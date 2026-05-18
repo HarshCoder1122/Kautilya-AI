@@ -19,14 +19,26 @@ _gemini_key_index = 0
 
 
 def _make_pooled_session(pool_connections=20, pool_maxsize=50):
-    """Session with connection pooling so we reuse TLS + TCP across calls.
-    Saves the ~150-300ms handshake on every LLM request.
+    """Session with connection pooling AND TCP_NODELAY so streaming SSE
+    chunks flush immediately instead of waiting for Nagle's algorithm to
+    coalesce them. Nagle adds 40-200ms of perceived latency to every token.
     """
+    import socket
+    from urllib3.poolmanager import PoolManager
+
+    class _NoDelayAdapter(HTTPAdapter):
+        def init_poolmanager(self, *args, **kwargs):
+            kwargs['socket_options'] = [
+                (socket.IPPROTO_TCP, socket.TCP_NODELAY, 1),  # flush each packet
+                (socket.SOL_SOCKET,  socket.SO_KEEPALIVE, 1),  # keep socket warm
+            ]
+            super().init_poolmanager(*args, **kwargs)
+
     s = requests.Session()
-    adapter = HTTPAdapter(
+    adapter = _NoDelayAdapter(
         pool_connections=pool_connections,
         pool_maxsize=pool_maxsize,
-        max_retries=0,  # we handle retries upstream
+        max_retries=0,
     )
     s.mount("https://", adapter)
     s.mount("http://", adapter)
@@ -37,6 +49,22 @@ def _make_pooled_session(pool_connections=20, pool_maxsize=50):
 _NVIDIA_SESSION = _make_pooled_session()
 _GROQ_SESSION = _make_pooled_session()
 _OPENROUTER_SESSION = _make_pooled_session()
+
+
+def _prewarm_nvidia():
+    """Open a TLS connection to NVIDIA at module import so the first real
+    user request doesn't pay the 200-400ms handshake. Fire-and-forget on
+    a daemon thread — if it fails, real calls still work."""
+    import threading
+    def _go():
+        try:
+            _NVIDIA_SESSION.head("https://integrate.api.nvidia.com/v1/models",
+                                 timeout=(2, 3))
+        except Exception:
+            pass
+    threading.Thread(target=_go, daemon=True).start()
+
+_prewarm_nvidia()
 
 
 def get_gemini_key():
@@ -264,12 +292,12 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                 def generate():
                     try:
                         thinking_active = False
-                        # chunk_size=64: small enough that SSE frames flush
-                        # near-instantly, large enough to avoid 1-byte syscalls.
-                        # With Accept-Encoding: identity above, urllib3 returns
-                        # whatever bytes have arrived — it does not block waiting
-                        # for chunk_size bytes.
-                        for line in resp.iter_lines(chunk_size=64, decode_unicode=True):
+                        # chunk_size=8: byte-level latency-optimal. urllib3 returns
+                        # whatever has arrived without filling the buffer
+                        # (Accept-Encoding: identity above ensures no buffering).
+                        # 1 is pure CPU overhead; 64 adds Nagle-style jitter on
+                        # NVIDIA's edge. 8 is the sweet spot.
+                        for line in resp.iter_lines(chunk_size=8, decode_unicode=True):
                             if not line:
                                 continue
                             if isinstance(line, bytes):

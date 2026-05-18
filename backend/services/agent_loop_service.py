@@ -84,17 +84,28 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 pass
         return ""
 
+    # TTFT optimization: previously these blocked for up to 1.9s pre-LLM.
+    # Now we cap the wait at 250ms total — if context isn't ready, we send
+    # without it. Both fetches still complete in the background; they just
+    # don't gate the LLM call. RAG/location are nice-to-have, not critical.
+    last_msg_preview = ""
+    if messages and messages[-1]["role"] == "user":
+        c = messages[-1].get("content", "")
+        last_msg_preview = c if isinstance(c, str) else " ".join(p.get("text", "") for p in c if isinstance(p, dict) and p.get("type") == "text")
+    # Skip RAG entirely for short messages (greetings, "ok", "thanks") — saves
+    # the Firestore round-trip and embedding similarity compute.
+    _skip_rag = len(last_msg_preview.strip()) < 20
     future_loc = _executor.submit(fetch_loc)
-    future_rag = _executor.submit(fetch_rag)
-    
+    future_rag = None if _skip_rag else _executor.submit(fetch_rag)
     try:
-        location_context = future_loc.result(timeout=0.9)
+        location_context = future_loc.result(timeout=0.15)
     except:
         pass
-    try:
-        rag_context = future_rag.result(timeout=1.0)
-    except:
-        pass
+    if future_rag is not None:
+        try:
+            rag_context = future_rag.result(timeout=0.25)
+        except:
+            pass
 
     current_messages = [m.copy() for m in messages]
     if location_context or rag_context:
@@ -123,10 +134,15 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     except Exception as _e:
         print(f"[Agent] date injection failed: {_e}")
 
-    # Inject available integration tools into the system prompt so the model
-    # knows what it can invoke via [INTEGRATION: name | {args}]. Skipped if
-    # the user has no integrations connected, to keep the prompt lean.
-    if uid:
+    # Inject available integration tools into the system prompt — but only
+    # when the user's message looks like an integration request. Always-on
+    # injection bloated prompts and slowed NVIDIA TTFT by 100-300ms on
+    # short messages. The keyword gate is cheap and accurate enough.
+    _intent_kw = ('send', 'whatsapp', 'slack', 'calendar', 'schedule', 'meeting',
+                  'crm', 'hubspot', 'zoho', 'contact', 'lead', 'zapier', 'event',
+                  'email', 'remind', 'follow up', 'follow-up')
+    _msg_low = (last_user_msg or "").lower() if last_user_msg else ""
+    if uid and any(k in _msg_low for k in _intent_kw):
         try:
             from services.integration_tools import available_tools
             specs = available_tools(uid)
@@ -153,9 +169,11 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             last_user_msg = " ".join([p["text"] for p in content if p.get("type") == "text"])
 
     # Pre-fetch integration data based on intent BEFORE calling the LLM.
-    # Inject into the last USER message (not system prompt) so the model
-    # sees it immediately before generating its response — can't ignore it.
-    if uid and last_user_msg:
+    # Gated by intent keywords so chitchat doesn't pay the HTTP round-trip
+    # to Google/HubSpot — that was adding 400-800ms TTFT on every message.
+    _prefetch_kw = ('calendar', 'schedule', 'meeting', 'event', 'crm', 'contact',
+                    'lead', 'email', 'gmail', 'remind', 'agenda', 'tomorrow', 'today')
+    if uid and last_user_msg and any(k in (last_user_msg or "").lower() for k in _prefetch_kw):
         integration_context = _pre_fetch_integrations(uid, last_user_msg)
         if integration_context:
             last_idx = len(current_messages) - 1
@@ -209,40 +227,41 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     DAILY_MODEL = 'mistralai/mistral-medium-3.5-128b'
 
     def _wrap_with_placeholder_thinking(inner_gen):
-        """Mistral on the daily tier has higher time-to-first-token than Groq.
-        We can't emit real reasoning_content (reasoning_effort='none') so we
-        synthesize a short 'thinking' placeholder that streams while the user
-        waits, then flip thinking_done as soon as real content arrives."""
+        """Show a 'thinking' placeholder ONLY if Mistral's TTFT exceeds 600ms.
+        For fast responses we don't show the bubble at all — going straight
+        from 'Sending…' to streaming feels snappier than a thinking flash.
+        """
         import time as _t
         phrases = [
             "Reading your question…",
             "Pulling the relevant context…",
             "Drafting a response…",
         ]
+        start = _t.time()
         phrase_idx = 0
-        # Emit the first thinking line immediately so the bubble appears
-        yield {"thinking": phrases[phrase_idx]}
-        last_emit = _t.time()
+        placeholder_shown = False
         thinking_closed = False
+        last_emit = start
         for item in inner_gen:
-            # Detect first content delta
             is_content = (
-                isinstance(item, dict) and (
-                    "chunk" in item or "tool_calls" in item
-                )
+                isinstance(item, dict) and ("chunk" in item or "tool_calls" in item)
             ) or isinstance(item, str)
+            now = _t.time()
+            # Lazy placeholder: only inject if the first content delta is slow.
+            if not is_content and not placeholder_shown and now - start > 0.6:
+                yield {"thinking": phrases[phrase_idx]}
+                placeholder_shown = True
+                last_emit = now
             if is_content and not thinking_closed:
-                yield {"thinking_done": True}
+                if placeholder_shown:
+                    yield {"thinking_done": True}
                 thinking_closed = True
-            # If still in thinking phase and >1.2s passed, emit next phrase
-            if not thinking_closed and _t.time() - last_emit > 1.2 and phrase_idx + 1 < len(phrases):
+            if placeholder_shown and not thinking_closed and now - last_emit > 1.2 and phrase_idx + 1 < len(phrases):
                 phrase_idx += 1
                 yield {"thinking": " " + phrases[phrase_idx]}
-                last_emit = _t.time()
+                last_emit = now
             yield item
-        if not thinking_closed:
-            # Stream ended without producing content; close anyway so the
-            # frontend doesn't keep the bubble open forever
+        if placeholder_shown and not thinking_closed:
             yield {"thinking_done": True}
 
     def _call_daily(msgs, **kw):

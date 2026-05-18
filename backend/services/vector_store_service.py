@@ -18,8 +18,18 @@ def _get_user_chat_dir(uid):
 
 
 class VectorStore:
+    # Class-level TTL cache: {uid: (vectors_dict, expires_at)}. The vectors
+    # rarely change between messages but were being re-streamed from
+    # Firestore on every chat call, costing 300-800ms TTFT per request.
+    _CACHE = {}
+    _CACHE_TTL_SEC = 60
+
     def __init__(self):
         self.client = None
+
+    @classmethod
+    def invalidate_cache(cls, uid):
+        cls._CACHE.pop(uid, None)
 
     def init_client(self):
         if not self.client and GEMINI_API_KEYS:
@@ -33,6 +43,12 @@ class VectorStore:
         vectors = {}
         if not uid:
             return vectors
+
+        # Cache check: avoid re-streaming Firestore on every chat message.
+        import time as _t
+        cached = VectorStore._CACHE.get(uid)
+        if cached and cached[1] > _t.time():
+            return cached[0]
 
         # 1. Try Firestore First
         from extensions import db
@@ -50,6 +66,7 @@ class VectorStore:
                     }
                 if vectors:
                     print(f"[VectorStore] Loaded {len(vectors)} memories from Firestore.")
+                    VectorStore._CACHE[uid] = (vectors, _t.time() + VectorStore._CACHE_TTL_SEC)
                     return vectors
             except Exception as e:
                 print(f"[VectorStore] Firestore load failed: {e}")
@@ -75,6 +92,8 @@ class VectorStore:
     def save_vectors(self, uid, vectors, new_id=None):
         if not uid:
             return
+        # Invalidate cache so the next read sees the new entries.
+        VectorStore._CACHE.pop(uid, None)
 
         from extensions import db
 

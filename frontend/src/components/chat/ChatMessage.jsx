@@ -62,6 +62,7 @@ const TOOL_NAMES = [
   'GMAIL_LIST', 'GMAIL_SEND', 'GMAIL_READ',
   'RUN_PYTHON', 'FETCH_URL',
   'WHATSAPP_SEND', 'SLACK_POST', 'HUBSPOT_CREATE_CONTACT',
+  'INTEGRATION',  // generic integration dispatch tag from agent_loop
 ].join('|');
 // Case-sensitive (no /i flag) so lowercase headers like "[email: foo]" inside
 // natural prose are preserved. Real tokens are always ALL_CAPS_WITH_UNDERSCORES.
@@ -93,18 +94,30 @@ function LinkCard({ href: rawHref, children }) {
   const isEventLink = isCalendar || isMeet || isZoom || isTeams;
 
   if (!isEventLink) {
-    let displayLabel = href;
-    try {
-      const url = new URL(href);
-      displayLabel = url.hostname.replace('www.', '');
-    } catch {}
+    // Prefer the link TEXT the model wrote — [some label](url). Falls back
+    // to hostname only when the model emitted a bare URL with no label.
+    let displayLabel = '';
+    const childText = (() => {
+      if (typeof children === 'string') return children;
+      if (Array.isArray(children)) return children.filter(c => typeof c === 'string').join('');
+      return '';
+    })().trim();
+    if (childText && childText !== href) {
+      displayLabel = childText;
+    } else {
+      displayLabel = href;
+      try {
+        const url = new URL(href);
+        displayLabel = url.hostname.replace('www.', '');
+      } catch {}
+    }
 
     return (
       <a href={href} target="_blank" rel="noopener noreferrer"
         className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-accent/40 border border-[var(--k-border)] text-[var(--k-brand)] hover:bg-accent hover:border-[var(--k-brand)]/30 transition-all duration-200 no-underline text-xs font-medium my-1"
       >
         <Link className="w-3.5 h-3.5" weight="bold" />
-        <span className="truncate max-w-[180px]">{displayLabel}</span>
+        <span className="truncate max-w-[260px]">{displayLabel}</span>
         <ArrowSquareOut className="w-3 h-3 text-muted-foreground/50" />
       </a>
     );
@@ -286,7 +299,14 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
   const rawContent = cleanText
     .replace(/<think>[\s\S]*?<\/think>/g, '')
     .trim();
-  const displayContent = linkifyContent(rawContent);
+  // Mid-stream code-fence safety: if the response has an odd number of ```
+  // fences, the markdown parser will treat everything after the last opener
+  // as code — including narrative text the model emits after a code block.
+  // Auto-balance by appending a virtual closer. The real closer (when it
+  // streams in) just replaces this, so no UX regression.
+  const _fenceCount = (rawContent.match(/```/g) || []).length;
+  const balancedContent = _fenceCount % 2 === 1 ? rawContent + '\n```' : rawContent;
+  const displayContent = linkifyContent(balancedContent);
 
   // Merge citations
   const allCitations = [...(message.citations || [])];
