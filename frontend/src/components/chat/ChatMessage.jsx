@@ -429,15 +429,8 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
       {/* Live "generating" pulse — visible whenever the backend is still
           streaming this message, so reloads/screen-locks don't show a dead UI */}
       {isLiveStreaming && !hasContent && (
-        <div className="flex items-center gap-2.5 text-xs text-muted-foreground py-2">
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--k-brand)] opacity-60"></span>
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-[var(--k-brand)]"></span>
-          </span>
-          <span className="font-medium tracking-wide">Kautilya is thinking…</span>
-          <span className="text-[10px] text-muted-foreground/60">
-            Response will appear here even if you refresh
-          </span>
+        <div className="py-2">
+          <ThinkingTokens />
         </div>
       )}
 

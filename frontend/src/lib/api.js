@@ -307,6 +307,18 @@ export const userAPI = {
     const response = await api.put('/api/user/profile', profileData);
     return response.data;
   },
+
+  // Get full settings doc
+  getSettings: async () => {
+    const response = await api.get('/api/user/settings');
+    return response.data;
+  },
+
+  // Save full settings doc
+  saveSettings: async (settingsData) => {
+    const response = await api.post('/api/user/settings', settingsData);
+    return response.data;
+  },
 };
 
 // Artifacts API
