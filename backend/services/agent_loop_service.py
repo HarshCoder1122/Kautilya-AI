@@ -45,6 +45,13 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
 
     rag_context = ""
     location_context = ""
+    last_user_msg = ""
+    if messages and messages[-1]["role"] == "user":
+        content = messages[-1].get("content", "")
+        if isinstance(content, str):
+            last_user_msg = content
+        elif isinstance(content, list):
+            last_user_msg = " ".join([p["text"] for p in content if p.get("type") == "text"])
 
     # Fetch context in parallel
     def fetch_loc():
@@ -62,22 +69,20 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get('status') == 'success':
-                    loc_str = f"\n[System: User location: {data.get('city')}, {data.get('regionName')}]\n"
-                    _loc_cache[user_ip] = (loc_str, now)
-                    return loc_str
+                     loc_str = f"\n[System: User location: {data.get('city')}, {data.get('regionName')}]\n"
+                     _loc_cache[user_ip] = (loc_str, now)
+                     return loc_str
         except:
             pass
         return ""
 
     def fetch_rag():
-        if not uid or not messages:
+        if not uid or not last_user_msg:
             return ""
-        last_msg = messages[-1]["content"]
-        query_text = last_msg if isinstance(last_msg, str) else " ".join([p["text"] for p in last_msg if p.get("type") == "text"])
         # Only RAG if query is meaningful (> 10 chars)
-        if len(query_text) > 10:
+        if len(last_user_msg) > 10:
             try:
-                hits = vector_store.search(uid, query_text, top_k=2)
+                hits = vector_store.search(uid, last_user_msg, top_k=2)
                 if hits:
                     return "\n\nRELEVANT MEMORIES:\n" + "\n".join([f"- {h[1]}" for h in hits])
             except:
@@ -88,13 +93,9 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     # Now we cap the wait at 250ms total — if context isn't ready, we send
     # without it. Both fetches still complete in the background; they just
     # don't gate the LLM call. RAG/location are nice-to-have, not critical.
-    last_msg_preview = ""
-    if messages and messages[-1]["role"] == "user":
-        c = messages[-1].get("content", "")
-        last_msg_preview = c if isinstance(c, str) else " ".join(p.get("text", "") for p in c if isinstance(p, dict) and p.get("type") == "text")
     # Skip RAG entirely for short messages (greetings, "ok", "thanks") — saves
     # the Firestore round-trip and embedding similarity compute.
-    _skip_rag = len(last_msg_preview.strip()) < 20
+    _skip_rag = len(last_user_msg.strip()) < 20
     future_loc = _executor.submit(fetch_loc)
     future_rag = None if _skip_rag else _executor.submit(fetch_rag)
     try:
@@ -158,15 +159,6 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         except Exception as _e:
             print(f"[Agent] integration tool prompt injection failed: {_e}")
 
-    MAX_TURNS = 3
-
-    last_user_msg = ""
-    if messages and messages[-1]["role"] == "user":
-        content = messages[-1].get("content", "")
-        if isinstance(content, str):
-            last_user_msg = content
-        elif isinstance(content, list):
-            last_user_msg = " ".join([p["text"] for p in content if p.get("type") == "text"])
 
     # Pre-fetch integration data based on intent BEFORE calling the LLM.
     # Gated by intent keywords so chitchat doesn't pay the HTTP round-trip
@@ -287,6 +279,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                              tools=kw.get('tools'), tool_choice=kw.get('tool_choice'))
         return _wrap_with_placeholder_thinking(groq_gen) if groq_gen else None
 
+    MAX_TURNS = 3
     for turn in range(MAX_TURNS):
         print(f"[Agent] Turn {turn+1}/{MAX_TURNS}")
 

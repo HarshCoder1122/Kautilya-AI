@@ -25,6 +25,40 @@ function linkifyContent(text) {
   );
 }
 
+function splitCrammedEmojis(content) {
+  if (!content || typeof content !== 'string') return content;
+  const emojiRegexGlobal = /(?:✅|❌|⭐|🔹|🔸|🔷|🔶|🔵|🔴|🟢|🟡|🟠|🟣|🟤|🎯|📌|📍|👉|➡|✨|⚡|🔥|💡|🚨|ℹ|✔|✖|☑)/gu;
+  const emojiRegexSingle = /(?:✅|❌|⭐|🔹|🔸|🔷|🔶|🔵|🔴|🟢|🟡|🟠|🟣|🟤|🎯|📌|📍|👉|➡|✨|⚡|🔥|💡|🚨|ℹ|✔|✖|☑)/u;
+
+  const lines = content.split('\n');
+  let inCodeBlock = false;
+
+  const processedLines = lines.map(line => {
+    if (line.trim().startsWith('```')) {
+      inCodeBlock = !inCodeBlock;
+      return line;
+    }
+    if (inCodeBlock) return line;
+
+    const matches = line.match(emojiRegexGlobal);
+    if (matches && matches.length >= 2) {
+      const firstEmojiMatch = line.match(emojiRegexSingle);
+      if (firstEmojiMatch) {
+        const firstIdx = firstEmojiMatch.index;
+        const preamble = line.substring(0, firstIdx).trim();
+        const afterPreamble = line.substring(firstIdx);
+
+        const splitSection = afterPreamble.replace(emojiRegexGlobal, '\n- $&');
+        return preamble ? `${preamble}\n${splitSection.trim()}` : splitSection.trim();
+      }
+    }
+    return line;
+  });
+
+  return processedLines.join('\n');
+}
+
+
 /** Normalize an href so plain `youtube.com/abc` doesn't get treated as a
  * path relative to ai.revealiq.in. Adds https:// when the model forgets it. */
 function normalizeHref(href) {
@@ -326,7 +360,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
   _normalized = _normalized.replace(/(```[\s\S]*?```)|\\\(([\s\S]+?)\\\)/g,
     (m, code, math) => code || `$${math}$`);
 
-  const displayContent = linkifyContent(_normalized);
+  const displayContent = linkifyContent(splitCrammedEmojis(_normalized));
 
   // Merge citations
   const allCitations = [...(message.citations || [])];
