@@ -355,6 +355,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
         content: '',
         thinking: '',
         thinkingDone: false,
+        streaming: true,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         agentType: activeMode === 'research' ? 'researcher' : activeMode === 'code' ? 'coder' : null,
       };
@@ -582,6 +583,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
         }
       }
 
+      updateAssistant({ streaming: false });
       setIsStreaming(false);
       leftMidStreamRef.current = false; // Stream completed normally — no reload needed
       // Refresh sidebar so the AI-generated title replaces the optimistic preview.
@@ -589,6 +591,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
         setTimeout(() => onStreamComplete(), 800);
       }
     } catch (error) {
+      updateAssistant({ streaming: false });
       if (error.name === 'AbortError') {
         console.log('Stream aborted by user');
         setIsThinking(false);
@@ -768,7 +771,16 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                 if (userMsgIndex >= 0) {
                   const userMsg = messages[userMsgIndex];
                   setMessages(prev => prev.filter(m => m.id !== failedMsg.id && m.id !== userMsg.id));
-                  setInputValue(userMsg.content);
+                  let userText = '';
+                  if (typeof userMsg.content === 'string') {
+                    userText = userMsg.content;
+                  } else if (Array.isArray(userMsg.content)) {
+                    userText = userMsg.content
+                      .filter(part => part && part.type === 'text')
+                      .map(part => part.text || '')
+                      .join('\n');
+                  }
+                  setInputValue(userText);
                   setTimeout(() => handleSend(), 50);
                 }
               }}
