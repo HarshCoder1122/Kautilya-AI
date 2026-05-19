@@ -353,8 +353,15 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       };
 
       const updateContent = () => {
-        // Multi-file workspace: detect complete <file>...</file> blocks (coder mode)
-        if (/<\/file>/.test(fullContent)) {
+        // Multi-file workspace: detect either <file>...</file> blocks OR the
+        // common "**filename.ext**\n```lang\n...\n```" pattern that
+        // Claude/Emergent-style coder responses emit. We require 2+ filename
+        // headers OR any explicit <file> tag so single code snippets still
+        // render as a normal artifact rather than a multi-file project.
+        const hasFileTags = /<\/file>/.test(fullContent);
+        const filenameHeaderRe = /(^|\n)[ \t]*(?:\*\*|`|#{1,6}\s+|(?:[Ff]ile|[Ff]ilename|[Pp]ath)\s*[:=]\s*)?[\w./@-]+\.(?:jsx|tsx|js|ts|html|css|py|json|md|vue|svelte|go|rs|java|cpp|c|h|sh|yml|yaml|toml|env)(?:\*\*|`)?[ \t]*\n[ \t]*```/g;
+        const headerHits = (fullContent.match(filenameHeaderRe) || []).length;
+        if (hasFileTags || headerHits >= 2) {
           const cleanContent = fullContent.replace(/<file[\s\S]*?<\/file>/g, '').trim();
           updateAssistant({
             content: cleanContent || 'Here are the project files:',
@@ -368,7 +375,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
           // Update canvas on every chunk so file tree stays current during streaming
           if (onOpenCanvas) {
             if (!canvasOpened) canvasOpened = true;
-            onOpenCanvas({ type: 'multifile', code: fullContent, title: 'Project Files' });
+            onOpenCanvas({ type: 'multifile', code: fullContent, title: 'Project Files', messageId: aiMsg.id });
           }
           return;
         }
@@ -736,6 +743,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                 type: msg.artifactType,
                 code: msg.artifactCode || "",
                 title: msg.artifactTitle || 'AI Analysis',
+                messageId: msg.id,
               })}
             />
           ))}

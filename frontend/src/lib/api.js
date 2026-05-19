@@ -324,6 +324,21 @@ export const artifactsAPI = {
   }
 };
 
+// Coder Projects — multi-file workspaces persisted to Firestore so coder
+// projects survive across reloads / message edits.
+export const coderProjectsAPI = {
+  save: async ({ uid, message_id, title, files }) => {
+    const response = await api.post('/api/coder/project/save', { uid, message_id, title, files });
+    return response.data;
+  },
+  load: async (message_id, uid) => {
+    const response = await api.get(`/api/coder/project/${encodeURIComponent(message_id)}`, {
+      params: { uid }
+    });
+    return response.data;
+  },
+};
+
 // API Keys
 export const keysAPI = {
   list: async () => {

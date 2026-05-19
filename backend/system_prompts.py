@@ -149,7 +149,12 @@ Rules:
 - Use ONE <file> block per file. Include ALL files needed to run the project.
 - For web projects: include index.html, style.css, script.js (or App.jsx etc).
 - For Python projects: include main.py, requirements.txt.
-- The user's canvas will display a file tree and live preview automatically.
+- For React/TSX projects: include App.tsx (or App.jsx) PLUS any component files.
+  The canvas auto-detects React entrypoints and compiles them in-browser with
+  Babel — so `import X from './Other'` between your files just works.
+- The user's canvas will display a file tree, live React/HTML preview, and a
+  ZIP-download button automatically — but ONLY when every file is wrapped in
+  its own <file> tag. NEVER mix files into one big fenced block.
 - After ALL <file> blocks, write a brief "## How to Run" section.
 
 Example for a React component:
