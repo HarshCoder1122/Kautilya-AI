@@ -39,6 +39,9 @@ function splitCrammedEmojis(content) {
       return line;
     }
     if (inCodeBlock) return line;
+    
+    // Skip splitting if the line looks like part of a markdown table
+    if (line.includes('|')) return line;
 
     const matches = line.match(emojiRegexGlobal);
     if (matches && matches.length >= 2) {
@@ -449,17 +452,32 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
           rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false, output: 'html' }]]}
           components={{
             a({ href, children }) {
-              return <LinkCard href={href} />;
+              return <LinkCard href={href}>{children}</LinkCard>;
             },
 
             table({ children }) {
               return (
-                <div className="overflow-x-auto my-6 rounded-xl border border-[var(--k-border)] bg-white/5 shadow-sm">
-                  <table className="min-w-full divide-y divide-[var(--k-border)]">
+                <div className="overflow-x-auto my-6 rounded-xl border border-[var(--k-border)] bg-black/20 shadow-sm">
+                  <table className="min-w-full divide-y divide-[var(--k-border)] text-sm">
                     {children}
                   </table>
                 </div>
               );
+            },
+            thead({ children }) {
+              return <thead className="bg-white/5">{children}</thead>;
+            },
+            tbody({ children }) {
+              return <tbody className="divide-y divide-[var(--k-border)]">{children}</tbody>;
+            },
+            tr({ children }) {
+              return <tr className="hover:bg-white/[0.02] transition-colors">{children}</tr>;
+            },
+            th({ children }) {
+              return <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">{children}</th>;
+            },
+            td({ children }) {
+              return <td className="px-4 py-3 text-foreground whitespace-pre-wrap">{children}</td>;
             },
             code({ node, inline, className, children, ...props }) {
               const match = /language-(\w+)/.exec(className || '');
@@ -546,36 +564,38 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
       </div>
 
       {/* Action Buttons */}
-      <div className="flex items-center gap-1 mt-4 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-        <button
-          onClick={handlePlayTTS}
-          disabled={isSynthesizing}
-          className={`p-2 rounded-md transition-all duration-200 ${isPlaying ? 'bg-[var(--k-brand)]/10 text-[var(--k-brand)]' : 'hover:bg-accent text-muted-foreground hover:text-foreground'}`}
-          title={isPlaying ? 'Stop voice' : 'Play Kautilya Voice'}
-        >
-          {isSynthesizing
-            ? <SpeakerHigh className="w-4 h-4 animate-pulse" />
-            : isPlaying
-            ? <StopCircle className="w-4 h-4" weight="bold" />
-            : <Play className="w-4 h-4" weight="bold" />}
-        </button>
+      {!isLiveStreaming && (
+        <div className="flex items-center gap-1 mt-4 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+          <button
+            onClick={handlePlayTTS}
+            disabled={isSynthesizing}
+            className={`p-2 rounded-md transition-all duration-200 ${isPlaying ? 'bg-[var(--k-brand)]/10 text-[var(--k-brand)]' : 'hover:bg-accent text-muted-foreground hover:text-foreground'}`}
+            title={isPlaying ? 'Stop voice' : 'Play Kautilya Voice'}
+          >
+            {isSynthesizing
+              ? <SpeakerHigh className="w-4 h-4 animate-pulse" />
+              : isPlaying
+              ? <StopCircle className="w-4 h-4" weight="bold" />
+              : <Play className="w-4 h-4" weight="bold" />}
+          </button>
 
-        <button
-          onClick={() => handleCopy(rawContent)}
-          className="p-2 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-all duration-200"
-          title="Copy Message"
-        >
-          {copied ? <Check className="w-4 h-4 text-emerald-400" weight="bold" /> : <Copy className="w-4 h-4" weight="bold" />}
-        </button>
+          <button
+            onClick={() => handleCopy(rawContent)}
+            className="p-2 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-all duration-200"
+            title="Copy Message"
+          >
+            {copied ? <Check className="w-4 h-4 text-emerald-400" weight="bold" /> : <Copy className="w-4 h-4" weight="bold" />}
+          </button>
 
-        <button
-          onClick={() => onRegenerate?.(message)}
-          className="p-2 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-all duration-200"
-          title="Regenerate Response"
-        >
-          <ArrowsClockwise className="w-4 h-4" weight="bold" />
-        </button>
-      </div>
+          <button
+            onClick={() => onRegenerate?.(message)}
+            className="p-2 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-all duration-200"
+            title="Regenerate Response"
+          >
+            <ArrowsClockwise className="w-4 h-4" weight="bold" />
+          </button>
+        </div>
+      )}
 
       {/* Citations */}
       {allCitations.length > 0 && (
@@ -619,10 +639,12 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
         </button>
       )}
 
-      <div className="text-[10px] text-muted-foreground/40 mt-4 flex items-center gap-2">
-        <div className="w-1 h-1 rounded-full bg-[var(--k-border)]" />
-        {message.timestamp}
-      </div>
+      {!isLiveStreaming && (
+        <div className="text-[10px] text-muted-foreground/40 mt-4 flex items-center gap-2">
+          <div className="w-1 h-1 rounded-full bg-[var(--k-border)]" />
+          {message.timestamp}
+        </div>
+      )}
     </div>
   );
 }

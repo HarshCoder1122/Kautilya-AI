@@ -122,11 +122,12 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         today = _t.strftime("%Y-%m-%d (%A)")
         tomorrow = _t.strftime("%Y-%m-%d", _t.localtime(_t.time() + 86400)) + f" ({_t.strftime('%A', _t.localtime(_t.time() + 86400))})"
         time_block = (
-            f"\n\nCURRENT_DATETIME (always trust this — your training cutoff is older):\n"
-            f"- Now: {now_str}\n"
+            f"\n\nCRITICAL TEMPORAL ANCHOR (OVERRIDE YOUR INTERNAL CLOCK):\n"
+            f"The current year is STRICTLY 2026. Do NOT say it is 2024. Your internal clock and knowledge cutoff are outdated.\n"
+            f"- Exact current time: {now_str}\n"
             f"- Today: {today}\n"
             f"- Tomorrow: {tomorrow}\n"
-            f"Use this when the user mentions today / tomorrow / next week / etc."
+            f"You MUST use 2026 for any calculations involving the current date, age, or time elapsed."
         )
         if current_messages and current_messages[0].get("role") == "system":
             current_messages[0]["content"] = str(current_messages[0].get("content", "")) + time_block
@@ -850,38 +851,16 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
 def _estimate_tokens(user_msg, mode):
     """
     Smart token budget estimator.
-    Scales answer budget proportionally to message complexity and mode.
-    Professional-level: longer/complex queries unlock more tokens for quality output.
+    Returns None to allow maximum unlimited streaming response.
     """
     msg_lower = user_msg.lower().strip()
     msg_len = len(msg_lower)
 
     greetings = {'hi', 'hello', 'hey', 'yo', 'sup', 'namaste', 'thanks', 'ok', 'bye', 'okay'}
     if msg_lower in greetings or msg_len < 10:
-        return 256  # short reply for simple greetings
+        return 1024  # short reply for simple greetings
 
-    # Complexity tiers by message length
-    if msg_len < 80:
-        complexity = 'low'
-    elif msg_len < 400:
-        complexity = 'medium'
-    elif msg_len < 1200:
-        complexity = 'high'
-    else:
-        complexity = 'very_high'
-
-    # Token budgets per mode & complexity
-    # Generous budgets — Mistral / Nemotron / Qwen all accept up to 32K output.
-    # Truncated responses are a worse UX than slightly slower streaming, and
-    # the model decides when to stop anyway. These are upper bounds, not targets.
-    budgets = {
-        'daily': {'low': 2048, 'medium': 6144, 'high': 12288, 'very_high': 16384},
-        'coder': {'low': 4096, 'medium': 12288, 'high': 24576, 'very_high': 32768},
-        'pro':   {'low': 4096, 'medium': 12288, 'high': 24576, 'very_high': 32768},
-    }
-
-    mode_key = mode if mode in budgets else 'daily'
-    return budgets[mode_key][complexity]
+    return None # Return None to let model stream as much as it wants
 
 
 def _estimate_reasoning_budget(max_tokens, max_thinking=False):
@@ -889,9 +868,12 @@ def _estimate_reasoning_budget(max_tokens, max_thinking=False):
     Derive a proportional reasoning budget from the answer token budget.
     Thinking should be ≥ answer budget to allow full deliberation.
     """
+    if max_tokens is None:
+        return 32768 if max_thinking else 8192
+
     if not max_thinking:
         # Light reasoning for standard calls
-        return min(4096, max_tokens)
+        return min(8192, max_tokens)
     # Deep thinking: up to 2× the answer budget, capped at 32k
     return min(32768, max_tokens * 2)
 

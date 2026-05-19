@@ -245,7 +245,9 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
         if has_dropped_image:
             print(f"[NVIDIA] Image dropped — model {model} is text-only")
         payload = {"model": model, "messages": clean_messages, "temperature": temperature,
-                   "max_tokens": max_tokens, "top_p": top_p, "stream": stream}
+                   "top_p": top_p, "stream": stream}
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         if tools:
             payload["tools"] = tools
         if tool_choice:
@@ -283,7 +285,7 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
             "https://integrate.api.nvidia.com/v1/chat/completions",
             headers=headers,
             json=payload,
-            timeout=(5, 600),  # (connect, read) — fail fast on connect
+            timeout=(5, 3600),  # (connect, read) — fail fast on connect, no timeout on streaming reads
             stream=stream,
         )
         if resp.status_code == 200:
@@ -400,10 +402,12 @@ def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False,
             
             # Use max_completion_tokens only for O1 models
             if "o1-" in model:
-                payload["max_completion_tokens"] = max_tokens
+                if max_tokens is not None:
+                    payload["max_completion_tokens"] = max_tokens
                 payload["reasoning_effort"] = "medium"
             else:
-                payload["max_tokens"] = max_tokens
+                if max_tokens is not None:
+                    payload["max_tokens"] = max_tokens
 
             if stream:
                 payload["stream_options"] = {"include_usage": True}
@@ -421,7 +425,7 @@ def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False,
             resp = _GROQ_SESSION.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers=headers,
-                json=payload, timeout=(5, 120), stream=stream
+                json=payload, timeout=(5, 3600), stream=stream
             )
             if resp.status_code == 200:
                 # Distinguish between classifier and regular calls
