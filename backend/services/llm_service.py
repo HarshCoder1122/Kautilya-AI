@@ -294,16 +294,10 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                 def generate():
                     try:
                         thinking_active = False
-                        # chunk_size=8: byte-level latency-optimal. urllib3 returns
-                        # whatever has arrived without filling the buffer
-                        # (Accept-Encoding: identity above ensures no buffering).
-                        # 1 is pure CPU overhead; 64 adds Nagle-style jitter on
-                        # NVIDIA's edge. 8 is the sweet spot.
-                        for line in resp.iter_lines(chunk_size=8, decode_unicode=True):
+                        for line in resp.iter_lines():
                             if not line:
                                 continue
-                            if isinstance(line, bytes):
-                                line = line.decode('utf-8', errors='replace')
+                            line = line.decode('utf-8', errors='replace')
                             if not line.startswith('data: '):
                                 continue
                             json_str = line[6:]
