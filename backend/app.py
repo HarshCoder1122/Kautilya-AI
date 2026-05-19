@@ -40,6 +40,7 @@ from routes.embed_routes import embed_bp
 from routes.artifact_routes import artifact_bp
 from routes.tts_routes import tts_bp
 from routes.analytics_routes import analytics_bp
+from routes.projects_routes import projects_bp
 
 app = Flask(__name__, static_folder=STATIC_FOLDER)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24).hex())
@@ -74,6 +75,7 @@ app.register_blueprint(embed_bp, url_prefix='/api')
 app.register_blueprint(artifact_bp, url_prefix='/api')
 app.register_blueprint(tts_bp, url_prefix='/api')
 app.register_blueprint(analytics_bp, url_prefix='/api')
+app.register_blueprint(projects_bp, url_prefix='/api')
 
 # CORS for special endpoints
 CORS(app, resources={r"/embed/*": {"origins": "*"}, r"/embed.js": {"origins": "*"}})
@@ -85,7 +87,7 @@ def set_security_headers(response):
     csp = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' 'unsafe-eval' "
-            "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com "
+            "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com "
             "https://www.gstatic.com https://apis.google.com "
             "https://checkout.razorpay.com https://cdn.razorpay.com; "
         "style-src 'self' 'unsafe-inline' "

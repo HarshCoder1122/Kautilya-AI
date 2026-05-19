@@ -413,3 +413,198 @@
 .animate-fade-up {
   animation: fade-up 0.25s ease forwards;
 }
+
+/* ──────────────────────────────────────────────────────────────────────
+   PREMIUM MARKDOWN TYPOGRAPHY
+   Airier spacing, branded bullets/numbers, glassmorphic equation cards,
+   pill-shaped inline code & math, softly-highlighted strong text.
+   ────────────────────────────────────────────────────────────────────── */
+.message-content {
+  font-size: 15px;
+  line-height: 1.72;
+  letter-spacing: 0.005em;
+  color: var(--k-text-secondary);
+}
+
+.message-content p {
+  margin: 0 0 1rem;
+}
+
+/* Inline code → branded pill */
+.message-content :not(pre) > code {
+  background: linear-gradient(180deg,
+    rgba(var(--k-brand-rgb, 99 102 241) / 0.12),
+    rgba(var(--k-brand-rgb, 99 102 241) / 0.06));
+  border: 1px solid rgba(var(--k-brand-rgb, 99 102 241) / 0.18);
+  color: var(--k-brand, #6366f1);
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 0.85em;
+  font-family: 'JetBrains Mono', monospace;
+  white-space: nowrap;
+}
+
+/* Inline KaTeX → soft pill so equations sit nicely in prose */
+.message-content .katex:not(.katex-display .katex) {
+  padding: 2px 8px;
+  margin: 0 1px;
+  border-radius: 8px;
+  background: linear-gradient(180deg,
+    rgba(168, 85, 247, 0.10),
+    rgba(99, 102, 241, 0.06));
+  border: 1px solid rgba(168, 85, 247, 0.16);
+  font-size: 1.02em;
+}
+
+/* Display equations → glassmorphic card with corner label */
+.message-content .katex-display {
+  position: relative;
+  margin: 1.4rem 0;
+  padding: 1.25rem 1.5rem 1.1rem;
+  border-radius: 14px;
+  background: linear-gradient(160deg,
+    rgba(255, 255, 255, 0.04),
+    rgba(255, 255, 255, 0.015));
+  border: 1px solid var(--k-border);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.02) inset,
+    0 12px 32px -18px rgba(0, 0, 0, 0.55),
+    0 0 32px -16px rgba(168, 85, 247, 0.18);
+  overflow-x: auto;
+}
+
+.message-content .katex-display::before {
+  content: 'EQUATION';
+  position: absolute;
+  top: 8px;
+  left: 14px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: rgba(168, 85, 247, 0.55);
+  font-family: 'IBM Plex Sans', sans-serif;
+}
+
+.message-content .katex-display > .katex {
+  font-size: 1.08em;
+  margin-top: 0.2rem;
+}
+
+/* Premium bullet lists — branded dot, generous spacing */
+.message-content ul {
+  list-style: none;
+  padding-left: 1.4rem;
+  margin: 1rem 0;
+}
+
+.message-content ul > li {
+  position: relative;
+  padding-left: 0.4rem;
+  margin: 0.55rem 0;
+  line-height: 1.7;
+}
+
+.message-content ul > li:not(.has-emoji-bullet)::before {
+  content: '';
+  position: absolute;
+  left: -0.95rem;
+  top: 0.72em;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: linear-gradient(135deg,
+    var(--k-brand, #6366f1),
+    rgba(168, 85, 247, 0.85));
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.45);
+}
+
+/* Emoji-led items — emoji IS the bullet, suppress the dot */
+.message-content ul > li.has-emoji-bullet {
+  padding-left: 0;
+  list-style: none;
+}
+.message-content ul > li.has-emoji-bullet::before {
+  display: none;
+}
+
+/* Premium numbered lists — branded square counters */
+.message-content ol {
+  list-style: none;
+  counter-reset: kautilya-step;
+  padding-left: 2.2rem;
+  margin: 1rem 0;
+}
+
+.message-content ol > li {
+  position: relative;
+  counter-increment: kautilya-step;
+  padding-left: 0.4rem;
+  margin: 0.6rem 0;
+  line-height: 1.7;
+}
+
+.message-content ol > li::before {
+  content: counter(kautilya-step);
+  position: absolute;
+  left: -2rem;
+  top: 0.15em;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 6px;
+  background: linear-gradient(135deg,
+    rgba(var(--k-brand-rgb, 99 102 241) / 0.18),
+    rgba(168, 85, 247, 0.12));
+  border: 1px solid rgba(var(--k-brand-rgb, 99 102 241) / 0.24);
+  color: var(--k-brand, #6366f1);
+  font-size: 11px;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: 0;
+}
+
+/* Subtle highlight on strong text — draws the eye without shouting */
+.message-content strong {
+  color: var(--k-text);
+  font-weight: 650;
+  background: linear-gradient(180deg,
+    transparent 62%,
+    rgba(var(--k-brand-rgb, 99 102 241) / 0.18) 62%,
+    rgba(var(--k-brand-rgb, 99 102 241) / 0.18) 92%,
+    transparent 92%);
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
+/* Refined blockquotes — gradient border + rounded edges */
+.message-content blockquote {
+  position: relative;
+  border-left: 3px solid transparent;
+  border-image: linear-gradient(180deg,
+    var(--k-brand, #6366f1),
+    rgba(168, 85, 247, 0.5)) 1;
+  padding: 0.85rem 1.25rem;
+  margin: 1.5rem 0;
+  background: linear-gradient(90deg,
+    rgba(var(--k-brand-rgb, 99 102 241) / 0.07),
+    transparent 85%);
+  border-radius: 0 10px 10px 0;
+  font-style: italic;
+  color: var(--k-text-secondary);
+}
+
+/* Generous headings */
+.message-content h1,
+.message-content h2,
+.message-content h3 {
+  margin-top: 1.8rem;
+  margin-bottom: 0.85rem;
+  letter-spacing: -0.015em;
+}
+.message-content h1:first-child,
+.message-content h2:first-child,
+.message-content h3:first-child {
+  margin-top: 0;
+}

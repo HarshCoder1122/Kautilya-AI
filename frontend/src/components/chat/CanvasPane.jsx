@@ -7,6 +7,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Area, AreaChart } from "recharts";
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { coderProjectsAPI } from '@/lib/api';
 
 /** Parse `<file ...>...</file>` blocks from model output.
  *
@@ -19,22 +20,95 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
  */
 function parseFileBlocks(code) {
   if (!code) return [];
-  const re = /<file\s+([^>]+?)>([\s\S]*?)<\/file>/gi;
   const files = [];
+  const seen = new Set();
+
+  const pushFile = (name, body, langHint) => {
+    if (!name) return;
+    const cleanName = name.trim().replace(/^["'`]|["'`]$/g, '');
+    if (!cleanName || seen.has(cleanName)) return;
+    seen.add(cleanName);
+    files.push({
+      name: cleanName,
+      language: langHint || inferLang(cleanName),
+      content: (body || '').replace(/^\n+|\n+$/g, ''),
+    });
+  };
+
+  // 1) Explicit <file name="..." language="..."> blocks
+  const re = /<file\s+([^>]+?)>([\s\S]*?)<\/file>/gi;
   let m;
   while ((m = re.exec(code)) !== null) {
     const attrs = parseAttrs(m[1]);
     const filename = attrs.name || attrs.path || attrs.filename || attrs.file;
     if (!filename) continue;
     let body = m[2];
-    // Strip a leading/trailing ```lang ... ``` fence (model often wraps the code)
     body = body.replace(/^\s*```[a-zA-Z0-9_+-]*\s*\n/, '').replace(/\n\s*```\s*$/, '');
-    files.push({
-      name: filename,
-      language: attrs.language || attrs.lang || inferLang(filename),
-      content: body.replace(/^\n+|\n+$/g, ''),  // trim leading/trailing newlines, keep internal whitespace
-    });
+    pushFile(filename, body, attrs.language || attrs.lang);
   }
+
+  // 2) Claude/Emergent-style: a filename header immediately followed by a
+  //    fenced code block. We accept several common header forms so projects
+  //    parse cleanly even when the model forgets <file> tags.
+  //
+  //    Recognized headers (each on its own line, with code fence right after):
+  //      **path/file.tsx**
+  //      ### path/file.tsx
+  //      ## path/file.tsx
+  //      `path/file.tsx`
+  //      File: path/file.tsx
+  //      path/file.tsx
+  //
+  //    Also recognizes ```filename.tsx as the language label.
+  const FILENAME_HINT = /^[\w./@-]+\.[a-zA-Z0-9]{1,6}$/;
+  const headerRe = /^[ \t]*(?:\*\*|`|#{1,6}\s+|(?:[Ff]ile|[Ff]ilename|[Pp]ath)\s*[:=]\s*)?([\w./@-]+\.[a-zA-Z0-9]{1,6})(?:\*\*|`)?[ \t]*$/;
+  // Tokenize on fenced blocks so we can pair "preceding header" → "fence".
+  const fenceRe = /```([a-zA-Z0-9_+./@-]*)\s*\n([\s\S]*?)```/g;
+  let fm;
+  while ((fm = fenceRe.exec(code)) !== null) {
+    const lang = (fm[1] || '').trim();
+    const body = fm[2] || '';
+    const startIdx = fm.index;
+
+    // Skip if this fence sits INSIDE a <file>...</file> we already handled.
+    const tail = code.slice(0, startIdx);
+    const lastOpen = tail.lastIndexOf('<file');
+    const lastClose = tail.lastIndexOf('</file>');
+    if (lastOpen > lastClose) continue;
+
+    // Case A: language label is itself a filename → use it.
+    if (FILENAME_HINT.test(lang)) {
+      pushFile(lang, body);
+      continue;
+    }
+
+    // Case B: look at the up-to-3 non-empty lines preceding the fence for a
+    // filename header.
+    const beforeText = tail.slice(Math.max(0, tail.length - 400));
+    const beforeLines = beforeText.split('\n').filter(l => l.trim().length).slice(-3).reverse();
+    let foundName = null;
+    for (const line of beforeLines) {
+      const h = line.match(headerRe);
+      if (h && FILENAME_HINT.test(h[1])) { foundName = h[1]; break; }
+      // First non-empty line that ISN'T a filename header breaks the search
+      // (we only want IMMEDIATELY-preceding filename labels).
+      if (line.trim().length > 0 && !/^[\*#`>\-\s]*$/.test(line)) break;
+    }
+    if (foundName) {
+      pushFile(foundName, body, lang || undefined);
+      continue;
+    }
+
+    // Case C: leading comment naming the file: // File: x.tsx  or  # path/y.py
+    const firstLine = body.split('\n', 1)[0] || '';
+    const commentMatch = firstLine.match(/^[ \t]*(?:\/\/|#|--|;)\s*(?:[Ff]ile\s*[:=]\s*)?([\w./@-]+\.[a-zA-Z0-9]{1,6})\s*$/);
+    if (commentMatch && FILENAME_HINT.test(commentMatch[1])) {
+      const stripped = body.split('\n').slice(1).join('\n');
+      pushFile(commentMatch[1], stripped, lang || undefined);
+      continue;
+    }
+  }
+
   return files;
 }
 
@@ -87,6 +161,165 @@ function buildHtmlPreview(files) {
     src = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Preview</title></head><body>${src}</body></html>`;
   }
   return src;
+}
+
+/** Build a self-contained HTML page that mounts a React/JSX/TSX project in
+ *  the iframe using Babel standalone for in-browser transpile. Recognizes
+ *  common entrypoints (App.jsx, App.tsx, src/App.tsx, index.tsx, main.tsx)
+ *  and loads sibling modules via an in-memory import map so `import X from
+ *  './Other'` works without a bundler. CSS files are inlined as <style>.
+ */
+function buildReactPreview(files) {
+  if (!files || !files.length) return null;
+  const isReactFile = (f) => /\.(jsx|tsx)$/i.test(f.name);
+  const reactFiles = files.filter(isReactFile);
+  if (!reactFiles.length) return null;
+
+  // Pick an entry: App.tsx/jsx → src/App.tsx → main/index.tsx → first React file
+  const byName = (n) => reactFiles.find(f => f.name.replace(/^\.\//, '') === n);
+  const entry =
+       byName('App.tsx') || byName('App.jsx')
+    || byName('src/App.tsx') || byName('src/App.jsx')
+    || byName('index.tsx') || byName('index.jsx')
+    || byName('main.tsx') || byName('main.jsx')
+    || byName('src/index.tsx') || byName('src/main.tsx')
+    || reactFiles[0];
+
+  if (!entry) return null;
+
+  // All inlined CSS
+  const cssFiles = files.filter(f => /\.css$/i.test(f.name));
+  const cssCombined = cssFiles.map(f => `/* ${f.name} */\n${f.content}`).join('\n\n');
+
+  // Build module registry: { "./Foo": "...code...", "./components/Bar": "..." }
+  // Strip extensions on keys so import paths resolve regardless of extension.
+  const moduleMap = {};
+  for (const f of reactFiles) {
+    const noExt = f.name.replace(/\.(jsx|tsx|js|ts)$/i, '');
+    moduleMap[`./${noExt}`] = f.content;
+    moduleMap[`./${f.name}`] = f.content;
+    // Also expose without leading './'
+    moduleMap[noExt] = f.content;
+    moduleMap[f.name] = f.content;
+  }
+
+  // Strip TypeScript-only constructs that Babel preset-typescript handles —
+  // we already include preset-typescript, so this is just a safety net for
+  // `import type` lines that cause issues with the loader.
+  // (Babel handles the rest.)
+
+  const moduleMapJson = JSON.stringify(moduleMap);
+  const entryName = entry.name;
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>React Preview</title>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+<style>
+  html,body,#root{margin:0;padding:0;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
+  #__preview_error{position:fixed;inset:0;background:#1e1e22;color:#ff8a8a;padding:24px;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow:auto;display:none;z-index:9999;}
+${cssCombined}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<pre id="__preview_error"></pre>
+<script>
+  window.process = window.process || { env: { NODE_ENV: 'development' } };
+  const __MODULES__ = ${moduleMapJson};
+  const __CACHE__ = {};
+
+  function showError(err) {
+    const box = document.getElementById('__preview_error');
+    box.textContent = (err && (err.stack || err.message)) || String(err);
+    box.style.display = 'block';
+    console.error(err);
+  }
+  window.addEventListener('error', e => showError(e.error || e.message));
+  window.addEventListener('unhandledrejection', e => showError(e.reason));
+
+  function resolve(spec, fromKey) {
+    // Strip ./ and extension to match registry keys
+    let k = spec.replace(/^\\.\\//, '');
+    if (__MODULES__[spec] != null) return spec;
+    if (__MODULES__['./' + k] != null) return './' + k;
+    if (__MODULES__[k] != null) return k;
+    const stripped = k.replace(/\\.(jsx|tsx|js|ts)$/i, '');
+    if (__MODULES__['./' + stripped] != null) return './' + stripped;
+    if (__MODULES__[stripped] != null) return stripped;
+    return null;
+  }
+
+  function externalModule(spec) {
+    if (spec === 'react') return React;
+    if (spec === 'react-dom') return ReactDOM;
+    if (spec === 'react-dom/client') return ReactDOM;
+    return null;
+  }
+
+  function load(spec) {
+    if (__CACHE__[spec]) return __CACHE__[spec].exports;
+    const src = __MODULES__[spec];
+    if (src == null) throw new Error('Module not found: ' + spec);
+
+    let transformed;
+    try {
+      transformed = Babel.transform(src, {
+        presets: [
+          ['env', { modules: 'commonjs', targets: { esmodules: true } }],
+          'react',
+          ['typescript', { allExtensions: true, isTSX: true, allowDeclareFields: true }]
+        ],
+        filename: spec
+      }).code;
+    } catch (e) {
+      throw new Error('Compile failed in ' + spec + ':\\n' + (e.message || e));
+    }
+
+    const module = { exports: {} };
+    __CACHE__[spec] = module;
+    const require = (req) => {
+      const ext = externalModule(req);
+      if (ext) return ext;
+      const resolved = resolve(req, spec);
+      if (resolved == null) throw new Error('Cannot resolve "' + req + '" from ' + spec);
+      return load(resolved);
+    };
+    try {
+      new Function('require', 'module', 'exports', transformed)(require, module, module.exports);
+    } catch (e) {
+      throw new Error('Runtime error in ' + spec + ':\\n' + (e.stack || e.message || e));
+    }
+    return module.exports;
+  }
+
+  try {
+    const entryKey = resolve(${JSON.stringify(entryName)}, null) || ${JSON.stringify(entryName)};
+    const mod = load(entryKey);
+    const Component = mod && (mod.default || mod.App || mod);
+    const container = document.getElementById('root');
+    if (typeof Component === 'function' || (Component && Component.$$typeof)) {
+      const root = ReactDOM.createRoot(container);
+      root.render(React.createElement(Component));
+    } else if (mod && mod.default && typeof mod.default === 'object') {
+      // Module just exported elements
+      const root = ReactDOM.createRoot(container);
+      root.render(mod.default);
+    } else {
+      // Side-effect entry (e.g. main.tsx already calls createRoot)
+      // Nothing to do — the entry already rendered itself.
+    }
+  } catch (e) {
+    showError(e);
+  }
+</script>
+</body>
+</html>`;
 }
 
 function downloadFile(filename, content) {
@@ -184,6 +417,11 @@ function MultiFileWorkspace({ files, title }) {
 
   const currentFile = files.find(f => f.name === activeFile) || files[0];
   const htmlPreview = useMemo(() => buildHtmlPreview(files), [files]);
+  const reactPreview = useMemo(() => buildReactPreview(files), [files]);
+  // Pick whichever preview is available — HTML wins when both, since the
+  // model usually emits a dedicated index.html for plain web projects.
+  const previewSrc = htmlPreview || reactPreview;
+  const previewKind = htmlPreview ? 'html' : (reactPreview ? 'react' : null);
 
   const handleCopy = () => {
     if (currentFile) {
@@ -222,14 +460,14 @@ function MultiFileWorkspace({ files, title }) {
           <span className="text-[10px] text-muted-foreground ml-2 shrink-0">{files.length} file{files.length !== 1 ? 's' : ''}</span>
         </div>
         <div className="flex items-center gap-1">
-          {htmlPreview && (
+          {previewSrc && (
             <>
               <button
                 onClick={() => setViewMode(v => v === 'preview' ? 'code' : 'preview')}
                 className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-bold transition-all ${viewMode === 'preview' ? 'bg-[var(--k-brand)] text-white' : 'bg-accent text-muted-foreground hover:text-foreground'}`}
-                title={viewMode === 'preview' ? 'Show code' : 'Show preview'}
+                title={viewMode === 'preview' ? 'Show code' : `Live ${previewKind === 'react' ? 'React' : 'HTML'} preview`}
               >
-                <Eye className="w-3 h-3" />{viewMode === 'preview' ? 'Code' : 'Preview'}
+                <Eye className="w-3 h-3" />{viewMode === 'preview' ? 'Code' : (previewKind === 'react' ? 'React' : 'Preview')}
               </button>
               {viewMode === 'preview' && (
                 <>
@@ -241,7 +479,7 @@ function MultiFileWorkspace({ files, title }) {
                     <ArrowsOutSimple className="w-3.5 h-3.5 text-muted-foreground" />
                   </button>
                   <button
-                    onClick={() => openPreviewInNewTab(htmlPreview)}
+                    onClick={() => openPreviewInNewTab(previewSrc)}
                     className="p-1.5 rounded hover:bg-accent"
                     title="Open preview in new tab"
                   >
@@ -290,9 +528,9 @@ function MultiFileWorkspace({ files, title }) {
 
         {/* Editor / Preview */}
         <div className="flex-1 min-w-0 overflow-hidden">
-          {viewMode === 'preview' && htmlPreview ? (
+          {viewMode === 'preview' && previewSrc ? (
             <iframe
-              srcDoc={htmlPreview}
+              srcDoc={previewSrc}
               sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
               className="w-full h-full border-none bg-white"
               title="Live Preview"
@@ -313,16 +551,16 @@ function MultiFileWorkspace({ files, title }) {
       </div>
 
       {/* Fullscreen preview overlay */}
-      {fullscreen && htmlPreview && (
+      {fullscreen && previewSrc && (
         <div className="fixed inset-0 z-[100] bg-black/95 flex flex-col">
           <div className="h-12 flex items-center justify-between px-4 border-b border-white/10 bg-[var(--k-surface)]">
             <div className="flex items-center gap-2">
               <Eye className="w-4 h-4 text-[var(--k-brand)]" />
-              <span className="text-sm font-bold text-foreground truncate max-w-[60vw]">{title} — Live Preview</span>
+              <span className="text-sm font-bold text-foreground truncate max-w-[60vw]">{title} — Live {previewKind === 'react' ? 'React' : 'HTML'} Preview</span>
             </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => openPreviewInNewTab(htmlPreview)}
+                onClick={() => openPreviewInNewTab(previewSrc)}
                 className="flex items-center gap-1 px-3 py-1.5 rounded bg-accent text-foreground hover:bg-accent/80 text-xs font-semibold"
                 title="Open in new tab"
               >
@@ -339,7 +577,7 @@ function MultiFileWorkspace({ files, title }) {
             </div>
           </div>
           <iframe
-            srcDoc={htmlPreview}
+            srcDoc={previewSrc}
             sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
             className="flex-1 w-full border-none bg-white"
             title="Fullscreen Preview"
@@ -360,10 +598,59 @@ export function CanvasPane({ content, onClose, activeMode }) {
 
   const [activeTab, setActiveTab] = useState(getInitialTab(content));
   const [copied, setCopied] = useState(false);
+  const [restoredFiles, setRestoredFiles] = useState(null);
 
   // Parse multi-file blocks from content
-  const fileBlocks = useMemo(() => parseFileBlocks(content?.code), [content?.code]);
+  const parsedBlocks = useMemo(() => parseFileBlocks(content?.code), [content?.code]);
+  // Prefer Firestore-restored files when message text doesn't parse to as
+  // many files — this is the "never lose your project" guarantee.
+  const fileBlocks = useMemo(() => {
+    if (restoredFiles && restoredFiles.length > parsedBlocks.length) return restoredFiles;
+    return parsedBlocks;
+  }, [parsedBlocks, restoredFiles]);
   const isMultiFile = fileBlocks.length > 0;
+
+  // Auto-save coder projects to Firestore (keyed by message_id) so files
+  // survive across page reloads even if the underlying message text is
+  // trimmed/edited.
+  useEffect(() => {
+    if (!isMultiFile || !content?.messageId || parsedBlocks.length === 0) return;
+    const uid = (() => {
+      try { return JSON.parse(localStorage.getItem('user') || '{}')?.uid || ''; }
+      catch { return ''; }
+    })();
+    if (!uid) return;
+    const handle = setTimeout(() => {
+      coderProjectsAPI.save({
+        uid,
+        message_id: content.messageId,
+        title: content.title || 'Untitled Project',
+        files: parsedBlocks.map(f => ({ name: f.name, language: f.language, content: f.content })),
+      }).catch((e) => console.warn('[CoderProject] save failed:', e?.message || e));
+    }, 800);
+    return () => clearTimeout(handle);
+  }, [isMultiFile, parsedBlocks, content?.messageId, content?.title]);
+
+  // Auto-restore from Firestore when message text parses to nothing (older
+  // chats reopened after a reload).
+  useEffect(() => {
+    if (!content?.messageId || parsedBlocks.length > 0) return;
+    const uid = (() => {
+      try { return JSON.parse(localStorage.getItem('user') || '{}')?.uid || ''; }
+      catch { return ''; }
+    })();
+    if (!uid) return;
+    let cancelled = false;
+    coderProjectsAPI.load(content.messageId, uid)
+      .then((res) => {
+        if (cancelled) return;
+        if (res?.found && Array.isArray(res.files) && res.files.length) {
+          setRestoredFiles(res.files);
+        }
+      })
+      .catch((e) => console.warn('[CoderProject] load failed:', e?.message || e));
+    return () => { cancelled = true; };
+  }, [content?.messageId, parsedBlocks.length]);
 
   // Sync tab when content changes (new artifact opened)
   useEffect(() => {
