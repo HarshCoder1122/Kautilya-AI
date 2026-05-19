@@ -58,8 +58,10 @@ def reveal_iq_stream():
             'speed': float(speed),
         }
 
-        # Request streaming from Space
-        resp = requests.post(url, headers=headers, json=payload, stream=True, timeout=60)
+        # Request streaming from Space. Connect timeout 15s, but NO read
+        # timeout — long messages take 30-90s of continuous chunk delivery
+        # and a scalar `timeout=60` was killing playback mid-stream.
+        resp = requests.post(url, headers=headers, json=payload, stream=True, timeout=(15, None))
 
         if not resp.ok:
             logger.error(f"[TTS Stream] RevealIQ returned {resp.status_code}: {resp.text[:200]}")
