@@ -257,13 +257,22 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
       return;
     }
 
+    // Send the WHOLE cleaned message — the backend Kokoro stream synthesises
+    // sentence-by-sentence so long messages still get a fast TTFB. The
+    // previous 600-char slice caused everything past the first paragraph to
+    // be silently dropped from playback.
     const textToSpeak = (message.content || message.responseText || '')
       .replace(/<think>[\s\S]*?<\/think>/g, '')
       .replace(/<artifact[\s\S]*?<\/artifact>/g, '')
+      .replace(/<file[\s\S]*?<\/file>/gi, '')
       .replace(/```[\s\S]*?```/g, '')
+      .replace(/\[(?:[A-Z_]+):[\s\S]*?\]/g, '')   // strip [TOOL: ...] tags
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, '')       // strip image markdown
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')  // keep link text, drop URL
       .replace(/[#*_~`>]/g, '')
-      .trim()
-      .slice(0, 600);
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
 
     if (!textToSpeak) return;
 
