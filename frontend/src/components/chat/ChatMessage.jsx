@@ -199,8 +199,35 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
   const [isSynthesizing, setIsSynthesizing] = useState(false);
   const audioRef = useRef(null);
 
+  // Normalize content & attachments (especially for history loaded messages)
+  let normalizedContent = message.content || '';
+  let attachments = Array.isArray(message.files) ? message.files : [];
+
+  if (Array.isArray(message.content)) {
+    const textParts = [];
+    const imageParts = [];
+    message.content.forEach(part => {
+      if (!part) return;
+      if (typeof part === 'string') {
+        textParts.push(part);
+      } else if (part.type === 'text' && part.text) {
+        textParts.push(part.text);
+      } else if (part.type === 'image_url' && part.image_url?.url) {
+        imageParts.push({
+          previewUrl: part.image_url.url,
+          name: 'Attachment',
+          type: 'image/png'
+        });
+      }
+    });
+    normalizedContent = textParts.join('\n');
+    attachments = [...attachments, ...imageParts];
+  } else if (typeof normalizedContent !== 'string') {
+    normalizedContent = String(normalizedContent);
+  }
+
   const handleCopy = (text) => {
-    const copyText = text || message.content || message.responseText || '';
+    const copyText = text || normalizedContent || message.responseText || '';
     if (!copyText) return;
     navigator.clipboard.writeText(copyText).catch(() => {});
     setCopied(true);
@@ -231,7 +258,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
     // sentence-by-sentence so long messages still get a fast TTFB. The
     // previous 600-char slice caused everything past the first paragraph to
     // be silently dropped from playback.
-    const textToSpeak = (message.content || message.responseText || '')
+    const textToSpeak = (normalizedContent || message.responseText || '')
       .replace(/<think>[\s\S]*?<\/think>/g, '')
       .replace(/<artifact[\s\S]*?<\/artifact>/g, '')
       .replace(/<file[\s\S]*?<\/file>/gi, '')
@@ -304,7 +331,6 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
   };
 
   if (message.role === 'user') {
-    const attachments = Array.isArray(message.files) ? message.files : [];
     return (
       <div className="message-user flex justify-end animate-fade-up" data-testid={`message-${message.id}`}>
         <div className="max-w-[85%]">
@@ -331,9 +357,9 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
               })}
             </div>
           )}
-          {message.content && (
+          {normalizedContent && (
             <div className="bg-[var(--k-brand)] text-white px-4 py-3 rounded-2xl rounded-br-md text-sm leading-relaxed shadow-lg shadow-[var(--k-brand)]/10 whitespace-pre-wrap">
-              {message.content}
+              {normalizedContent}
             </div>
           )}
           <div className="text-[10px] text-muted-foreground/50 mt-1 text-right font-medium">{message.timestamp}</div>
@@ -342,7 +368,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
     );
   }
 
-  const { sources: extractedSources, cleanText } = extractSources(message.responseText || message.content || '');
+  const { sources: extractedSources, cleanText } = extractSources(message.responseText || normalizedContent || '');
   
   const agent = message.agentType ? agentBadge[message.agentType] : null;
   const rawContent = cleanText
