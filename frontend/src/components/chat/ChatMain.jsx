@@ -323,10 +323,19 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
         throw new Error(detail || `Request failed (${response.status})`);
       }
 
-      setIsThinking(false);
+      // Keep "Analyzing your request..." banner visible until the first
+      // actual content/thinking chunk arrives — otherwise the indicator
+      // disappears the instant headers are received (a few seconds before
+      // NVIDIA daily model emits its first token), leaving a dead screen.
       setIsStreaming(true);
       setStaleTimeout(false);
       leftMidStreamRef.current = true; // Mark in-progress so tab-return triggers reload
+      let firstChunkSeen = false;
+      const markFirstChunk = () => {
+        if (firstChunkSeen) return;
+        firstChunkSeen = true;
+        setIsThinking(false);
+      };
 
       const aiMsg = {
         id: `msg-ai-${Date.now()}`,
@@ -436,6 +445,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
               }
               if (parsed.event === 'status') {
                 if (parsed.message) {
+                  markFirstChunk();
                   updateAssistant({ thinking: parsed.message, thinkingDone: false });
                 } else {
                   updateAssistant({ thinkingDone: true });
@@ -514,6 +524,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                 continue;
               }
               if (parsed.thinking) {
+                markFirstChunk();
                 setMessages(prev => prev.map(msg => (
                   msg.id === aiMsg.id
                     ? { ...msg, thinking: `${msg.thinking || ''}${parsed.thinking}`, thinkingDone: false }
@@ -526,12 +537,14 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                 continue;
               }
               if (parsed.chunk) {
+                markFirstChunk();
                 fullContent += parsed.chunk;
                 updateContent();
               }
             } catch (e) {
               // Non-JSON raw chunk
               if (data && data !== '[DONE]') {
+                markFirstChunk();
                 fullContent += data;
                 updateContent();
               }
@@ -750,7 +763,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
 
           {isThinking && (
             <ThinkingTokens
-              text="Analyzing your request... Routing to specialized agent... Gathering context..."
+              text="Reading your question... Drafting response... Analyzing context... Routing to the right agent..."
             />
           )}
 
