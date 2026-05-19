@@ -2,16 +2,27 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { User, Key, Bell, Shield, Palette, CaretRight, CheckCircle, Warning, GoogleLogo, Crown } from "@phosphor-icons/react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { billingAPI } from "../../lib/api";
+import { billingAPI, userAPI } from "../../lib/api";
 import ApiKeySettings from "./ApiKeySettings";
 
 export default function UserSettings({ user }) {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('profile');
   const [billingConfig, setBillingConfig] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [profileSettings, setProfileSettings] = useState({
+    preferred_name: "",
+    display_name: "",
+    work_function: "",
+    personal_preferences: "",
+  });
+  const [saveStatus, setSaveStatus] = useState(null); // 'success' | 'error' | null
 
   useEffect(() => {
     loadBillingStatus();
+    loadProfileSettings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadBillingStatus = async () => {
@@ -20,6 +31,44 @@ export default function UserSettings({ user }) {
       setBillingConfig(config);
     } catch (error) {
       console.error("Failed to load billing status:", error);
+    }
+  };
+
+  const loadProfileSettings = async () => {
+    setLoading(true);
+    try {
+      const data = await userAPI.getSettings();
+      if (data && data.settings) {
+        setProfileSettings({
+          preferred_name: data.settings.preferred_name || "",
+          display_name: data.settings.display_name || user?.displayName || "",
+          work_function: data.settings.work_function || "",
+          personal_preferences: data.settings.personal_preferences || "",
+        });
+      }
+    } catch (error) {
+      console.error("Failed to load user settings:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSaveSettings = async (e) => {
+    if (e) e.preventDefault();
+    setSaving(true);
+    setSaveStatus(null);
+    try {
+      await userAPI.saveSettings({
+        ...profileSettings,
+        display_name: profileSettings.display_name || user?.displayName || "",
+      });
+      setSaveStatus('success');
+      setTimeout(() => setSaveStatus(null), 3000);
+    } catch (error) {
+      console.error("Failed to save settings:", error);
+      setSaveStatus('error');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -86,7 +135,7 @@ export default function UserSettings({ user }) {
                       </div>
                       <div className="space-y-1">
                         <div className="text-lg font-semibold text-foreground flex items-center gap-2">
-                          {user?.displayName || 'User'}
+                          {profileSettings.preferred_name || user?.displayName || 'User'}
                           {isPro && <Crown className="w-5 h-5 text-amber-400" weight="fill" />}
                         </div>
                         <div className="text-sm text-muted-foreground flex items-center gap-2">
@@ -98,6 +147,79 @@ export default function UserSettings({ user }) {
                           <span>Connected via Google Auth</span>
                         </div>
                       </div>
+                    </div>
+                  </section>
+
+                  {/* AI Personalization Section */}
+                  <section className="space-y-4">
+                    <h3 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">AI Personalization</h3>
+                    <div className="p-6 rounded-2xl bg-white/5 border border-white/5 space-y-4">
+                      <form onSubmit={handleSaveSettings} className="space-y-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="space-y-1.5">
+                            <label className="text-xs font-semibold text-muted-foreground" htmlFor="preferred-name">
+                              Preferred Name
+                            </label>
+                            <input
+                              id="preferred-name"
+                              type="text"
+                              value={profileSettings.preferred_name}
+                              onChange={(e) => setProfileSettings({ ...profileSettings, preferred_name: e.target.value })}
+                              placeholder="How AI should address you, e.g., Harsh"
+                              className="w-full px-3 py-2 rounded-lg border border-[var(--k-border)] bg-[var(--k-surface)] text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-[var(--k-brand)] focus:border-[var(--k-brand)] transition-colors"
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-xs font-semibold text-muted-foreground" htmlFor="work-function">
+                              Role / Profession
+                            </label>
+                            <input
+                              id="work-function"
+                              type="text"
+                              value={profileSettings.work_function}
+                              onChange={(e) => setProfileSettings({ ...profileSettings, work_function: e.target.value })}
+                              placeholder="e.g., Founder, Software Engineer"
+                              className="w-full px-3 py-2 rounded-lg border border-[var(--k-border)] bg-[var(--k-surface)] text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-[var(--k-brand)] focus:border-[var(--k-brand)] transition-colors"
+                            />
+                          </div>
+                        </div>
+                        
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-semibold text-muted-foreground" htmlFor="personal-preferences">
+                            Custom System Instructions / AI Persona Settings
+                          </label>
+                          <textarea
+                            id="personal-preferences"
+                            value={profileSettings.personal_preferences}
+                            onChange={(e) => setProfileSettings({ ...profileSettings, personal_preferences: e.target.value })}
+                            placeholder="Provide custom instructions on how Kautilya AI should behave, speak, or format its replies. (e.g., 'Be extremely concise', 'Do not use corporate jargon', 'Explain math/code step by step')"
+                            rows={4}
+                            className="w-full px-3 py-2 rounded-lg border border-[var(--k-border)] bg-[var(--k-surface)] text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-[var(--k-brand)] focus:border-[var(--k-brand)] transition-colors resize-none"
+                          />
+                        </div>
+
+                        <div className="flex items-center justify-between pt-2 border-t border-[var(--k-border)]">
+                          <div className="h-6">
+                            {saveStatus === 'success' && (
+                              <span className="text-xs text-emerald-400 flex items-center gap-1.5 animate-fade-in">
+                                <CheckCircle className="w-4.5 h-4.5" weight="fill" /> Settings saved successfully!
+                              </span>
+                            )}
+                            {saveStatus === 'error' && (
+                              <span className="text-xs text-rose-400 flex items-center gap-1.5 animate-fade-in">
+                                <Warning className="w-4.5 h-4.5" weight="fill" /> Failed to save settings
+                              </span>
+                            )}
+                          </div>
+                          <button
+                            type="submit"
+                            disabled={saving}
+                            className="px-4 py-2 rounded-lg bg-[var(--k-brand)] text-white text-sm font-semibold hover:bg-[var(--k-brand-hover)] active:scale-[0.98] transition-all disabled:opacity-50 flex items-center gap-2"
+                          >
+                            {saving ? 'Saving...' : 'Save Personalization'}
+                          </button>
+                        </div>
+                      </form>
                     </div>
                   </section>
 

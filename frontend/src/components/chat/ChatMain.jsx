@@ -346,9 +346,9 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       const markFirstChunk = () => {
         if (firstChunkSeen) return;
         firstChunkSeen = true;
-        setIsThinking(false);
       };
 
+      setIsThinking(false);
       const aiMsg = {
         id: `msg-ai-${Date.now()}`,
         role: 'assistant',

@@ -129,20 +129,24 @@ def build_personalized_prompt(base_prompt, user_name=None, memories=None, user_e
     system_context = f"\n\nCURRENT SYSTEM CONTEXT:\n- Current Date and Time: {current_time}\n"
     system_context += "- CRITICAL IDENTITY RULE: You are KAUTILYA AI, created solely by Harsh (CEO of RevealIQ). NEVER identify as OpenAI, ChatGPT, GPT, Anthropic, Claude, Meta, or Llama.\n"
 
-    # Resolve display name: settings > Firestore profile > Firebase Auth record > token name
-    display_name = (settings or {}).get('preferred_name') or (settings or {}).get('display_name') or user_name
-    if not display_name and uid:
+    # Load full profile/settings from Firestore if settings is not fully provided
+    profile_data = settings or {}
+    if (not profile_data or 'preferred_name' not in profile_data) and uid:
         try:
             from extensions import db, FIREBASE_AVAILABLE
             if FIREBASE_AVAILABLE and db:
                 pdoc = db.collection('users').document(uid).collection('settings').document('profile').get()
                 if pdoc.exists:
-                    pdata = pdoc.to_dict() or {}
-                    display_name = pdata.get('preferred_name') or pdata.get('display_name')
+                    profile_data = pdoc.to_dict() or {}
         except:
             pass
-    # Try Firebase Auth user record for proper displayName (set during signup)
+
+    # Resolve display name: settings preferred_name > settings display_name > Firebase Auth record > token name
+    preferred_name = profile_data.get('preferred_name')
+    display_name = preferred_name or profile_data.get('display_name') or user_name
+    
     if not display_name and uid:
+        # Try Firebase Auth user record for proper displayName (set during signup)
         try:
             from firebase_admin import auth as fb_auth
             user_record = fb_auth.get_user(uid)
@@ -165,14 +169,30 @@ def build_personalized_prompt(base_prompt, user_name=None, memories=None, user_e
             return False
         return True
 
+    # If it is explicitly configured preferred name, bypass real name looks verification
+    is_name_valid = False
+    if preferred_name:
+        is_name_valid = True
+    elif display_name and _looks_like_real_name(display_name):
+        is_name_valid = True
+
     personalization = "\n\nPERSONALIZATION:\n"
-    if display_name and _looks_like_real_name(display_name):
+    if is_name_valid:
         personalization += f"- User's name: {display_name}\n"
         personalization += f"- Address the user as '{display_name}' when natural — never use generic 'Sir/Ma'am'.\n"
     else:
         # No proper name available. Tell the model to skip generic salutations
         # and wait for the user to introduce themselves.
         personalization += "- User's name is not on file yet. Do NOT address them by username, email-prefix, or generic 'Sir/Ma'am'. Use a friendly conversational tone. If asked, mention they can set their name in Dashboard → Settings.\n"
+    
+    work_function = profile_data.get('work_function')
+    personal_preferences = profile_data.get('personal_preferences')
+    
+    if work_function:
+        personalization += f"- User's role/work function: {work_function}\n"
+    if personal_preferences:
+        personalization += f"- User's personalization instructions/custom preferences:\n{personal_preferences}\n"
+
     if user_email:
         personalization += f"- User email (for reference, do not greet with it): {user_email}\n"
     if memories:
