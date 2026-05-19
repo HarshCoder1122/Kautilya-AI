@@ -14,73 +14,6 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 const CALENDAR_RE = /https?:\/\/(calendar\.google\.com|meet\.google\.com|zoom\.us|teams\.microsoft\.com)[^\s\)\]"<]*/g;
 
-// Emoji bullets the model frequently crams onto one line. We split clusters
-// of these into their own list items so the rendered output breathes.
-const BULLET_EMOJI_RE = /[✅❌⭐🔹🔸🔷🔶🔵🔴🟢🟡🟠🟣🟤🎯📌📍👉➡✨⚡🔥💡🚨ℹ✔✖☑]/;
-const BULLET_EMOJI_GLOBAL = new RegExp(BULLET_EMOJI_RE.source + '\\uFE0F?', 'g');
-
-// Test whether a string starts with one of our bullet emojis (with optional
-// VS16 selector). Used by the custom <li> renderer to suppress the marker.
-function startsWithBulletEmoji(str) {
-  if (!str) return false;
-  const trimmed = str.trimStart();
-  return BULLET_EMOJI_RE.test(trimmed.slice(0, 3));
-}
-
-// Premium formatting preprocessor — runs OUTSIDE code fences so syntax
-// is never disturbed. Splits crammed inline emoji bullets onto their own
-// list lines, normalizes Step headers, and prettifies text arrows.
-function enhanceFormatting(text) {
-  if (!text || typeof text !== 'string') return text;
-
-  // Split on triple-backtick fences and only transform the non-code segments.
-  const segments = text.split(/(```[\s\S]*?```)/g);
-  return segments
-    .map((seg, idx) => {
-      if (idx % 2 === 1) return seg; // odd segments are fenced code
-
-      let out = seg;
-
-      // Pretty arrows (skip when surrounded by code-likeness — we already
-      // excluded fenced code; inline backticked text is processed at render
-      // time so this is safe enough for prose).
-      out = out.replace(/(^|[^=<-])->(?!>)/g, '$1→');
-      out = out.replace(/(^|[^=<])=>(?!>)/g, '$1⇒');
-
-      // Standardize step headers onto their own line.
-      out = out.replace(/([^\n])\s+(Step\s+\d+\s*[:\-])/g, '$1\n\n$2');
-
-      // Split a paragraph that crams 2+ emoji bullets inline into a
-      // proper bulleted list. We match a line that contains at least two
-      // bullet emojis and rewrite each emoji-led chunk onto its own line.
-      out = out.replace(/^([^\n]*?)$/gm, (line) => {
-        // Skip lines that already look like markdown list items.
-        if (/^\s*([-*+]|\d+\.)\s/.test(line)) return line;
-        const matches = line.match(BULLET_EMOJI_GLOBAL);
-        if (!matches || matches.length < 2) return line;
-
-        const parts = [];
-        let lastIdx = 0;
-        const re = new RegExp(BULLET_EMOJI_GLOBAL.source, 'g');
-        let m;
-        const indices = [];
-        while ((m = re.exec(line)) !== null) indices.push(m.index);
-        // Preamble (text before first bullet) kept as-is.
-        const preamble = line.slice(0, indices[0]).trimEnd();
-        for (let i = 0; i < indices.length; i++) {
-          const start = indices[i];
-          const end = i + 1 < indices.length ? indices[i + 1] : line.length;
-          parts.push(line.slice(start, end).trim());
-        }
-        const bulletLines = parts.filter(Boolean).map(p => `- ${p}`).join('\n');
-        return preamble ? `${preamble}\n${bulletLines}` : bulletLines;
-      });
-
-      return out;
-    })
-    .join('');
-}
-
 function linkifyContent(text) {
   if (!text) return text;
   // Skip URLs that are already part of a markdown link/image:
@@ -392,10 +325,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
     (m, code, math) => code || `$$${math}$$`);
   _normalized = _normalized.replace(/(```[\s\S]*?```)|\\\(([\s\S]+?)\\\)/g,
     (m, code, math) => code || `$${math}$`);
-  // Premium formatting pass — split crammed emoji bullets, normalize step
-  // headers, prettify arrows. Runs after math normalization so $...$ blocks
-  // are not touched.
-  _normalized = enhanceFormatting(_normalized);
+
   const displayContent = linkifyContent(_normalized);
 
   // Merge citations
@@ -487,29 +417,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
             a({ href, children }) {
               return <LinkCard href={href} />;
             },
-            li({ node, children, ...props }) {
-              // Detect emoji-led items so CSS can suppress the default marker —
-              // the emoji IS the bullet.
-              const firstText = (() => {
-                if (typeof children === 'string') return children;
-                if (Array.isArray(children)) {
-                  const first = children.find(c => typeof c === 'string' && c.trim().length);
-                  if (typeof first === 'string') return first;
-                  // Look one level deeper into the first child element
-                  const el = children.find(c => c && typeof c === 'object');
-                  if (el && el.props && typeof el.props.children === 'string') {
-                    return el.props.children;
-                  }
-                }
-                return '';
-              })();
-              const hasEmoji = startsWithBulletEmoji(firstText);
-              return (
-                <li className={hasEmoji ? 'has-emoji-bullet' : ''} {...props}>
-                  {children}
-                </li>
-              );
-            },
+
             table({ children }) {
               return (
                 <div className="overflow-x-auto my-6 rounded-xl border border-[var(--k-border)] bg-white/5 shadow-sm">
