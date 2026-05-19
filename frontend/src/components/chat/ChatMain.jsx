@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning, Columns, CaretDown, X, Microphone, MicrophoneSlash, Phone } from "@phosphor-icons/react";
+import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning, Columns, CaretDown, X, Microphone, MicrophoneSlash, Phone, StopCircle } from "@phosphor-icons/react";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ThinkingTokens } from "@/components/chat/ThinkingTokens";
 import { LiveKitVoice } from "@/components/chat/LiveKitVoice";
@@ -42,6 +42,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   // Track whether we left mid-stream (user navigated away during generation)
   const leftMidStreamRef = useRef(false);
   const staleTimerRef = useRef(null);
+  const abortControllerRef = useRef(null);
 
   // Auto-scroll: instant during streaming (smooth would jitter as tokens arrive
   // faster than the animation finishes), smooth only on quiescent updates.
@@ -252,6 +253,15 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     }
   };
 
+  const handleStopGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsStreaming(false);
+    setIsThinking(false);
+  };
+
   const handleSend = async () => {
     if (!inputValue.trim() && selectedFiles.length === 0) return;
     if (isStreaming) return;
@@ -305,11 +315,13 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
 
     try {
       const model = activeMode === 'code' ? 'coder' : 'auto';
+      abortControllerRef.current = new AbortController();
 
       const response = activeMode === 'research'
-        ? await chatAPI.streamResearch(currentInput, currentSessionId)
+        ? await chatAPI.streamResearch(currentInput, currentSessionId, { signal: abortControllerRef.current.signal })
         : await chatAPI.streamMessage(currentInput, currentSessionId, model, currentFiles, {
             maxThinking: activeMode === 'code',
+            signal: abortControllerRef.current.signal,
           });
 
       if (!response.ok || !response.body) {
@@ -577,6 +589,14 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
         setTimeout(() => onStreamComplete(), 800);
       }
     } catch (error) {
+      if (error.name === 'AbortError') {
+        console.log('Stream aborted by user');
+        setIsThinking(false);
+        setIsStreaming(false);
+        leftMidStreamRef.current = false;
+        return;
+      }
+      
       console.error('Failed to send message:', error);
       setIsThinking(false);
       setIsStreaming(false);
@@ -873,18 +893,29 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
               className="flex-1 py-3 px-1 bg-transparent resize-none focus:outline-none text-sm text-foreground placeholder:text-muted-foreground max-h-32 disabled:opacity-60"
               style={{ minHeight: '44px' }}
             />
-            <button
-              data-testid="send-message-btn"
-              onClick={handleSend}
-              disabled={(!inputValue.trim() && selectedFiles.length === 0) || isThinking || isStreaming || isRecording}
-              className={`p-3 transition-colors ${
-                inputValue.trim() && !isThinking && !isStreaming
-                  ? 'text-[var(--k-brand)] hover:text-[var(--k-brand-hover)]'
-                  : 'text-muted-foreground/40'
-              }`}
-            >
-              <ArrowRight className="w-5 h-5" weight="bold" />
-            </button>
+            {(isThinking || isStreaming) ? (
+              <button
+                data-testid="stop-generation-btn"
+                onClick={handleStopGeneration}
+                className="p-3 text-rose-500 hover:text-rose-400 transition-colors"
+                title="Stop generation"
+              >
+                <StopCircle className="w-5 h-5" weight="fill" />
+              </button>
+            ) : (
+              <button
+                data-testid="send-message-btn"
+                onClick={handleSend}
+                disabled={(!inputValue.trim() && selectedFiles.length === 0) || isRecording}
+                className={`p-3 transition-colors ${
+                  inputValue.trim() && !isRecording
+                    ? 'text-[var(--k-brand)] hover:text-[var(--k-brand-hover)]'
+                    : 'text-muted-foreground/40'
+                }`}
+              >
+                <ArrowRight className="w-5 h-5" weight="bold" />
+              </button>
+            )}
           </div>
           <div className="flex items-center justify-between mt-2 px-1">
             <div className="flex items-center gap-3">
