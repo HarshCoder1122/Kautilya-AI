@@ -793,7 +793,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
             />
           ))}
 
-          {isThinking && (
+          {isThinking && messages[messages.length - 1]?.role !== 'assistant' && (
             <ThinkingTokens
               text="Reading your question... Drafting response... Analyzing context... Routing to the right agent..."
             />
