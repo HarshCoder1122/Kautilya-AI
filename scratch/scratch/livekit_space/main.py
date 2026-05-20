@@ -845,7 +845,7 @@ async def entrypoint(ctx: JobContext):
                 # Since RevealIQ /v1/audio/speech is OpenAI-compatible and streams MP3 by default,
                 # the standard LiveKit openai.TTS plugin works perfectly!
                 tts = openai.TTS(
-                    base_url="https://ai.revealiq.in/v1",
+                    base_url="https://HarshSharma1212-RevealIQ-ASR.hf.space/v1",
                     api_key="none",
                     model=model_name,
                     voice=voice_id

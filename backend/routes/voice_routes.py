@@ -237,7 +237,7 @@ def voice_preview():
         voice_clean = voice.split(":", 1)[1] if ":" in voice else voice
         model = 'kokoro-hi' if ('hi' in voice_clean.lower() or voice_clean.startswith('hf_') or voice_clean.startswith('hm_')) else 'kokoro-en'
         
-        url = 'https://ai.revealiq.in/v1/audio/speech'
+        url = 'https://HarshSharma1212-RevealIQ-ASR.hf.space/v1/audio/speech'
         headers = {
             'Content-Type': 'application/json',
         }
