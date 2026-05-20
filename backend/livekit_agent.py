@@ -828,12 +828,10 @@ async def entrypoint(ctx: JobContext):
 
             if provider == "revealiq":
                 model_name = "kokoro-hi" if ("hi" in voice_id.lower() or voice_id.startswith(("hf_", "hm_"))) else "kokoro-en"
-                # Use openai.TTS initialized with our proxy endpoint
-                # Since RevealIQ /v1/audio/speech is OpenAI-compatible and streams MP3 by default,
-                # the standard LiveKit openai.TTS plugin works perfectly!
+                hf_token = os.environ.get("REVEALIQ_HF_TOKEN") or os.environ.get("HF_TOKEN") or "none"
                 tts = openai.TTS(
                     base_url="https://HarshSharma1212-RevealIQ-ASR.hf.space/v1",
-                    api_key="none",
+                    api_key=hf_token,
                     model=model_name,
                     voice=voice_id
                 )
