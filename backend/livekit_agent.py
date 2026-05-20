@@ -18,7 +18,7 @@ from livekit.agents import (
     AgentSession,
 )
 from livekit.agents.llm import ChatMessage
-from livekit.plugins import sarvam, openai, silero, cartesia, google
+from livekit.plugins import sarvam, openai, silero, cartesia, google, elevenlabs
 from services.llm_service import call_nvidia
 
 load_dotenv()
@@ -805,7 +805,55 @@ async def entrypoint(ctx: JobContext):
         else:
             vad = _get_vad()
             stt = sarvam.STT(language=agent_language)
-            tts = sarvam.TTS(target_language_code=agent_language, speaker=agent_voice, model="bulbul:v3")
+            
+            # Map dynamic provider and voice
+            voice_str = agent_voice or "sarvam:shubh"
+            provider = "sarvam"
+            voice_id = voice_str
+            
+            if ":" in voice_str:
+                parts = voice_str.split(":", 1)
+                provider = parts[0].lower()
+                voice_id = parts[1]
+            else:
+                # Heuristic fallbacks for legacy/un-prefixed settings
+                if voice_str.startswith(("hf_", "hm_", "af_", "am_")):
+                    provider = "revealiq"
+                elif len(voice_str) == 36 and "-" in voice_str:
+                    provider = "cartesia"
+                elif voice_str in ["21m00Tcm4TlvDq8ikWAM", "AZnzlk1XhkUvS5ch7s7i", "EXAVITQu4vr4xnSDxMaL", "ErXw9S1aaH7HBy8S4H2u", "Lcf7m3M63S7G38m7V8p7", "MF3m7V8p7m7V8p7m7V8p"]:
+                    provider = "elevenlabs"
+
+            print(f"[Agent] Configured TTS provider: {provider}, voice ID: {voice_id}", flush=True)
+
+            if provider == "revealiq":
+                model_name = "kokoro-hi" if ("hi" in voice_id.lower() or voice_id.startswith(("hf_", "hm_"))) else "kokoro-en"
+                # Use openai.TTS initialized with our proxy endpoint
+                # Since RevealIQ /v1/audio/speech is OpenAI-compatible and streams MP3 by default,
+                # the standard LiveKit openai.TTS plugin works perfectly!
+                tts = openai.TTS(
+                    base_url="https://ai.revealiq.in/v1",
+                    api_key="none",
+                    model=model_name,
+                    voice=voice_id
+                )
+            elif provider == "cartesia":
+                tts = cartesia.TTS(
+                    voice=voice_id,
+                    model="sonic-english"
+                )
+            elif provider == "elevenlabs":
+                # Ensure ElevenLabs API key is mapped correctly for LiveKit plugin
+                if "ELEVENLABS_API_KEY" in os.environ and "ELEVEN_API_KEY" not in os.environ:
+                    os.environ["ELEVEN_API_KEY"] = os.environ["ELEVENLABS_API_KEY"]
+                tts = elevenlabs.TTS(
+                    voice_id=voice_id,
+                    model="eleven_monolingual_v1"
+                )
+            else:
+                # Default to Sarvam Bulbul v3
+                tts = sarvam.TTS(target_language_code=agent_language, speaker=voice_id, model="bulbul:v3")
+
             llm_plugin = openai.LLM(base_url="https://api.groq.com/openai/v1", api_key=os.environ.get("GROQ_API_KEY"), model="llama-3.3-70b-versatile")
             session = AgentSession(vad=vad, stt=stt, llm=llm_plugin, tts=tts)
             agent_obj = KautilyaAgent(instructions=system_prompt, owner_uid=owner_uid)

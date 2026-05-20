@@ -138,15 +138,28 @@ class VectorStore:
         except Exception as e:
             print(f"[VectorStore] Local save failed: {e}")
 
+    # Cache the embedding model that works — avoids repeated 404 round-trips.
+    _working_model = None
+
     def get_embedding(self, text):
         self.init_client()
         if not self.client:
             return None
         try:
-            models_to_try = ["models/embedding-001", "models/text-embedding-004"]
+            # Try cached model first to skip the fallback loop on every call.
+            if VectorStore._working_model:
+                try:
+                    result = self.client.models.embed_content(model=VectorStore._working_model, contents=text)
+                    return np.array(result.embeddings[0].values)
+                except Exception:
+                    VectorStore._working_model = None  # reset — try all again
+
+            # Prefer text-embedding-004 (current); embedding-001 often 404s.
+            models_to_try = ["models/text-embedding-004", "models/embedding-001"]
             for model in models_to_try:
                 try:
                     result = self.client.models.embed_content(model=model, contents=text)
+                    VectorStore._working_model = model  # remember for next call
                     return np.array(result.embeddings[0].values)
                 except Exception as e:
                     if "404" in str(e) or "NOT_FOUND" in str(e):
@@ -161,16 +174,40 @@ class VectorStore:
         if not text:
             return
         vector = self.get_embedding(text)
-        if vector is not None:
-            vectors = self.load_vectors(uid)
-            mem_id = str(uuid.uuid4())
-            vectors[mem_id] = {
-                "text": text,
-                "embedding": vector,
-                "metadata": metadata or {}
-            }
-            self.save_vectors(uid, vectors, new_id=mem_id)
-            print(f"[VectorStore] Added memory: {text[:30]}...")
+        if vector is None:
+            return
+        mem_id = str(uuid.uuid4())
+        entry = {
+            "text": text,
+            "embedding": vector,
+            "metadata": metadata or {}
+        }
+
+        # Fast path: write single doc to Firestore directly instead of
+        # load-all → append → save-all.  The old approach re-streamed every
+        # memory just to add one, costing 300-800ms.
+        from extensions import db
+        if db:
+            try:
+                from firebase_admin import firestore as _fs
+                db.collection('users').document(uid).collection('memories').document(mem_id).set({
+                    "text": text,
+                    "embedding": vector.tolist(),
+                    "metadata": metadata or {},
+                    "timestamp": _fs.SERVER_TIMESTAMP
+                })
+                # Invalidate cache so next search sees this new memory.
+                VectorStore._CACHE.pop(uid, None)
+                print(f"[VectorStore] Added memory (fast path): {text[:30]}...")
+                return
+            except Exception as e:
+                print(f"[VectorStore] Firestore direct write failed, falling back: {e}")
+
+        # Fallback: load-all + save-all (local filesystem or Firestore failure)
+        vectors = self.load_vectors(uid)
+        vectors[mem_id] = entry
+        self.save_vectors(uid, vectors, new_id=mem_id)
+        print(f"[VectorStore] Added memory (fallback path): {text[:30]}...")
 
     def search(self, uid, query, top_k=3):
         vectors = self.load_vectors(uid)
@@ -179,13 +216,15 @@ class VectorStore:
 
         query_vec = self.get_embedding(query)
         if query_vec is not None:
-            # Cosine similarity search
+            # Cosine similarity search — pre-compute query norm once.
+            norm_q = np.linalg.norm(query_vec)
+            if norm_q == 0:
+                return []
             results = []
             for mid, data in vectors.items():
                 db_vec = data["embedding"]
-                norm_q = np.linalg.norm(query_vec)
                 norm_d = np.linalg.norm(db_vec)
-                if norm_q == 0 or norm_d == 0:
+                if norm_d == 0:
                     continue
                 similarity = np.dot(query_vec, db_vec) / (norm_q * norm_d)
                 results.append((float(similarity), data["text"], data["metadata"]))

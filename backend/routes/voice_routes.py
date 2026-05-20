@@ -10,7 +10,7 @@ import requests
 
 from flask import Blueprint, request, jsonify, Response
 
-from config import GROQ_API_KEY, SARVAM_API_KEY, STATIC_FOLDER, LIVEKIT_URL
+from config import GROQ_API_KEY, SARVAM_API_KEY, STATIC_FOLDER, LIVEKIT_URL, CARTESIA_API_KEY, ELEVENLABS_API_KEY, REVEALIQ_HF_TOKEN
 from services.tts_service import clean_text_for_tts, detect_tts_voice
 from services.auth_service import verify_firebase_token, record_usage
 
@@ -198,7 +198,9 @@ def voice_preview():
     if uid:
         record_usage(uid, 'tts_chars', len(text), model=f'preview-{provider}')
 
-    if provider.lower() == 'sarvam':
+    provider_lower = provider.lower()
+    
+    if provider_lower == 'sarvam':
         if not SARVAM_API_KEY:
             return jsonify({"error": "Sarvam API Key missing"}), 500
             
@@ -230,8 +232,90 @@ def voice_preview():
         except Exception as e:
             return jsonify({"error": str(e)}), 500
             
-    # If it's Cartesia or Gemini or other, fallback to Edge TTS for preview or just return error
-    # since Gemini realtime voices can't be easily previewed via a simple REST TTS call yet.
-    # For now, we'll return an error explaining that only Sarvam supports direct preview here,
-    # or implement a fallback edge-tts if needed.
-    return jsonify({"error": f"Preview not supported for provider: {provider}. Gemini voices are only available during live calls."}), 400
+    elif provider_lower == 'revealiq':
+        # Split prefix if present (e.g. "revealiq:af_heart" -> "af_heart")
+        voice_clean = voice.split(":", 1)[1] if ":" in voice else voice
+        model = 'kokoro-hi' if ('hi' in voice_clean.lower() or voice_clean.startswith('hf_') or voice_clean.startswith('hm_')) else 'kokoro-en'
+        
+        url = 'https://ai.revealiq.in/v1/audio/speech'
+        headers = {
+            'Content-Type': 'application/json',
+        }
+        hf_token = REVEALIQ_HF_TOKEN or os.environ.get('HF_TOKEN')
+        if hf_token:
+            headers['Authorization'] = f'Bearer {hf_token}'
+            
+        payload = {
+            'model': model,
+            'input': text,
+            'voice': voice_clean,
+            'speed': 1.0,
+            'response_format': 'mp3'
+        }
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=20)
+            if not resp.ok:
+                return jsonify({"error": f"RevealIQ API Error: {resp.text}"}), 500
+            return Response(resp.content, mimetype="audio/mpeg")
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    elif provider_lower == 'cartesia':
+        if not CARTESIA_API_KEY:
+            return jsonify({"error": "Cartesia API Key missing"}), 500
+            
+        voice_clean = voice.split(":", 1)[1] if ":" in voice else voice
+        url = 'https://api.cartesia.ai/tts'
+        headers = {
+            'X-API-Key': CARTESIA_API_KEY,
+            'Cartesia-Version': '2024-06-10',
+            'Content-Type': 'application/json'
+        }
+        payload = {
+            'text': text,
+            'model_id': 'sonic-english',
+            'voice': {
+                'mode': 'id',
+                'id': voice_clean
+            },
+            'output_format': {
+                'container': 'mp3',
+                'sample_rate': 44100
+            }
+        }
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=20)
+            if not resp.ok:
+                return jsonify({"error": f"Cartesia API Error: {resp.text}"}), 500
+            return Response(resp.content, mimetype="audio/mpeg")
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    elif provider_lower == 'elevenlabs':
+        if not ELEVENLABS_API_KEY:
+            return jsonify({"error": "ElevenLabs API Key missing"}), 500
+            
+        voice_clean = voice.split(":", 1)[1] if ":" in voice else voice
+        url = f'https://api.elevenlabs.io/v1/text-to-speech/{voice_clean}'
+        headers = {
+            'xi-api-key': ELEVENLABS_API_KEY,
+            'Content-Type': 'application/json',
+            'accept': 'audio/mpeg'
+        }
+        payload = {
+            'text': text,
+            'model_id': 'eleven_monolingual_v1',
+            'voice_settings': {
+                'stability': 0.5,
+                'similarity_boost': 0.75
+            }
+        }
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=20)
+            if not resp.ok:
+                return jsonify({"error": f"ElevenLabs API Error: {resp.text}"}), 500
+            return Response(resp.content, mimetype="audio/mpeg")
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    return jsonify({"error": f"Preview not supported for provider: {provider}"}), 400

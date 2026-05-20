@@ -16,6 +16,57 @@ import {
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+const GEMINI_LIVE_VOICES = [
+  { value: "Puck", label: "Puck" },
+  { value: "Charon", label: "Charon" },
+  { value: "Kore", label: "Kore" },
+  { value: "Fenrir", label: "Fenrir" },
+  { value: "Aoede", label: "Aoede" }
+];
+
+const STANDARD_VOICES = {
+  revealiq: [
+    { value: "revealiq:af_heart", label: "Priya (RevealIQ Hindi/English Female)" },
+    { value: "revealiq:hf_alpha", label: "Aarav (RevealIQ Hindi Male)" },
+    { value: "revealiq:hf_beta", label: "Ishaan (RevealIQ Hindi Male)" },
+    { value: "revealiq:hm_omega", label: "Kabir (RevealIQ Hindi Male)" },
+    { value: "revealiq:hm_psi", label: "Vihaan (RevealIQ Hindi Male)" },
+    { value: "revealiq:af_bella", label: "Ananya (RevealIQ English Female)" },
+    { value: "revealiq:af_nicole", label: "Nicole (RevealIQ English Female)" },
+    { value: "revealiq:af_sky", label: "Sky (RevealIQ English Female)" },
+    { value: "revealiq:am_adam", label: "Arjun (RevealIQ English Male)" },
+    { value: "revealiq:am_michael", label: "Michael (RevealIQ English Male)" }
+  ],
+  sarvam: [
+    { value: "sarvam:shubh", label: "Shubh (Sarvam Bulbul v3)" },
+    { value: "sarvam:priya", label: "Priya (Sarvam Bulbul v3)" },
+    { value: "sarvam:rahul", label: "Rahul (Sarvam Bulbul v3)" },
+    { value: "sarvam:deepa", label: "Deepa (Sarvam Bulbul v3)" },
+    { value: "sarvam:amit", label: "Amit (Sarvam Bulbul v3)" },
+    { value: "sarvam:suraj", label: "Suraj (Sarvam Bulbul v3)" },
+    { value: "sarvam:kiran", label: "Kiran (Sarvam Bulbul v3)" },
+    { value: "sarvam:smita", label: "Smita (Sarvam Bulbul v3)" }
+  ],
+  elevenlabs: [
+    { value: "elevenlabs:21m00Tcm4TlvDq8ikWAM", label: "Rachel (ElevenLabs Female)" },
+    { value: "elevenlabs:AZnzlk1XhkUvS5ch7s7i", label: "Domi (ElevenLabs Female)" },
+    { value: "elevenlabs:EXAVITQu4vr4xnSDxMaL", label: "Bella (ElevenLabs Female)" },
+    { value: "elevenlabs:ErXw9S1aaH7HBy8S4H2u", label: "Antoni (ElevenLabs Male)" },
+    { value: "elevenlabs:Lcf7m3M63S7G38m7V8p7", label: "Charlie (ElevenLabs Male)" },
+    { value: "elevenlabs:pNInz6obpgqj9YJElM3j", label: "Adam (ElevenLabs Male)" },
+    { value: "elevenlabs:IKne3meq5aSn9XLyUdCD", label: "Charlie V2 (ElevenLabs Male)" },
+    { value: "elevenlabs:JBF2zCBsd21rIBHNCm1X", label: "Josh (ElevenLabs Male)" }
+  ],
+  cartesia: [
+    { value: "cartesia:79a125e8-cd45-4c13-8a25-4eede72224e5", label: "Emma (Cartesia English Female)" },
+    { value: "cartesia:a0e9987c-abaf-4752-909e-3199cd709935", label: "Jessica (Cartesia English Female)" },
+    { value: "cartesia:248be419-caca-407b-83fa-ee92ae248a37", label: "Ryan (Cartesia English Male)" },
+    { value: "cartesia:156fb38d-1355-4080-9286-90b56b3e945c", label: "Marcus (Cartesia English Male)" },
+    { value: "cartesia:63836798-251c-435b-80a5-f85c6f376cf9", label: "Aditya (Cartesia Hindi Male)" },
+    { value: "cartesia:b822d645-0d29-450e-b8d2-8b9a7c376cf9", label: "Kavya (Cartesia Hindi Female)" }
+  ]
+};
+
 export default function AgentStudio() {
   const navigate = useNavigate();
   const [agents, setAgents] = useState([]);
@@ -296,22 +347,20 @@ function AgentDetail({ agent, onClose, onUpdate }) {
   const handleVoicePreview = async () => {
     try {
       setIsPreviewing(true);
-      let audioBlob;
-      if (editedAgent.voice?.startsWith('revealiq:')) {
-        const voiceId = editedAgent.voice.split(':')[1];
-        const isHindi = voiceId.startsWith('hf_');
-        audioBlob = await ttsAPI.revealIQ.synthesize(
-          editedAgent.welcome_message || 'Namaste! This is a preview.',
-          isHindi ? 'kokoro-hi' : 'kokoro-en',
-          voiceId
-        );
-      } else {
-        audioBlob = await ttsAPI.previewVoice({
-          voice: editedAgent.voice || 'shubh',
-          provider: 'sarvam',
-          text: editedAgent.welcome_message || 'Namaste! This is a preview of how my voice will sound on the call.',
-        });
+      const voiceStr = editedAgent.voice || 'sarvam:shubh';
+      let provider = 'sarvam';
+      let voiceId = voiceStr;
+      if (voiceStr.includes(':')) {
+        const parts = voiceStr.split(':');
+        provider = parts[0];
+        voiceId = parts[1];
       }
+      
+      const audioBlob = await agentsAPI.previewVoice({
+        voice: voiceId,
+        provider: provider,
+        text: editedAgent.welcome_message || 'Namaste! This is a preview of how my voice will sound on the call.',
+      });
       const audio = new Audio(URL.createObjectURL(audioBlob));
       const playPromise = audio.play();
       if (playPromise !== undefined) {
@@ -538,26 +587,46 @@ function AgentDetail({ agent, onClose, onUpdate }) {
                   onChange={(e) => setEditedAgent({ ...editedAgent, voice: e.target.value })}
                   className="w-full px-3 py-2.5 text-sm bg-accent/20 border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none"
                 >
-                  <optgroup label="RevealIQ (Premium Indian Voices)">
-                    <option value="revealiq:af_heart">Priya (Hindi/English Female)</option>
-                    <option value="revealiq:hf_alpha">Aarav (Hindi Male)</option>
-                    <option value="revealiq:af_bella">Ananya (English Female)</option>
-                    <option value="revealiq:am_adam">Arjun (English Male)</option>
-                  </optgroup>
-                  <optgroup label="Standard Voices">
-                    <option value="shubh">Shubh (Standard Male)</option>
-                    <option value="priya">Priya (Standard Female)</option>
-                  </optgroup>
+                  {editedAgent.model === "gemini-live" ? (
+                    GEMINI_LIVE_VOICES.map((v) => (
+                      <option key={v.value} value={v.value}>{v.label}</option>
+                    ))
+                  ) : (
+                    <>
+                      <optgroup label="RevealIQ (Premium Indian Voices)">
+                        {STANDARD_VOICES.revealiq.map((v) => (
+                          <option key={v.value} value={v.value}>{v.label}</option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="Sarvam Bulbul v3 Voices">
+                        {STANDARD_VOICES.sarvam.map((v) => (
+                          <option key={v.value} value={v.value}>{v.label}</option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="ElevenLabs Voices">
+                        {STANDARD_VOICES.elevenlabs.map((v) => (
+                          <option key={v.value} value={v.value}>{v.label}</option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="Cartesia Voices">
+                        {STANDARD_VOICES.cartesia.map((v) => (
+                          <option key={v.value} value={v.value}>{v.label}</option>
+                        ))}
+                      </optgroup>
+                    </>
+                  )}
                 </select>
-                <button
-                  type="button"
-                  onClick={handleVoicePreview}
-                  disabled={isPreviewing}
-                  className="mt-2 flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--k-border)] hover:bg-accent text-xs text-foreground disabled:opacity-50"
-                >
-                  <SpeakerHigh className="w-3.5 h-3.5" />
-                  {isPreviewing ? 'Previewing...' : 'Preview Voice'}
-                </button>
+                {editedAgent.model !== "gemini-live" && (
+                  <button
+                    type="button"
+                    onClick={handleVoicePreview}
+                    disabled={isPreviewing}
+                    className="mt-2 flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--k-border)] hover:bg-accent text-xs text-foreground disabled:opacity-50"
+                  >
+                    <SpeakerHigh className="w-3.5 h-3.5" />
+                    {isPreviewing ? 'Previewing...' : 'Preview Voice'}
+                  </button>
+                )}
               </div>
               <div className="space-y-2">
                 <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Language</label>
@@ -572,12 +641,28 @@ function AgentDetail({ agent, onClose, onUpdate }) {
                 <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">LLM Back-end</label>
                 <select
                   value={editedAgent.model}
-                  onChange={(e) => setEditedAgent({ ...editedAgent, model: e.target.value })}
+                  onChange={(e) => {
+                    const newModel = e.target.value;
+                    const isGeminiLive = newModel === "gemini-live";
+                    const currentVoice = editedAgent.voice;
+                    let nextVoice = currentVoice;
+                    if (isGeminiLive) {
+                      if (!GEMINI_LIVE_VOICES.some(v => v.value === currentVoice)) {
+                        nextVoice = "Puck";
+                      }
+                    } else {
+                      if (GEMINI_LIVE_VOICES.some(v => v.value === currentVoice)) {
+                        nextVoice = "sarvam:shubh";
+                      }
+                    }
+                    setEditedAgent({ ...editedAgent, model: newModel, voice: nextVoice });
+                  }}
                   className="w-full px-3 py-2.5 text-sm bg-accent/20 border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none"
                 >
                   <option value="kautilya-daily">Kautilya Daily (Llama 3.3)</option>
                   <option value="kautilya-pro">Kautilya Pro (Nemotron-3)</option>
                   <option value="coder">DeepSeek-V4 (Logic Heavy)</option>
+                  <option value="gemini-live">Gemini Live (Multimodal)</option>
                 </select>
               </div>
               <div className="space-y-2">
@@ -838,7 +923,7 @@ function CreateAgentForm({ onClose, onSuccess }) {
     name: '',
     system_prompt: '',
     model: 'kautilya-daily',
-    voice: 'shubh',
+    voice: 'sarvam:shubh',
     language: 'hi-IN',
     agent_type: 'inbound',
     temperature: 0.7,
@@ -892,12 +977,28 @@ function CreateAgentForm({ onClose, onSuccess }) {
           <select
             data-testid="new-agent-model"
             value={formData.model}
-            onChange={(e) => setFormData({ ...formData, model: e.target.value })}
+            onChange={(e) => {
+              const newModel = e.target.value;
+              const isGeminiLive = newModel === "gemini-live";
+              const currentVoice = formData.voice;
+              let nextVoice = currentVoice;
+              if (isGeminiLive) {
+                if (!GEMINI_LIVE_VOICES.some(v => v.value === currentVoice)) {
+                  nextVoice = "Puck";
+                }
+              } else {
+                if (GEMINI_LIVE_VOICES.some(v => v.value === currentVoice)) {
+                  nextVoice = "sarvam:shubh";
+                }
+              }
+              setFormData({ ...formData, model: newModel, voice: nextVoice });
+            }}
             className="w-full px-4 py-3 text-sm bg-accent/20 border border-[var(--k-border)] rounded-xl text-foreground"
           >
             <option value="kautilya-daily">Daily (Llama 3.3)</option>
             <option value="kautilya-pro">Pro (Nemotron-3)</option>
             <option value="coder">Coder (DeepSeek)</option>
+            <option value="gemini-live">Gemini Live (Multimodal)</option>
           </select>
         </div>
         <div className="space-y-1.5">
@@ -908,9 +1009,34 @@ function CreateAgentForm({ onClose, onSuccess }) {
             onChange={(e) => setFormData({ ...formData, voice: e.target.value })}
             className="w-full px-4 py-3 text-sm bg-accent/20 border border-[var(--k-border)] rounded-xl text-foreground"
           >
-            <option value="shubh">Shubh (Hindi)</option>
-            <option value="priya">Priya (Hindi)</option>
-            <option value="rahul">Rahul (Deep)</option>
+            {formData.model === "gemini-live" ? (
+              GEMINI_LIVE_VOICES.map((v) => (
+                <option key={v.value} value={v.value}>{v.label}</option>
+              ))
+            ) : (
+              <>
+                <optgroup label="RevealIQ (Premium Indian Voices)">
+                  {STANDARD_VOICES.revealiq.map((v) => (
+                    <option key={v.value} value={v.value}>{v.label}</option>
+                  ))}
+                </optgroup>
+                <optgroup label="Sarvam Bulbul v3 Voices">
+                  {STANDARD_VOICES.sarvam.map((v) => (
+                    <option key={v.value} value={v.value}>{v.label}</option>
+                  ))}
+                </optgroup>
+                <optgroup label="ElevenLabs Voices">
+                  {STANDARD_VOICES.elevenlabs.map((v) => (
+                    <option key={v.value} value={v.value}>{v.label}</option>
+                  ))}
+                </optgroup>
+                <optgroup label="Cartesia Voices">
+                  {STANDARD_VOICES.cartesia.map((v) => (
+                    <option key={v.value} value={v.value}>{v.label}</option>
+                  ))}
+                </optgroup>
+              </>
+            )}
           </select>
         </div>
       </div>

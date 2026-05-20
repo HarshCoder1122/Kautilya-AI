@@ -220,40 +220,83 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     DAILY_MODEL = 'mistralai/mistral-medium-3.5-128b'
 
     def _wrap_with_placeholder_thinking(inner_gen):
-        """Show a 'thinking' placeholder ONLY if Mistral's TTFT exceeds 600ms.
-        For fast responses we don't show the bubble at all — going straight
-        from 'Sending…' to streaming feels snappier than a thinking flash.
+        """Show a 'thinking' placeholder while Mistral's TTFT is pending.
+
+        The inner generator (an HTTP SSE stream from NVIDIA) blocks the calling
+        thread during time-to-first-token.  Previously this meant the
+        placeholder time checks could never fire because `next(inner_gen)`
+        didn't return until the first chunk arrived.
+
+        Fix: consume `inner_gen` on a daemon thread, push items to a
+        thread-safe queue, and poll with 100ms timeouts on the main thread.
+        When `queue.Empty` fires we know the model hasn't responded yet and
+        can emit the next placeholder phrase.
         """
         import time as _t
+        import threading
+        from queue import Queue, Empty
+
         phrases = [
             "Reading your question…",
             "Pulling the relevant context…",
             "Drafting a response…",
         ]
+
+        q = Queue(maxsize=256)
+        _SENTINEL = object()  # marks end of stream
+
+        def _pump():
+            """Drain inner_gen on a background thread."""
+            try:
+                for item in inner_gen:
+                    q.put(("item", item))
+            except Exception as exc:
+                q.put(("error", exc))
+            finally:
+                q.put(("done", _SENTINEL))
+
+        t = threading.Thread(target=_pump, daemon=True)
+        t.start()
+
         start = _t.time()
         phrase_idx = 0
         placeholder_shown = False
         thinking_closed = False
         last_emit = start
-        for item in inner_gen:
+
+        while True:
+            try:
+                kind, payload = q.get(timeout=0.1)
+            except Empty:
+                # Queue empty — model hasn't responded yet.
+                now = _t.time()
+                if not placeholder_shown and now - start > 0.6:
+                    yield {"thinking": phrases[phrase_idx]}
+                    placeholder_shown = True
+                    last_emit = now
+                elif placeholder_shown and not thinking_closed and now - last_emit > 1.2 and phrase_idx + 1 < len(phrases):
+                    phrase_idx += 1
+                    yield {"thinking": " " + phrases[phrase_idx]}
+                    last_emit = now
+                continue
+
+            if kind == "done":
+                break
+            if kind == "error":
+                print(f"[Agent] inner_gen error: {payload}")
+                break
+
+            item = payload
             is_content = (
                 isinstance(item, dict) and ("chunk" in item or "tool_calls" in item)
             ) or isinstance(item, str)
-            now = _t.time()
-            # Lazy placeholder: only inject if the first content delta is slow.
-            if not is_content and not placeholder_shown and now - start > 0.6:
-                yield {"thinking": phrases[phrase_idx]}
-                placeholder_shown = True
-                last_emit = now
+
             if is_content and not thinking_closed:
                 if placeholder_shown:
                     yield {"thinking_done": True}
                 thinking_closed = True
-            if placeholder_shown and not thinking_closed and now - last_emit > 1.2 and phrase_idx + 1 < len(phrases):
-                phrase_idx += 1
-                yield {"thinking": " " + phrases[phrase_idx]}
-                last_emit = now
             yield item
+
         if placeholder_shown and not thinking_closed:
             yield {"thinking_done": True}
 
