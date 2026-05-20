@@ -242,3 +242,46 @@
   background: rgba(0, 0, 0, 0.2);
   border: 1px solid rgba(255, 255, 255, 0.05);
 }
+
+/* Force dark theme on native select/option/optgroup dropdowns.
+   These elements ignore most CSS by default and render with the
+   OS-level grey/white style — jarring on a dark UI. */
+select {
+  color-scheme: dark;
+}
+select,
+select option,
+select optgroup {
+  background-color: var(--k-surface-elevated);
+  color: var(--k-text);
+}
+select optgroup {
+  font-weight: 700;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--k-text-secondary);
+  padding: 8px 0 4px;
+}
+select option {
+  padding: 6px 12px;
+  font-weight: 400;
+}
+select option:checked {
+  background-color: var(--k-brand);
+  color: #fff;
+}
+/* Light mode overrides */
+:root select {
+  color-scheme: light;
+}
+:root select,
+:root select option,
+:root select optgroup {
+  background-color: #fff;
+  color: var(--k-text);
+}
+:root select option:checked {
+  background-color: var(--k-brand);
+  color: #fff;
+}
