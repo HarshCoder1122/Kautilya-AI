@@ -1,0 +1,17 @@
+# Ignore test scripts
+test_*.py
+test_api.py
+test_hindi.py
+test_english.py
+test_all_voices.py
+
+# Ignore generated audio files
+*.wav
+*.mp3
+
+# Ignore standard python cache
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/

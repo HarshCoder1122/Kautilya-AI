@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 tts_bp = Blueprint('tts', __name__)
 
-REVEALIQ_BASE = 'https://harshsharma1212-revealiq-asr.hf.space'
+REVEALIQ_BASE = 'https://ai.revealiq.in'
 
 def _warmup_revealiq():
     """Ping the RevealIQ Space every 4 minutes to prevent cold starts."""
@@ -109,23 +109,20 @@ def reveal_iq_synthesize():
             return jsonify({"error": "Text is required"}), 400
         
         hf_token = os.environ.get('REVEALIQ_HF_TOKEN') or os.environ.get('HF_TOKEN')
-        if not hf_token:
-            return jsonify({"error": "RevealIQ HF token not configured"}), 500
         
-        # Call RevealIQ Hugging Face Space (Universal URL format)
-        # Using the NEW high-performance endpoints
         url = f'{REVEALIQ_BASE}/v1/audio/speech'
         headers = {
             'Content-Type': 'application/json',
-            'Authorization': f'Bearer {hf_token}',
         }
+        if hf_token:
+            headers['Authorization'] = f'Bearer {hf_token}'
         
-        # Exact voice mapping for RevealIQ Space
         payload = {
             'model': model,
             'input': text,
             'voice': voice,
             'speed': float(speed),
+            'response_format': 'wav'
         }
         
         print(f"[RevealIQ] Synthesis request: URL={url} | Model={model} | Voice={voice}")

@@ -1,0 +1,14 @@
+livekit>=1.1.0
+livekit-api>=1.1.0
+livekit-agents>=1.5.0
+livekit-plugins-cartesia>=1.5.0
+livekit-plugins-openai>=1.5.0
+livekit-plugins-silero>=1.5.0
+livekit-plugins-sarvam>=1.5.0
+livekit-plugins-google>=1.5.0
+python-dotenv
+requests
+firebase-admin
+numpy
+fastapi
+uvicorn

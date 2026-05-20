@@ -5,8 +5,11 @@ import uuid
 import asyncio
 import time as _time
 import sys
+import threading
 from datetime import datetime
 from dotenv import load_dotenv
+from fastapi import FastAPI
+import uvicorn
 
 from livekit import rtc, api
 from livekit.agents import (
@@ -18,13 +21,23 @@ from livekit.agents import (
     AgentSession,
 )
 from livekit.agents.llm import ChatMessage
-from livekit.plugins import sarvam, openai, silero, cartesia, google, elevenlabs
+from livekit.plugins import sarvam, openai, silero, cartesia, google
 from services.llm_service import call_nvidia
 
 load_dotenv()
 
 # Force unbuffered output for faster logs on HF
 sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
+
+# ============== Health Check Server (Hugging Face) ==============
+app = FastAPI()
+
+@app.get("/")
+def health_check():
+    return {"status": "ok", "timestamp": datetime.now().isoformat()}
+
+def run_health_check():
+    uvicorn.run(app, host="0.0.0.0", port=7860, log_level="warning")
 
 # ---- Module-level pre-warm (runs ONCE when worker process starts) ----
 _PREWARMED_VAD = None
@@ -522,73 +535,11 @@ def _resolve_gemini_model(db_model: str) -> str:
 
 
 # ============== Agent ==============
-# Integration tools — registered as @function_tool so the voice LLM can invoke
-# them mid-call. Each one dispatches to services.integration_tools using the
-# owning user's uid (captured from the agent doc at session start).
-try:
-    from livekit.agents.llm import function_tool
-    _HAS_FUNCTION_TOOL = True
-except ImportError:
-    _HAS_FUNCTION_TOOL = False
-    def function_tool(*a, **kw):
-        def _wrap(f): return f
-        return _wrap
-
-
 class KautilyaAgent(Agent):
-    def __init__(self, owner_uid=None, **kwargs):
+    def __init__(self, **kwargs):
         if 'instructions' not in kwargs:
             kwargs['instructions'] = "You are Kautilya AI assistant."
         super().__init__(**kwargs)
-        self._owner_uid = owner_uid
-
-    def _exec_tool(self, name, args):
-        if not self._owner_uid:
-            return {"ok": False, "error": "no owner uid bound to agent"}
-        try:
-            from services.integration_tools import execute_tool
-            return execute_tool(self._owner_uid, name, args)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-
-    @function_tool()
-    async def send_whatsapp(self, to: str, message: str):
-        """Send a WhatsApp message. to: recipient phone in E.164. message: text body."""
-        return await asyncio.to_thread(self._exec_tool, "send_whatsapp", {"to": to, "message": message})
-
-    @function_tool()
-    async def post_slack(self, message: str):
-        """Post a message to the user's configured Slack channel."""
-        return await asyncio.to_thread(self._exec_tool, "post_slack", {"message": message})
-
-    @function_tool()
-    async def create_calendar_event(self, title: str, start: str, end: str, description: str = "", attendees: list = None, tz: str = "Asia/Kolkata"):
-        """Create a Google Calendar event. start/end are RFC3339 datetimes."""
-        return await asyncio.to_thread(self._exec_tool, "create_calendar_event",
-                                       {"title": title, "start": start, "end": end,
-                                        "description": description, "attendees": attendees or [], "tz": tz})
-
-    @function_tool()
-    async def lookup_crm_contact(self, phone: str = "", email: str = ""):
-        """Look up a contact in the connected CRM (HubSpot or Zoho) by phone or email."""
-        return await asyncio.to_thread(self._exec_tool, "lookup_crm_contact", {"phone": phone, "email": email})
-
-    @function_tool()
-    async def log_crm_activity(self, contact_id: str, note: str, source: str = "hubspot"):
-        """Append a note/activity to a CRM contact's timeline."""
-        return await asyncio.to_thread(self._exec_tool, "log_crm_activity",
-                                       {"contact_id": contact_id, "note": note, "source": source})
-
-    @function_tool()
-    async def create_or_update_crm_contact(self, phone: str = "", email: str = "",
-                                           first_name: str = "", last_name: str = "",
-                                           company: str = "", title: str = "", notes: str = ""):
-        """Create a new CRM contact (or update an existing one matched by phone/email).
-        Call this AS SOON as you have captured name/email/company from the caller — don't wait until call end."""
-        return await asyncio.to_thread(self._exec_tool, "create_or_update_crm_contact", {
-            "phone": phone, "email": email, "first_name": first_name, "last_name": last_name,
-            "company": company, "title": title, "notes": notes,
-        })
 
 
 async def entrypoint(ctx: JobContext):
@@ -676,57 +627,8 @@ async def entrypoint(ctx: JobContext):
     if handoff_enabled:
         system_prompt += f"\n\nHANDOFF: If user wants human, say: \"{handoff_callback_message}\""
 
-    # Inbound caller CRM enrichment — when a customer calls IN, look them up in
-    # the owner's connected CRM by their SIP caller-id and inject what we know
-    # so the agent can greet them by name and reference past context.
-    # For inbound SIP, the caller phone is usually in raw_agent_id (Vobiz/Exotel
-    # both pass it). For outbound, telephony_routes already did the lookup pre-call.
-    caller_phone = ""
-    if is_sip and raw_agent_id and _is_phone_like(raw_agent_id):
-        caller_phone = raw_agent_id
-    elif is_sip and call_id and _is_phone_like(call_id):
-        caller_phone = call_id
-
-    crm_context_line = ""
-    if owner_uid and caller_phone:
-        try:
-            from services.integration_tools import _lookup_crm_contact
-            crm = _lookup_crm_contact(owner_uid, {"phone": caller_phone})
-            if crm.get("ok") and crm.get("contact"):
-                c = crm["contact"]
-                name = (c.get("firstname") or c.get("First_Name") or "").strip()
-                last = (c.get("lastname") or c.get("Last_Name") or "").strip()
-                company = (c.get("company") or c.get("Account_Name") or "").strip()
-                stage = (c.get("lifecyclestage") or c.get("Lead_Status") or "").strip()
-                cid = c.get("vid") or c.get("id") or c.get("contact_id") or ""
-                parts = [f"{name} {last}".strip(), company, f"stage: {stage}" if stage else ""]
-                summary = " | ".join(p for p in parts if p)
-                if summary:
-                    crm_context_line = (
-                        f"\n\nINBOUND CALLER (from {crm['source']} CRM, phone {caller_phone}): {summary}. "
-                        f"Contact ID: {cid}. Greet them by name. Use log_crm_activity with this contact_id to append notes."
-                    )
-                    print(f"[Inbound] CRM hit for {caller_phone}: {summary}", flush=True)
-            else:
-                crm_context_line = (
-                    f"\n\nINBOUND CALLER: unknown number {caller_phone} — NOT in CRM. "
-                    f"Politely ask for their name and email, then IMMEDIATELY call create_or_update_crm_contact "
-                    f"with phone={caller_phone} so we capture this lead. Don't wait until call end."
-                )
-                print(f"[Inbound] CRM miss for {caller_phone} — instructed agent to create contact", flush=True)
-        except Exception as _e:
-            print(f"[Inbound] CRM lookup soft-fail: {_e}", flush=True)
-
-    # Call-center playbook: instruct the agent to actively use CRM tools.
-    system_prompt += crm_context_line + (
-        "\n\nCALL-CENTER PROTOCOL (always follow):\n"
-        "1. CAPTURE: If caller name / email / company isn't already provided above, ask conversationally — never robotically.\n"
-        "2. UPSERT: The moment you have their name + (phone or email), call create_or_update_crm_contact. Don't batch it for later.\n"
-        "3. LOG: As soon as you understand their issue or intent, call log_crm_activity with the contact_id to record what they said.\n"
-        "4. SCHEDULE: If you commit to any follow-up with a time, call create_calendar_event before ending the call.\n"
-        "5. ESCALATE: Use post_slack to alert the team if the issue is urgent or out-of-scope.\n"
-        "Speak naturally — do not narrate that you're 'logging' or 'saving' anything."
-    )
+    # Hardcoded Lead Capture Instructions
+    system_prompt += "\n\nLEAD CAPTURE: You MUST ask the user for their Name, Email ID, and Contact Number during the conversation if not already provided. This is essential for our records."
 
     await connect_task
 
@@ -786,7 +688,7 @@ async def entrypoint(ctx: JobContext):
             except: llm_plugin = google.realtime.RealtimeModel(**llm_kwargs)
 
             session = AgentSession(llm=llm_plugin)
-            agent_obj = KautilyaAgent(instructions=gemini_instructions, owner_uid=owner_uid)
+            agent_obj = KautilyaAgent(instructions=gemini_instructions)
             _attach_session_events(session)
             await session.start(room=ctx.room, agent=agent_obj)
 
@@ -805,58 +707,10 @@ async def entrypoint(ctx: JobContext):
         else:
             vad = _get_vad()
             stt = sarvam.STT(language=agent_language)
-            
-            # Map dynamic provider and voice
-            voice_str = agent_voice or "sarvam:shubh"
-            provider = "sarvam"
-            voice_id = voice_str
-            
-            if ":" in voice_str:
-                parts = voice_str.split(":", 1)
-                provider = parts[0].lower()
-                voice_id = parts[1]
-            else:
-                # Heuristic fallbacks for legacy/un-prefixed settings
-                if voice_str.startswith(("hf_", "hm_", "af_", "am_")):
-                    provider = "revealiq"
-                elif len(voice_str) == 36 and "-" in voice_str:
-                    provider = "cartesia"
-                elif voice_str in ["21m00Tcm4TlvDq8ikWAM", "AZnzlk1XhkUvS5ch7s7i", "EXAVITQu4vr4xnSDxMaL", "ErXw9S1aaH7HBy8S4H2u", "Lcf7m3M63S7G38m7V8p7", "MF3m7V8p7m7V8p7m7V8p"]:
-                    provider = "elevenlabs"
-
-            print(f"[Agent] Configured TTS provider: {provider}, voice ID: {voice_id}", flush=True)
-
-            if provider == "revealiq":
-                model_name = "kokoro-hi" if ("hi" in voice_id.lower() or voice_id.startswith(("hf_", "hm_"))) else "kokoro-en"
-                # Use openai.TTS initialized with our proxy endpoint
-                # Since RevealIQ /v1/audio/speech is OpenAI-compatible and streams MP3 by default,
-                # the standard LiveKit openai.TTS plugin works perfectly!
-                tts = openai.TTS(
-                    base_url="https://ai.revealiq.in/v1",
-                    api_key="none",
-                    model=model_name,
-                    voice=voice_id
-                )
-            elif provider == "cartesia":
-                tts = cartesia.TTS(
-                    voice=voice_id,
-                    model="sonic-english"
-                )
-            elif provider == "elevenlabs":
-                # Ensure ElevenLabs API key is mapped correctly for LiveKit plugin
-                if "ELEVENLABS_API_KEY" in os.environ and "ELEVEN_API_KEY" not in os.environ:
-                    os.environ["ELEVEN_API_KEY"] = os.environ["ELEVENLABS_API_KEY"]
-                tts = elevenlabs.TTS(
-                    voice_id=voice_id,
-                    model="eleven_monolingual_v1"
-                )
-            else:
-                # Default to Sarvam Bulbul v3
-                tts = sarvam.TTS(target_language_code=agent_language, speaker=voice_id, model="bulbul:v3")
-
+            tts = sarvam.TTS(target_language_code=agent_language, speaker=agent_voice, model="bulbul:v3")
             llm_plugin = openai.LLM(base_url="https://api.groq.com/openai/v1", api_key=os.environ.get("GROQ_API_KEY"), model="llama-3.3-70b-versatile")
             session = AgentSession(vad=vad, stt=stt, llm=llm_plugin, tts=tts)
-            agent_obj = KautilyaAgent(instructions=system_prompt, owner_uid=owner_uid)
+            agent_obj = KautilyaAgent(instructions=system_prompt)
             _attach_session_events(session)
             await session.start(room=ctx.room, agent=agent_obj)
             await asyncio.sleep(0.8)
@@ -996,5 +850,9 @@ if __name__ == "__main__":
 
     try: opts = WorkerOptions(num_idle_processes=num_idle, **worker_kwargs)
     except: opts = WorkerOptions(**worker_kwargs)
+
+    # Start health check server in background to prevent HF timeout
+    print("[HealthCheck] Starting server on port 7860...", flush=True)
+    threading.Thread(target=run_health_check, daemon=True).start()
 
     cli.run_app(opts)

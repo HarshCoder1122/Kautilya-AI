@@ -25,6 +25,7 @@ livekit-plugins-openai>=1.5.0
 livekit-plugins-silero>=1.5.0
 livekit-plugins-deepgram>=1.5.0
 livekit-plugins-sarvam>=1.5.0
+livekit-plugins-elevenlabs>=1.5.0
 livekit-plugins-google>=1.5.0
 websockets
 razorpay
