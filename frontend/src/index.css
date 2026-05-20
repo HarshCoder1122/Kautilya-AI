@@ -271,17 +271,17 @@ select option:checked {
   background-color: var(--k-brand);
   color: #fff;
 }
-/* Light mode overrides */
-:root select {
+/* Light mode overrides (only when .dark is NOT present) */
+:root:not(.dark) select {
   color-scheme: light;
 }
-:root select,
-:root select option,
-:root select optgroup {
+:root:not(.dark) select,
+:root:not(.dark) select option,
+:root:not(.dark) select optgroup {
   background-color: #fff;
   color: var(--k-text);
 }
-:root select option:checked {
+:root:not(.dark) select option:checked {
   background-color: var(--k-brand);
   color: #fff;
 }
