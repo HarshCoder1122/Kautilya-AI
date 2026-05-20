@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 tts_bp = Blueprint('tts', __name__)
 
-REVEALIQ_BASE = 'https://ai.revealiq.in'
+REVEALIQ_BASE = 'https://HarshSharma1212-RevealIQ-ASR.hf.space'
 
 def _warmup_revealiq():
     """Ping the RevealIQ Space every 4 minutes to prevent cold starts."""
@@ -50,8 +50,8 @@ def reveal_iq_stream():
         headers = {'Content-Type': 'application/json'}
         if hf_token:
             headers['Authorization'] = f'Bearer {hf_token}'
-        else:
-            logger.warning("[TTS Stream] No HF token found (REVEALIQ_HF_TOKEN / HF_TOKEN) — request may be rejected")
+
+        print(f"[TTS Stream] POST {url} | model={model} voice={voice} has_token={bool(hf_token)} token_prefix={str(hf_token)[:8] if hf_token else 'NONE'}...", flush=True)
 
         payload = {
             'model': model,
@@ -60,15 +60,13 @@ def reveal_iq_stream():
             'speed': float(speed),
         }
 
-        logger.info(f"[TTS Stream] POST {url} | model={model} voice={voice} has_token={bool(hf_token)}")
-
         # Request streaming from Space. Connect timeout 15s, but NO read
         # timeout — long messages take 30-90s of continuous chunk delivery
         # and a scalar `timeout=60` was killing playback mid-stream.
         resp = requests.post(url, headers=headers, json=payload, stream=True, timeout=(15, None))
 
         if not resp.ok:
-            logger.error(f"[TTS Stream] RevealIQ returned {resp.status_code}: {resp.text[:200]}")
+            print(f"[TTS Stream] RevealIQ FAILED {resp.status_code}: {resp.text[:300]}", flush=True)
             return jsonify({"error": f"Streaming failed ({resp.status_code}): {resp.text[:200]}"}), 502
 
         from flask import Response
