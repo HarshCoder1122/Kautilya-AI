@@ -50,6 +50,8 @@ def reveal_iq_stream():
         headers = {'Content-Type': 'application/json'}
         if hf_token:
             headers['Authorization'] = f'Bearer {hf_token}'
+        else:
+            logger.warning("[TTS Stream] No HF token found (REVEALIQ_HF_TOKEN / HF_TOKEN) — request may be rejected")
 
         payload = {
             'model': model,
@@ -57,6 +59,8 @@ def reveal_iq_stream():
             'voice': voice,
             'speed': float(speed),
         }
+
+        logger.info(f"[TTS Stream] POST {url} | model={model} voice={voice} has_token={bool(hf_token)}")
 
         # Request streaming from Space. Connect timeout 15s, but NO read
         # timeout — long messages take 30-90s of continuous chunk delivery
