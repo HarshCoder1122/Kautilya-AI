@@ -9,6 +9,7 @@ livekit-plugins-google>=1.5.0
 livekit-plugins-elevenlabs>=1.5.0
 python-dotenv
 requests
+httpx
 firebase-admin
 numpy
 fastapi

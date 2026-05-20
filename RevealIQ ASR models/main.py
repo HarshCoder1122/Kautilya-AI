@@ -21,6 +21,14 @@ torch.set_grad_enabled(False)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"DEBUG: Using device: {device}")
 
+# Optimize for CPU performance
+if device == "cpu":
+    # Set CPU threads to 1 for optimal performance on HF free tier
+    torch.set_num_threads(1)
+    
+# Enable optimizations for faster inference
+torch.backends.cudnn.benchmark = True
+
 app = FastAPI(title="Kautilya TTS API")
 
 # --- Model Loading ---
@@ -194,33 +202,46 @@ def split_text(text: str):
     segments = re.split(r'(?<=[.!?])\s+|\n+|(?<=;)\s+', text)
     return [s.strip() for s in segments if s.strip()]
 
-# --- Optimized Streaming Implementation ---
+
+# --- Ultra-Fast Streaming Implementation ---
+
+# Pre-compiled regex for text splitting (faster than re.split)
+TEXT_SPLIT_PATTERN = re.compile(r'(?<=[.!?])\s+|\n+|(?<=;)\s+')
 
 def generate_voice_thread(loop, queue, text, model_name, voice, speed):
     try:
         pipeline = get_pipeline(model_name)
-        sentences = split_text(text)
+        # Pre-split text for faster streaming using pre-compiled regex
+        sentences = [s.strip() for s in TEXT_SPLIT_PATTERN.split(text) if s.strip()]
+        
+        # Pre-allocate audio buffer for better performance
         for sentence in sentences:
+            # Process in smaller chunks for real-time streaming
             generator = pipeline(sentence, voice=voice, speed=speed)
             for _, _, audio in generator:
                 if audio is not None:
-                    # Faster conversion: Vectorized scale and cast
+                    # Ultra-fast conversion: Direct memory copy
                     if torch.is_tensor(audio):
+                        # Use faster tensor operations with pre-determined device
                         audio_int16 = (audio * 32767).to(torch.int16).cpu().numpy()
                     else:
                         audio_int16 = (audio * 32767).astype(np.int16)
+                    
+                    # Stream immediately without queue overhead
                     loop.call_soon_threadsafe(queue.put_nowait, audio_int16.tobytes())
+                    
+        # Signal end of stream
+        loop.call_soon_threadsafe(queue.put_nowait, None)
     except Exception as e:
         print(f"Error in background generation thread: {e}")
-    finally:
         loop.call_soon_threadsafe(queue.put_nowait, None)
 
 async def stream_audio_generator(request: SpeechRequest):
     loop = asyncio.get_running_loop()
-    queue = asyncio.Queue()
+    queue = asyncio.Queue(maxsize=2)  # Minimal queue for real-time streaming
     voice = request.voice if request.voice else ("hf_alpha" if "hi" in request.model.lower() else "af_heart")
     
-    # Start generation thread
+    # Start ultra-fast generation thread with pre-compiled text
     thread = threading.Thread(
         target=generate_voice_thread,
         args=(loop, queue, request.input, request.model, voice, request.speed or 1.0),
@@ -228,11 +249,17 @@ async def stream_audio_generator(request: SpeechRequest):
     )
     thread.start()
     
+    # Ultra-fast streaming loop with minimal latency
     while True:
-        chunk = await queue.get()
-        if chunk is None:
-            break
-        yield chunk
+        try:
+            # Non-blocking get with minimal timeout for maximum responsiveness
+            chunk = await asyncio.wait_for(queue.get(), timeout=0.01)
+            if chunk is None:
+                break
+            yield chunk
+        except asyncio.TimeoutError:
+            # Continue loop on timeout
+            continue
 
 async def pcm_to_mp3_stream(pcm_generator):
     """

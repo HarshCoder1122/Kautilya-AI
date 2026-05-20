@@ -19,7 +19,55 @@ from livekit.agents import (
 )
 from livekit.agents.llm import ChatMessage
 from livekit.plugins import sarvam, openai, silero, cartesia, google, elevenlabs
+from livekit.agents import tts as _tts
+from livekit.agents.utils import shortuuid as _shortuuid
+import httpx as _httpx
 from services.llm_service import call_nvidia
+
+
+# ============== Custom RevealIQ TTS (streams raw PCM from /v1/audio/stream) ==============
+class RevealIQTTS(_tts.TTS):
+    def __init__(self, *, base_url: str, api_key: str, model: str, voice: str, speed: float = 1.0):
+        super().__init__(
+            capabilities=_tts.TTSCapabilities(streaming=False),
+            sample_rate=24000,
+            num_channels=1,
+        )
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+        self._model = model
+        self._voice = voice
+        self._speed = speed
+
+    def synthesize(self, text, *, conn_options=_tts.DEFAULT_API_CONNECT_OPTIONS):
+        return _RevealIQChunkedStream(tts=self, input_text=text, conn_options=conn_options)
+
+
+class _RevealIQChunkedStream(_tts.ChunkedStream):
+    async def _run(self, output_emitter):
+        output_emitter.initialize(
+            request_id=_shortuuid(),
+            sample_rate=self._tts.sample_rate,
+            num_channels=self._tts.num_channels,
+            mime_type="audio/pcm",
+            stream=False,
+        )
+        headers = {"Content-Type": "application/json"}
+        if self._tts._api_key and self._tts._api_key != "none":
+            headers["Authorization"] = f"Bearer {self._tts._api_key}"
+        payload = {
+            "model": self._tts._model,
+            "input": self._input_text,
+            "voice": self._tts._voice,
+            "speed": self._tts._speed,
+        }
+        async with _httpx.AsyncClient(timeout=60) as client:
+            async with client.stream("POST", f"{self._tts._base_url}/v1/audio/stream", json=payload, headers=headers) as resp:
+                resp.raise_for_status()
+                async for chunk in resp.aiter_bytes(2048):
+                    if chunk:
+                        output_emitter.push(chunk)
+        output_emitter.flush()
 
 load_dotenv()
 
@@ -829,12 +877,11 @@ async def entrypoint(ctx: JobContext):
             if provider == "revealiq":
                 model_name = "kokoro-hi" if ("hi" in voice_id.lower() or voice_id.startswith(("hf_", "hm_"))) else "kokoro-en"
                 hf_token = os.environ.get("REVEALIQ_HF_TOKEN") or os.environ.get("HF_TOKEN") or "none"
-                tts = openai.TTS(
-                    base_url="https://HarshSharma1212-RevealIQ-ASR.hf.space/v1",
+                tts = RevealIQTTS(
+                    base_url="https://HarshSharma1212-RevealIQ-ASR.hf.space",
                     api_key=hf_token,
                     model=model_name,
                     voice=voice_id,
-                    response_format="pcm",
                 )
             elif provider == "cartesia":
                 tts = cartesia.TTS(
