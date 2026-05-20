@@ -541,7 +541,7 @@ function AgentDetail({ agent, onClose, onUpdate }) {
                 <input
                   value={editedAgent.name || ''}
                   onChange={(e) => setEditedAgent({ ...editedAgent, name: e.target.value })}
-                  className="w-full px-3 py-2.5 text-sm bg-accent/20 border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none"
+                  className="w-full px-3 py-2.5 text-sm bg-[var(--k-surface-elevated)] border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none"
                 />
               </div>
               <div className="space-y-2">
@@ -549,7 +549,7 @@ function AgentDetail({ agent, onClose, onUpdate }) {
                 <input
                   value={editedAgent.welcome_message || ''}
                   onChange={(e) => setEditedAgent({ ...editedAgent, welcome_message: e.target.value })}
-                  className="w-full px-3 py-2.5 text-sm bg-accent/20 border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none"
+                  className="w-full px-3 py-2.5 text-sm bg-[var(--k-surface-elevated)] border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none"
                 />
               </div>
             </div>
@@ -585,7 +585,7 @@ function AgentDetail({ agent, onClose, onUpdate }) {
                 <select
                   value={editedAgent.voice}
                   onChange={(e) => setEditedAgent({ ...editedAgent, voice: e.target.value })}
-                  className="w-full px-3 py-2.5 text-sm bg-accent/20 border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none"
+                  className="w-full px-3 py-2.5 text-sm bg-[var(--k-surface-elevated)] border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none"
                 >
                   {editedAgent.model === "gemini-live" ? (
                     GEMINI_LIVE_VOICES.map((v) => (
@@ -657,7 +657,7 @@ function AgentDetail({ agent, onClose, onUpdate }) {
                     }
                     setEditedAgent({ ...editedAgent, model: newModel, voice: nextVoice });
                   }}
-                  className="w-full px-3 py-2.5 text-sm bg-accent/20 border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none"
+                  className="w-full px-3 py-2.5 text-sm bg-[var(--k-surface-elevated)] border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none"
                 >
                   <option value="kautilya-daily">Kautilya Daily (Llama 3.3)</option>
                   <option value="kautilya-pro">Kautilya Pro (Nemotron-3)</option>

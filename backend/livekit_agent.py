@@ -833,7 +833,8 @@ async def entrypoint(ctx: JobContext):
                     base_url="https://HarshSharma1212-RevealIQ-ASR.hf.space/v1",
                     api_key=hf_token,
                     model=model_name,
-                    voice=voice_id
+                    voice=voice_id,
+                    response_format="pcm",
                 )
             elif provider == "cartesia":
                 tts = cartesia.TTS(

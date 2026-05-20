@@ -100,7 +100,7 @@ class SpeechRequest(BaseModel):
     input: str = Field(..., min_length=1, description="Text to synthesize")
     voice: Optional[str] = None
     speed: Optional[float] = Field(1.0, ge=0.5, le=2.0)
-    response_format: Optional[str] = "pcm"
+    response_format: Optional[str] = "mp3"
 
 # --- Endpoints ---
 
