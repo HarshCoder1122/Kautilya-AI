@@ -5,12 +5,52 @@ Handles root routes, html views, and basic analytics endpoints.
 import os
 import psutil
 import time
-from flask import Blueprint, jsonify, send_from_directory, request
+import requests
+from flask import Blueprint, jsonify, send_from_directory, request, Response
 
 from config import STATIC_FOLDER
 from services.auth_service import verify_firebase_token
 
 static_bp = Blueprint('static_routes', __name__)
+
+
+# ---- Firebase Auth handler reverse-proxy ----------------------------------
+# When the React app uses authDomain=ai.revealiq.in, Firebase's Google OAuth
+# popup hits https://ai.revealiq.in/__/auth/handler (plus /__/auth/iframe.js
+# and /__/firebase/init.json). Those paths are normally served by Firebase
+# Hosting — since our app lives on a Flask + HF Space stack instead, we
+# transparently proxy them to jarvis-a6e18.firebaseapp.com so the OAuth flow
+# works without moving DNS to Firebase Hosting.
+_FIREBASE_HOST = "https://jarvis-a6e18.firebaseapp.com"
+_HOP_BY_HOP = {
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailers", "transfer-encoding", "upgrade", "content-encoding",
+    "content-length",
+}
+
+@static_bp.route('/__/<path:subpath>', methods=['GET', 'POST', 'OPTIONS'])
+def firebase_auth_proxy(subpath):
+    upstream_url = f"{_FIREBASE_HOST}/__/{subpath}"
+    try:
+        upstream = requests.request(
+            method=request.method,
+            url=upstream_url,
+            params=request.args,
+            data=request.get_data() if request.method != 'GET' else None,
+            headers={k: v for k, v in request.headers.items()
+                     if k.lower() not in ('host', 'cookie')},
+            cookies=request.cookies,
+            allow_redirects=False,
+            stream=True,
+            timeout=(5, 30),
+        )
+    except Exception as e:
+        return jsonify({"error": f"Auth proxy upstream failed: {e}"}), 502
+
+    headers = [(k, v) for k, v in upstream.raw.headers.items()
+               if k.lower() not in _HOP_BY_HOP]
+    return Response(upstream.iter_content(chunk_size=8192),
+                    status=upstream.status_code, headers=headers)
 
 
 @static_bp.route('/')
