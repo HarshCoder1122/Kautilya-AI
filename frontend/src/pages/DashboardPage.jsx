@@ -9,6 +9,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { logout } from "../lib/firebase";
 import { UserCircle } from "@phosphor-icons/react";
 import AgentStudio, { AgentDetailPage } from "@/components/dashboard/AgentStudio";
+import UsagePage from "@/components/dashboard/UsagePage";
 import LeadManagement from "@/components/dashboard/LeadManagement";
 import CampaignDialer from "@/components/dashboard/CampaignDialer";
 import CallAnalytics from "@/components/dashboard/CallAnalytics";
@@ -30,8 +31,8 @@ const navItems = [
   { id: 'tts', label: 'TTS Studio', icon: SpeakerHigh, path: '/dashboard/tts' },
   { id: 'integrations', label: 'Integrations', icon: PlugsConnected, path: '/dashboard/integrations' },
   { id: 'api', label: 'Developer API', icon: Terminal, path: '/dashboard/api' },
-  { id: 'billing', label: 'Billing', icon: CreditCard, path: '/dashboard/billing' },
-  { id: 'settings', label: 'Settings', icon: Gear, path: '/dashboard/settings' },
+  { id: 'billing', label: 'Billing', icon: CreditableCard, path: '/dashboard/billing' },
+  { id: 'usage', label: 'Usage', icon: ChartBar, path: '/dashboard/usage' },
 ];
 
 export default function DashboardPage({ theme, toggleTheme, user }) {
@@ -166,6 +167,7 @@ export default function DashboardPage({ theme, toggleTheme, user }) {
           <Route path="integrations" element={<Integrations />} />
           <Route path="api" element={<DeveloperAPI />} />
           <Route path="billing" element={<Billing user={user} />} />
+          <Route path="usage" element={<UsagePage />} />
           <Route path="settings" element={<UserSettings user={user} />} />
         </Routes>
       </div>

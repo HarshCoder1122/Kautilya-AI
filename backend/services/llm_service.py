@@ -9,8 +9,8 @@ from requests.adapters import HTTPAdapter
 from config import (
     GROQ_API_KEYS, GROQ_COOLDOWN_SECONDS,
     OPENROUTER_API_KEY, NVIDIA_API_KEY,
+    NVIDIA_API_KEYS,
     GEMINI_API_KEYS,
-)
 
 # Groq key rotation state
 _groq_key_index = 0
@@ -49,6 +49,20 @@ def _make_pooled_session(pool_connections=20, pool_maxsize=50):
 _NVIDIA_SESSION = _make_pooled_session()
 _GROQ_SESSION = _make_pooled_session()
 _OPENROUTER_SESSION = _make_pooled_session()
+
+# NVIDIA key rotation state
+_nvidia_key_index = 0
+_nvidia_key_cooldowns = {}
+
+# NVIDIA key rotation function
+def _get_available_nvidia_key():
+    global _nvidia_key_index
+    if not NVIDIA_API_KEYS:
+        return None
+    # Simple round-robin rotation
+    key = NVIDIA_API_KEYS[_nvidia_key_index % len(NVIDIA_API_KEYS)]
+    _nvidia_key_index = (_nvidia_key_index + 1) % len(NVIDIA_API_KEYS)
+    return key
 
 
 def _prewarm_nvidia():
@@ -271,8 +285,10 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
         #     (gzip would batch tokens until enough bytes accumulate for a frame)
         #   • Connection: keep-alive lets urllib3 hold the socket open
         #   • Lower connect timeout fails fast if NVIDIA edge is dead
+        # Get available NVIDIA key using rotation
+        nvidia_api_key = _get_available_nvidia_key() or NVIDIA_API_KEY
         headers = {
-            "Authorization": f"Bearer {NVIDIA_API_KEY}",
+            "Authorization": f"Bearer {nvidia_api_key}",
             "Content-Type": "application/json",
             "Connection": "keep-alive",
         }

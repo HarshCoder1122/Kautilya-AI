@@ -35,6 +35,14 @@ SERPAPI_API_KEY = os.environ.get("SERPAPI_API_KEY", "")
 MAPPLS_API_KEY = os.environ.get("MAPPLS_API_KEY", "")
 SARVAM_API_KEY = os.environ.get("SARVAM_API_KEY", "")
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
+_NVIDIA_API_KEYS_RAW = [
+    os.environ.get("NVIDIA_API_KEY", ""),
+    os.environ.get("NVIDIA_API_KEY_BACKUP", ""),
+    os.environ.get("NVIDIA_API_KEY_3", ""),
+    os.environ.get("NVIDIA_API_KEY_4", ""),
+    os.environ.get("NVIDIA_API_KEY_5", ""),
+]
+NVIDIA_API_KEYS = [k for k in _NVIDIA_API_KEYS_RAW if k]
 if not NVIDIA_API_KEY:
     print("[CONFIG] WARNING: NVIDIA_API_KEY not set — Pro/Coder models will fall back to Groq Llama")
 
@@ -105,8 +113,8 @@ API_KEY_PREFIX = "kautilya-"
 
 # ============== Rate Limits ==============
 API_RATE_LIMITS = {
-    "free": {"llm_tokens": 10000, "tts_chars": 5000, "stt_seconds": 60, "max_tokens": 2048},
-    "pro":  {"llm_tokens": 1000000, "tts_chars": 500000, "stt_seconds": 6000, "max_tokens": 16384},
+    "free": {"llm_tokens": 1000000, "tts_chars": 500000, "stt_seconds": 6000, "max_tokens": 2048},
+    "pro":  {"llm_tokens": 10000000, "tts_chars": 5000000, "stt_seconds": 6000, "max_tokens": 16384},
 }
 
 _MESSAGE_RATE_LIMITS = {
@@ -119,8 +127,8 @@ _MESSAGE_RATE_LIMITS = {
 # These caps are separate from the in-app chat caps above.
 # Beyond the daily cap the request falls through to PAYG credits.
 _DEVELOPER_API_LIMITS = {
-    "free": {"per_minute": 10, "per_day": 50},
-    "pro":  {"per_minute": 60, "per_day": 500},
+    "free": {"per_minute": 10, "per_day": 1000000},
+    "pro":  {"per_minute": 60, "per_day": 10000000},
 }
 DEVELOPER_API_PAYG_PRICE = 1.00  # INR per API call after daily cap
 

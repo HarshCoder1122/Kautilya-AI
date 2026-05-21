@@ -180,13 +180,52 @@ def get_pipeline(model_name: str):
             raise HTTPException(status_code=503, detail="English pipeline not ready")
         return kokoro_en
 
+def trim_silence(audio, sample_rate=24000, threshold=0.005, keep_start_ms=20, keep_end_ms=40):
+    """
+    Trim leading and trailing silence from float32 audio.
+    Keeps a small cushion of silence (keep_start_ms at start, keep_end_ms at end)
+    so it doesn't sound completely cut off, preventing long breaks after punctuation.
+    """
+    is_tensor = False
+    if torch.is_tensor(audio):
+        is_tensor = True
+        audio_np = audio.cpu().numpy()
+    else:
+        audio_np = audio
+
+    # Find indices where amplitude exceeds threshold
+    non_silent = np.where(np.abs(audio_np) > threshold)[0]
+    
+    if len(non_silent) == 0:
+        return audio
+
+    start_idx = non_silent[0]
+    end_idx = non_silent[-1]
+
+    # Calculate cushions in samples
+    start_cushion = int((keep_start_ms / 1000.0) * sample_rate)
+    end_cushion = int((keep_end_ms / 1000.0) * sample_rate)
+
+    new_start = max(0, start_idx - start_cushion)
+    new_end = min(len(audio_np), end_idx + end_cushion)
+
+    trimmed_audio = audio_np[new_start:new_end]
+
+    if is_tensor:
+        return torch.from_numpy(trimmed_audio).to(audio.device)
+    return trimmed_audio
+
 def generate_full_audio_sync(request: SpeechRequest):
     pipeline = get_pipeline(request.model)
     # Smart Default Voice
     voice = request.voice if request.voice else ("hf_alpha" if "hi" in request.model.lower() else "af_heart")
     
     generator = pipeline(request.input, voice=voice, speed=request.speed)
-    audio_chunks = [audio for _, _, audio in generator if audio is not None]
+    audio_chunks = []
+    for _, _, audio in generator:
+        if audio is not None:
+            trimmed = trim_silence(audio)
+            audio_chunks.append(trimmed)
     
     if not audio_chunks:
         raise ValueError("Audio generation failed")
@@ -220,6 +259,8 @@ def generate_voice_thread(loop, queue, text, model_name, voice, speed):
             generator = pipeline(sentence, voice=voice, speed=speed)
             for _, _, audio in generator:
                 if audio is not None:
+                    # Trim silence from the audio chunk to keep the flow continuous
+                    audio = trim_silence(audio)
                     # Ultra-fast conversion: Direct memory copy
                     if torch.is_tensor(audio):
                         # Use faster tensor operations with pre-determined device
@@ -238,7 +279,7 @@ def generate_voice_thread(loop, queue, text, model_name, voice, speed):
 
 async def stream_audio_generator(request: SpeechRequest):
     loop = asyncio.get_running_loop()
-    queue = asyncio.Queue(maxsize=2)  # Minimal queue for real-time streaming
+    queue = asyncio.Queue(maxsize=20)  # Larger queue allows pre-generation of subsequent sentences to prevent playback gaps
     voice = request.voice if request.voice else ("hf_alpha" if "hi" in request.model.lower() else "af_heart")
     
     # Start ultra-fast generation thread with pre-compiled text
