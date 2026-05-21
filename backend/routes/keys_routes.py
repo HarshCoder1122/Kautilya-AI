@@ -74,8 +74,19 @@ def api_key_list():
         active_key = None
         try:
             user_doc = db.collection('users').document(uid).get()
-            if user_doc.exists: active_key = user_doc.to_dict().get('active_api_key')
-        except: pass
+            if user_doc.exists:
+                raw_active_key = user_doc.to_dict().get('active_api_key')
+                if raw_active_key:
+                    # Validate if this key is still active in api_keys
+                    active_key_hash = hash_api_key(raw_active_key)
+                    key_doc = db.collection('api_keys').document(active_key_hash).get()
+                    if key_doc.exists and key_doc.to_dict().get('is_active', False):
+                        active_key = raw_active_key
+                    else:
+                        # Clear inactive key from users document
+                        db.collection('users').document(uid).update({'active_api_key': firestore.DELETE_FIELD})
+        except Exception as e:
+            print(f"[keys/list] Active key validation error: {e}")
         
         return jsonify({"keys": keys, "usage": usage, "limits": limits, "tier": tier, "active_key": active_key})
     except Exception as e:
@@ -85,6 +96,7 @@ def api_key_list():
 @keys_bp.route('/keys/revoke', methods=['POST'])
 def api_key_revoke():
     from extensions import db
+    from firebase_admin import firestore
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
     if not uid: return jsonify({"error": "Authentication required"}), 401
@@ -97,6 +109,14 @@ def api_key_revoke():
         doc = db.collection('api_keys').document(key_hash).get()
         if doc.exists and doc.to_dict().get('uid') == uid:
             db.collection('api_keys').document(key_hash).update({'is_active': False})
+            
+            # Also clean up the active_api_key in the user document if it matches the revoked key
+            user_doc = db.collection('users').document(uid).get()
+            if user_doc.exists:
+                current_active = user_doc.to_dict().get('active_api_key')
+                if current_active and hash_api_key(current_active) == key_hash:
+                    db.collection('users').document(uid).update({'active_api_key': firestore.DELETE_FIELD})
+                    
             return jsonify({"status": "ok", "message": "Key revoked"})
         return jsonify({"error": "Key not found"}), 404
     except Exception as e:

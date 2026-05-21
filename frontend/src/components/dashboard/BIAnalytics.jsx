@@ -52,10 +52,49 @@ export default function BIAnalytics() {
   };
 
   // Transform usage data to chart format
-  const revenueData = usageData?.daily_usage?.map(d => ({
-    month: new Date(d.date).toLocaleDateString('en-US', { month: 'short' }),
-    value: d.count || 0,
-  })) || [];
+  const revenueData = usageData?.daily_usage?.map(d => {
+    try {
+      const parsedDate = new Date(d.date);
+      if (isNaN(parsedDate.getTime())) {
+        return {
+          month: d.date || '—',
+          value: d.count || 0,
+        };
+      }
+      return {
+        month: parsedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        value: d.count || 0,
+      };
+    } catch (e) {
+      return {
+        month: d.date || '—',
+        value: d.count || 0,
+      };
+    }
+  }) || [];
+
+  // Generate dynamic 3-day forecast based on last date in daily usage
+  const getForecastData = () => {
+    if (revenueData.length === 0) return [];
+    const lastItem = revenueData[revenueData.length - 1];
+    const lastDate = usageData?.daily_usage?.[usageData.daily_usage.length - 1]?.date;
+    const baseDate = lastDate ? new Date(lastDate) : new Date();
+    
+    const forecast = [];
+    for (let i = 1; i <= 3; i++) {
+      const nextDate = new Date(baseDate);
+      nextDate.setDate(baseDate.getDate() + i);
+      const label = nextDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      forecast.push({
+        month: label,
+        value: Math.round((lastItem.value || 0) * (1 + i * 0.1)),
+        forecast: true
+      });
+    }
+    return [...revenueData, ...forecast];
+  };
+
+  const forecastData = getForecastData();
 
   const [salesByRegion, setSalesByRegion] = useState([]);
   const [conversionFunnel, setConversionFunnel] = useState([]);
@@ -219,12 +258,7 @@ export default function BIAnalytics() {
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--k-brand)]/10 text-[var(--k-brand)] font-medium">Trend Analysis</span>
               </div>
               <ResponsiveContainer width="100%" height={220}>
-                <LineChart data={[
-                  ...revenueData,
-                  { month: 'Nov', value: revenueData[revenueData.length - 1]?.value * 1.1 || 0, forecast: true },
-                  { month: 'Dec', value: revenueData[revenueData.length - 1]?.value * 1.2 || 0, forecast: true },
-                  { month: 'Jan', value: revenueData[revenueData.length - 1]?.value * 1.3 || 0, forecast: true },
-                ]}>
+                <LineChart data={forecastData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--k-border)" />
                   <XAxis dataKey="month" tick={{ fontSize: 11, fill: 'var(--k-text-secondary)' }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fontSize: 11, fill: 'var(--k-text-secondary)' }} axisLine={false} tickLine={false} />

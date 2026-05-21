@@ -26,134 +26,114 @@ def get_usage():
         return jsonify({"error": "Unauthorized"}), 401
 
     try:
-        usage = {
-            "total_calls": 0,
-            "failed_calls": 0,
-            "avg_sentiment": 0.0,
-            "success_rate": "0%",
-            "total_tokens": 0,
-            "daily_usage": [],
-        }
+        total_tokens = 0
+        tts_usage = 0
+        stt_usage = 0
+
+        import datetime
+        today_str = datetime.date.today().strftime('%Y-%m-%d')
+        # Pre-seed last 14 days of date labels
+        today = datetime.date.today()
+        date_list = [(today - datetime.timedelta(days=i)).strftime('%Y-%m-%d') for i in range(14)]
+        
+        # We will count call volumes per day in the last 14 days
+        calls_per_day = {d: 0 for d in date_list}
+
+        total_calls = 0
+        failed_calls = 0
+        daily_calls = 0
+        avg_sentiment = 0.0
+        success_rate = "0%"
 
         if db:
-            # Fetch call logs from agents
+            # 1. Fetch token and media usage from api_usage
             try:
-                agents_docs = db.collection('agents').where('uid', '==', uid).limit(20).stream()
-                total_calls = 0
-                failed_calls = 0
+                daily_docs = db.collection('api_usage').document(uid).collection('daily').stream()
+                for doc in daily_docs:
+                    data = doc.to_dict() or {}
+                    total_tokens += int(data.get('llm_tokens') or 0)
+                    tts_usage += int(data.get('tts_chars') or 0)
+                    stt_usage += int(data.get('stt_seconds') or 0)
+            except Exception as e:
+                print(f"[Analytics] api_usage aggregation error: {e}")
+
+            # 2. Fetch call logs from agent_logs to calculate call statistics
+            sentiment_scores = []
+
+            try:
+                from firebase_admin import firestore
+                agents_docs = db.collection('agents').where(filter=firestore.FieldFilter('uid', '==', uid)).stream()
                 for agent_doc in agents_docs:
                     agent_id = agent_doc.id
-                    logs = db.collection('agents').document(agent_id).collection('call_logs').limit(200).stream()
+                    logs = db.collection('agents').document(agent_id).collection('agent_logs').limit(500).stream()
                     for log in logs:
-                        log_data = log.to_dict()
+                        log_data = log.to_dict() or {}
                         total_calls += 1
-                        if log_data.get('status') == 'failed':
+
+                        status = (log_data.get('status') or '').lower()
+                        if status in ('failed', 'no_audio', 'error'):
                             failed_calls += 1
-                usage["total_calls"] = total_calls
-                usage["failed_calls"] = failed_calls
-                if total_calls > 0:
-                    usage["success_rate"] = f"{int(((total_calls - failed_calls) / total_calls) * 100)}%"
+
+                        # Group logs by date for trend
+                        ts = log_data.get('created_at') or log_data.get('timestamp')
+                        if ts:
+                            log_day = None
+                            if hasattr(ts, 'to_datetime'):
+                                try:
+                                    ts = ts.to_datetime()
+                                except Exception:
+                                    pass
+                            if hasattr(ts, 'strftime'):
+                                log_day = ts.strftime("%Y-%m-%d")
+                            elif hasattr(ts, 'timestamp'):
+                                try:
+                                    log_day = datetime.datetime.fromtimestamp(ts.timestamp()).strftime("%Y-%m-%d")
+                                except Exception:
+                                    pass
+                            elif isinstance(ts, (int, float)):
+                                log_day = datetime.date.fromtimestamp(ts).strftime("%Y-%m-%d")
+                            
+                            if log_day:
+                                if log_day == today_str:
+                                    daily_calls += 1
+                                if log_day in calls_per_day:
+                                    calls_per_day[log_day] += 1
+
+                        sentiment = (log_data.get('sentiment') or '').lower()
+                        if sentiment == 'positive':
+                            sentiment_scores.append(1.0)
+                        elif sentiment == 'neutral':
+                            sentiment_scores.append(0.6)
+                        elif sentiment == 'negative':
+                            sentiment_scores.append(0.2)
             except Exception as e:
                 print(f"[Analytics] call log fetch error: {e}")
 
-            # Fetch token usage
-            try:
-                usage_doc = db.collection('user_usage').document(uid).get()
-                if usage_doc.exists:
-                    udata = usage_doc.to_dict()
-                    usage["total_tokens"] = udata.get('llm_tokens', 0)
-            except Exception as e:
-                print(f"[Analytics] token usage error: {e}")
+            if total_calls > 0:
+                success_rate = f"{int(((total_calls - failed_calls) / total_calls) * 100)}%"
 
-        # Build daily usage buckets (placeholder trend)
-        buckets = _date_buckets(14)
-        usage["daily_usage"] = [{"date": d, "count": 0} for d in buckets]
+            if sentiment_scores:
+                avg_sentiment = round(sum(sentiment_scores) / len(sentiment_scores) * 10, 1)
 
-        return jsonify(usage)
-    except Exception as e:
-        print(f"[Analytics] Usage error: {e}")
-        return jsonify({
-            "total_calls": 0, "failed_calls": 0, "avg_sentiment": 0.0,
-            "success_rate": "0%", "total_tokens": 0, "daily_usage": []
-        })
-
-
-@analytics_bp.route('/analytics/call-volume', methods=['GET'])
-def get_call_volume():
-    """Return call volume bucketed by day for charts."""
-    from extensions import db
-    token_data = verify_firebase_token()
-    uid = token_data.get('uid') if token_data else None
-    if not uid:
-        return jsonify({"error": "Unauthorized"}), 401
-
-    try:
-        buckets_labels = _date_buckets(14)
-        buckets = [{"label": b, "count": 0} for b in buckets_labels]
-        total_calls = 0
-        failed_calls = 0
-        avg_sentiment = 0.0
-
-        if db:
-            try:
-                agents_docs = db.collection('agents').where('uid', '==', uid).limit(20).stream()
-                sentiment_total = 0.0
-                sentiment_count = 0
-                for agent_doc in agents_docs:
-                    logs = db.collection('agents').document(agent_doc.id).collection('call_logs').limit(200).stream()
-                    for log in logs:
-                        log_data = log.to_dict()
-                        total_calls += 1
-                        if log_data.get('status') == 'failed':
-                            failed_calls += 1
-                        s = log_data.get('sentiment_score')
-                        if isinstance(s, (int, float)):
-                            sentiment_total += s
-                            sentiment_count += 1
-                if sentiment_count > 0:
-                    avg_sentiment = round(sentiment_total / sentiment_count, 2)
-            except Exception as e:
-                print(f"[Analytics] call volume error: {e}")
+        # Build chronological trend data for the area chart
+        daily_usage = [{"date": d, "count": calls_per_day[d]} for d in reversed(date_list)]
 
         return jsonify({
-            "buckets": buckets,
             "total_calls": total_calls,
             "failed_calls": failed_calls,
+            "daily_calls": daily_calls,
+            "success_rate": success_rate,
             "avg_sentiment": avg_sentiment,
+            "total_tokens": total_tokens,
+            "tts_usage": tts_usage,
+            "stt_usage": stt_usage,
+            "daily_usage": daily_usage,
         })
     except Exception as e:
-        print(f"[Analytics] Call volume error: {e}")
-        return jsonify({"buckets": [], "total_calls": 0, "failed_calls": 0, "avg_sentiment": 0.0})
+        print(f"[Analytics] Usage endpoint error: {e}")
+        return jsonify({
+            "total_calls": 0, "failed_calls": 0, "daily_calls": 0,
+            "success_rate": "0%", "avg_sentiment": 0.0, "total_tokens": 0,
+            "tts_usage": 0, "stt_usage": 0, "daily_usage": []
+        })
 
-
-@analytics_bp.route('/analytics/trends', methods=['GET'])
-def get_trends():
-    """Return trend data for charts (messages sent, sessions, etc.)."""
-    from extensions import db
-    token_data = verify_firebase_token()
-    uid = token_data.get('uid') if token_data else None
-    if not uid:
-        return jsonify({"error": "Unauthorized"}), 401
-
-    try:
-        buckets_labels = _date_buckets(14)
-        trends = {
-            "messages_per_day": [{"date": b, "count": 0} for b in buckets_labels],
-            "sessions_per_day": [{"date": b, "count": 0} for b in buckets_labels],
-            "models_used": {},
-        }
-
-        if db:
-            try:
-                from firebase_admin import firestore
-                conv_docs = db.collection('users').document(uid).collection('conversations') \
-                    .order_by('last_updated', direction=firestore.Query.DESCENDING).limit(100).stream()
-                for conv in conv_docs:
-                    pass  # Could build per-day counts here from timestamps
-            except Exception as e:
-                print(f"[Analytics] trends fetch error: {e}")
-
-        return jsonify(trends)
-    except Exception as e:
-        print(f"[Analytics] Trends error: {e}")
-        return jsonify({"messages_per_day": [], "sessions_per_day": [], "models_used": {}})
