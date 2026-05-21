@@ -42,11 +42,11 @@ export default function UsagePage() {
     }
   };
 
-  // Mock data for charts
+  // Chart data based on plan limits
   const usageChartData = [
-    { name: 'LLM Tokens', used: usageData?.total_tokens || 0, limit: 10000000 },
-    { name: 'TTS Chars', used: usageData?.tts_usage || 0, limit: 5000000 },
-    { name: 'STT Secs', used: usageData?.stt_usage || 0, limit: 6000 }
+    { name: 'LLM Tokens', used: usageData?.total_tokens || 0, limit: keysData?.limits?.llm_tokens || 1000000 },
+    { name: 'TTS Chars', used: usageData?.tts_usage || 0, limit: keysData?.limits?.tts_chars || 500000 },
+    { name: 'STT Secs', used: usageData?.stt_usage || 0, limit: keysData?.limits?.stt_seconds || 6000 }
   ];
 
   return (
@@ -73,7 +73,7 @@ export default function UsagePage() {
                   {usageData?.total_tokens?.toLocaleString() || '0'}
                 </div>
                 <div className="text-xs text-muted-foreground mt-1">
-                  Free Tier: 1,000,000 tokens
+                  {keysData?.tier === 'pro' ? 'Pro Tier' : 'Free Tier'} Limit: {keysData?.limits?.llm_tokens ? (keysData.limits.llm_tokens).toLocaleString() : '1,000,000'} tokens
                 </div>
               </div>
               
@@ -83,7 +83,7 @@ export default function UsagePage() {
                   {usageData?.tts_usage?.toLocaleString() || '0'}
                 </div>
                 <div className="text-xs text-muted-foreground mt-1">
-                  Free Tier: 500,000 characters
+                  {keysData?.tier === 'pro' ? 'Pro Tier' : 'Free Tier'} Limit: {keysData?.limits?.tts_chars ? (keysData.limits.tts_chars).toLocaleString() : '500,000'} characters
                 </div>
               </div>
               
@@ -93,7 +93,7 @@ export default function UsagePage() {
                   {usageData?.stt_usage || '0'}s
                 </div>
                 <div className="text-xs text-muted-foreground mt-1">
-                  Free Tier: 6,000 seconds
+                  {keysData?.tier === 'pro' ? 'Pro Tier' : 'Free Tier'} Limit: {keysData?.limits?.stt_seconds ? (keysData.limits.stt_seconds).toLocaleString() : '6,000'} seconds
                 </div>
               </div>
             </div>
@@ -118,8 +118,8 @@ export default function UsagePage() {
                   </BarChart>
                 </ResponsiveContainer>
                 <div className="text-xs text-muted-foreground mt-2">
-                  {usageData?.total_tokens 
-                    ? `${((usageData.total_tokens / 10000000) * 100).toFixed(2)}% of limit used`
+                  {usageData?.total_tokens && keysData?.limits?.llm_tokens 
+                    ? `${((usageData.total_tokens / keysData.limits.llm_tokens) * 100).toFixed(2)}% of limit used`
                     : '0% of limit used'}
                 </div>
               </div>
