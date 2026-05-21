@@ -6,6 +6,7 @@ import threading
 import time
 from flask import Blueprint, request, send_file, jsonify
 from flask_cors import cross_origin
+from services.auth_service import verify_firebase_token, record_usage
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,11 @@ def reveal_iq_stream():
         return '', 200
     
     try:
+        token_data = verify_firebase_token()
+        uid = token_data.get('uid') if token_data else None
+        if not uid:
+            return jsonify({"error": "Unauthorized"}), 401
+
         data = request.get_json(silent=True) or {}
         text = data.get('text', '').strip()
         if not text:
@@ -43,6 +49,9 @@ def reveal_iq_stream():
         model = 'kokoro-hi' if 'hi' in raw_model.lower() else 'kokoro-en'
         voice = data.get('voice', 'af_nicole')
         speed = data.get('speed', 1.0)
+
+        # Record usage
+        record_usage(uid, 'tts_chars', len(text), model)
 
         hf_token = os.environ.get('REVEALIQ_HF_TOKEN') or os.environ.get('HF_TOKEN')
         url = f'{REVEALIQ_BASE}/v1/audio/stream'
@@ -98,6 +107,11 @@ def reveal_iq_synthesize():
         return '', 200
     
     try:
+        token_data = verify_firebase_token()
+        uid = token_data.get('uid') if token_data else None
+        if not uid:
+            return jsonify({"error": "Unauthorized"}), 401
+
         data = request.get_json()
         text = data.get('text', '')
         # Standardize model names for Kokoro engine
@@ -109,6 +123,9 @@ def reveal_iq_synthesize():
         
         if not text:
             return jsonify({"error": "Text is required"}), 400
+
+        # Record usage
+        record_usage(uid, 'tts_chars', len(text), model)
         
         hf_token = os.environ.get('REVEALIQ_HF_TOKEN') or os.environ.get('HF_TOKEN')
         
@@ -154,6 +171,11 @@ def cartesia_synthesize():
         return '', 200
     
     try:
+        token_data = verify_firebase_token()
+        uid = token_data.get('uid') if token_data else None
+        if not uid:
+            return jsonify({"error": "Unauthorized"}), 401
+
         data = request.get_json()
         text = data.get('text', '')
         voice = data.get('voice', '')
@@ -162,6 +184,9 @@ def cartesia_synthesize():
             return jsonify({"error": "Text is required"}), 400
         if not voice:
             return jsonify({"error": "Voice ID is required"}), 400
+
+        # Record usage
+        record_usage(uid, 'tts_chars', len(text), 'cartesia')
         
         api_key = os.environ.get('CARTESIA_API_KEY')
         if not api_key:
@@ -204,6 +229,11 @@ def elevenlabs_synthesize():
         return '', 200
     
     try:
+        token_data = verify_firebase_token()
+        uid = token_data.get('uid') if token_data else None
+        if not uid:
+            return jsonify({"error": "Unauthorized"}), 401
+
         data = request.get_json()
         text = data.get('text', '')
         voice_id = data.get('voice_id', '')
@@ -212,6 +242,9 @@ def elevenlabs_synthesize():
             return jsonify({"error": "Text is required"}), 400
         if not voice_id:
             return jsonify({"error": "Voice ID is required"}), 400
+
+        # Record usage
+        record_usage(uid, 'tts_chars', len(text), 'elevenlabs')
         
         api_key = os.environ.get('ELEVENLABS_API_KEY')
         if not api_key:
@@ -254,12 +287,20 @@ def sarvam_synthesize():
         return '', 200
     
     try:
+        token_data = verify_firebase_token()
+        uid = token_data.get('uid') if token_data else None
+        if not uid:
+            return jsonify({"error": "Unauthorized"}), 401
+
         data = request.get_json()
         text = data.get('text', '')
         language = data.get('language', 'hi-IN')
         
         if not text:
             return jsonify({"error": "Text is required"}), 400
+
+        # Record usage
+        record_usage(uid, 'tts_chars', len(text), 'sarvam')
         
         api_key = os.environ.get('SARVAM_API_KEY')
         if not api_key:

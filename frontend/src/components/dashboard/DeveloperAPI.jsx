@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import {
   Code, Copy, Check, Key, ArrowSquareOut, Eye, EyeSlash,
   Lightning, Brain, Robot, ArrowClockwise, Terminal,
-  BookOpen, Cpu, Microphone, Phone
+  BookOpen, Cpu, Microphone, Phone, Plus, Trash, Warning
 } from "@phosphor-icons/react";
 import { keysAPI } from "../../lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -220,6 +220,108 @@ export function VoiceAgent({ userName = "User" }) {
 }`,
 };
 
+const TTS_EXAMPLES = {
+  python: `import requests
+
+url = "${BACKEND}/api/tts/revealiq/synthesize"
+headers = {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer YOUR_KEY_HERE"
+}
+payload = {
+    "text": "नमस्ते, कौटिल्य एआई में आपका स्वागत है।",
+    "voice": "hi_female",
+    "speed": 1.0
+}
+
+response = requests.post(url, headers=headers, json=payload)
+if response.ok:
+    with open("output.wav", "wb") as f:
+        f.write(response.content)
+    print("Audio file saved successfully as output.wav")
+else:
+    print(f"Error: {response.status_code} - {response.text}")`,
+
+  javascript: `async function synthesizeSpeech() {
+  const response = await fetch("${BACKEND}/api/tts/revealiq/synthesize", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer YOUR_KEY_HERE"
+    },
+    body: JSON.stringify({
+      text: "नमस्ते, कौटिल्य एआई में आपका स्वागत है।",
+      voice: "hi_female",
+      speed: 1.0
+    })
+  });
+
+  if (response.ok) {
+    const arrayBuffer = await response.arrayBuffer();
+    
+    // Play or save the audio binary (audio/wav format)
+    const blob = new Blob([arrayBuffer], { type: "audio/wav" });
+    const audioUrl = URL.createObjectURL(blob);
+    const audio = new Audio(audioUrl);
+    audio.play();
+  } else {
+    console.error("Failed to synthesize speech:", await response.text());
+  }
+}`,
+
+  curl: `curl -X POST "${BACKEND}/api/tts/revealiq/synthesize" \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer YOUR_KEY_HERE" \\
+  -d '{
+    "text": "नमस्ते, कौटिल्य एआई में आपका स्वागत है।",
+    "voice": "hi_female",
+    "speed": 1.0
+  }' \\
+  --output output.wav`,
+
+  python_stream: `import requests
+
+url = "${BACKEND}/api/tts/revealiq/stream"
+headers = {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer YOUR_KEY_HERE"
+}
+payload = {
+    "text": "This is a streaming response example for low-latency audio generation.",
+    "voice": "af_nicole",
+    "speed": 1.0
+}
+
+# Request streaming raw PCM chunks
+with requests.post(url, headers=headers, json=payload, stream=True) as r:
+    for chunk in r.iter_content(chunk_size=1024):
+        # Process raw 24kHz mono 16-bit PCM chunk here (e.g. play or save)
+        pass`,
+
+  js_stream: `// Stream raw 24kHz 16-bit mono PCM audio
+async function streamAudio() {
+  const response = await fetch("${BACKEND}/api/tts/revealiq/stream", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer YOUR_KEY_HERE"
+    },
+    body: JSON.stringify({
+      text: "This is a streaming response example.",
+      voice: "af_nicole",
+      speed: 1.0
+    })
+  });
+
+  const reader = response.body.getReader();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    // value is a Uint8Array containing raw PCM audio chunks
+  }
+}`
+};
+
 function CopyButton({ text, size = "sm" }) {
   const [copied, setCopied] = useState(false);
   const handle = () => {
@@ -267,35 +369,44 @@ function CodeBlock({ code, language }) {
 }
 
 export default function DeveloperAPI() {
+  const [keys, setKeys] = useState([]);
   const [activeKey, setActiveKey] = useState(null);
   const [keyVisible, setKeyVisible] = useState(false);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
+  const [newKeyName, setNewKeyName] = useState("");
+  const [showFullKeys, setShowFullKeys] = useState({});
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
-    loadKey();
+    loadKeys();
   }, []);
 
-  const loadKey = async () => {
+  const loadKeys = async () => {
     try {
       setLoading(true);
       const data = await keysAPI.list();
+      setKeys(data.keys || []);
       setActiveKey(data.active_key || null);
     } catch (e) {
       console.error(e);
+      showToast("Failed to load keys");
     } finally {
       setLoading(false);
     }
   };
 
   const handleGenerate = async () => {
+    const name = newKeyName.trim() || "Developer Key";
     try {
       setGenerating(true);
-      await keysAPI.create({ name: "Developer Key" });
-      await loadKey();
-      setKeyVisible(true);
-      showToast("New API key generated!");
+      const result = await keysAPI.create({ name });
+      setNewKeyName("");
+      showToast(`Key "${result.name}" created!`);
+      // Temporarily store the full key in state so it can be copied
+      setShowFullKeys(prev => ({ ...prev, [result.key_id]: result.key }));
+      setActiveKey(result.key);
+      await loadKeys();
     } catch (e) {
       showToast("Failed to generate key");
     } finally {
@@ -303,9 +414,21 @@ export default function DeveloperAPI() {
     }
   };
 
+  const handleRevokeKey = async (keyHash) => {
+    if (!confirm("Are you sure you want to revoke this API key? This action is permanent.")) return;
+    try {
+      await keysAPI.revoke(keyHash);
+      showToast("API key revoked");
+      await loadKeys();
+    } catch (e) {
+      console.error("Failed to revoke key:", e);
+      showToast("Failed to revoke key");
+    }
+  };
+
   const showToast = (msg) => {
     setToast(msg);
-    setTimeout(() => setToast(null), 3000);
+    setTimeout(() => setToast(null), 4000);
   };
 
   const maskedKey = activeKey
@@ -316,6 +439,13 @@ export default function DeveloperAPI() {
 
   const examplesWithKey = Object.fromEntries(
     Object.entries(EXAMPLES).map(([k, v]) => [
+      k,
+      activeKey ? v.replace(/YOUR_KEY_HERE/g, activeKey) : v,
+    ])
+  );
+
+  const ttsExamplesWithKey = Object.fromEntries(
+    Object.entries(TTS_EXAMPLES).map(([k, v]) => [
       k,
       activeKey ? v.replace(/YOUR_KEY_HERE/g, activeKey) : v,
     ])
@@ -355,12 +485,12 @@ export default function DeveloperAPI() {
             </div>
           </div>
 
-          {/* API Key Card */}
-          <div className="p-6 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] space-y-4">
-            <div className="flex items-center justify-between">
+          {/* API Key Management */}
+          <div className="p-6 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] space-y-6">
+            <div className="flex items-center justify-between border-b border-[var(--k-border)] pb-4">
               <div className="flex items-center gap-2">
-                <Key className="w-4 h-4 text-[var(--k-brand)]" />
-                <span className="text-sm font-semibold text-foreground">Your API Key</span>
+                <Key className="w-5 h-5 text-[var(--k-brand)]" />
+                <span className="text-base font-semibold text-foreground">API Key Management</span>
               </div>
               {activeKey && (
                 <button
@@ -368,51 +498,130 @@ export default function DeveloperAPI() {
                   className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
                 >
                   {keyVisible ? <EyeSlash className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                  {keyVisible ? "Hide" : "Reveal"}
+                  {keyVisible ? "Hide Active Key" : "Reveal Active Key"}
                 </button>
               )}
             </div>
 
-            {loading ? (
-              <div className="h-10 bg-accent rounded-lg animate-pulse" />
-            ) : activeKey ? (
-              <div className="flex items-center gap-2">
-                <div className="flex-1 px-4 py-2.5 bg-[#0d1117] border border-[var(--k-border)] rounded-lg font-mono text-sm text-foreground overflow-x-auto whitespace-nowrap">
-                  {displayedKey}
-                </div>
-                <button
-                  onClick={() => { navigator.clipboard.writeText(activeKey).catch(() => {}); showToast("API key copied!"); }}
-                  className="flex items-center gap-1.5 px-3 py-2.5 rounded-lg bg-[var(--k-brand)]/10 text-[var(--k-brand)] hover:bg-[var(--k-brand)]/20 transition-colors text-xs font-semibold whitespace-nowrap"
-                >
-                  <Copy className="w-3.5 h-3.5" />
-                  Copy Key
-                </button>
+            {/* Create Key Form */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-muted-foreground">Create a New API Key</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Key name (e.g., Cursor, Python Script, Server)"
+                  value={newKeyName}
+                  onChange={(e) => setNewKeyName(e.target.value)}
+                  className="flex-1 px-3 py-2 text-xs bg-[var(--k-surface-elevated)] border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-[var(--k-brand)] placeholder-muted-foreground/50 font-sans"
+                />
                 <button
                   onClick={handleGenerate}
-                  disabled={generating}
-                  className="p-2.5 rounded-lg border border-[var(--k-border)] hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
-                  title="Regenerate key"
+                  disabled={generating || !newKeyName.trim()}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--k-brand)] text-white text-xs font-semibold hover:opacity-90 transition-opacity disabled:opacity-40"
                 >
-                  <ArrowClockwise className={`w-3.5 h-3.5 ${generating ? "animate-spin" : ""}`} />
+                  <Plus className="w-3.5 h-3.5" />
+                  {generating ? "Creating..." : "Create Key"}
                 </button>
               </div>
-            ) : (
-              <div className="flex flex-col items-center gap-3 py-4 border border-dashed border-[var(--k-border)] rounded-lg">
-                <p className="text-sm text-muted-foreground">No API key yet. Generate one to get started.</p>
-                <button
-                  onClick={handleGenerate}
-                  disabled={generating}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[var(--k-brand)] text-white text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50"
-                >
-                  <Key className="w-4 h-4" />
-                  {generating ? "Generating…" : "Generate API Key"}
-                </button>
-              </div>
-            )}
+            </div>
 
-            <p className="text-[11px] text-muted-foreground">
-              Keep your key secret. Use it as the API key when initializing the OpenAI SDK.
-            </p>
+            {/* Active Keys List */}
+            <div className="space-y-3">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Active Keys</h3>
+              {loading ? (
+                <div className="h-20 bg-accent/20 rounded-lg animate-pulse flex items-center justify-center text-xs text-muted-foreground">
+                  Loading API keys...
+                </div>
+              ) : keys.length === 0 ? (
+                <div className="flex flex-col items-center gap-2 py-6 border border-dashed border-[var(--k-border)] rounded-lg text-center">
+                  <Key className="w-6 h-6 text-muted-foreground/30" />
+                  <p className="text-xs text-muted-foreground">No API keys active. Generate one above to begin.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {keys.map((k) => {
+                    const isSnippetKey = activeKey && k.preview && activeKey.endsWith(k.preview.replace('...', ''));
+                    const hasFullKey = showFullKeys[k.key_id];
+                    
+                    return (
+                      <div key={k.key_hash} className="p-3.5 rounded-lg border border-[var(--k-border)] bg-[var(--k-surface-elevated)] flex flex-col gap-2 hover:border-[var(--k-brand)]/20 transition-colors">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2 overflow-hidden">
+                            <span className="text-xs font-semibold text-foreground truncate">{k.name}</span>
+                            {isSnippetKey && (
+                              <span className="px-1.5 py-0.5 rounded-full bg-[var(--k-brand)]/10 text-[var(--k-brand)] text-[8px] font-bold border border-[var(--k-brand)]/20 whitespace-nowrap">
+                                Snippet Active
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            {isSnippetKey && (
+                              <button
+                                onClick={() => setKeyVisible(v => !v)}
+                                className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                                title={keyVisible ? "Hide key" : "Reveal key"}
+                              >
+                                {keyVisible ? <EyeSlash className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleRevokeKey(k.key_hash)}
+                              className="p-1 rounded text-muted-foreground hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+                              title="Revoke key"
+                            >
+                              <Trash className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                        
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 px-3 py-1.5 bg-[#0d1117] border border-[var(--k-border)] rounded-md font-mono text-xs text-foreground overflow-x-auto whitespace-nowrap">
+                            {hasFullKey ? hasFullKey : (isSnippetKey && keyVisible) ? activeKey : k.preview}
+                          </div>
+                          <button
+                            onClick={() => {
+                              const toCopy = hasFullKey || (isSnippetKey ? activeKey : null);
+                              if (toCopy) {
+                                navigator.clipboard.writeText(toCopy).catch(() => {});
+                                showToast("API key copied!");
+                              } else {
+                                showToast("Key can only be copied on generation");
+                              }
+                            }}
+                            disabled={!hasFullKey && !isSnippetKey}
+                            className="px-2 py-1.5 rounded-md bg-[var(--k-brand)]/10 text-[var(--k-brand)] hover:bg-[var(--k-brand)]/20 disabled:opacity-30 disabled:pointer-events-none transition-colors text-[10px] font-medium flex items-center gap-1 flex-shrink-0"
+                            title="Copy Key"
+                          >
+                            <Copy className="w-3 h-3" />
+                            Copy
+                          </button>
+                        </div>
+                        
+                        {hasFullKey && (
+                          <div className="text-[9px] text-green-400 font-medium flex items-center gap-1 mt-0.5">
+                            <Warning className="w-3 h-3 text-green-400 flex-shrink-0" />
+                            Copy key now! You will not see it again.
+                          </div>
+                        )}
+                        
+                        <div className="text-[9px] text-muted-foreground flex justify-between mt-1">
+                          <span>Created: {k.created_at ? new Date(k.created_at).toLocaleDateString() : "unknown"}</span>
+                          {k.last_used && <span>Last used: {new Date(k.last_used).toLocaleDateString()}</span>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Security Warning */}
+            <div className="flex items-start gap-2 p-3 bg-amber-500/5 border border-amber-500/15 rounded-lg">
+              <Warning className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+              <span className="text-[10px] text-muted-foreground leading-normal">
+                Your API keys carry the full access rights of your developer account. Never share them or expose them in client-side code.
+              </span>
+            </div>
           </div>
 
           {/* Base URL */}
@@ -602,6 +811,106 @@ export default function DeveloperAPI() {
                   <p className="text-[11px] text-muted-foreground mt-2">
                     Install: <code className="bg-accent px-1 py-0.5 rounded">npm install @livekit/components-react livekit-client @livekit/components-styles</code>
                   </p>
+                </TabsContent>
+              </div>
+            </Tabs>
+          </div>
+
+          {/* Text-to-Speech API (TTS) */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Microphone className="w-4 h-4 text-[var(--k-brand)]" weight="duotone" />
+              <span className="text-sm font-semibold text-foreground">Text-to-Speech (TTS) API</span>
+              <span className="px-2 py-0.5 rounded-full bg-[var(--k-brand)]/10 text-[var(--k-brand)] text-[10px] font-bold uppercase tracking-wider border border-[var(--k-brand)]/20 ml-1">REST API</span>
+            </div>
+
+            {/* How it works grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="p-4 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] flex flex-col gap-1">
+                <div className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                  <Lightning className="w-4 h-4 text-yellow-500" />
+                  Synthesize WAV Endpoint
+                </div>
+                <div className="text-[10px] font-mono text-muted-foreground bg-[#0d1117] p-2 rounded border border-[var(--k-border)] my-1 overflow-x-auto">
+                  POST {BACKEND}/api/tts/revealiq/synthesize
+                </div>
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  Generates full audio files (WAV) directly. Pass the text and voice name, and receive the binary audio stream back instantly. Best for static messages and file generation.
+                </p>
+              </div>
+
+              <div className="p-4 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] flex flex-col gap-1">
+                <div className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                  <Lightning className="w-4 h-4 text-green-500" />
+                  Stream PCM (Zero-Lag) Endpoint
+                </div>
+                <div className="text-[10px] font-mono text-muted-foreground bg-[#0d1117] p-2 rounded border border-[var(--k-border)] my-1 overflow-x-auto">
+                  POST {BACKEND}/api/tts/revealiq/stream
+                </div>
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  Streams raw 24kHz 16-bit mono PCM chunks as they are generated. Provides lowest possible latency. Best for interactive agents, dialog, and real-time playback.
+                </p>
+              </div>
+            </div>
+
+            {/* Parameters card */}
+            <div className="p-4 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)]">
+              <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3 block">Request Body Parameters</span>
+              <div className="space-y-3 text-xs leading-normal">
+                <div className="flex flex-col md:flex-row md:items-start border-b border-[var(--k-border)] pb-2 gap-1 md:gap-4">
+                  <span className="font-mono text-[var(--k-brand)] w-20 flex-shrink-0">text</span>
+                  <div className="flex-1">
+                    <span className="text-[10px] uppercase font-bold text-rose-400 mr-2">Required</span>
+                    <span className="text-muted-foreground">The text content to convert to speech. Supports both English and Hindi.</span>
+                  </div>
+                </div>
+                <div className="flex flex-col md:flex-row md:items-start border-b border-[var(--k-border)] pb-2 gap-1 md:gap-4">
+                  <span className="font-mono text-[var(--k-brand)] w-20 flex-shrink-0">voice</span>
+                  <div className="flex-1">
+                    <span className="text-[10px] uppercase font-bold text-muted-foreground mr-2">Optional</span>
+                    <span className="text-muted-foreground">Voice ID to use. Hindi: <code className="bg-accent px-1 rounded text-foreground">hi_female</code>, <code className="bg-accent px-1 rounded text-foreground">hi_male</code>. English: <code className="bg-accent px-1 rounded text-foreground">af_nicole</code>, <code className="bg-accent px-1 rounded text-foreground">af_heart</code>, <code className="bg-accent px-1 rounded text-foreground">am_adam</code>. Default: <code className="bg-accent px-1 rounded text-foreground">af_nicole</code>.</span>
+                  </div>
+                </div>
+                <div className="flex flex-col md:flex-row md:items-start gap-1 md:gap-4">
+                  <span className="font-mono text-[var(--k-brand)] w-20 flex-shrink-0">speed</span>
+                  <div className="flex-1">
+                    <span className="text-[10px] uppercase font-bold text-muted-foreground mr-2">Optional</span>
+                    <span className="text-muted-foreground">Speed rate multiplier. Values: <code className="bg-accent px-1 rounded text-foreground">0.5</code> to <code className="bg-accent px-1 rounded text-foreground">2.0</code>. Default: <code className="bg-accent px-1 rounded text-foreground">1.0</code>.</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* TTS Code Tabs */}
+            <Tabs defaultValue="python_tts">
+              <TabsList className="bg-[var(--k-surface)] border border-[var(--k-border)] h-9 p-1 gap-1 flex-wrap">
+                {[
+                  { id: "python_tts", label: "Python (WAV)" },
+                  { id: "js_tts", label: "Node.js (WAV)" },
+                  { id: "curl_tts", label: "cURL (WAV)" },
+                  { id: "python_stream_tts", label: "Python Stream (PCM)" },
+                  { id: "js_stream_tts", label: "JS Stream (PCM)" },
+                ].map(t => (
+                  <TabsTrigger key={t.id} value={t.id} className="text-[10px] font-bold uppercase tracking-wider px-2.5 data-[state=active]:bg-[var(--k-brand)] data-[state=active]:text-white rounded">
+                    {t.label}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+              <div className="mt-3">
+                <TabsContent value="python_tts" className="m-0">
+                  <CodeBlock code={ttsExamplesWithKey.python} language="python" />
+                </TabsContent>
+                <TabsContent value="js_tts" className="m-0">
+                  <CodeBlock code={ttsExamplesWithKey.javascript} language="javascript" />
+                </TabsContent>
+                <TabsContent value="curl_tts" className="m-0">
+                  <CodeBlock code={ttsExamplesWithKey.curl} language="curl" />
+                </TabsContent>
+                <TabsContent value="python_stream_tts" className="m-0">
+                  <CodeBlock code={ttsExamplesWithKey.python_stream} language="python" />
+                </TabsContent>
+                <TabsContent value="js_stream_tts" className="m-0">
+                  <CodeBlock code={ttsExamplesWithKey.js_stream} language="javascript" />
                 </TabsContent>
               </div>
             </Tabs>
