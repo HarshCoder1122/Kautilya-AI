@@ -63,6 +63,57 @@ def _inject_kautilya_prompt(requested_model, messages):
             out.append(m)
     return out
 
+
+def _trim_to_context_window(messages, max_tokens=32000):
+    """
+    Trim conversation history to fit within max_tokens (sliding context window).
+    Always preserve all system messages at the beginning of the context.
+    """
+    system_messages = []
+    other_messages = []
+    for m in messages:
+        if m.get("role") == "system":
+            system_messages.append(m)
+        else:
+            other_messages.append(m)
+
+    system_chars = sum(len(str(m.get("content", ""))) for m in system_messages)
+    system_tokens = max(1, system_chars // 4)
+
+    if system_tokens >= max_tokens:
+        # If system messages themselves exceed max_tokens, just return system messages
+        return system_messages
+
+    allowed_other_tokens = max_tokens - system_tokens
+    trimmed_others = []
+    current_tokens = 0
+
+    for m in reversed(other_messages):
+        content = m.get("content", "")
+        m_chars = 0
+        if isinstance(content, str):
+            m_chars = len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict):
+                    m_chars += len(str(part.get("text", "")))
+        
+        if "tool_calls" in m:
+            try:
+                m_chars += len(json.dumps(m["tool_calls"]))
+            except Exception:
+                pass
+            
+        m_tokens = max(1, m_chars // 4)
+        if current_tokens + m_tokens <= allowed_other_tokens:
+            trimmed_others.insert(0, m)
+            current_tokens += m_tokens
+        else:
+            break
+
+    return system_messages + trimmed_others
+
+
 openai_compat_bp = Blueprint('openai_compat', __name__)
 
 
@@ -140,6 +191,10 @@ def chat_completions():
 
     # Inject Kautilya identity so model doesn't reveal Qwen/Nemotron underneath.
     messages = _inject_kautilya_prompt(requested_model, messages)
+
+    # Trim messages to fit within the context window limits (64k tokens for Pro, 32k for Free)
+    max_context_tokens = 64000 if is_pro else 32000
+    messages = _trim_to_context_window(messages, max_tokens=max_context_tokens)
 
     stream = bool(body.get('stream', False))
     temperature = body.get('temperature', 0.7)

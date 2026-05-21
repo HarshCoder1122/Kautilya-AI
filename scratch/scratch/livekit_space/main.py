@@ -42,7 +42,7 @@ class RevealIQTTS(_tts.TTS):
         self._voice = voice
         self._speed = speed
 
-    def synthesize(self, text, *, conn_options=_tts.DEFAULT_API_CONNECT_OPTIONS):
+    def synthesize(self, text, *, conn_options=None):
         return _RevealIQChunkedStream(tts=self, input_text=text, conn_options=conn_options)
 
 
