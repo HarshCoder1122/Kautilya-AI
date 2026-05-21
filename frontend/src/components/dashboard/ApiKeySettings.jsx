@@ -95,7 +95,7 @@ export default function ApiKeySettings() {
         <div className="p-4 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)]">
           <div className="flex items-center gap-2 mb-2">
             <ChartBar className="w-4 h-4 text-[var(--k-brand)]" />
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Monthly Usage</span>
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Daily Usage</span>
           </div>
           <div className="flex items-end justify-between">
             <div>

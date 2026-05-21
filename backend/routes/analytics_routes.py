@@ -51,11 +51,34 @@ def get_usage():
                 daily_docs = db.collection('api_usage').document(uid).collection('daily').stream()
                 for doc in daily_docs:
                     data = doc.to_dict() or {}
-                    total_tokens += int(data.get('llm_tokens') or 0)
-                    tts_usage += int(data.get('tts_chars') or 0)
-                    stt_usage += int(data.get('stt_seconds') or 0)
+                    
+                    # LLM Tokens
+                    try:
+                        val = data.get('llm_tokens')
+                        if val is not None:
+                            total_tokens += int(float(val))
+                    except (ValueError, TypeError) as ex:
+                        print(f"[Analytics] Error parsing llm_tokens for doc {doc.id}: {ex}")
+                        
+                    # TTS Chars
+                    try:
+                        val = data.get('tts_chars')
+                        if val is not None:
+                            tts_usage += int(float(val))
+                    except (ValueError, TypeError) as ex:
+                        print(f"[Analytics] Error parsing tts_chars for doc {doc.id}: {ex}")
+                        
+                    # STT Seconds
+                    try:
+                        val = data.get('stt_seconds')
+                        if val is not None:
+                            stt_usage += int(float(val))
+                    except (ValueError, TypeError) as ex:
+                        print(f"[Analytics] Error parsing stt_seconds for doc {doc.id}: {ex}")
             except Exception as e:
+                import traceback
                 print(f"[Analytics] api_usage aggregation error: {e}")
+                traceback.print_exc()
 
             # 2. Fetch call logs from agent_logs to calculate call statistics
             sentiment_scores = []
