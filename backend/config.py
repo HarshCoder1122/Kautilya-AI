@@ -127,8 +127,10 @@ _MESSAGE_RATE_LIMITS = {
 # These caps are separate from the in-app chat caps above.
 # Beyond the daily cap the request falls through to PAYG credits.
 _DEVELOPER_API_LIMITS = {
-    "free": {"per_minute": 10, "per_day": 1000000},
-    "pro":  {"per_minute": 60, "per_day": 10000000},
+    # Caps measured in API CALLS per day (not tokens). Beyond the daily cap
+    # the request falls through to PAYG credits at DEVELOPER_API_PAYG_PRICE.
+    "free": {"per_minute": 10, "per_day": 100},
+    "pro":  {"per_minute": 60, "per_day": 10000},
 }
 DEVELOPER_API_PAYG_PRICE = 1.00  # INR per API call after daily cap
 

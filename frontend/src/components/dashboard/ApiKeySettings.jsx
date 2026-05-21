@@ -8,6 +8,7 @@ export default function ApiKeySettings() {
   const [keys, setKeys] = useState([]);
   const [usage, setUsage] = useState({});
   const [limits, setLimits] = useState({});
+  const [developerApi, setDeveloperApi] = useState({ calls_today: 0, daily_limit: 100, per_minute: 10 });
   const [tier, setTier] = useState('free');
   const [loading, setLoading] = useState(true);
   const [newKeyName, setNewKeyName] = useState("");
@@ -27,6 +28,7 @@ export default function ApiKeySettings() {
       setUsage(data.usage || {});
       setLimits(data.limits || {});
       setTier(data.tier || 'free');
+      if (data.developer_api) setDeveloperApi(data.developer_api);
     } catch (error) {
       console.error('Failed to load keys:', error);
     } finally {
@@ -95,27 +97,33 @@ export default function ApiKeySettings() {
         <div className="p-4 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)]">
           <div className="flex items-center gap-2 mb-2">
             <ChartBar className="w-4 h-4 text-[var(--k-brand)]" />
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Daily Usage</span>
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Developer API · Today</span>
           </div>
           <div className="flex items-end justify-between">
             <div>
               <div className="text-2xl font-bold k-heading text-foreground">
-                {((usage.llm_tokens || 0) / 1000).toFixed(1)}k
+                {(developerApi.calls_today || 0).toLocaleString('en-IN')}
               </div>
-              <div className="text-[10px] text-muted-foreground">Tokens used</div>
+              <div className="text-[10px] text-muted-foreground">API calls used</div>
             </div>
             <div className="text-right">
               <div className="text-sm font-medium text-foreground">
-                {limits.llm_tokens ? `${((limits.llm_tokens - (usage.llm_tokens || 0)) / 1000).toFixed(1)}k` : 'Unlimited'}
+                {Math.max(0, (developerApi.daily_limit || 0) - (developerApi.calls_today || 0)).toLocaleString('en-IN')}
+                <span className="text-muted-foreground">
+                  {' / '}{(developerApi.daily_limit || 0).toLocaleString('en-IN')}
+                </span>
               </div>
-              <div className="text-[10px] text-muted-foreground">Remaining</div>
+              <div className="text-[10px] text-muted-foreground">Remaining today</div>
             </div>
           </div>
           <div className="mt-3 w-full h-1.5 bg-accent rounded-full overflow-hidden">
-             <div 
-               className="h-full bg-[var(--k-brand)] transition-all duration-500" 
-               style={{ width: `${Math.min(100, (usage.llm_tokens || 0) / (limits.llm_tokens || 1) * 100)}%` }}
+             <div
+               className="h-full bg-[var(--k-brand)] transition-all duration-500"
+               style={{ width: `${Math.min(100, ((developerApi.calls_today || 0) / Math.max(1, developerApi.daily_limit || 1)) * 100)}%` }}
              />
+          </div>
+          <div className="text-[10px] text-muted-foreground mt-2">
+            {developerApi.per_minute} req/min · ₹{(developerApi.payg_price_per_call || 1).toFixed(2)}/call after daily cap
           </div>
         </div>
 

@@ -6,8 +6,45 @@ from flask import Blueprint, request, jsonify
 
 from services.auth_service import verify_firebase_token
 from services.memory_service import record_user_session
+from services.email_service import send_welcome_email
 
 user_bp = Blueprint('user', __name__)
+
+
+@user_bp.route('/user/welcome-check', methods=['POST'])
+def welcome_check():
+    """Idempotent first-login hook.
+
+    Called by the frontend right after Google sign-in. If we've never seen this
+    uid before, write users/{uid}.welcomed_at and fire the welcome email. Safe
+    to call on every login — only triggers once per user.
+    """
+    from extensions import db
+    from firebase_admin import firestore
+    token_data = verify_firebase_token()
+    if not token_data:
+        return jsonify({"error": "Unauthorized"}), 401
+    uid = token_data.get('uid')
+    email = token_data.get('email')
+    name = token_data.get('name') or ''
+    if not uid or not email or not db:
+        return jsonify({"welcomed": False, "skipped": True})
+    try:
+        ref = db.collection('users').document(uid)
+        snap = ref.get()
+        already = bool(snap.exists and (snap.to_dict() or {}).get('welcomed_at'))
+        if already:
+            return jsonify({"welcomed": False, "already": True})
+        ref.set({
+            'uid': uid, 'email': email, 'name': name,
+            'welcomed_at': firestore.SERVER_TIMESTAMP,
+            'first_seen_at': firestore.SERVER_TIMESTAMP,
+        }, merge=True)
+        send_welcome_email(email, name)
+        return jsonify({"welcomed": True})
+    except Exception as e:
+        print(f"[welcome-check] failed: {e}")
+        return jsonify({"welcomed": False, "error": "internal"}), 200
 
 
 @user_bp.route('/user/settings', methods=['GET'])

@@ -103,7 +103,12 @@ export const initFirebase = async () => {
 
     const fallbackConfig = {
       apiKey: "AIzaSyA5GIkQSRq2Kdcn0SVsWDNgokA1IgL3k2c",
-      authDomain: "jarvis-a6e18.firebaseapp.com",
+      // Custom auth domain so the Google OAuth screen says ai.revealiq.in
+      // instead of jarvis-a6e18.firebaseapp.com. Requires the domain to be
+      // verified under Firebase Console → Hosting AND added to Auth →
+      // Settings → Authorized domains. Falls back to firebaseapp.com if the
+      // env override is not provided.
+      authDomain: "ai.revealiq.in",
       projectId: "jarvis-a6e18",
       storageBucket: "jarvis-a6e18.firebasestorage.app",
       messagingSenderId: "872168972424",
@@ -114,6 +119,13 @@ export const initFirebase = async () => {
     if (!config || !config.apiKey) {
       console.log("Firebase: Using Hardcoded Fallback Config");
       config = fallbackConfig;
+    }
+
+    // Force the custom auth domain even when the loaded config still points
+    // to firebaseapp.com — the rest of the config (apiKey, projectId, etc.)
+    // is unchanged so verification works as before.
+    if (config && config.authDomain && /firebaseapp\.com$/i.test(config.authDomain)) {
+      config = { ...config, authDomain: "ai.revealiq.in" };
     }
 
     const app = initializeApp(config);
@@ -145,6 +157,12 @@ export const loginWithGoogle = async () => {
       displayName: result.user.displayName,
       photoURL: result.user.photoURL
     }));
+    // Fire-and-forget: backend writes users/{uid} on first sight and emails
+    // the welcome message. Idempotent — safe on every login.
+    try {
+      const { userAPI } = await import('./api');
+      userAPI.welcomeCheck().catch(() => {});
+    } catch {}
     return result.user;
   } catch (error) {
     console.error("Login failed:", error);

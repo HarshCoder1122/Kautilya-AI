@@ -319,6 +319,12 @@ export const userAPI = {
     const response = await api.post('/api/user/settings', settingsData);
     return response.data;
   },
+
+  // Idempotent first-login welcome trigger. Safe to call after every login.
+  welcomeCheck: async () => {
+    const response = await api.post('/api/user/welcome-check');
+    return response.data;
+  },
 };
 
 // Artifacts API

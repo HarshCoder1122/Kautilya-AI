@@ -55,11 +55,30 @@ def create_billing_order():
         uid = token_data.get("uid") if token_data else None
 
         if plan_type == 'pro_subscription':
-            plan_id = os.environ.get('RAZORPAY_PRO_PLAN_ID', 'plan_JarvisPro599')
-            subscription = razorpay_client.subscription.create({
-                'plan_id': plan_id, 'customer_notify': 1, 'total_count': 120,
-                'notes': {'uid': uid, 'plan_type': 'pro'}
-            })
+            plan_id = os.environ.get('RAZORPAY_PRO_PLAN_ID', '').strip()
+            if not plan_id or not plan_id.startswith('plan_'):
+                # Without a real plan_id Razorpay returns a cryptic
+                # "The ID provided is invalid or could not be found." — surface
+                # the actual root cause to ops instead.
+                return jsonify({
+                    "error": "Pro subscription not configured",
+                    "details": (
+                        "RAZORPAY_PRO_PLAN_ID env var is missing or invalid. "
+                        "Create a Pro plan in the Razorpay dashboard (Subscriptions → Plans) "
+                        "and set RAZORPAY_PRO_PLAN_ID to the resulting plan_XXXXXX id."
+                    ),
+                }), 500
+            try:
+                subscription = razorpay_client.subscription.create({
+                    'plan_id': plan_id, 'customer_notify': 1, 'total_count': 120,
+                    'notes': {'uid': uid, 'plan_type': 'pro'}
+                })
+            except Exception as e:
+                print(f"[Billing] subscription.create failed plan_id={plan_id}: {e}")
+                return jsonify({
+                    "error": "Could not create Razorpay subscription",
+                    "details": f"plan_id={plan_id} — {e}",
+                }), 500
             if uid and db:
                 db.collection('users').document(uid).update({
                     'razorpay_subscription_id': subscription['id'], 'tier': 'pro_pending'
