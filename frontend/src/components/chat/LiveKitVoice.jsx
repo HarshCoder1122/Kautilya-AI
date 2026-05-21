@@ -2,8 +2,11 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { X, Microphone, MicrophoneSlash, Phone, PhoneDisconnect, WifiHigh, WifiSlash } from "@phosphor-icons/react";
 import { getAuthHeaders } from "../../lib/api";
 
-const API_BASE_URL = process.env.REACT_APP_API_URL
-  || (window.location.hostname === 'localhost' ? 'http://localhost:5000' : window.location.origin);
+// Force same-origin when served from *.revealiq.in so the proxy is used (see lib/api.js).
+const _hn = (typeof window !== 'undefined' ? window.location.hostname : '') || '';
+const API_BASE_URL = /(^|\.)revealiq\.in$/i.test(_hn)
+  ? window.location.origin
+  : (process.env.REACT_APP_API_URL || (_hn === 'localhost' ? 'http://localhost:5000' : window.location.origin));
 
 const STATES = {
   IDLE: 'idle',

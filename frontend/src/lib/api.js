@@ -1,7 +1,15 @@
 import axios from 'axios';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL 
-  || (window.location.hostname === 'localhost' ? 'http://localhost:5000' : window.location.origin);
+// When the app is served from our own domain (revealiq.in or any subdomain),
+// ALWAYS route through the same origin so the ai.revealiq.in → HF Space proxy
+// handles auth headers, CORS, and rate-limiting. Hitting the raw HF Space URL
+// bypasses the proxy and breaks signed cookies / custom auth headers.
+const _hn = (typeof window !== 'undefined' ? window.location.hostname : '') || '';
+const _onOwnDomain = /(^|\.)revealiq\.in$/i.test(_hn);
+const API_BASE_URL = _onOwnDomain
+  ? window.location.origin
+  : (process.env.REACT_APP_API_URL
+      || (_hn === 'localhost' ? 'http://localhost:5000' : window.location.origin));
 
 // Create axios instance with default config
 const api = axios.create({

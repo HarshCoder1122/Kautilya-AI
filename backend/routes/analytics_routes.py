@@ -29,14 +29,18 @@ def get_usage():
         total_tokens = 0
         tts_usage = 0
         stt_usage = 0
+        chat_count = 0
+        image_count = 0
+        api_count = 0
 
         import datetime
         today_str = datetime.date.today().strftime('%Y-%m-%d')
-        # Pre-seed last 14 days of date labels
         today = datetime.date.today()
         date_list = [(today - datetime.timedelta(days=i)).strftime('%Y-%m-%d') for i in range(14)]
-        
-        # We will count call volumes per day in the last 14 days
+
+        # Daily token trend so the chart on Usage page reflects real consumption
+        tokens_per_day = {d: 0 for d in date_list}
+        # Call volumes (agent voice calls) per day in the last 14 days
         calls_per_day = {d: 0 for d in date_list}
 
         total_calls = 0
@@ -44,41 +48,84 @@ def get_usage():
         daily_calls = 0
         avg_sentiment = 0.0
         success_rate = "0%"
+        api_usage_doc_count = 0
+        agg_error = None
 
         if db:
-            # 1. Fetch token and media usage from api_usage
+            # 1. Primary source: enumerate api_usage/{uid}/daily/{date} docs.
             try:
-                daily_docs = db.collection('api_usage').document(uid).collection('daily').stream()
+                daily_docs = list(
+                    db.collection('api_usage').document(uid).collection('daily').stream()
+                )
+                api_usage_doc_count = len(daily_docs)
                 for doc in daily_docs:
                     data = doc.to_dict() or {}
-                    
-                    # LLM Tokens
-                    try:
-                        val = data.get('llm_tokens')
-                        if val is not None:
-                            total_tokens += int(float(val))
-                    except (ValueError, TypeError) as ex:
-                        print(f"[Analytics] Error parsing llm_tokens for doc {doc.id}: {ex}")
-                        
-                    # TTS Chars
-                    try:
-                        val = data.get('tts_chars')
-                        if val is not None:
-                            tts_usage += int(float(val))
-                    except (ValueError, TypeError) as ex:
-                        print(f"[Analytics] Error parsing tts_chars for doc {doc.id}: {ex}")
-                        
-                    # STT Seconds
-                    try:
-                        val = data.get('stt_seconds')
-                        if val is not None:
-                            stt_usage += int(float(val))
-                    except (ValueError, TypeError) as ex:
-                        print(f"[Analytics] Error parsing stt_seconds for doc {doc.id}: {ex}")
+                    doc_day = doc.id  # YYYY-MM-DD
+                    for key, bucket_name in (
+                        ('llm_tokens', 'tokens'),
+                        ('tts_chars', 'tts'),
+                        ('stt_seconds', 'stt'),
+                        ('chat_count', 'chat'),
+                        ('image_count', 'image'),
+                        ('api_count', 'api'),
+                    ):
+                        try:
+                            val = data.get(key)
+                            if val is None:
+                                continue
+                            n = int(float(val))
+                        except (ValueError, TypeError):
+                            continue
+                        if bucket_name == 'tokens':
+                            total_tokens += n
+                            if doc_day in tokens_per_day:
+                                tokens_per_day[doc_day] += n
+                        elif bucket_name == 'tts':
+                            tts_usage += n
+                        elif bucket_name == 'stt':
+                            stt_usage += n
+                        elif bucket_name == 'chat':
+                            chat_count += n
+                        elif bucket_name == 'image':
+                            image_count += n
+                        elif bucket_name == 'api':
+                            api_count += n
             except Exception as e:
                 import traceback
+                agg_error = str(e)
                 print(f"[Analytics] api_usage aggregation error: {e}")
                 traceback.print_exc()
+
+            # 2. Fallback / cross-check: if primary aggregation produced nothing
+            #    (e.g. parent doc isn't materialised), aggregate from the flat
+            #    usage_logs collection which record_usage writes one row at a time.
+            if total_tokens == 0 and tts_usage == 0 and stt_usage == 0:
+                try:
+                    from firebase_admin import firestore as _fs
+                    logs = (db.collection('usage_logs')
+                              .where(filter=_fs.FieldFilter('uid', '==', uid))
+                              .stream())
+                    for log in logs:
+                        d = log.to_dict() or {}
+                        t = d.get('type')
+                        try:
+                            amount = int(float(d.get('amount') or 0))
+                        except (ValueError, TypeError):
+                            amount = 0
+                        if amount <= 0 or not t:
+                            continue
+                        if t == 'llm_tokens':
+                            total_tokens += amount
+                            day = d.get('day')
+                            if day in tokens_per_day:
+                                tokens_per_day[day] += amount
+                        elif t == 'tts_chars':
+                            tts_usage += amount
+                        elif t == 'stt_seconds':
+                            stt_usage += amount
+                    print(f"[Analytics] usage_logs fallback recovered tokens={total_tokens} tts={tts_usage} stt={stt_usage}")
+                except Exception as e:
+                    print(f"[Analytics] usage_logs fallback failed: {e}")
 
             # 2. Fetch call logs from agent_logs to calculate call statistics
             sentiment_scores = []
@@ -138,8 +185,24 @@ def get_usage():
             if sentiment_scores:
                 avg_sentiment = round(sum(sentiment_scores) / len(sentiment_scores) * 10, 1)
 
-        # Build chronological trend data for the area chart
-        daily_usage = [{"date": d, "count": calls_per_day[d]} for d in reversed(date_list)]
+        # Build chronological trend data for the area chart. Order ascending
+        # (oldest → today) so recharts renders left-to-right correctly.
+        daily_usage = [
+            {"date": d, "count": calls_per_day[d], "tokens": tokens_per_day[d]}
+            for d in sorted(date_list)
+        ]
+
+        # Today's developer-API count is the cleanest "daily calls" signal for
+        # users who only use the chat/dev API and have no voice agent logs.
+        if daily_calls == 0:
+            try:
+                today_doc = (db.collection('api_usage').document(uid)
+                               .collection('daily').document(today_str).get()) if db else None
+                if today_doc and today_doc.exists:
+                    td = today_doc.to_dict() or {}
+                    daily_calls = int(td.get('api_count', 0) or 0) + int(td.get('chat_count', 0) or 0)
+            except Exception as e:
+                print(f"[Analytics] today doc lookup failed: {e}")
 
         return jsonify({
             "total_calls": total_calls,
@@ -150,7 +213,15 @@ def get_usage():
             "total_tokens": total_tokens,
             "tts_usage": tts_usage,
             "stt_usage": stt_usage,
+            "chat_count": chat_count,
+            "image_count": image_count,
+            "api_count": api_count,
             "daily_usage": daily_usage,
+            "_debug": {
+                "uid": uid,
+                "api_usage_docs": api_usage_doc_count,
+                "agg_error": agg_error,
+            },
         })
     except Exception as e:
         print(f"[Analytics] Usage endpoint error: {e}")
