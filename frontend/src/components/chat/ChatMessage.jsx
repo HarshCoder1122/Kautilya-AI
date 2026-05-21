@@ -503,7 +503,15 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
               const lang = match ? match[1] : '';
               const codeString = String(children).replace(/\n$/, '');
 
-              if (inline) {
+              // Stray-fragment guard: react-markdown promotes single chars to
+              // "block" code when the model emits a half-finished fence mid-
+              // stream or a 4-space-indented line. Without this, you get a
+              // huge CODE · 1 line card wrapping just `/` or `)`. Treat any
+              // single-line block code with no language tag and short content
+              // as inline — real code blocks always have a language fence or
+              // multiple lines.
+              const isStray = !inline && !lang && !codeString.includes('\n') && codeString.trim().length < 8;
+              if (inline || isStray) {
                 return <code className="bg-accent/50 px-1.5 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
               }
 
