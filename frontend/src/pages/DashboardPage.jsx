@@ -31,7 +31,7 @@ const navItems = [
   { id: 'tts', label: 'TTS Studio', icon: SpeakerHigh, path: '/dashboard/tts' },
   { id: 'integrations', label: 'Integrations', icon: PlugsConnected, path: '/dashboard/integrations' },
   { id: 'api', label: 'Developer API', icon: Terminal, path: '/dashboard/api' },
-  { id: 'billing', label: 'Billing', icon: CreditableCard, path: '/dashboard/billing' },
+  { id: 'billing', label: 'Billing', icon: CreditCard, path: '/dashboard/billing' },
   { id: 'usage', label: 'Usage', icon: ChartBar, path: '/dashboard/usage' },
 ];
 
