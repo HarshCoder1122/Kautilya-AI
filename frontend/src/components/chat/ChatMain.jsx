@@ -13,8 +13,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-const API_BASE_URL = process.env.REACT_APP_API_URL
-  || (window.location.hostname === 'localhost' ? 'http://localhost:5000' : window.location.origin);
+// Force same-origin when served from *.revealiq.in so the proxy is used (see lib/api.js).
+const _hn = (typeof window !== 'undefined' ? window.location.hostname : '') || '';
+const API_BASE_URL = /(^|\.)revealiq\.in$/i.test(_hn)
+  ? window.location.origin
+  : (process.env.REACT_APP_API_URL || (_hn === 'localhost' ? 'http://localhost:5000' : window.location.origin));
 
 const modes = [
   { id: 'chat', label: 'Chat', icon: Lightning, desc: 'General AI assistant' },
