@@ -27,7 +27,7 @@ import uuid
 
 from flask import Blueprint, request, jsonify, Response
 
-from config import NVIDIA_API_KEY
+from config import NVIDIA_API_KEY, NVIDIA_API_KEYS
 from services.auth_service import verify_api_key, record_usage
 from services.llm_service import call_groq, call_nvidia
 from system_prompts import DAILY_SYSTEM_PROMPT, PRO_SYSTEM_PROMPT, CODER_SYSTEM_PROMPT_PRO
@@ -266,7 +266,7 @@ def chat_completions():
                         headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
     # ---- NVIDIA path (qwen-coder / nemotron / mistral-daily) ----
-    if not NVIDIA_API_KEY:
+    if not NVIDIA_API_KEYS:
         return jsonify({"error": {"message": "NVIDIA backend not configured", "type": "upstream_error"}}), 503
 
     # Same path the dashboard chat uses — call_nvidia handles streaming with

@@ -11,6 +11,7 @@ from config import (
     OPENROUTER_API_KEY, NVIDIA_API_KEY,
     NVIDIA_API_KEYS,
     GEMINI_API_KEYS,
+)
 
 # Groq key rotation state
 _groq_key_index = 0
@@ -237,7 +238,7 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
     for non-chat call sites such as post-call NIM analysis where we just
     want a final string).
     """
-    if not NVIDIA_API_KEY:
+    if not NVIDIA_API_KEYS:
         return None
     try:
         clean_messages = []
