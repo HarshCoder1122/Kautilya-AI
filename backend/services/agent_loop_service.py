@@ -305,8 +305,8 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         Groq Llama is still the last-resort fallback if NVIDIA is unreachable.
         Output is wrapped with a placeholder-thinking stream so the UI shows
         the thinking bubble during Mistral's time-to-first-token wait."""
-        from config import NVIDIA_API_KEY
-        if NVIDIA_API_KEY:
+        from config import NVIDIA_API_KEYS
+        if NVIDIA_API_KEYS:
             r = call_nvidia(msgs, stream=True, model=DAILY_MODEL,
                             temperature=kw.get('temperature', 0.6),
                             top_p=kw.get('top_p', 1.0),
@@ -346,9 +346,9 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         reasoning_budget = _estimate_reasoning_budget(max_tokens, effective_max_thinking)
 
         if model_choice == 'coder':
-            from config import NVIDIA_API_KEY
+            from config import NVIDIA_API_KEYS
             label, model_id = _MODEL_LABELS['coder']
-            if not NVIDIA_API_KEY:
+            if not NVIDIA_API_KEYS:
                 yield json.dumps({"event": "status", "message": f"⚡ {label} requires NVIDIA API key — using fast model…"})
                 response_gen = _call_daily(current_messages, max_tokens=max_tokens,
                                            tools=tools, tool_choice=tool_choice)
@@ -369,9 +369,9 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                                                tools=tools, tool_choice=tool_choice)
 
         elif model_choice == 'pro':
-            from config import NVIDIA_API_KEY
+            from config import NVIDIA_API_KEYS
             label, model_id = _MODEL_LABELS['pro']
-            if not NVIDIA_API_KEY:
+            if not NVIDIA_API_KEYS:
                 yield json.dumps({"event": "status", "message": f"⚡ {label} requires NVIDIA API key — using fast model…"})
                 response_gen = _call_daily(current_messages, max_tokens=max_tokens,
                                            tools=tools, tool_choice=tool_choice)

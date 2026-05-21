@@ -3,13 +3,13 @@ import json
 import uuid
 import datetime
 from openai import OpenAI
-from config import KAUTILYA_API_KEY # or other config if needed
+from config import KAUTILYA_API_KEY, NVIDIA_API_KEY, NVIDIA_API_KEYS
 import traceback
 
 # You can use the standard OpenAI library to interact with NVIDIA NIM
 def get_nim_client():
     # Primary: NVIDIA NIM
-    api_key = os.environ.get("NVIDIA_API_KEY")
+    api_key = NVIDIA_API_KEYS[0] if NVIDIA_API_KEYS else NVIDIA_API_KEY
     if api_key:
         print("[NIM] Using NVIDIA NIM for analytics.")
         return OpenAI(

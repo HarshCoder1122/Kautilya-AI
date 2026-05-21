@@ -9,7 +9,7 @@ import ast
 import json
 import requests
 
-from config import NVIDIA_API_KEY, SERPAPI_API_KEY, MAPPLS_API_KEY
+from config import NVIDIA_API_KEY, SERPAPI_API_KEY, MAPPLS_API_KEY, NVIDIA_API_KEYS
 
 
 def find_balanced_command(text, start_index):
@@ -231,9 +231,10 @@ def execute_cloud_commands(response_text, uid=None):
             limit_manager.increment_image_count(uid)
             try:
                 import base64
+                nvidia_key = NVIDIA_API_KEYS[0] if NVIDIA_API_KEYS else NVIDIA_API_KEY
                 resp = requests.post(
                     "https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b",
-                    headers={"Authorization": f"Bearer {NVIDIA_API_KEY}", "Accept": "application/json", "Content-Type": "application/json"},
+                    headers={"Authorization": f"Bearer {nvidia_key}", "Accept": "application/json", "Content-Type": "application/json"},
                     json={"prompt": prompt}, timeout=60
                 )
                 if resp.status_code == 200:
