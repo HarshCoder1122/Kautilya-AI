@@ -130,23 +130,59 @@ class LimitManager:
     def add_pro_user(self, user_id):
         if not user_id or not self.db: return
         try:
+            # Was this user already Pro? Only fire the upgrade email on the
+            # transition from free → pro (handles webhook retries / repeat calls).
+            existing = self.db.collection('pro_users').document(user_id).get()
+            was_pro = existing.exists
             self.db.collection('pro_users').document(user_id).set({
                 "uid": user_id,
                 "granted_at": datetime.now().isoformat()
             })
             self._pro_cache.set(user_id, True)
             print(f"[LimitManager] Added User {user_id} to PRO tier.")
+            if not was_pro:
+                self._notify_tier_change(user_id, "upgraded")
         except Exception as e:
             print(f"[LimitManager] Firestore add pro failed: {e}")
 
     def remove_pro_user(self, user_id):
         if not user_id or not self.db: return
         try:
+            existing = self.db.collection('pro_users').document(user_id).get()
+            was_pro = existing.exists
             self.db.collection('pro_users').document(user_id).delete()
             self._pro_cache.set(user_id, False)
             print(f"[LimitManager] Removed User {user_id} from PRO tier.")
+            if was_pro:
+                self._notify_tier_change(user_id, "demoted")
         except Exception as e:
             print(f"[LimitManager] Firestore remove pro failed: {e}")
+
+    def _notify_tier_change(self, user_id, kind):
+        """Best-effort email on pro transition. Failures are swallowed."""
+        try:
+            doc = self.db.collection('users').document(user_id).get()
+            data = doc.to_dict() if doc.exists else {}
+            email = (data or {}).get('email')
+            name = (data or {}).get('name') or ''
+            if not email:
+                try:
+                    from firebase_admin import auth as firebase_auth
+                    rec = firebase_auth.get_user(user_id)
+                    email = rec.email
+                    name = name or (rec.display_name or '')
+                except Exception:
+                    pass
+            if not email:
+                print(f"[LimitManager] tier-change email skipped — no email for {user_id}")
+                return
+            from services.email_service import send_pro_upgraded_email, send_pro_demoted_email
+            if kind == "upgraded":
+                send_pro_upgraded_email(email, name)
+            elif kind == "demoted":
+                send_pro_demoted_email(email, name)
+        except Exception as e:
+            print(f"[LimitManager] tier-change email failed: {e}")
 
     # ================= DAILY USAGE HELPER =================
     def _get_daily_usage(self, user_id):

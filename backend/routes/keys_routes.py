@@ -4,7 +4,7 @@ Handles /api/keys/* endpoints (API key generation & management).
 """
 from flask import Blueprint, request, jsonify
 
-from config import MAX_KEYS_PER_USER, API_RATE_LIMITS
+from config import MAX_KEYS_PER_USER, API_RATE_LIMITS, _DEVELOPER_API_LIMITS, DEVELOPER_API_PAYG_PRICE
 from services.auth_service import verify_firebase_token, generate_api_key, hash_api_key, get_api_usage
 
 keys_bp = Blueprint('keys', __name__)
@@ -70,6 +70,16 @@ def api_key_list():
         usage = get_api_usage(uid)
         tier = "pro" if limit_manager.is_pro_user(uid) else "free"
         limits = API_RATE_LIMITS[tier]
+
+        # Developer API (per-call) usage — the Settings → API Keys card uses
+        # this to show "X / Y calls today" rather than token-sized numbers.
+        dev_cfg = _DEVELOPER_API_LIMITS.get(tier, _DEVELOPER_API_LIMITS["free"])
+        developer_api = {
+            "calls_today": int(usage.get("api_count", 0) or 0),
+            "daily_limit": int(dev_cfg["per_day"]),
+            "per_minute": int(dev_cfg["per_minute"]),
+            "payg_price_per_call": float(DEVELOPER_API_PAYG_PRICE),
+        }
         
         active_key = None
         try:
@@ -88,7 +98,10 @@ def api_key_list():
         except Exception as e:
             print(f"[keys/list] Active key validation error: {e}")
         
-        return jsonify({"keys": keys, "usage": usage, "limits": limits, "tier": tier, "active_key": active_key})
+        return jsonify({
+            "keys": keys, "usage": usage, "limits": limits, "tier": tier,
+            "active_key": active_key, "developer_api": developer_api,
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

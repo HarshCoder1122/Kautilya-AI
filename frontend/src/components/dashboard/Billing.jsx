@@ -207,7 +207,7 @@ export default function Billing({ user }) {
                     </div>
                     <ul className="mt-4 space-y-2 text-sm text-muted-foreground">
                       <Feature>Unlimited in-app daily messages</Feature>
-                      <Feature>500 Developer API calls/day (10× the free quota)</Feature>
+                      <Feature>10,000 Developer API calls/day (100× the free quota)</Feature>
                       <Feature>Access to all models incl. Kautilya Pro & Coder</Feature>
                       <Feature>Higher per-minute rate limits (20/min)</Feature>
                       <Feature>PAYG credits cover anything beyond your daily cap</Feature>
