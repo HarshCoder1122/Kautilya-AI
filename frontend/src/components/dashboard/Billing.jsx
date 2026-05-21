@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Crown, Lightning, Coin, CheckCircle, ArrowUp, Wallet, CreditCard, Terminal } from "@phosphor-icons/react";
+import { Crown, Lightning, Coin, CheckCircle, ArrowUp, Wallet, CreditCard } from "@phosphor-icons/react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { billingAPI } from "../../lib/api";
 
@@ -139,16 +139,11 @@ export default function Billing({ user }) {
   const isPro = !!(config?.is_pro || config?.tier === "pro");
   const credits = Number(config?.credits || 0);
   const usage = config?.usage || { chat_count: 0, daily_limit: 30 };
-  const apiUsage = config?.api_usage || { api_count: 0, daily_limit: 50, price_per_call: 1 };
   const pricePerMsg = Number(config?.payg_price_per_message || 0.5);
   const usedPct = usage.daily_limit > 0
     ? Math.min(100, Math.round((usage.chat_count / usage.daily_limit) * 100))
     : 0;
-  const apiUsedPct = apiUsage.daily_limit > 0
-    ? Math.min(100, Math.round((apiUsage.api_count / apiUsage.daily_limit) * 100))
-    : 0;
   const remainingPaygMessages = Math.floor(credits / pricePerMsg);
-  const remainingPaygApiCalls = Math.floor(credits / Number(apiUsage.price_per_call || 1));
 
   return (
     <div className="h-full flex flex-col bg-background" data-testid="billing-page">
@@ -197,48 +192,6 @@ export default function Billing({ user }) {
                 />
               </div>
 
-              {/* Developer API usage */}
-              <section className="rounded-2xl border border-[var(--k-border)] bg-[var(--k-surface)] p-6 md:p-8">
-                <div className="flex items-center gap-2 text-violet-400 mb-1">
-                  <Terminal weight="fill" className="w-5 h-5" />
-                  <span className="text-xs font-semibold uppercase tracking-widest">Developer API</span>
-                </div>
-                <h3 className="text-xl font-semibold k-heading text-foreground">Kautilya API key usage</h3>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Daily quota for calls made via <span className="k-mono">ai.revealiq.in/api/v1</span>
-                  {" "}(Cline, Continue, OpenAI SDK, etc.). Beyond the cap, calls draw ₹{Number(apiUsage.price_per_call).toFixed(2)} each from your PAYG balance.
-                </p>
-
-                <div className="mt-5 grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Today</div>
-                    <div className="mt-1 text-lg font-semibold text-foreground">
-                      {apiUsage.api_count} / {apiUsage.daily_limit} calls
-                    </div>
-                    <div className="mt-2 h-1.5 rounded-full bg-[var(--k-border)] overflow-hidden">
-                      <div className="h-full bg-violet-400 transition-all" style={{ width: `${apiUsedPct}%` }} />
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Plan limit</div>
-                    <div className="mt-1 text-lg font-semibold text-foreground">
-                      {isPro ? "500" : "50"} calls/day
-                    </div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      {isPro ? "Pro tier" : "Free tier · Upgrade for 10×"}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">After-cap calls</div>
-                    <div className="mt-1 text-lg font-semibold text-foreground">
-                      ~{remainingPaygApiCalls}
-                    </div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      from ₹{credits.toFixed(2)} balance @ ₹{Number(apiUsage.price_per_call).toFixed(2)}/call
-                    </div>
-                  </div>
-                </div>
-              </section>
 
               {/* Pro plan */}
               <section className="rounded-2xl border border-[var(--k-border)] bg-[var(--k-surface)] overflow-hidden">
@@ -374,13 +327,7 @@ export default function Billing({ user }) {
               <section className="rounded-2xl border border-[var(--k-border)] bg-[var(--k-surface)] p-6 md:p-8 space-y-4">
                 <h3 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">How it works</h3>
                 <Faq q="When are PAYG credits used?">
-                  Credits kick in <strong>only after</strong> you cross the relevant daily cap — either your in-app message quota
-                  or your Developer API quota. Each in-app message costs ₹{pricePerMsg.toFixed(2)} and each API call costs
-                  ₹{Number(apiUsage.price_per_call).toFixed(2)}. While you're under the daily caps, usage is free.
-                </Faq>
-                <Faq q="Does Pro also use credits?">
-                  Pro gives you unlimited in-app chat, but the Developer API still has a 500-calls/day cap to keep abuse in check.
-                  Beyond that cap, Pro accounts also draw from PAYG credits at the same per-call rate.
+                  Credits kick in <strong>only after</strong> you cross your daily message quota. Each in-app message costs ₹{pricePerMsg.toFixed(2)}. While you're under the daily cap, usage is free.
                 </Faq>
                 <Faq q="Do credits expire?">No. Your top-up balance carries forward until used.</Faq>
                 <Faq q="Can I cancel Pro anytime?">
