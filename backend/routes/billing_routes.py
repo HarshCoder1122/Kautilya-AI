@@ -80,9 +80,11 @@ def create_billing_order():
                     "details": f"plan_id={plan_id} — {e}",
                 }), 500
             if uid and db:
-                db.collection('users').document(uid).update({
+                # set(..., merge=True) so this works for users who don't yet
+                # have a users/{uid} doc — update() 404s on first-time upgrades.
+                db.collection('users').document(uid).set({
                     'razorpay_subscription_id': subscription['id'], 'tier': 'pro_pending'
-                })
+                }, merge=True)
             return jsonify(subscription)
         else:
             # payment_capture=1 → Razorpay auto-captures on successful authorization,
