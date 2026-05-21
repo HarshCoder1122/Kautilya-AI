@@ -371,58 +371,23 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       let researchSources = [];
       let canvasOpened = false;
 
-      // ---- Typewriter smoothing ----
-      // The network gives us bursty chunks (esp. through Cloudflare / HF
-      // buffering — sometimes 1000+ chars arrive at once). We type them out
-      // at a steady pace via rAF so the UI feels like ChatGPT/Claude even
-      // when the upstream is gluggy.
-      let displayedLen = 0;          // how many chars of fullContent we've shown
-      let rafId = null;
-      let streamFinished = false;    // set true when reader is done — burst-catch-up
-      const SMOOTH_SPEED_CHARS = 8;  // chars per frame at 60fps → ~480 cps baseline
-
+      // Render each network chunk directly — fastest possible perceived
+      // response. Earlier we tried a rAF typewriter to even out burst
+      // arrivals, but it added enough lag to make snappy responses feel
+      // sluggish. Trust the upstream pacing and just paint as it arrives.
       const updateAssistant = (patch) => {
         setMessages(prev => prev.map(msg => (
           msg.id === aiMsg.id ? { ...msg, ...patch } : msg
         )));
       };
 
-      const tickSmoother = () => {
-        const targetLen = fullContent.length;
-        if (displayedLen >= targetLen) {
-          rafId = null;
-          return;
-        }
-        // Catch-up: if we're way behind (huge burst), accelerate but stay
-        // smooth. If the stream has finished, race to the end so the user
-        // doesn't wait for an artificial typewriter delay after upstream is done.
-        const gap = targetLen - displayedLen;
-        let step = SMOOTH_SPEED_CHARS;
-        if (streamFinished) step = Math.max(step, Math.ceil(gap / 8));
-        else if (gap > 600) step = Math.ceil(gap / 40);
-        else if (gap > 200) step = Math.ceil(gap / 30);
-        displayedLen = Math.min(targetLen, displayedLen + step);
-        renderVisible();
-        rafId = requestAnimationFrame(tickSmoother);
-      };
-
-      const scheduleSmoother = () => {
-        if (rafId == null) rafId = requestAnimationFrame(tickSmoother);
-      };
-
       const updateContent = () => {
-        scheduleSmoother();
-      };
-
-      const renderVisible = () => {
-        const visible = fullContent.slice(0, displayedLen);
+        const visible = fullContent;
         // Multi-file workspace: detect either <file>...</file> blocks OR the
         // common "**filename.ext**\n```lang\n...\n```" pattern that
         // Claude/Emergent-style coder responses emit. We require 2+ filename
         // headers OR any explicit <file> tag so single code snippets still
         // render as a normal artifact rather than a multi-file project.
-        // (Artifact detection runs on fullContent so the side-canvas opens
-        // immediately even before the typewriter has rendered it.)
         const hasFileTags = /<\/file>/.test(fullContent);
         const filenameHeaderRe = /(^|\n)[ \t]*(?:\*\*|`|#{1,6}\s+|(?:[Ff]ile|[Ff]ilename|[Pp]ath)\s*[:=]\s*)?[\w./@-]+\.(?:jsx|tsx|js|ts|html|css|py|json|md|vue|svelte|go|rs|java|cpp|c|h|sh|yml|yaml|toml|env)(?:\*\*|`)?[ \t]*\n[ \t]*```/g;
         const headerHits = (fullContent.match(filenameHeaderRe) || []).length;
@@ -627,19 +592,6 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
         }
       }
 
-      // Stream done — let the smoother race to the end so the final tokens
-      // appear within a frame or two, then flush content one last time.
-      streamFinished = true;
-      scheduleSmoother();
-      // Hard-flush after a brief window in case the rAF loop has already
-      // exited (e.g. tab was backgrounded and rAF was throttled to 0Hz).
-      setTimeout(() => {
-        if (displayedLen < fullContent.length) {
-          displayedLen = fullContent.length;
-          renderVisible();
-        }
-      }, 100);
-
       updateAssistant({ streaming: false });
       setIsStreaming(false);
       leftMidStreamRef.current = false; // Stream completed normally — no reload needed
@@ -648,14 +600,9 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
         setTimeout(() => onStreamComplete(), 800);
       }
     } catch (error) {
-      // Cancel any in-flight typewriter so the spinner doesn't keep ticking.
-      if (rafId != null) { cancelAnimationFrame(rafId); rafId = null; }
       updateAssistant({ streaming: false });
       if (error.name === 'AbortError') {
         console.log('Stream aborted by user');
-        // On abort, snap to whatever we got so the user sees the partial answer.
-        displayedLen = fullContent.length;
-        renderVisible();
         setIsThinking(false);
         setIsStreaming(false);
         leftMidStreamRef.current = false;
