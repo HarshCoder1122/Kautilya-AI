@@ -145,24 +145,84 @@ def _send_raw(to_email: str, subject: str, html_body: str) -> bool:
     if not SMTP_PASS:
         print("[Email] ZOHO_SMTP_PASSWORD not set — skipping send")
         return False
-    try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = formataddr((FROM_NAME, SMTP_USER))
-        msg["To"] = to_email
-        msg.attach(MIMEText(html_body, "html", "utf-8"))
+    
+    # Prepare message
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = formataddr((FROM_NAME, SMTP_USER))
+    msg["To"] = to_email
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as s:
-            s.ehlo()
-            s.starttls()
-            s.ehlo()
-            s.login(SMTP_USER, SMTP_PASS)
-            s.sendmail(SMTP_USER, [to_email], msg.as_string())
-        print(f"[Email] Sent '{subject}' to {to_email}")
-        return True
-    except Exception as e:
-        print(f"[Email] Send to {to_email} failed: {e}")
-        return False
+    # Define connection attempts
+    # We will try:
+    # 1. Configured SMTP_HOST + SMTP_PORT
+    # 2. If SMTP_PORT was 587, try port 465 (SSL) on SMTP_HOST
+    # 3. Try port 465 (SSL) on smtp.zoho.in (India fallback)
+    # 4. Try port 465 (SSL) on smtp.zoho.com (US/Global fallback)
+    # 5. Try port 587 (STARTTLS) on smtp.zoho.in
+    # 6. Try port 587 (STARTTLS) on smtp.zoho.com
+    
+    attempts = []
+    
+    # Add primary configured attempt
+    attempts.append({
+        "host": SMTP_HOST,
+        "port": SMTP_PORT,
+        "use_ssl": SMTP_PORT == 465
+    })
+    
+    # If primary was on port 587, add port 465 SSL fallback on same host
+    if SMTP_PORT == 587:
+        attempts.append({
+            "host": SMTP_HOST,
+            "port": 465,
+            "use_ssl": True
+        })
+        
+    # Add other zoho endpoints just in case
+    zoho_endpoints = ["smtp.zoho.in", "smtp.zoho.com"]
+    for host in zoho_endpoints:
+        # Avoid duplicate configurations
+        if not any(a["host"] == host and a["port"] == 465 for a in attempts):
+            attempts.append({
+                "host": host,
+                "port": 465,
+                "use_ssl": True
+            })
+        if not any(a["host"] == host and a["port"] == 587 for a in attempts):
+            attempts.append({
+                "host": host,
+                "port": 587,
+                "use_ssl": False
+            })
+
+    last_error = None
+    for attempt in attempts:
+        host = attempt["host"]
+        port = attempt["port"]
+        use_ssl = attempt["use_ssl"]
+        
+        print(f"[Email] Attempting to send via {host}:{port} ({'SSL' if use_ssl else 'STARTTLS'})...")
+        try:
+            if use_ssl:
+                s = smtplib.SMTP_SSL(host, port, timeout=15)
+            else:
+                s = smtplib.SMTP(host, port, timeout=15)
+                s.ehlo()
+                s.starttls()
+            
+            with s:
+                s.ehlo()
+                s.login(SMTP_USER, SMTP_PASS)
+                s.sendmail(SMTP_USER, [to_email], msg.as_string())
+            print(f"[Email] Successfully sent '{subject}' to {to_email} via {host}:{port}")
+            return True
+        except Exception as e:
+            print(f"[Email] Attempt via {host}:{port} failed: {e}")
+            last_error = e
+
+    print(f"[Email] All email send attempts to {to_email} failed. Last error: {last_error}")
+    return False
 
 
 def _send_async(to_email: str, subject: str, html_body: str):
