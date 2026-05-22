@@ -20,10 +20,10 @@ echo "[START] Launching Flask API on port $TARGET_PORT..."
 # 4. Start Gunicorn
 # Concurrency strategy: SSE streaming is I/O-bound (most time waiting on
 # upstream LLM tokens), so threads matter more than processes.
-#   workers=4, threads=16  →  up to 64 concurrent chat streams
+#   workers=12, threads=32  →  up to 384 concurrent chat streams
 # Tunables overridable via env: GUNICORN_WORKERS / GUNICORN_THREADS.
-GUNICORN_WORKERS=${GUNICORN_WORKERS:-4}
-GUNICORN_THREADS=${GUNICORN_THREADS:-16}
+GUNICORN_WORKERS=${GUNICORN_WORKERS:-12}
+GUNICORN_THREADS=${GUNICORN_THREADS:-32}
 
 exec gunicorn app:app \
     --bind 0.0.0.0:$TARGET_PORT \
