@@ -3,7 +3,7 @@ import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning,
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ThinkingTokens } from "@/components/chat/ThinkingTokens";
 import { LiveKitVoice } from "@/components/chat/LiveKitVoice";
-import { chatAPI, getAuthHeaders } from "../../lib/api";
+import { chatAPI, getAuthHeaders, integrationsAPI } from "../../lib/api";
 // ReActSteps is rendered inside ChatMessage — no need to import here
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -17,6 +17,13 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { Toaster } from "@/components/ui/toaster";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 
 // Force same-origin when served from *.revealiq.in so the proxy is used (see lib/api.js).
 const _hn = (typeof window !== 'undefined' ? window.location.hostname : '') || '';
@@ -29,6 +36,16 @@ const modes = [
   { id: 'research', label: 'Deep Research', icon: MagnifyingGlass, desc: 'Web search & citations' },
   { id: 'code', label: 'Code Interpreter', icon: Code, desc: 'Execute & analyze code' },
 ];
+
+function parseAttrs(s) {
+  const out = {};
+  const re = /([a-zA-Z_:][\w:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    out[m[1].toLowerCase()] = m[2] ?? m[3] ?? m[4] ?? '';
+  }
+  return out;
+}
 
 export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSidebar, canvasOpen, onToggleCanvas, onOpenCanvas, activeMode, onSetMode, theme, toggleTheme, sessionId, onSessionChange, onNewSession, onStreamComplete }) {
   const [messages, setMessages] = useState([]);
@@ -45,6 +62,10 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   const cameraInputRef = useRef(null);
   const inputRef = useRef(null);
   const [maxThinking, setMaxThinking] = useState(false);
+  const [showMcpDialog, setShowMcpDialog] = useState(false);
+  const [mcpSearch, setMcpSearch] = useState("");
+  const [mcpStatus, setMcpStatus] = useState(null);
+  const [loadingMcp, setLoadingMcp] = useState(false);
   const { toast } = useToast();
   const messagesEndRef = useRef(null);
   const mediaRecorderRef = useRef(null);
@@ -91,6 +112,30 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     document.addEventListener('visibilitychange', handleVisibility);
     return () => document.removeEventListener('visibilitychange', handleVisibility);
   }, [sessionId, isStreaming, isThinking]);
+
+  // Fetch MCP status when the dialog opens
+  useEffect(() => {
+    if (!showMcpDialog) return;
+
+    const fetchMcpStatus = async () => {
+      setLoadingMcp(true);
+      try {
+        const data = await integrationsAPI.getMcpStatus();
+        setMcpStatus(data);
+      } catch (err) {
+        console.error("Failed to load MCP status:", err);
+        toast({
+          variant: "destructive",
+          title: "Failed to load MCP Status",
+          description: err.message || "An error occurred while fetching MCP servers."
+        });
+      } finally {
+        setLoadingMcp(false);
+      }
+    };
+
+    fetchMcpStatus();
+  }, [showMcpDialog, toast]);
 
   // Load history when sessionId changes
   useEffect(() => {
@@ -397,13 +442,13 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
         // Claude/Emergent-style coder responses emit. We require 2+ filename
         // headers OR any explicit <file> tag so single code snippets still
         // render as a normal artifact rather than a multi-file project.
-        const hasFileTags = /<\/file>/.test(fullContent);
+        const hasFileTags = /<file[\s>]/i.test(fullContent);
         const filenameHeaderRe = /(^|\n)[ \t]*(?:\*\*|`|#{1,6}\s+|(?:[Ff]ile|[Ff]ilename|[Pp]ath)\s*[:=]\s*)?[\w./@-]+\.(?:jsx|tsx|js|ts|html|css|py|json|md|vue|svelte|go|rs|java|cpp|c|h|sh|yml|yaml|toml|env)(?:\*\*|`)?[ \t]*\n[ \t]*```/g;
         const headerHits = (fullContent.match(filenameHeaderRe) || []).length;
         if (hasFileTags || headerHits >= 2) {
           // Visible body uses the typewriter-smoothed slice; the canvas/
           // artifact gets fullContent so file tree is always current.
-          const cleanContent = visible.replace(/<file[\s\S]*?<\/file>/g, '').trim();
+          const cleanContent = visible.replace(/<file[\s\S]*?<\/file>/gi, '').replace(/<file[\s\S]*/gi, '').trim();
           updateAssistant({
             content: cleanContent || 'Here are the project files:',
             thinkingDone: true,
@@ -420,31 +465,55 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
           return;
         }
 
-        const artifactMatch = fullContent.match(/<artifact\s+type="([^"]+)"(?:\s+title="([^"]+)")?>([\s\S]*?)<\/artifact>/);
-        const artifactData = artifactMatch ? {
-          type: artifactMatch[1],
-          title: artifactMatch[2] || 'Analysis',
-          code: artifactMatch[3].trim()
-        } : null;
+        const tagMatch = fullContent.match(/<artifact(\s+[^>]+)?>/i);
+        let artifactData = null;
+        if (tagMatch) {
+          const openTag = tagMatch[0];
+          const attrs = parseAttrs(tagMatch[1] || '');
+          const startIndex = tagMatch.index + openTag.length;
+          const closeIndex = fullContent.indexOf('</artifact>', startIndex);
+          const code = closeIndex >= 0 
+            ? fullContent.slice(startIndex, closeIndex)
+            : fullContent.slice(startIndex);
+          
+          artifactData = {
+            type: attrs.type || 'document',
+            title: attrs.title || 'Analysis',
+            filename: attrs.filename || '',
+            subtype: attrs.subtype || '',
+            code: code.trim(),
+            isClosed: closeIndex >= 0
+          };
+        }
+
+        const cleanContent = visible
+          .replace(/<artifact[\s\S]*?<\/artifact>/gi, '')
+          .replace(/<artifact[\s\S]*/gi, '')
+          .trim();
 
         updateAssistant({
-          content: visible.replace(/<artifact[\s\S]*?<\/artifact>/g, '').trim(),
+          content: cleanContent || (artifactData ? 'Here is the generated artifact:' : ''),
           thinkingDone: true,
           isSynthesizing: false,
           artifactType: artifactData?.type,
           artifactTitle: artifactData?.title,
+          artifactFilename: artifactData?.filename,
+          artifactSubtype: artifactData?.subtype,
           artifactCode: artifactData?.code,
           hasArtifact: !!artifactData,
         });
 
-        // Auto-open canvas when artifact is first detected
-        if (artifactData && !canvasOpened && onOpenCanvas) {
-          canvasOpened = true;
+        // Open or update canvas in real-time
+        if (artifactData && onOpenCanvas) {
           onOpenCanvas({
             type: artifactData.type,
             code: artifactData.code,
             title: artifactData.title,
+            filename: artifactData.filename,
+            subtype: artifactData.subtype,
+            messageId: aiMsg.id,
           });
+          canvasOpened = true;
         }
       };
 
@@ -806,6 +875,8 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                 type: msg.artifactType,
                 code: msg.artifactCode || "",
                 title: msg.artifactTitle || 'AI Analysis',
+                filename: msg.artifactFilename || "",
+                subtype: msg.artifactSubtype || "",
                 messageId: msg.id,
               })}
             />
@@ -965,10 +1036,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                   Tools & Capabilities
                 </DropdownMenuLabel>
                 <DropdownMenuItem
-                  onClick={() => toast({
-                    title: "Active MCP Servers",
-                    description: "firebase-mcp-server is active with Firebase Auth, Deploy, & Knowledge search.",
-                  })}
+                  onSelect={(e) => { e.preventDefault(); setShowMcpDialog(true); }}
                   className="flex items-center gap-2.5 px-2.5 py-2 text-sm rounded-lg cursor-pointer hover:bg-accent text-foreground transition-colors duration-150"
                 >
                   <Cpu className="w-4 h-4 text-indigo-400" weight="duotone" />
@@ -1060,6 +1128,208 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
           </div>
         </div>
       </div>
+      <Dialog open={showMcpDialog} onOpenChange={setShowMcpDialog}>
+        <DialogContent className="sm:max-w-[700px] max-h-[85vh] flex flex-col p-6 overflow-hidden bg-[var(--k-surface-elevated)] border-[var(--k-border)] rounded-xl shadow-2xl">
+          <DialogHeader className="pb-4 border-b border-[var(--k-border)]">
+            <DialogTitle className="text-xl font-semibold tracking-tight text-foreground flex items-center gap-2">
+              <Cpu className="w-5 h-5 text-indigo-400" weight="duotone" />
+              Model Context Protocol (MCP) Servers
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground mt-1">
+              Active and available MCP servers providing external tools, context, and integrations to Kautilya AI.
+            </DialogDescription>
+          </DialogHeader>
+
+          {loadingMcp && !mcpStatus ? (
+            <div className="flex-1 flex flex-col items-center justify-center py-12 gap-3">
+              <div className="w-8 h-8 rounded-full border-2 border-[var(--k-brand)] border-t-transparent animate-spin" />
+              <span className="text-xs text-muted-foreground">Querying MCP server status...</span>
+            </div>
+          ) : !mcpStatus ? (
+            <div className="flex-1 flex flex-col items-center justify-center py-12 gap-3">
+              <span className="text-xs text-rose-400">Failed to load MCP server configuration.</span>
+              <button 
+                onClick={async () => {
+                  setLoadingMcp(true);
+                  try {
+                    const data = await integrationsAPI.getMcpStatus();
+                    setMcpStatus(data);
+                  } catch (err) {
+                    console.error("Failed to load MCP status:", err);
+                  } finally {
+                    setLoadingMcp(false);
+                  }
+                }}
+                className="px-3 py-1.5 rounded-lg bg-[var(--k-brand)] hover:bg-[var(--k-brand-hover)] text-xs text-white transition-colors"
+              >
+                Retry
+              </button>
+            </div>
+          ) : (() => {
+            const servers = mcpStatus?.servers || [];
+            
+            // Group by category
+            const categoriesMap = {};
+            servers.forEach(s => {
+              const catName = s.category || "Other";
+              if (!categoriesMap[catName]) {
+                categoriesMap[catName] = [];
+              }
+              categoriesMap[catName].push(s);
+            });
+            
+            const groupedCategories = Object.keys(categoriesMap).map(catName => ({
+              category: catName,
+              servers: categoriesMap[catName]
+            }));
+
+            const total = servers.length;
+            const q = mcpSearch.trim().toLowerCase();
+            const filtered = groupedCategories
+              .map(cat => ({
+                ...cat,
+                servers: q
+                  ? cat.servers.filter(s =>
+                      s.name.toLowerCase().includes(q) ||
+                      (s.description || "").toLowerCase().includes(q) ||
+                      s.tools.some(t => t.name.toLowerCase().includes(q) || t.underlying.toLowerCase().includes(q))
+                    )
+                  : cat.servers,
+              }))
+              .filter(cat => cat.servers.length > 0);
+
+            return (
+              <>
+                <div className="px-1 pb-3 flex items-center gap-3 border-b border-[var(--k-border)]/50">
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      value={mcpSearch}
+                      onChange={(e) => setMcpSearch(e.target.value)}
+                      placeholder="Search MCP servers, tools, or capabilities..."
+                      className="w-full pl-3 pr-3 py-2 text-xs bg-[var(--k-surface)] border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-[var(--k-brand)] placeholder:text-muted-foreground"
+                    />
+                  </div>
+                  <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                    {q ? `${filtered.reduce((s, c) => s + c.servers.length, 0)} match` : `${total} servers`}
+                  </span>
+                </div>
+
+                <ScrollArea className="flex-1 mt-3 pr-1">
+                  <div className="space-y-6">
+                    {filtered.length === 0 && (
+                      <div className="text-center py-12 text-xs text-muted-foreground">
+                        No MCP servers found for "{mcpSearch}".
+                      </div>
+                    )}
+                    {filtered.map(cat => (
+                      <div key={cat.category}>
+                        <div className="text-[10px] uppercase font-bold tracking-[0.18em] text-muted-foreground/70 mb-3 px-1">
+                          {cat.category} <span className="text-muted-foreground/40 normal-case font-medium">· {cat.servers.length}</span>
+                        </div>
+                        <div className="space-y-3">
+                          {cat.servers.map(server => {
+                            const state = server.state || 'disabled';
+                            const isActive = state === 'active';
+                            const isError = state === 'error';
+                            const isMissingEnv = state === 'missing_env';
+                            
+                            let pillStyle = "text-muted-foreground bg-muted border-[var(--k-border)]";
+                            let pillText = "Disabled";
+                            let hasDot = false;
+                            
+                            if (isActive) {
+                              pillStyle = "text-emerald-400 bg-emerald-400/10 border-emerald-400/20";
+                              pillText = "Active";
+                              hasDot = true;
+                            } else if (isError) {
+                              pillStyle = "text-rose-400 bg-rose-400/10 border-rose-400/20";
+                              pillText = "Error";
+                              hasDot = true;
+                            } else if (isMissingEnv) {
+                              pillStyle = "text-amber-400 bg-amber-400/10 border-amber-400/20";
+                              pillText = "Missing Env";
+                              hasDot = true;
+                            }
+
+                            return (
+                              <div
+                                key={server.name}
+                                className={`p-4 rounded-xl border transition-all duration-200 ${
+                                  isActive
+                                    ? 'border-[var(--k-border)] bg-[var(--k-surface)] hover:bg-[var(--k-surface-elevated)]'
+                                    : 'border-[var(--k-border)] bg-[var(--k-surface)]/60 hover:bg-[var(--k-surface)] opacity-85 hover:opacity-100'
+                                }`}
+                              >
+                                <div className="flex items-start justify-between mb-2 gap-3">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className={`font-semibold text-sm ${isActive ? 'text-foreground' : 'text-foreground/90'}`}>
+                                        {server.name}
+                                      </span>
+                                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-medium border ${pillStyle}`}>
+                                        {hasDot && (
+                                          <span className={`w-1.5 h-1.5 rounded-full ${
+                                            isActive ? 'bg-emerald-400 animate-pulse' :
+                                            isError ? 'bg-rose-500' : 'bg-amber-400'
+                                          }`} />
+                                        )}
+                                        {pillText}
+                                      </span>
+                                    </div>
+                                    <p className={`text-xs mt-1 ${isActive ? 'text-muted-foreground' : 'text-muted-foreground/80'}`}>
+                                      {server.description}
+                                    </p>
+                                    
+                                    {isError && server.error && (
+                                      <div className="mt-2 text-[10px] font-mono text-rose-400 bg-rose-950/20 border border-rose-900/30 rounded p-1.5 max-h-20 overflow-y-auto">
+                                        Error: {server.error}
+                                      </div>
+                                    )}
+                                    
+                                    {isMissingEnv && server.env_required && (
+                                      <div className="mt-2 text-[10px] text-amber-300">
+                                        Required keys: {server.env_required.join(', ')}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                                
+                                {server.tools && server.tools.length > 0 && (
+                                  <div className={`mt-3 pt-3 border-t ${isActive ? 'border-[var(--k-border)]/50' : 'border-[var(--k-border)]/30'}`}>
+                                    <span className={`text-[10px] uppercase font-bold tracking-wider block mb-2 ${isActive ? 'text-muted-foreground/80' : 'text-muted-foreground/60'}`}>
+                                      Exposed Tools ({server.tools.length})
+                                    </span>
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {server.tools.map(t => (
+                                        <code
+                                          key={t.name}
+                                          title={`Underlying: ${t.underlying}`}
+                                          className={`text-[10px] font-mono px-2 py-0.5 rounded ${
+                                            isActive
+                                              ? 'bg-muted border border-[var(--k-border)]/50 text-indigo-300'
+                                              : 'bg-muted/30 border border-[var(--k-border)]/20 text-muted-foreground'
+                                          }`}
+                                        >
+                                          {t.name}
+                                        </code>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              </>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
       <Toaster />
     </div>
   );

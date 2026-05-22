@@ -33,3 +33,4 @@ flask-cors
 openai
 flask-compress
 googlesearch-python
+mcp>=1.2.0

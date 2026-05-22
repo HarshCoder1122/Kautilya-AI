@@ -160,6 +160,25 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         except Exception as _e:
             print(f"[Agent] integration tool prompt injection failed: {_e}")
 
+    # MCP tools: always advertise — gating by intent keywords misses queries like
+    # "find me the latest paper on X" (no keyword match yet a web-search MCP would
+    # answer it). Token cost is bounded since most deployments enable <10 servers.
+    try:
+        from services.mcp_client_service import available_mcp_tools
+        mcp_specs = available_mcp_tools()
+        if mcp_specs:
+            mcp_lines = [f"\n\nAVAILABLE MCP TOOLS ({len(mcp_specs)} from connected servers). Use ONLY when the task genuinely needs external data/action — do NOT call for opinions, math, or general knowledge you already have:"]
+            for s in mcp_specs:
+                fn = s["function"]
+                req = (fn.get("parameters") or {}).get("required", [])
+                desc = (fn.get("description") or "")[:160]
+                mcp_lines.append(f"- {fn['name']}({', '.join(req)}): {desc}")
+            mcp_lines.append("Syntax: [INTEGRATION: mcp_<server>_<tool> | {\"arg\":\"value\"}]  — same dispatch format. Wait for OBSERVATION before continuing.")
+            if current_messages and current_messages[0].get("role") == "system":
+                current_messages[0]["content"] = str(current_messages[0].get("content", "")) + "\n".join(mcp_lines)
+    except Exception as _e:
+        print(f"[Agent] MCP tool prompt injection failed: {_e}")
+
 
     # Pre-fetch integration data based on intent BEFORE calling the LLM.
     # Gated by intent keywords so chitchat doesn't pay the HTTP round-trip
@@ -849,35 +868,44 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         # lookup_crm_contact, log_crm_activity, trigger_zapier — only those whose
         # provider the user has connected.
         if not action_found:
-            int_match = re.search(r'\[INTEGRATION:\s*([a-z_]+)\s*\|\s*(\{.*?\})\s*\]', accumulated_response, re.DOTALL)
-            if int_match and uid:
+            int_match = re.search(r'\[INTEGRATION:\s*([a-z0-9_]+)\s*\|\s*(\{.*?\})\s*\]', accumulated_response, re.DOTALL)
+            if int_match:
                 tool_name = int_match.group(1).strip()
                 try:
                     tool_args = json.loads(int_match.group(2))
                 except Exception:
                     tool_args = {}
-                action_counter += 1
-                action_id = str(action_counter)
-                yield json.dumps({"event": "react_action", "id": action_id, "tool": tool_name,
-                                  "input": json.dumps(tool_args)[:80], "status": "running"})
-                try:
-                    from services.integration_tools import execute_tool
-                    result = execute_tool(uid, tool_name, tool_args)
-                    if result.get("ok"):
+                # MCP tools don't require uid (server-level creds); per-user integrations do.
+                is_mcp = tool_name.startswith("mcp_")
+                if is_mcp or uid:
+                    action_counter += 1
+                    action_id = str(action_counter)
+                    yield json.dumps({"event": "react_action", "id": action_id, "tool": tool_name,
+                                      "input": json.dumps(tool_args)[:80], "status": "running"})
+                    try:
+                        if is_mcp:
+                            from services.mcp_client_service import execute_mcp_tool
+                            result = execute_mcp_tool(tool_name, tool_args)
+                            label = "MCP"
+                        else:
+                            from services.integration_tools import execute_tool
+                            result = execute_tool(uid, tool_name, tool_args)
+                            label = "INTEGRATION"
+                        if result.get("ok"):
+                            yield json.dumps({"event": "react_action_done", "id": action_id,
+                                              "status": "done", "preview": f"{tool_name} succeeded"})
+                            obs = f"{label} RESULT ({tool_name}): {json.dumps(result)[:1500]}"
+                        else:
+                            yield json.dumps({"event": "react_action_done", "id": action_id,
+                                              "status": "error", "preview": str(result.get('error', ''))[:80]})
+                            obs = f"{label} ERROR ({tool_name}): {result.get('error', 'unknown')}"
+                    except Exception as e:
                         yield json.dumps({"event": "react_action_done", "id": action_id,
-                                          "status": "done", "preview": f"{tool_name} succeeded"})
-                        obs = f"INTEGRATION RESULT ({tool_name}): {json.dumps(result)[:800]}"
-                    else:
-                        yield json.dumps({"event": "react_action_done", "id": action_id,
-                                          "status": "error", "preview": result.get("error", "")[:80]})
-                        obs = f"INTEGRATION ERROR ({tool_name}): {result.get('error', 'unknown')}"
-                except Exception as e:
-                    yield json.dumps({"event": "react_action_done", "id": action_id,
-                                      "status": "error", "preview": str(e)[:80]})
-                    obs = f"INTEGRATION EXCEPTION: {e}"
-                current_messages.append({"role": "assistant", "content": accumulated_response})
-                current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nConfirm the result to the user — do not call [INTEGRATION:] again for the same action."})
-                action_found = True
+                                          "status": "error", "preview": str(e)[:80]})
+                        obs = f"TOOL EXCEPTION ({tool_name}): {e}"
+                    current_messages.append({"role": "assistant", "content": accumulated_response})
+                    current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nSynthesize a concise user-facing answer from this result. Do not call [INTEGRATION:] again for the same action."})
+                    action_found = True
 
         agent_loop._action_counter = action_counter
 

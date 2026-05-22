@@ -172,6 +172,17 @@ def list_tools():
     })
 
 
+# ---------- MCP Server Status ----------
+@integrations_bp.route('/mcp/status', methods=['GET'])
+def mcp_status():
+    """Returns the live status of all registered MCP servers and their tools."""
+    uid = _require_auth()
+    if not uid:
+        return jsonify({"error": "Authentication required"}), 401
+    from services.mcp_client_service import get_mcp_status
+    return jsonify(get_mcp_status())
+
+
 # ---------- OAuth start ----------
 @integrations_bp.route('/integrations/<provider>/connect', methods=['GET'])
 def connect(provider):

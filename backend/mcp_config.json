@@ -1,0 +1,150 @@
+{
+  "_comment": "MCP server registry. Set 'enabled': true and provide required env to activate a server. Servers are spawned at app startup via stdio transport. All tools are namespaced as 'mcp_<server_key>_<tool>' to avoid collisions.",
+  "servers": {
+    "filesystem": {
+      "enabled": false,
+      "description": "Sandboxed file read/write within allowlisted directories.",
+      "category": "Developer Tools",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "${MCP_FS_ROOT}"
+      ],
+      "env_required": [
+        "MCP_FS_ROOT"
+      ]
+    },
+    "fetch": {
+      "enabled": false,
+      "description": "Fetch any URL, returns HTML\u2192markdown. Respects robots.txt.",
+      "category": "Analytics & Web",
+      "transport": "stdio",
+      "command": "uvx",
+      "args": [
+        "mcp-server-fetch"
+      ],
+      "env_required": []
+    },
+    "brave_search": {
+      "enabled": false,
+      "description": "Brave web/local/news/image search.",
+      "category": "AI & Knowledge",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-brave-search"
+      ],
+      "env_required": [
+        "BRAVE_API_KEY"
+      ]
+    },
+    "github": {
+      "enabled": false,
+      "description": "GitHub API \u2014 repos, issues, PRs, code search.",
+      "category": "Developer Tools",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "env_required": [
+        "GITHUB_PERSONAL_ACCESS_TOKEN"
+      ]
+    },
+    "memory": {
+      "enabled": false,
+      "description": "Knowledge graph memory for long-term agent recall.",
+      "category": "AI & Knowledge",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ],
+      "env_required": []
+    },
+    "sequential_thinking": {
+      "enabled": false,
+      "description": "Structured step-by-step reasoning with branchable thoughts.",
+      "category": "AI & Knowledge",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ],
+      "env_required": []
+    },
+    "slack": {
+      "enabled": false,
+      "description": "Slack workspace \u2014 messages, channels, users.",
+      "category": "Communication",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-slack"
+      ],
+      "env_required": [
+        "SLACK_BOT_TOKEN",
+        "SLACK_TEAM_ID"
+      ]
+    },
+    "google_drive": {
+      "enabled": false,
+      "description": "Google Drive \u2014 list, search, read files (OAuth).",
+      "category": "Productivity",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-gdrive"
+      ],
+      "env_required": [
+        "GDRIVE_CREDENTIALS_PATH"
+      ]
+    },
+    "postgres": {
+      "enabled": false,
+      "description": "PostgreSQL read-only schema introspection and queries.",
+      "category": "Databases & Storage",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "${POSTGRES_URL}"
+      ],
+      "env_required": [
+        "POSTGRES_URL"
+      ]
+    },
+    "puppeteer": {
+      "enabled": false,
+      "description": "Headless Chrome \u2014 navigate, screenshot, scrape.",
+      "category": "Developer Tools",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-puppeteer"
+      ],
+      "env_required": []
+    },
+    "time": {
+      "enabled": false,
+      "description": "Timezone conversion and time queries.",
+      "category": "Productivity",
+      "transport": "stdio",
+      "command": "uvx",
+      "args": [
+        "mcp-server-time"
+      ],
+      "env_required": []
+    }
+  }
+}

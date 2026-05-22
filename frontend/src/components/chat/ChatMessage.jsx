@@ -96,27 +96,166 @@ function extractSources(text) {
 // names (CODE, EMAIL, PYTHON, MATH, etc.) would falsely match legit
 // markdown like `[Python: Real Python tutorial](url)` and strip the link.
 const TOOL_NAMES = [
+  // Original list
   'SEARCH',
   'CALCULATE',
   'CALENDAR_LIST', 'CALENDAR_CREATE', 'CALENDAR_DELETE',
   'GMAIL_LIST', 'GMAIL_SEND', 'GMAIL_READ',
   'RUN_PYTHON', 'FETCH_URL',
   'WHATSAPP_SEND', 'SLACK_POST', 'HUBSPOT_CREATE_CONTACT',
-  'INTEGRATION',  // generic integration dispatch tag from agent_loop
+  'INTEGRATION',
+  // Coder and other agent commands
+  'IMAGE', 'WEATHER', 'NEWS', 'STOCK', 'PREDICT_STOCK', 'CRYPTO', 'MOVIE', 'QUOTE', 'FACT', 'DEFINE',
+  'TRANSLATE', 'CONVERT', 'CURRENCY', 'WIKI', 'HOROSCOPE', 'RECIPE', 'MAP', 'ROUTE',
+  'CREATE_FILE', 'WRITE_FILE', 'EDIT_FILE', 'READ_FILE', 'LIST_FILES', 'LIST_DIR', 'TREE',
+  'DELETE_FILE', 'MOVE_FILE', 'MAKEDIRS', 'SHELL_EXEC', 'FETCH_DOCS', 'INSTALL_SKILL',
+  'SELF_OPTIMIZE', 'HISTORY', 'FINISH'
 ].join('|');
-// Case-sensitive (no /i flag) so lowercase headers like "[email: foo]" inside
-// natural prose are preserved. Real tokens are always ALL_CAPS_WITH_UNDERSCORES.
-const TOOL_TAG_RE = new RegExp(`\\[(?:${TOOL_NAMES})\\s*:[\\s\\S]*?\\]`, 'g');
+
+function findBalancedCommand(text, startIndex) {
+  let count = 0;
+  let inQuote = false;
+  let quoteChar = null;
+  let escaped = false;
+  
+  for (let i = startIndex; i < text.length; i++) {
+    const char = text[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      if (!inQuote) {
+        inQuote = true;
+        quoteChar = char;
+      } else if (char === quoteChar) {
+        inQuote = false;
+        quoteChar = null;
+      }
+    }
+    if (!inQuote) {
+      if (char === '[') {
+        count++;
+      } else if (char === ']') {
+        count--;
+      }
+      if (count === 0) {
+        return i;
+      }
+    }
+  }
+  return -1;
+}
 
 function stripToolTags(text) {
   if (!text || typeof text !== 'string') return text;
-  return text
-    .replace(TOOL_TAG_RE, '')                       // remove the token itself
+  
+  const toolNamesPattern = new RegExp(`^\\[(?:${TOOL_NAMES})(?::|\\])`);
+  let result = '';
+  let pos = 0;
+  
+  while (pos < text.length) {
+    const nextBracket = text.indexOf('[', pos);
+    if (nextBracket === -1) {
+      result += text.substring(pos);
+      break;
+    }
+    
+    result += text.substring(pos, nextBracket);
+    const remaining = text.substring(nextBracket);
+    const match = remaining.match(toolNamesPattern);
+    
+    if (match) {
+      const endIdx = findBalancedCommand(text, nextBracket);
+      if (endIdx !== -1) {
+        pos = endIdx + 1;
+        continue;
+      }
+    }
+    
+    result += '[';
+    pos = nextBracket + 1;
+  }
+  
+  return result
     .replace(/^[ \t]+$/gm, '')                       // trailing whitespace on lines
     // ReAct scaffolding — case-sensitive so we don't mangle prose like "Action:"
     .replace(/^\s*(OBSERVATION|THOUGHT|ACTION|FINAL ANSWER)\s*:.*$/gm, '')
     .replace(/\n{3,}/g, '\n\n')                      // collapse blank-line runs
     .trim();
+}
+
+function removeIndentedCodeBlocks(text) {
+  if (!text || typeof text !== 'string') return text;
+  
+  const lines = text.split('\n');
+  let inCodeBlock = false;
+  
+  const processedLines = lines.map(line => {
+    if (line.trim().startsWith('```')) {
+      inCodeBlock = !inCodeBlock;
+      return line;
+    }
+    if (inCodeBlock) {
+      return line;
+    }
+    
+    // Check if line has 4 or more leading spaces
+    const leadingSpaces = line.match(/^ {4,}/);
+    if (leadingSpaces) {
+      const rest = line.substring(leadingSpaces[0].length);
+      // If it starts with list item marker or blockquote, keep it
+      const isListOrQuote = /^[ \t]*(?:[-*+>]|\d+\.\s|\d+\)\s)/.test(rest);
+      if (isListOrQuote) {
+        return line;
+      }
+      return rest;
+    }
+    return line;
+  });
+  
+  return processedLines.join('\n');
+}
+
+function unindentMathBlocks(text) {
+  if (!text || typeof text !== 'string') return text;
+  
+  const lines = text.split('\n');
+  let inMathBlock = false;
+  let inCodeBlock = false;
+  
+  const processedLines = lines.map(line => {
+    const trimmed = line.trim();
+    
+    if (trimmed.startsWith('```')) {
+      inCodeBlock = !inCodeBlock;
+      return line;
+    }
+    
+    if (inCodeBlock) {
+      return line;
+    }
+    
+    if (trimmed.startsWith('$$')) {
+      if (trimmed.endsWith('$$') && trimmed.length > 2) {
+        return trimmed;
+      }
+      inMathBlock = !inMathBlock;
+      return trimmed;
+    }
+    
+    if (inMathBlock) {
+      return trimmed;
+    }
+    
+    return line;
+  });
+  
+  return processedLines.join('\n');
 }
 
 function LinkCard({ href: rawHref, children }) {
@@ -258,12 +397,11 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
     // sentence-by-sentence so long messages still get a fast TTFB. The
     // previous 600-char slice caused everything past the first paragraph to
     // be silently dropped from playback.
-    const textToSpeak = (normalizedContent || message.responseText || '')
+    const textToSpeak = stripToolTags(normalizedContent || message.responseText || '')
       .replace(/<think>[\s\S]*?<\/think>/g, '')
       .replace(/<artifact[\s\S]*?<\/artifact>/g, '')
       .replace(/<file[\s\S]*?<\/file>/gi, '')
       .replace(/```[\s\S]*?```/g, '')
-      .replace(/\[(?:[A-Z_]+):[\s\S]*?\]/g, '')   // strip [TOOL: ...] tags
       .replace(/!\[[^\]]*\]\([^)]*\)/g, '')       // strip image markdown
       .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')  // keep link text, drop URL
       .replace(/[#*_~`>]/g, '')
@@ -389,7 +527,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
   _normalized = _normalized.replace(/(```[\s\S]*?```)|\\\(([\s\S]+?)\\\)/g,
     (m, code, math) => code || `$${math}$`);
 
-  const displayContent = linkifyContent(splitCrammedEmojis(_normalized));
+  const displayContent = removeIndentedCodeBlocks(unindentMathBlocks(linkifyContent(splitCrammedEmojis(_normalized))));
 
   // Merge citations
   const allCitations = [...(message.citations || [])];
@@ -513,6 +651,14 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
               const isStray = !inline && !lang && !codeString.includes('\n') && codeString.trim().length < 8;
               if (inline || isStray) {
                 return <code className="bg-accent/50 px-1.5 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
+              }
+
+              if (!className) {
+                return (
+                  <pre className="my-2 p-3 bg-accent/20 rounded-lg overflow-x-auto text-xs font-mono whitespace-pre-wrap leading-relaxed border border-[var(--k-border)]/30 text-foreground/90">
+                    <code {...props}>{children}</code>
+                  </pre>
+                );
               }
 
               const lineCount = codeString.split('\n').length;

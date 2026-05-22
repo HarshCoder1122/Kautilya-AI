@@ -60,7 +60,9 @@
       "Bash(curl -s https://huggingface.co/api/spaces/HarshSharma1212/KAUTILYABACKEND/tree/main)",
       "Bash(curl -s \"https://huggingface.co/api/spaces/HarshSharma1212/KAUTILYABACKEND/tree/main\")",
       "Bash(curl -s \"https://huggingface.co/api/spaces/HarshSharma1212/KAUTILYABACKEND/tree/main\" -o hftree.json)",
-      "Bash(hf --version)"
+      "Bash(hf --version)",
+      "Bash(huggingface-cli --version)",
+      "Bash(pip show *)"
     ]
   }
 }

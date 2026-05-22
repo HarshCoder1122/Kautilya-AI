@@ -1,13 +1,13 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import ReactMarkdown from 'react-markdown';
 import JSZip from 'jszip';
-import { X, Code, ChartBar, FileText, Copy, Download, ArrowsOutSimple, Check, FolderOpen, Eye, File, ArrowSquareOut, Archive } from "@phosphor-icons/react";
+import { X, Code, ChartBar, FileText, Copy, Download, ArrowsOutSimple, Check, FolderOpen, Eye, File, ArrowSquareOut, Archive, CaretUp, CaretDown, MagnifyingGlass, Table } from "@phosphor-icons/react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Area, AreaChart } from "recharts";
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { coderProjectsAPI } from '@/lib/api';
+import { coderProjectsAPI, artifactsAPI } from '@/lib/api';
 
 /** Parse `<file ...>...</file>` blocks from model output.
  *
@@ -45,6 +45,25 @@ function parseFileBlocks(code) {
     let body = m[2];
     body = body.replace(/^\s*```[a-zA-Z0-9_+-]*\s*\n/, '').replace(/\n\s*```\s*$/, '');
     pushFile(filename, body, attrs.language || attrs.lang);
+  }
+
+  // 1.5) Handle unclosed <file ...> tag at the end of streaming code
+  const lastOpenIndex = code.toLowerCase().lastIndexOf('<file');
+  const lastCloseIndex = code.toLowerCase().lastIndexOf('</file>');
+  if (lastOpenIndex > lastCloseIndex) {
+    const unclosedPart = code.slice(lastOpenIndex);
+    const tagMatch = unclosedPart.match(/<file\s+([^>]+?)>/i);
+    if (tagMatch) {
+      const openTag = tagMatch[0];
+      const attrs = parseAttrs(tagMatch[1]);
+      const filename = attrs.name || attrs.path || attrs.filename || attrs.file;
+      if (filename) {
+        let body = unclosedPart.slice(tagMatch.index + openTag.length);
+        body = body.replace(/^\s*```[a-zA-Z0-9_+-]*\s*\n/, '');
+        body = body.replace(/\n\s*```\s*$/, '');
+        pushFile(filename, body, attrs.language || attrs.lang);
+      }
+    }
   }
 
   // 2) Claude/Emergent-style: a filename header immediately followed by a
@@ -408,6 +427,305 @@ const DOC_COMPONENTS = {
   strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
 };
 
+function isNumericColumn(rows, colIndex) {
+  if (!rows || rows.length === 0) return false;
+  const checkCount = Math.min(rows.length, 10);
+  let numericCount = 0;
+  for (let i = 0; i < checkCount; i++) {
+    const val = String(rows[i][colIndex] ?? '').trim();
+    if (!val) continue; // Skip empty
+    const clean = val.replace(/[$,%]/g, '');
+    if (!isNaN(Number(clean)) || /^-?\d+(\.\d+)?$/.test(clean)) {
+      numericCount++;
+    }
+  }
+  return numericCount > 0 && numericCount >= (checkCount / 2);
+}
+
+function parseSpreadsheetCode(code) {
+  if (!code) return [];
+  let trimmed = code.trim();
+
+  // Strip code block wrappers if any (e.g. ```json ... ``` or ```csv ... ```)
+  trimmed = trimmed.replace(/^```[a-zA-Z0-9_+-]*\s*\n/, '').replace(/\n\s*```\s*$/, '').trim();
+
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      const data = JSON.parse(trimmed);
+      if (data && Array.isArray(data.sheets)) {
+        return data.sheets.map(sheet => ({
+          name: sheet.name || 'Sheet',
+          headers: Array.isArray(sheet.header) ? sheet.header : (Array.isArray(sheet.headers) ? sheet.headers : []),
+          rows: Array.isArray(sheet.rows) ? sheet.rows : [],
+        }));
+      }
+      if (Array.isArray(data)) {
+        if (data.length === 0) return [];
+        const headers = Object.keys(data[0] || {});
+        const rows = data.map(item => headers.map(h => item[h]));
+        return [{
+          name: 'Sheet 1',
+          headers,
+          rows,
+        }];
+      }
+      if (data && (Array.isArray(data.header) || Array.isArray(data.headers)) && Array.isArray(data.rows)) {
+        const headers = Array.isArray(data.header) ? data.header : data.headers;
+        return [{
+          name: 'Sheet 1',
+          headers,
+          rows: data.rows,
+        }];
+      }
+    } catch (e) {
+      console.warn("JSON sheet parsing failed, falling back to markdown/csv", e);
+    }
+  }
+
+  // Check if it's a markdown table
+  const lines = trimmed.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+  const pipeLines = lines.filter(line => line.startsWith('|'));
+  if (pipeLines.length >= 2) {
+    const parseRow = (line) => line.split('|').map(cell => cell.trim()).filter((_, idx, arr) => idx > 0 && idx < arr.length - 1);
+    const headers = parseRow(pipeLines[0]);
+    const startIdx = pipeLines[1].replace(/[\s|:-]/g, '') === '' ? 2 : 1;
+    const rows = pipeLines.slice(startIdx).map(line => parseRow(line));
+    return [{
+      name: 'Table',
+      headers,
+      rows,
+    }];
+  }
+
+  // Check if it's comma/semicolon/tab separated (CSV-like)
+  if (lines.length > 0) {
+    const firstLine = lines[0];
+    let delimiter = ',';
+    if (firstLine.includes('\t')) delimiter = '\t';
+    else if (firstLine.includes(';')) delimiter = ';';
+
+    const parseCSVLine = (line) => {
+      const result = [];
+      let current = '';
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (char === '"' || char === "'") {
+          inQuotes = !inQuotes;
+        } else if (char === delimiter && !inQuotes) {
+          result.push(current.trim());
+          current = '';
+        } else {
+          current += char;
+        }
+      }
+      result.push(current.trim());
+      return result;
+    };
+
+    const headers = parseCSVLine(lines[0]);
+    const rows = lines.slice(1).map(line => parseCSVLine(line));
+    return [{
+      name: 'CSV Sheet',
+      headers,
+      rows,
+    }];
+  }
+
+  return [];
+}
+
+function SpreadsheetView({ code }) {
+  const sheets = useMemo(() => parseSpreadsheetCode(code), [code]);
+  const [selectedSheetIndex, setSelectedSheetIndex] = useState(0);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [sortState, setSortState] = useState({ colIndex: null, direction: null });
+
+  useEffect(() => {
+    setSelectedSheetIndex(0);
+    setSearchTerm("");
+    setSortState({ colIndex: null, direction: null });
+  }, [code]);
+
+  const currentSheet = sheets[selectedSheetIndex] || sheets[0];
+
+  const handleSort = (colIndex) => {
+    setSortState(prev => {
+      if (prev.colIndex === colIndex) {
+        if (prev.direction === 'asc') return { colIndex, direction: 'desc' };
+        if (prev.direction === 'desc') return { colIndex: null, direction: null };
+      }
+      return { colIndex, direction: 'asc' };
+    });
+  };
+
+  const filteredRows = useMemo(() => {
+    if (!currentSheet || !currentSheet.rows) return [];
+    if (!searchTerm.trim()) return currentSheet.rows;
+    const lower = searchTerm.toLowerCase();
+    return currentSheet.rows.filter(row =>
+      row.some(cell => String(cell ?? '').toLowerCase().includes(lower))
+    );
+  }, [currentSheet, searchTerm]);
+
+  const sortedRows = useMemo(() => {
+    if (sortState.colIndex === null || !sortState.direction) return filteredRows;
+    return [...filteredRows].sort((a, b) => {
+      let valA = String(a[sortState.colIndex] ?? '').trim();
+      let valB = String(b[sortState.colIndex] ?? '').trim();
+
+      const cleanA = valA.replace(/[$,%]/g, '');
+      const cleanB = valB.replace(/[$,%]/g, '');
+      const numA = Number(cleanA);
+      const numB = Number(cleanB);
+
+      if (!isNaN(numA) && !isNaN(numB)) {
+        return sortState.direction === 'asc' ? numA - numB : numB - numA;
+      }
+
+      return sortState.direction === 'asc'
+        ? valA.localeCompare(valB, undefined, { numeric: true, sensitivity: 'base' })
+        : valB.localeCompare(valA, undefined, { numeric: true, sensitivity: 'base' });
+    });
+  }, [filteredRows, sortState]);
+
+  const numericColumns = useMemo(() => {
+    if (!currentSheet || !currentSheet.headers || !currentSheet.rows) return {};
+    const cols = {};
+    currentSheet.headers.forEach((_, idx) => {
+      cols[idx] = isNumericColumn(currentSheet.rows, idx);
+    });
+    return cols;
+  }, [currentSheet]);
+
+  if (!sheets || sheets.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-center p-10 bg-[var(--k-bg)]">
+        <Table className="w-16 h-16 text-muted-foreground/15 mb-6" />
+        <h3 className="text-lg font-semibold mb-2">No Spreadsheet Data</h3>
+        <p className="text-sm text-muted-foreground max-w-[280px]">
+          The spreadsheet content could not be parsed. Make sure it is formatted as JSON sheets or a markdown table.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-full bg-[var(--k-bg)] min-h-0">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 border-b border-[var(--k-border)] bg-[var(--k-surface)] flex-shrink-0">
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1 sm:w-64">
+            <span className="absolute inset-y-0 left-3 flex items-center pointer-events-none text-muted-foreground">
+              <MagnifyingGlass className="w-4 h-4" />
+            </span>
+            <input
+              type="text"
+              placeholder="Search spreadsheet..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-9 pr-4 py-1.5 text-xs rounded-lg border border-[var(--k-border)] bg-[var(--k-bg)] text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[var(--k-brand)] focus:border-[var(--k-brand)]"
+            />
+          </div>
+          {searchTerm && (
+            <button
+              onClick={() => setSearchTerm("")}
+              className="text-xs text-[var(--k-brand)] hover:underline"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+        <div className="text-xs text-muted-foreground font-medium">
+          Showing {sortedRows.length} of {currentSheet.rows?.length || 0} rows
+        </div>
+      </div>
+
+      {sheets.length > 1 && (
+        <div className="flex border-b border-[var(--k-border)] bg-[var(--k-surface)] overflow-x-auto select-none flex-shrink-0">
+          {sheets.map((sheet, index) => (
+            <button
+              key={index}
+              onClick={() => {
+                setSelectedSheetIndex(index);
+                setSortState({ colIndex: null, direction: null });
+              }}
+              className={`px-4 py-2 text-xs font-bold border-b-2 transition-all ${
+                selectedSheetIndex === index
+                  ? 'border-[var(--k-brand)] text-[var(--k-brand)] bg-[var(--k-brand)]/5'
+                  : 'border-transparent text-muted-foreground hover:bg-accent hover:text-foreground'
+              }`}
+            >
+              {sheet.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="flex-1 overflow-auto min-h-0">
+        <table className="w-full border-collapse text-left text-xs select-text">
+          <thead className="sticky top-0 bg-[var(--k-surface)] border-b border-[var(--k-border)] z-10">
+            <tr>
+              {currentSheet.headers.map((header, idx) => {
+                const isNumeric = numericColumns[idx];
+                const isSorted = sortState.colIndex === idx;
+                return (
+                  <th
+                    key={idx}
+                    onClick={() => handleSort(idx)}
+                    className={`px-4 py-3 font-semibold text-foreground border-r border-[var(--k-border)] hover:bg-accent/60 cursor-pointer select-none transition-colors ${
+                      isNumeric ? 'text-right' : ''
+                    }`}
+                  >
+                    <div className={`flex items-center gap-1.5 justify-between ${isNumeric ? 'flex-row-reverse' : ''}`}>
+                      <span className="truncate">{header}</span>
+                      <span className="flex-shrink-0 text-muted-foreground/60">
+                        {isSorted ? (
+                          sortState.direction === 'asc' ? <CaretUp className="w-3.5 h-3.5 text-[var(--k-brand)]" /> : <CaretDown className="w-3.5 h-3.5 text-[var(--k-brand)]" />
+                        ) : (
+                          <div className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100" />
+                        )}
+                      </span>
+                    </div>
+                  </th>
+                );
+              })}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[var(--k-border)] bg-[var(--k-bg)]">
+            {sortedRows.length === 0 ? (
+              <tr>
+                <td colSpan={currentSheet.headers.length} className="px-4 py-8 text-center text-muted-foreground italic">
+                  No matching records found.
+                </td>
+              </tr>
+            ) : (
+              sortedRows.map((row, rowIdx) => (
+                <tr key={rowIdx} className="hover:bg-accent/30 transition-colors odd:bg-[var(--k-surface)]/20">
+                  {currentSheet.headers.map((_, colIdx) => {
+                    const isNumeric = numericColumns[colIdx];
+                    const val = row[colIdx];
+                    return (
+                      <td
+                        key={colIdx}
+                        className={`px-4 py-2 border-r border-[var(--k-border)] text-foreground/90 max-w-xs truncate ${
+                          isNumeric ? 'text-right font-mono' : ''
+                        }`}
+                        title={String(val ?? '')}
+                      >
+                        {val === null || val === undefined ? '' : String(val)}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function MultiFileWorkspace({ files, title }) {
   const [activeFile, setActiveFile] = useState(files[0]?.name || '');
   const [viewMode, setViewMode] = useState('code'); // 'code' | 'preview'
@@ -590,6 +908,7 @@ function MultiFileWorkspace({ files, title }) {
 
 export function CanvasPane({ content, onClose, activeMode }) {
   const getInitialTab = (c) => {
+    if (c?.type === 'excel' || c?.type === 'spreadsheet' || c?.type === 'csv') return 'spreadsheet';
     if (c?.type === 'code') return 'code';
     if (c?.type === 'document') return 'document';
     if (c?.type === 'dashboard') return 'dashboard';
@@ -665,17 +984,53 @@ export function CanvasPane({ content, onClose, activeMode }) {
     }
   };
 
-  const handleDownload = () => {
+  const handleDownload = async (kindOverride) => {
     if (!content?.code) return;
-    const ext = activeTab === 'code' ? (content.language || 'txt') : 'md';
-    const filename = `${(content.title || 'kautilya-artifact').replace(/[^a-z0-9]/gi, '-').toLowerCase()}.${ext}`;
-    const blob = new Blob([content.code], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
+    const kind = (typeof kindOverride === 'string' ? kindOverride : null) || 
+                 ((content?.type === 'excel' || content?.type === 'spreadsheet') ? 'excel' : 
+                  content?.type === 'csv' ? 'csv' : 
+                  activeTab === 'code' ? 'code' : 'markdown');
+
+    if (['excel', 'csv', 'pdf', 'docx'].includes(kind)) {
+      try {
+        const blob = await artifactsAPI.create({
+          kind,
+          content: content.code,
+          title: content.title || 'Kautilya Export',
+          filename: content.filename
+        });
+        
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const ext = kind === 'excel' ? 'xlsx' : kind;
+        const name = content.filename || `${(content.title || 'kautilya-export').replace(/[^a-z0-9]/gi, '-').toLowerCase()}.${ext}`;
+        a.download = name;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        console.error("Failed to download binary artifact:", err);
+        const ext = kind === 'excel' ? 'json' : (kind === 'csv' ? 'csv' : 'md');
+        const filename = content.filename || `${(content.title || 'kautilya-artifact').replace(/[^a-z0-9]/gi, '-').toLowerCase()}.${ext}`;
+        const blob = new Blob([content.code], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+    } else {
+      const ext = activeTab === 'code' ? (content.language || 'txt') : 'md';
+      const filename = content.filename || `${(content.title || 'kautilya-artifact').replace(/[^a-z0-9]/gi, '-').toLowerCase()}.${ext}`;
+      const blob = new Blob([content.code], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
   };
 
   const getDynamicData = () => {
@@ -702,7 +1057,7 @@ export function CanvasPane({ content, onClose, activeMode }) {
       <div className="h-14 min-h-[56px] flex items-center justify-between px-4 border-b border-[var(--k-border)] bg-[var(--k-surface)]">
         <div className="flex items-center gap-3 overflow-hidden">
           <div className="w-8 h-8 rounded-lg bg-[var(--k-brand)]/10 flex items-center justify-center text-[var(--k-brand)] flex-shrink-0">
-            {isMultiFile ? <FolderOpen className="w-4 h-4" /> : activeTab === 'code' ? <Code className="w-4 h-4" /> : activeTab === 'dashboard' ? <ChartBar className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
+            {isMultiFile ? <FolderOpen className="w-4 h-4" /> : activeTab === 'code' ? <Code className="w-4 h-4" /> : activeTab === 'dashboard' ? <ChartBar className="w-4 h-4" /> : activeTab === 'spreadsheet' ? <Table className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
           </div>
           <div className="flex flex-col overflow-hidden">
             <span className="text-sm font-semibold truncate text-foreground leading-tight">
@@ -743,27 +1098,58 @@ export function CanvasPane({ content, onClose, activeMode }) {
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
         <div className="px-4 bg-[var(--k-surface)] border-b border-[var(--k-border)]">
           <TabsList className="bg-transparent h-10 p-0 gap-6">
-            {['document', 'code', 'dashboard', 'preview'].map((tab) => (
-              <TabsTrigger
-                key={tab}
-                value={tab}
-                className="bg-transparent data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:text-[var(--k-brand)] text-muted-foreground px-0 pb-3 rounded-none border-b-2 border-transparent data-[state=active]:border-[var(--k-brand)] text-[11px] font-bold uppercase tracking-wider transition-all"
-              >
-                {tab}
-              </TabsTrigger>
-            ))}
+            {['document', 'spreadsheet', 'code', 'dashboard', 'preview']
+              .filter((tab) => {
+                if (tab === 'spreadsheet') {
+                  return content?.type === 'excel' || content?.type === 'spreadsheet' || content?.type === 'csv';
+                }
+                return true;
+              })
+              .map((tab) => (
+                <TabsTrigger
+                  key={tab}
+                  value={tab}
+                  className="bg-transparent data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:text-[var(--k-brand)] text-muted-foreground px-0 pb-3 rounded-none border-b-2 border-transparent data-[state=active]:border-[var(--k-brand)] text-[11px] font-bold uppercase tracking-wider transition-all"
+                >
+                  {tab}
+                </TabsTrigger>
+              ))}
           </TabsList>
         </div>
+
+        <TabsContent value="spreadsheet" className="flex-1 overflow-hidden m-0">
+          <SpreadsheetView code={content?.code} />
+        </TabsContent>
 
         <TabsContent value="document" className="flex-1 overflow-hidden m-0">
           <ScrollArea className="h-full bg-[#fcfcfc] dark:bg-[#0f1115]">
             <div className="min-h-full p-6 md:p-12 max-w-4xl mx-auto">
               <div className="bg-white dark:bg-[#16181d] shadow-[0_0_50px_rgba(0,0,0,0.04)] dark:shadow-none border border-[var(--k-border)] rounded-lg p-8 md:p-14 min-h-[800px]">
                 {/* Document Title Bar */}
-                <div className="mb-10">
-                  <div className="w-12 h-1 bg-[var(--k-brand)] mb-4" />
-                  <div className="text-[10px] uppercase tracking-[0.25em] text-muted-foreground font-bold mb-1">Kautilya Document</div>
-                  <h1 className="k-heading text-2xl md:text-3xl font-bold text-foreground">{content?.title || 'Untitled Document'}</h1>
+                <div className="mb-10 flex flex-col md:flex-row md:items-end md:justify-between gap-4 border-b border-[var(--k-border)] pb-6">
+                  <div>
+                    <div className="w-12 h-1 bg-[var(--k-brand)] mb-4" />
+                    <div className="text-[10px] uppercase tracking-[0.25em] text-muted-foreground font-bold mb-1">Kautilya Document</div>
+                    <h1 className="k-heading text-2xl md:text-3xl font-bold text-foreground">{content?.title || 'Untitled Document'}</h1>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleDownload('pdf')}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--k-border)] bg-[var(--k-surface)] hover:bg-accent text-xs font-semibold text-muted-foreground hover:text-foreground transition-all"
+                      title="Download PDF"
+                    >
+                      <FileText className="w-3.5 h-3.5 text-rose-500" />
+                      <span>PDF</span>
+                    </button>
+                    <button
+                      onClick={() => handleDownload('docx')}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--k-border)] bg-[var(--k-surface)] hover:bg-accent text-xs font-semibold text-muted-foreground hover:text-foreground transition-all"
+                      title="Download Word Document"
+                    >
+                      <FileText className="w-3.5 h-3.5 text-blue-500" />
+                      <span>DOCX</span>
+                    </button>
+                  </div>
                 </div>
 
                 {(() => {
