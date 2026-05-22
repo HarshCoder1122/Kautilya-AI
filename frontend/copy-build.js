@@ -49,6 +49,5 @@ try {
   copyFolderRecursiveSync(srcDir, destDir);
   console.log('✅ Successfully copied build files to backend/static!');
 } catch (err) {
-  console.error('❌ Error copying build files:', err);
-  process.exit(1);
+  console.warn('⚠️ Warning: Could not copy build files to backend/static (this is normal if building in a standalone frontend environment):', err.message);
 }
