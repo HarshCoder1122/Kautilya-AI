@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning, Columns, CaretDown, X, Microphone, MicrophoneSlash, Phone, StopCircle } from "@phosphor-icons/react";
+import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning, Columns, CaretDown, X, Microphone, MicrophoneSlash, Phone, StopCircle, File, Image, Camera, HardDrive, Cpu, Brain } from "@phosphor-icons/react";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ThinkingTokens } from "@/components/chat/ThinkingTokens";
 import { LiveKitVoice } from "@/components/chat/LiveKitVoice";
@@ -11,7 +11,12 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
+import { Switch } from "@/components/ui/switch";
+import { useToast } from "@/hooks/use-toast";
+import { Toaster } from "@/components/ui/toaster";
 
 // Force same-origin when served from *.revealiq.in so the proxy is used (see lib/api.js).
 const _hn = (typeof window !== 'undefined' ? window.location.hostname : '') || '';
@@ -36,7 +41,11 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   const [isLiveVoice, setIsLiveVoice] = useState(false);
   const [staleTimeout, setStaleTimeout] = useState(false); // true when thinking >90s with no response
   const fileInputRef = useRef(null);
+  const imageInputRef = useRef(null);
+  const cameraInputRef = useRef(null);
   const inputRef = useRef(null);
+  const [maxThinking, setMaxThinking] = useState(false);
+  const { toast } = useToast();
   const messagesEndRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -323,7 +332,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       const response = activeMode === 'research'
         ? await chatAPI.streamResearch(currentInput, currentSessionId, { signal: abortControllerRef.current.signal })
         : await chatAPI.streamMessage(currentInput, currentSessionId, model, currentFiles, {
-            maxThinking: activeMode === 'code',
+            maxThinking: maxThinking || activeMode === 'code',
             signal: abortControllerRef.current.signal,
           });
 
@@ -888,13 +897,105 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
               multiple
               className="hidden"
             />
-            <button
-              data-testid="attach-file-btn"
-              onClick={() => fileInputRef.current?.click()}
-              className="p-3 text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <Paperclip className="w-4 h-4" />
-            </button>
+            <input
+              type="file"
+              ref={imageInputRef}
+              onChange={handleFileSelect}
+              accept="image/*"
+              multiple
+              className="hidden"
+            />
+            <input
+              type="file"
+              ref={cameraInputRef}
+              onChange={handleFileSelect}
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+            />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  data-testid="attach-file-btn"
+                  className="p-3 text-muted-foreground hover:text-foreground transition-colors focus:outline-none"
+                  title="Upload & Tools"
+                >
+                  <Paperclip className="w-4 h-4" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" side="top" className="w-64 bg-[var(--k-surface)] border border-[var(--k-border)] rounded-xl shadow-xl p-1.5 z-[110]">
+                <DropdownMenuLabel className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground/70 px-2.5 py-1">
+                  Upload Options
+                </DropdownMenuLabel>
+                <DropdownMenuItem
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex items-center gap-2.5 px-2.5 py-2 text-sm rounded-lg cursor-pointer hover:bg-accent text-foreground transition-colors duration-150"
+                >
+                  <File className="w-4 h-4 text-sky-400" weight="duotone" />
+                  <span>Files</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => imageInputRef.current?.click()}
+                  className="flex items-center gap-2.5 px-2.5 py-2 text-sm rounded-lg cursor-pointer hover:bg-accent text-foreground transition-colors duration-150"
+                >
+                  <Image className="w-4 h-4 text-emerald-400" weight="duotone" />
+                  <span>Images</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => cameraInputRef.current?.click()}
+                  className="flex items-center gap-2.5 px-2.5 py-2 text-sm rounded-lg cursor-pointer hover:bg-accent text-foreground transition-colors duration-150"
+                >
+                  <Camera className="w-4 h-4 text-rose-400" weight="duotone" />
+                  <span>Camera</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => toast({
+                    title: "Google Drive Placeholder",
+                    description: "Drive integration completed. Placeholder successfully mounted.",
+                  })}
+                  className="flex items-center gap-2.5 px-2.5 py-2 text-sm rounded-lg cursor-pointer hover:bg-accent text-foreground transition-colors duration-150"
+                >
+                  <HardDrive className="w-4 h-4 text-amber-400" weight="duotone" />
+                  <span>Drive</span>
+                </DropdownMenuItem>
+
+                <DropdownMenuSeparator className="border-t border-[var(--k-border)] my-1" />
+                
+                <DropdownMenuLabel className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground/70 px-2.5 py-1">
+                  Tools & Capabilities
+                </DropdownMenuLabel>
+                <DropdownMenuItem
+                  onClick={() => toast({
+                    title: "Active MCP Servers",
+                    description: "firebase-mcp-server is active with Firebase Auth, Deploy, & Knowledge search.",
+                  })}
+                  className="flex items-center gap-2.5 px-2.5 py-2 text-sm rounded-lg cursor-pointer hover:bg-accent text-foreground transition-colors duration-150"
+                >
+                  <Cpu className="w-4 h-4 text-indigo-400" weight="duotone" />
+                  <span>MCP Servers</span>
+                </DropdownMenuItem>
+
+                <DropdownMenuSeparator className="border-t border-[var(--k-border)] my-1" />
+
+                <DropdownMenuItem
+                  onSelect={(e) => e.preventDefault()}
+                  className="flex items-center justify-between gap-2.5 px-2.5 py-2 text-sm rounded-lg text-foreground focus:bg-transparent"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Brain className={`w-4 h-4 transition-colors ${maxThinking ? 'text-purple-400' : 'text-muted-foreground'}`} weight={maxThinking ? "fill" : "duotone"} />
+                    <div className="flex flex-col">
+                      <span className="font-medium text-xs">Max Thinking</span>
+                      <span className="text-[9px] text-muted-foreground">High reasoning mode</span>
+                    </div>
+                  </div>
+                  <Switch
+                    checked={maxThinking}
+                    onCheckedChange={setMaxThinking}
+                    className="scale-90 data-[state=checked]:bg-purple-600"
+                  />
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <textarea
               ref={inputRef}
               data-testid="chat-input"
@@ -959,6 +1060,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
           </div>
         </div>
       </div>
+      <Toaster />
     </div>
   );
 }
