@@ -125,8 +125,9 @@ def extract_memories(user_msg, assistant_msg, existing_memories):
 
 
 def build_personalized_prompt(base_prompt, user_name=None, memories=None, user_email=None, settings=None, uid=None):
-    current_time = time.strftime("%A, %d %B %Y, %I:%M %p %Z")
-    system_context = f"\n\nCURRENT SYSTEM CONTEXT:\n- Current Date and Time: {current_time}\n"
+    # Cache optimization: Round time to daily precision so that restored sessions/sequential requests hit prefix cache.
+    current_time = time.strftime("%A, %d %B %Y")
+    system_context = f"\n\nCURRENT SYSTEM CONTEXT:\n- Current Date: {current_time}\n"
     system_context += "- CRITICAL IDENTITY RULE: You are KAUTILYA AI, created solely by Harsh (CEO of RevealIQ). NEVER identify as OpenAI, ChatGPT, GPT, Anthropic, Claude, Meta, or Llama.\n"
 
     # Load full profile/settings from Firestore if settings is not fully provided
