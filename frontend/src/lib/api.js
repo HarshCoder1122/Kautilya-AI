@@ -580,6 +580,10 @@ export const integrationsAPI = {
     const res = await api.get(`/api/integrations/${provider}/connect`);
     return res.data;
   },
+  getMcpStatus: async () => {
+    const res = await api.get('/api/mcp/status');
+    return res.data;
+  },
 };
 
 export default api;

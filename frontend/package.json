@@ -75,6 +75,7 @@
     "start": "node server.js",
     "dev": "craco start",
     "build": "craco build",
+    "postbuild": "node copy-build.js",
     "test": "craco test"
   },
   "browserslist": {

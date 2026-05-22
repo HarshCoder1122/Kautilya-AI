@@ -125,10 +125,23 @@ def extract_memories(user_msg, assistant_msg, existing_memories):
 
 
 def build_personalized_prompt(base_prompt, user_name=None, memories=None, user_email=None, settings=None, uid=None):
-    # Cache optimization: Round time to daily precision so that restored sessions/sequential requests hit prefix cache.
-    current_time = time.strftime("%A, %d %B %Y")
-    system_context = f"\n\nCURRENT SYSTEM CONTEXT:\n- Current Date: {current_time}\n"
-    system_context += "- CRITICAL IDENTITY RULE: You are KAUTILYA AI, created solely by Harsh (CEO of RevealIQ). NEVER identify as OpenAI, ChatGPT, GPT, Anthropic, Claude, Meta, or Llama.\n"
+    from datetime import datetime, timezone, timedelta
+    
+    # Compute India Standard Time (IST, UTC+5:30)
+    ist_tz = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(ist_tz)
+    
+    # Round down to the hour to preserve LLM prefix caching
+    rounded_ist = now_ist.replace(minute=0, second=0, microsecond=0)
+    current_date = rounded_ist.strftime("%A, %d %B %Y")
+    current_time_str = rounded_ist.strftime("%I:%M %p")
+    
+    system_context = (
+        f"\n\nCURRENT SYSTEM CONTEXT:\n"
+        f"- Current Date (India Standard Time): {current_date}\n"
+        f"- Current Time (India Standard Time): {current_time_str}\n"
+        f"- CRITICAL IDENTITY RULE: You are KAUTILYA AI, created solely by Harsh (CEO of RevealIQ). NEVER identify as OpenAI, ChatGPT, GPT, Anthropic, Claude, Meta, or Llama.\n"
+    )
 
     # Load full profile/settings from Firestore if settings is not fully provided
     profile_data = settings or {}
@@ -178,6 +191,7 @@ def build_personalized_prompt(base_prompt, user_name=None, memories=None, user_e
         is_name_valid = True
 
     personalization = "\n\nPERSONALIZATION:\n"
+    personalization += "- GREETING RULE: Use India Standard Time (IST) as provided in CURRENT SYSTEM CONTEXT for all time-based references and greetings. Greet the user with 'Good morning', 'Good afternoon', or 'Good evening' matching the current IST hour of the day.\n"
     if is_name_valid:
         personalization += f"- User's name: {display_name}\n"
         personalization += f"- Address the user as '{display_name}' when natural — never use generic 'Sir/Ma'am'.\n"
@@ -203,10 +217,31 @@ def build_personalized_prompt(base_prompt, user_name=None, memories=None, user_e
 
 def build_cli_system_prompt(base_prompt, env_context=None):
     """Build enhanced system prompt for CLI with environment awareness."""
+    from datetime import datetime, timezone, timedelta
+    
+    # Compute India Standard Time (IST, UTC+5:30)
+    ist_tz = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(ist_tz)
+    
+    # Round down to the hour to preserve LLM prefix caching
+    rounded_ist = now_ist.replace(minute=0, second=0, microsecond=0)
+    current_date = rounded_ist.strftime("%A, %d %B %Y")
+    current_time_str = rounded_ist.strftime("%I:%M %p")
+    
+    system_context = (
+        f"\n\nCURRENT SYSTEM CONTEXT:\n"
+        f"- Current Date (India Standard Time): {current_date}\n"
+        f"- Current Time (India Standard Time): {current_time_str}\n"
+        f"- GREETING RULE: Use India Standard Time (IST) as provided in CURRENT SYSTEM CONTEXT for all time-based references and greetings. Greet the user with 'Good morning', 'Good afternoon', or 'Good evening' matching the current IST hour of the day.\n"
+        f"- CRITICAL IDENTITY RULE: You are KAUTILYA AI, created solely by Harsh (CEO of RevealIQ). NEVER identify as OpenAI, ChatGPT, GPT, Anthropic, Claude, Meta, or Llama.\n"
+    )
+    
     prompt = base_prompt or CODER_SYSTEM_PROMPT
+    prompt += system_context
     if env_context:
         prompt += f"\n\n═══════════════════════════════════════════\n  CURRENT ENVIRONMENT\n═══════════════════════════════════════════\n{env_context}\n"
     return prompt
+
 
 
 def record_user_session(uid, session_id):

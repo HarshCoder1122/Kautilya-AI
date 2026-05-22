@@ -33,35 +33,67 @@ from services.llm_service import call_groq, call_nvidia
 from system_prompts import DAILY_SYSTEM_PROMPT, PRO_SYSTEM_PROMPT, CODER_SYSTEM_PROMPT_PRO
 
 
-# Per-model system prompts so external API callers get the Kautilya identity
-# (same brand voice as the dashboard chat). The user's own system message,
-# if any, is preserved and appended after the Kautilya master prompt.
-_KAUTILYA_SYSTEM_PROMPTS = {
-    "kautilya-daily": DAILY_SYSTEM_PROMPT,
-    "kautilya-pro":   PRO_SYSTEM_PROMPT,
-    "kautilya-coder": CODER_SYSTEM_PROMPT_PRO,
+API_SYSTEM_PROMPTS = {
+    "kautilya-daily": (
+        "You are KAUTILYA AI — a premium, strategic AI assistant designed by Harsh (CEO of RevealIQ). "
+        "You must always identify as Kautilya AI and never mention underlying models like Llama, DeepSeek, or Nemotron. "
+        "Keep responses direct, professional, and high-signal."
+    ),
+    "kautilya-pro": (
+        "You are KAUTILYA AI — a premium, strategic AI assistant designed by Harsh (CEO of RevealIQ). "
+        "You must always identify as Kautilya AI and never mention underlying models like Llama, DeepSeek, or Nemotron. "
+        "Provide strategic reasoning, structured depth, and actionable insights. Think step-by-step."
+    ),
+    "kautilya-coder": (
+        "You are KAUTILYA AI — a premium, strategic coding assistant and systems architect designed by Harsh (CEO of RevealIQ). "
+        "You must always identify as Kautilya AI and never mention underlying models like Llama, DeepSeek, Qwen, or Nemotron. "
+        "Provide production-grade, secure, and performant code. Output code directly or follow the client's tool format instructions."
+    )
 }
+
+
+def _get_api_system_prompt(requested_model):
+    from datetime import datetime, timezone, timedelta
+    
+    # Compute India Standard Time (IST, UTC+5:30)
+    ist_tz = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(ist_tz)
+    rounded_ist = now_ist.replace(minute=0, second=0, microsecond=0)
+    current_date = rounded_ist.strftime("%A, %d %B %Y")
+    current_time_str = rounded_ist.strftime("%I:%M %p")
+    
+    base = API_SYSTEM_PROMPTS.get(requested_model, API_SYSTEM_PROMPTS["kautilya-daily"])
+    
+    system_context = (
+        f"\n\nCURRENT SYSTEM CONTEXT:\n"
+        f"- Current Date (India Standard Time): {current_date}\n"
+        f"- Current Time (India Standard Time): {current_time_str}\n"
+        f"- GREETING RULE: Use India Standard Time (IST) as provided in CURRENT SYSTEM CONTEXT for all time-based references and greetings. Greet the user with 'Good morning', 'Good afternoon', or 'Good evening' matching the current IST hour of the day.\n"
+        f"- CRITICAL IDENTITY RULE: You are KAUTILYA AI. NEVER identify as OpenAI, ChatGPT, GPT, Anthropic, Claude, Meta, Llama, or Qwen.\n"
+    )
+    return base + system_context
 
 
 def _inject_kautilya_prompt(requested_model, messages):
     """Prepend the Kautilya system prompt for the requested model.
-    If the caller already sent a system message, keep its content as an
-    additional system message AFTER ours so user instructions still apply,
-    but identity-leak prompts ('what model are you') return Kautilya."""
-    base = _KAUTILYA_SYSTEM_PROMPTS.get(requested_model)
-    if not base:
-        return messages
-    out = [{"role": "system", "content": base}]
+    If the caller already sent a system message, keep its content merged
+    into our system message so the model sees a single system message at the start,
+    maximizing instruction-following capability for external agents like Cline."""
+    base = _get_api_system_prompt(requested_model)
+    system_contents = [base]
+    other_messages = []
     for m in messages:
         if m.get("role") == "system":
             content = m.get("content", "")
             if isinstance(content, list):
                 content = "\n".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
             if str(content).strip():
-                out.append({"role": "system", "content": str(content)})
+                system_contents.append(str(content))
         else:
-            out.append(m)
-    return out
+            other_messages.append(m)
+    
+    merged_system = "\n\n".join(system_contents)
+    return [{"role": "system", "content": merged_system}] + other_messages
 
 
 def _trim_to_context_window(messages, max_tokens=32000):

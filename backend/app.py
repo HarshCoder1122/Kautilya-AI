@@ -77,6 +77,14 @@ app.register_blueprint(tts_bp, url_prefix='/api')
 app.register_blueprint(analytics_bp, url_prefix='/api')
 app.register_blueprint(projects_bp, url_prefix='/api')
 
+# Boot MCP (Model Context Protocol) client — spawns enabled stdio servers
+# from mcp_config.json and registers their tools with the agent loop.
+try:
+    from services.mcp_client_service import init_mcp
+    init_mcp()
+except Exception as _mcp_e:
+    logger.warning(f"[App] MCP initialisation skipped: {_mcp_e}")
+
 # CORS for special endpoints
 CORS(app, resources={r"/embed/*": {"origins": "*"}, r"/embed.js": {"origins": "*"}})
 

@@ -489,26 +489,27 @@ def jarvis_stream():
                         except Exception:
                             pass
 
-                    # Usage tracking
-                    if uid:
-                        try:
-                            est_tokens = max(1, (len(str(message or '')) + len(full_response)) // 4)
-                            record_usage(uid, 'llm_tokens', est_tokens, model=model)
-                        except Exception as e:
-                            print(f"[Usage] llm_tokens record failed: {e}")
+                # Usage tracking — runs for every completed stream so the daily
+                # llm_tokens counter (and the Usage page chart) reflects real activity.
+                if uid:
+                    try:
+                        est_tokens = max(1, (len(str(message or '')) + len(full_response)) // 4)
+                        record_usage(uid, 'llm_tokens', est_tokens, model=model)
+                    except Exception as e:
+                        print(f"[Usage] llm_tokens record failed: {e}")
 
-                    # Background memory extraction
-                    if uid and message:
-                        def _bg_memory(fr=full_response):
-                            try:
-                                memories = get_user_memory(uid)
-                                new_facts = extract_memories(message, fr, memories)
-                                if new_facts:
-                                    memories.extend(new_facts)
-                                    save_user_memory(uid, memories)
-                            except Exception as e:
-                                print(f"[Memory] Background extraction failed: {e}")
-                        threading.Thread(target=_bg_memory, daemon=True).start()
+                # Background memory extraction
+                if uid and message and full_response:
+                    def _bg_memory(fr=full_response):
+                        try:
+                            memories = get_user_memory(uid)
+                            new_facts = extract_memories(message, fr, memories)
+                            if new_facts:
+                                memories.extend(new_facts)
+                                save_user_memory(uid, memories)
+                        except Exception as e:
+                            print(f"[Memory] Background extraction failed: {e}")
+                    threading.Thread(target=_bg_memory, daemon=True).start()
 
         # Launch LLM thread — independent of client connection
         t = threading.Thread(target=_run_llm, daemon=True)
