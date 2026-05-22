@@ -22,7 +22,20 @@ const HF_TOKEN = process.env.HF_TOKEN || '';
 // ── Gzip/brotli compression on everything ─────────────────────────────
 try {
   const compression = require('compression');
-  app.use(compression());
+  app.use(compression({
+    filter: (req, res) => {
+      // Do not compress if client accepts or server responds with event-stream (SSE)
+      // or if the URL path includes 'stream'
+      if (
+        (req.headers['accept'] && req.headers['accept'].includes('text/event-stream')) ||
+        req.path.includes('/stream') ||
+        (res.getHeader && res.getHeader('Content-Type') && res.getHeader('Content-Type').includes('text/event-stream'))
+      ) {
+        return false;
+      }
+      return compression.filter(req, res);
+    }
+  }));
 } catch (e) {
   console.warn('[Kautilya] compression module not installed — skipping');
 }
