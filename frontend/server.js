@@ -105,6 +105,22 @@ app.use(createProxyMiddleware({
   },
 }));
 
+// ── Proxy /__/* → Firebase Auth handler (so custom authDomain works) ──
+const FIREBASE_PROJECT_ID = process.env.REACT_APP_FIREBASE_PROJECT_ID || 'jarvis-a6e18';
+const FIREBASE_TARGET = `https://${FIREBASE_PROJECT_ID}.firebaseapp.com`;
+
+app.use(createProxyMiddleware({
+  target: FIREBASE_TARGET,
+  changeOrigin: true,
+  pathFilter: ['/__/**'],
+  on: {
+    error: (err, req, res) => {
+      console.error('[Firebase Proxy] Error:', err.message);
+      if (!res.headersSent) res.status(502).json({ error: 'Firebase Auth proxy failed' });
+    },
+  },
+}));
+
 // ── Static React build with proper cache headers ──────────────────────
 // - index.html + sw.js: NEVER cache (so kill-switch + new builds propagate)
 // - hashed assets under /static/: cache forever (filenames change on rebuild)

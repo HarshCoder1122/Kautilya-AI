@@ -27,6 +27,11 @@ function App() {
 
   useEffect(() => {
     const auth = getAuthInstance();
+    if (!auth) {
+      console.warn("[Auth] Firebase Auth instance is not initialized yet.");
+      setLoading(false);
+      return;
+    }
     let refreshInterval = null;
 
     const refreshToken = async (authUser) => {
@@ -41,9 +46,14 @@ function App() {
     const unsubscribe = onAuthStateChanged(auth, async (authUser) => {
       if (refreshInterval) clearInterval(refreshInterval);
       if (authUser) {
-        const token = await authUser.getIdToken(true);
-        localStorage.setItem('firebase_token', token);
-        setUser(authUser);
+        try {
+          const token = await authUser.getIdToken();
+          localStorage.setItem('firebase_token', token);
+          setUser(authUser);
+        } catch (e) {
+          console.warn('[Auth] Initial token retrieval failed, using fallback:', e);
+          setUser(authUser);
+        }
         // Refresh token every 55 minutes (expires at 60m)
         refreshInterval = setInterval(() => refreshToken(authUser), 55 * 60 * 1000);
       } else {

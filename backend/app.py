@@ -185,16 +185,29 @@ def get_firebase_config():
         "appId": env_config["appId"] or ""
     })
 
-@app.route('/__/<path:firebase_path>')
+@app.route('/__/<path:firebase_path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'])
 def firebase_proxy(firebase_path):
-    firebase_url = f"https://jarvis-a6e18.firebaseapp.com/__/{firebase_path}"
+    query_string = request.query_string.decode('utf-8')
+    suffix = f"?{query_string}" if query_string else ""
+    firebase_url = f"https://jarvis-a6e18.firebaseapp.com/__/{firebase_path}{suffix}"
     try:
-        resp = requests.get(firebase_url, timeout=15)
-        excluded_headers = {'content-encoding', 'transfer-encoding', 'connection'}
-        headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded_headers}
-        return Response(resp.content, status=resp.status_code, headers=headers)
+        headers = {k: v for k, v in request.headers if k.lower() != 'host'}
+        resp = requests.request(
+            method=request.method,
+            url=firebase_url,
+            headers=headers,
+            data=request.get_data(),
+            cookies=request.cookies,
+            allow_redirects=False,
+            timeout=15
+        )
+        excluded_headers = {'content-encoding', 'transfer-encoding', 'connection', 'keep-alive'}
+        resp_headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded_headers}
+        return Response(resp.content, status=resp.status_code, headers=resp_headers)
     except Exception as e:
+        logger.error(f"[Firebase Proxy] Proxy error: {e}")
         return Response(f"Proxy error: {e}", status=502)
+
 
 # SPA Catch-all (Must be last)
 @app.route('/', defaults={'path': ''})

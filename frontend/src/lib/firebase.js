@@ -121,12 +121,18 @@ export const initFirebase = async () => {
       config = fallbackConfig;
     }
 
-    // Force the custom auth domain even when the loaded config still points
-    // to firebaseapp.com — the rest of the config (apiKey, projectId, etc.)
-    // is unchanged so verification works as before.
-    if (config && config.authDomain && /firebaseapp\.com$/i.test(config.authDomain)) {
-      config = { ...config, authDomain: "ai.revealiq.in" };
+    // Force the custom auth domain if we are hosted on the custom domain (ai.revealiq.in)
+    // or if the configuration authDomain uses the default firebaseapp/web.app domains.
+    const _hn = (typeof window !== 'undefined' ? window.location.hostname : '') || '';
+    const _onOwnDomain = /(^|\.)revealiq\.in$/i.test(_hn);
+    if (config && config.authDomain) {
+      if (_onOwnDomain) {
+        config = { ...config, authDomain: "ai.revealiq.in" };
+      } else if (/(\.firebaseapp\.com|\.web\.app)$/i.test(config.authDomain)) {
+        // Keeps original default auth domain on non-revealiq.in domains (like localhost)
+      }
     }
+
 
     const app = initializeApp(config);
     authInstance = getAuth(app);
