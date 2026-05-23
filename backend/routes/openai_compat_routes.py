@@ -58,7 +58,7 @@ def _get_api_system_prompt(requested_model):
     # Compute India Standard Time (IST, UTC+5:30)
     ist_tz = timezone(timedelta(hours=5, minutes=30))
     now_ist = datetime.now(ist_tz)
-    rounded_ist = now_ist.replace(minute=0, second=0, microsecond=0)
+    rounded_ist = now_ist.replace(microsecond=0)
     current_date = rounded_ist.strftime("%A, %d %B %Y")
     current_time_str = rounded_ist.strftime("%I:%M %p")
     

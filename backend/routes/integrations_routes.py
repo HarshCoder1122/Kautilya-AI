@@ -180,7 +180,7 @@ def mcp_status():
     if not uid:
         return jsonify({"error": "Authentication required"}), 401
     from services.mcp_client_service import get_mcp_status
-    return jsonify(get_mcp_status())
+    return jsonify(get_mcp_status(uid=uid))
 
 
 # ---------- OAuth start ----------
@@ -542,3 +542,83 @@ def followup_dispatch():
         results.append(outcome)
 
     return jsonify({"results": results})
+
+
+# ---------- User Custom MCP Servers ----------
+@integrations_bp.route('/integrations/mcp/custom', methods=['GET'])
+def get_custom_mcps():
+    uid = _require_auth()
+    if not uid:
+        return jsonify({"error": "Authentication required"}), 401
+    from extensions import db
+    if not db:
+        return jsonify({"servers": []})
+    try:
+        docs = db.collection('users').document(uid).collection('mcp_servers').stream()
+        servers = []
+        for doc in docs:
+            d = doc.to_dict()
+            d['key'] = doc.id
+            servers.append(d)
+        return jsonify({"servers": servers})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@integrations_bp.route('/integrations/mcp/custom', methods=['POST'])
+def save_custom_mcp():
+    uid = _require_auth()
+    if not uid:
+        return jsonify({"error": "Authentication required"}), 401
+    data = request.get_json(silent=True) or {}
+    key = data.get('key')
+    url = data.get('url')
+    if not key or not url:
+        return jsonify({"error": "Missing key or url"}), 400
+    
+    # Sanitize key
+    import re
+    key = re.sub(r'[^a-zA-Z0-9_]', '_', key).lower()
+    
+    from extensions import db
+    if not db:
+        return jsonify({"error": "Database not initialized"}), 500
+    try:
+        ref = db.collection('users').document(uid).collection('mcp_servers').document(key)
+        srv_data = {
+            "url": url,
+            "description": data.get('description', ''),
+            "category": data.get('category', 'Custom'),
+            "enabled": bool(data.get('enabled', True)),
+            "updated_at": int(time.time())
+        }
+        ref.set(srv_data, merge=True)
+        
+        # Trigger dynamic connection/reconnection of this specific server
+        from services.mcp_client_service import init_user_mcp_server
+        init_user_mcp_server(uid, key, srv_data)
+        
+        return jsonify({"status": "ok", "key": key})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@integrations_bp.route('/integrations/mcp/custom/<key>', methods=['DELETE'])
+def delete_custom_mcp(key):
+    uid = _require_auth()
+    if not uid:
+        return jsonify({"error": "Authentication required"}), 401
+    from extensions import db
+    if not db:
+        return jsonify({"error": "Database not initialized"}), 500
+    try:
+        db.collection('users').document(uid).collection('mcp_servers').document(key).delete()
+        
+        # Close connection and remove from cache
+        from services.mcp_client_service import close_user_mcp_server
+        close_user_mcp_server(uid, key)
+        
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
