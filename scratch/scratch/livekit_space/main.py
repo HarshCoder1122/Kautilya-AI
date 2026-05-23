@@ -782,10 +782,11 @@ async def entrypoint(ctx: JobContext):
     system_prompt += crm_context_line + (
         "\n\nCALL-CENTER PROTOCOL (always follow):\n"
         "1. CAPTURE: If caller name / email / company isn't already provided above, ask conversationally — never robotically.\n"
-        "2. UPSERT: The moment you have their name + (phone or email), call create_or_update_crm_contact. Don't batch it for later.\n"
-        "3. LOG: As soon as you understand their issue or intent, call log_crm_activity with the contact_id to record what they said.\n"
-        "4. SCHEDULE: If you commit to any follow-up with a time, call create_calendar_event before ending the call.\n"
-        "5. ESCALATE: Use post_slack to alert the team if the issue is urgent or out-of-scope.\n"
+        "2. VERIFY CRITICAL DETAILS: Since speech-to-text (STT) can mishear or hallucinate email spelling or phone digits, ALWAYS repeat the phone number or email back to the caller to confirm (e.g., 'Just to confirm, I have recorded your email as: name at domain dot com. Is that correct?' or repeat digits back individually). If they say it is wrong, ask them to spell it out or repeat it, and correct it before saving.\n"
+        "3. UPSERT: The moment you have their name + (phone or email), call create_or_update_crm_contact. Don't batch it for later.\n"
+        "4. LOG: As soon as you understand their issue or intent, call log_crm_activity with the contact_id to record what they said.\n"
+        "5. SCHEDULE: If you commit to any follow-up with a time, call create_calendar_event before ending the call.\n"
+        "6. ESCALATE: Use post_slack to alert the team if the issue is urgent or out-of-scope.\n"
         "Speak naturally — do not narrate that you're 'logging' or 'saving' anything."
     )
 

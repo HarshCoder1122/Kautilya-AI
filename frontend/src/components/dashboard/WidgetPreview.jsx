@@ -5,23 +5,12 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-const embedCode = `<!-- Kautilya AI Chat Widget -->
-<script>
-  (function() {
-    var s = document.createElement('script');
-    s.src = 'https://cdn.kautilya.ai/widget.js';
-    s.async = true;
-    s.dataset.agentId = 'agent-1';
-    s.dataset.theme = 'dark';
-    s.dataset.position = 'bottom-right';
-    document.head.appendChild(s);
-  })();
-</script>`;
-
 export default function WidgetPreview() {
   const [copied, setCopied] = useState(false);
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [selectedAgentDetail, setSelectedAgentDetail] = useState(null);
+  const [generatingToken, setGeneratingToken] = useState(false);
   const [widgetConfig, setWidgetConfig] = useState({
     theme: 'dark',
     position: 'bottom-right',
@@ -48,8 +37,51 @@ export default function WidgetPreview() {
     loadAgents();
   }, []);
 
+  useEffect(() => {
+    if (widgetConfig.agentId) {
+      loadAgentToken(widgetConfig.agentId);
+    }
+  }, [widgetConfig.agentId]);
+
+  const loadAgentToken = async (id) => {
+    try {
+      const data = await agentsAPI.get(id);
+      setSelectedAgentDetail(data);
+    } catch (err) {
+      console.error("Failed to load agent details:", err);
+    }
+  };
+
+  const handleGenerateToken = async () => {
+    if (!widgetConfig.agentId) return;
+    try {
+      setGeneratingToken(true);
+      await agentsAPI.rotateEmbedToken(widgetConfig.agentId);
+      await loadAgentToken(widgetConfig.agentId);
+    } catch (err) {
+      alert("Failed to generate embed token: " + (err.response?.data?.error || err.message));
+    } finally {
+      setGeneratingToken(false);
+    }
+  };
+
+  const currentHost = typeof window !== 'undefined' ? window.location.origin : 'https://kautilya.ai';
+  const tokenValue = selectedAgentDetail?.embed_token || 'YOUR_PUBLIC_TOKEN';
+
+  const dynamicEmbedCode = `<!-- Kautilya AI Chat Widget -->
+<script 
+  src="${currentHost}/api/embed.js" 
+  data-agent="${widgetConfig.agentId || 'agent-id'}" 
+  data-token="${tokenValue}"
+  data-theme="${widgetConfig.theme}"
+  data-position="${widgetConfig.position}"
+  data-greeting="${widgetConfig.greeting.replace(/"/g, '&quot;')}"
+  data-auto-open="${widgetConfig.autoOpen}"
+  async>
+</script>`;
+
   const handleCopy = () => {
-    navigator.clipboard.writeText(embedCode);
+    navigator.clipboard.writeText(dynamicEmbedCode);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -169,20 +201,34 @@ export default function WidgetPreview() {
                   </div>
                 </TabsContent>
 
-                <TabsContent value="code">
-                  <div className="relative">
-                    <pre className="p-4 rounded-md bg-[#1E1E1E] text-[#D4D4D4] text-xs font-mono leading-relaxed overflow-x-auto">
-                      <code>{embedCode}</code>
-                    </pre>
-                    <button
-                      data-testid="copy-embed-code"
-                      onClick={handleCopy}
-                      className="absolute top-3 right-3 flex items-center gap-1 px-2 py-1 rounded-md bg-white/10 hover:bg-white/20 text-white text-xs transition-colors"
-                    >
-                      {copied ? <CheckCircle className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                      {copied ? 'Copied!' : 'Copy'}
-                    </button>
-                  </div>
+                <TabsContent value="code" className="space-y-4">
+                  {!selectedAgentDetail?.embed_token ? (
+                    <div className="p-4 rounded-xl border border-rose-500/20 bg-rose-500/5 text-xs text-rose-400 space-y-3">
+                      <div className="font-semibold">⚠️ Embed Token Missing</div>
+                      <div>This agent does not have a public embed token generated yet. Enable the widget to get the script code.</div>
+                      <button
+                        onClick={handleGenerateToken}
+                        disabled={generatingToken}
+                        className="px-4 py-2 rounded-lg bg-[var(--k-brand)] hover:bg-[var(--k-brand-hover)] text-white font-semibold transition-all disabled:opacity-50 animate-pulse"
+                      >
+                        {generatingToken ? 'Generating...' : 'Generate Public Embed Token'}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="relative">
+                      <pre className="p-4 rounded-md bg-[#1E1E1E] text-[#D4D4D4] text-xs font-mono leading-relaxed overflow-x-auto">
+                        <code>{dynamicEmbedCode}</code>
+                      </pre>
+                      <button
+                        data-testid="copy-embed-code"
+                        onClick={handleCopy}
+                        className="absolute top-3 right-3 flex items-center gap-1 px-2 py-1 rounded-md bg-white/10 hover:bg-white/20 text-white text-xs transition-colors"
+                      >
+                        {copied ? <CheckCircle className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                        {copied ? 'Copied!' : 'Copy'}
+                      </button>
+                    </div>
+                  )}
                 </TabsContent>
               </Tabs>
             </div>

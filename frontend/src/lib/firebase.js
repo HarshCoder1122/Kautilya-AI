@@ -1,8 +1,56 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
-import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut } from "firebase/auth";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut, signInWithCredential } from "firebase/auth";
 
 let authInstance;
 let googleProvider;
+
+let nativeSignInResolver = null;
+let nativeSignInRejecter = null;
+
+if (typeof window !== 'undefined') {
+  window.handleAndroidSignIn = async (idToken) => {
+    try {
+      console.log("[Auth] Android Native sign-in token received.");
+      const auth = getAuthInstance();
+      const credential = GoogleAuthProvider.credential(idToken);
+      const result = await signInWithCredential(auth, credential);
+      const token = await result.user.getIdToken();
+      localStorage.setItem('firebase_token', token);
+      localStorage.setItem('user', JSON.stringify({
+        uid: result.user.uid,
+        email: result.user.email,
+        displayName: result.user.displayName,
+        photoURL: result.user.photoURL
+      }));
+      try {
+        const { userAPI } = await import('./api');
+        userAPI.welcomeCheck().catch(() => {});
+      } catch {}
+
+      if (nativeSignInResolver) {
+        nativeSignInResolver(result.user);
+        nativeSignInResolver = null;
+        nativeSignInRejecter = null;
+      }
+    } catch (error) {
+      console.error("[Auth] Android native sign-in integration failed:", error);
+      if (nativeSignInRejecter) {
+        nativeSignInRejecter(error);
+        nativeSignInResolver = null;
+        nativeSignInRejecter = null;
+      }
+    }
+  };
+
+  window.handleAndroidSignInError = (errorMsg) => {
+    console.error("[Auth] Android native sign-in callback error:", errorMsg);
+    if (nativeSignInRejecter) {
+      nativeSignInRejecter(new Error(errorMsg));
+      nativeSignInResolver = null;
+      nativeSignInRejecter = null;
+    }
+  };
+}
 
 export const initFirebase = async () => {
   if (getApps().length > 0) {
@@ -154,27 +202,36 @@ export const getAuthInstance = () => {
 export const loginWithGoogle = async () => {
   const auth = await initFirebase();
   try {
-    const isAndroidApp = typeof navigator !== 'undefined' && navigator.userAgent.includes('KautilyaAndroidApp');
-    if (isAndroidApp) {
-      await signInWithRedirect(auth, googleProvider);
-      return null;
+    const isAndroidNative = typeof window !== 'undefined' && window.AndroidInterface;
+    if (isAndroidNative) {
+      return new Promise((resolve, reject) => {
+        nativeSignInResolver = resolve;
+        nativeSignInRejecter = reject;
+        window.AndroidInterface.startGoogleSignIn();
+      });
     } else {
-      const result = await signInWithPopup(auth, googleProvider);
-      const token = await result.user.getIdToken();
-      localStorage.setItem('firebase_token', token);
-      localStorage.setItem('user', JSON.stringify({
-        uid: result.user.uid,
-        email: result.user.email,
-        displayName: result.user.displayName,
-        photoURL: result.user.photoURL
-      }));
-      // Fire-and-forget: backend writes users/{uid} on first sight and emails
-      // the welcome message. Idempotent — safe on every login.
-      try {
-        const { userAPI } = await import('./api');
-        userAPI.welcomeCheck().catch(() => {});
-      } catch {}
-      return result.user;
+      const isAndroidApp = typeof navigator !== 'undefined' && navigator.userAgent.includes('KautilyaAndroidApp');
+      if (isAndroidApp) {
+        await signInWithRedirect(auth, googleProvider);
+        return new Promise(() => {});
+      } else {
+        const result = await signInWithPopup(auth, googleProvider);
+        const token = await result.user.getIdToken();
+        localStorage.setItem('firebase_token', token);
+        localStorage.setItem('user', JSON.stringify({
+          uid: result.user.uid,
+          email: result.user.email,
+          displayName: result.user.displayName,
+          photoURL: result.user.photoURL
+        }));
+        // Fire-and-forget: backend writes users/{uid} on first sight and emails
+        // the welcome message. Idempotent — safe on every login.
+        try {
+          const { userAPI } = await import('./api');
+          userAPI.welcomeCheck().catch(() => {});
+        } catch {}
+        return result.user;
+      }
     }
   } catch (error) {
     console.error("Login failed:", error);

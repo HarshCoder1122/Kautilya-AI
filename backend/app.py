@@ -65,6 +65,7 @@ app.register_blueprint(keys_bp, url_prefix='/api')
 app.register_blueprint(agents_bp, url_prefix='/api')
 app.register_blueprint(campaigns_bp, url_prefix='/api')
 app.register_blueprint(telephony_bp, url_prefix='/api')
+app.register_blueprint(export_bp, url_prefix='/api')
 app.register_blueprint(webhooks_bp, url_prefix='/api')
 app.register_blueprint(openai_compat_bp, url_prefix='/api')  # routes: /api/v1/...
 app.register_blueprint(background_bp, url_prefix='/api')

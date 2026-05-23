@@ -133,7 +133,7 @@ def api_telephony_save():
         return jsonify({"error": str(e)}), 500
 
 
-@telephony_bp.route('/api/agents/<agent_id>/call-outbound', methods=['POST'])
+@telephony_bp.route('/agents/<agent_id>/call-outbound', methods=['POST'])
 def api_agent_call_outbound(agent_id):
     from extensions import db
     token_data = verify_firebase_token()

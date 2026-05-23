@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Plus, PencilSimple, Trash, SpeakerHigh, Brain, Lightning, CheckCircle, Phone, X, UploadSimple, LinkSimple, FileText, ChatCircleText, Clock, Globe, CaretLeft, Microphone } from "@phosphor-icons/react";
 import { LiveKitVoice } from "@/components/chat/LiveKitVoice";
-import { agentsAPI, telephonyAPI, ttsAPI } from "../../lib/api";
+import { agentsAPI, telephonyAPI, ttsAPI, integrationsAPI } from "../../lib/api";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
@@ -108,8 +108,8 @@ export default function AgentStudio() {
   return (
     <div className="h-full flex flex-col bg-background" data-testid="agent-studio">
       {/* Header */}
-      <div className="px-8 py-6 border-b border-[var(--k-border)] bg-background/50 backdrop-blur-sm z-10">
-        <div className="flex items-center justify-between">
+      <div className="px-4 sm:px-8 py-6 border-b border-[var(--k-border)] bg-background/50 backdrop-blur-sm z-10">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-medium k-heading tracking-tight text-foreground">Agent Studio</h1>
             <p className="text-sm text-muted-foreground mt-1">Create and manage your AI voice & chat agents</p>
@@ -119,7 +119,7 @@ export default function AgentStudio() {
             <DialogTrigger asChild>
               <button
                 data-testid="create-agent-btn"
-                className="flex items-center gap-2 px-4 py-2.5 rounded-md bg-[var(--k-brand)] text-white text-sm font-medium hover:bg-[var(--k-brand-hover)] transition-all duration-200 hover:-translate-y-px shadow-lg shadow-[var(--k-brand)]/20"
+                className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-md bg-[var(--k-brand)] text-white text-sm font-medium hover:bg-[var(--k-brand-hover)] transition-all duration-200 hover:-translate-y-px shadow-lg shadow-[var(--k-brand)]/20 w-full sm:w-auto"
               >
                 <Plus className="w-4 h-4" />
                 Create Agent
@@ -137,7 +137,7 @@ export default function AgentStudio() {
 
       {/* Agent Grid */}
       <ScrollArea className="flex-1">
-        <div className="px-8 py-8">
+        <div className="px-4 sm:px-8 py-8">
           {loading ? (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
                {[1,2,3].map(i => (
@@ -304,13 +304,44 @@ function AgentDetail({ agent, onClose, onUpdate }) {
   const [testInput, setTestInput] = useState("");
   const [isChatTesting, setIsChatTesting] = useState(false);
   const [testNotice, setTestNotice] = useState("");
+  const [integrationsStatus, setIntegrationsStatus] = useState({
+    hubspot: false,
+    zoho: false,
+    google_calendar: false,
+    whatsapp: false,
+    slack: false
+  });
 
 	  useEffect(() => {
 	    if (activeTab === "knowledge") loadKnowledge();
 	    if (activeTab === "logs") loadLogs();
+	    if (activeTab === "tools") loadIntegrations();
 	    // The loaders are local actions; re-run only when the selected tab/agent changes.
 	    // eslint-disable-next-line react-hooks/exhaustive-deps
 	  }, [activeTab, agent.agent_id]);
+
+  const loadIntegrations = async () => {
+    try {
+      const data = await integrationsAPI.list();
+      const statusMap = {
+        hubspot: false,
+        zoho: false,
+        google_calendar: false,
+        whatsapp: false,
+        slack: false
+      };
+      if (data && data.integrations) {
+        data.integrations.forEach(item => {
+          if (item.id in statusMap) {
+            statusMap[item.id] = !!item.connected;
+          }
+        });
+      }
+      setIntegrationsStatus(statusMap);
+    } catch (err) {
+      console.error("Failed to load integrations status:", err);
+    }
+  };
 
   const handleSave = async () => {
     try {
@@ -526,16 +557,17 @@ function AgentDetail({ agent, onClose, onUpdate }) {
       <ScrollArea className="flex-1 overflow-auto" style={{minHeight: 0}}>
         <div className="p-6">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="bg-accent/50 h-10 p-1 mb-6 rounded-lg w-full max-w-2xl">
-            <TabsTrigger value="config" className="flex-1 rounded-md text-xs font-semibold data-[state=active]:bg-background data-[state=active]:text-[var(--k-brand)]">Instruction</TabsTrigger>
-            <TabsTrigger value="voice" className="flex-1 rounded-md text-xs font-semibold data-[state=active]:bg-background data-[state=active]:text-[var(--k-brand)]">Voice & LLM</TabsTrigger>
-            <TabsTrigger value="knowledge" className="flex-1 rounded-md text-xs font-semibold data-[state=active]:bg-background data-[state=active]:text-[var(--k-brand)]">Knowledge</TabsTrigger>
-            <TabsTrigger value="test" className="flex-1 rounded-md text-xs font-semibold data-[state=active]:bg-background data-[state=active]:text-[var(--k-brand)]">Live Test</TabsTrigger>
-            <TabsTrigger value="logs" className="flex-1 rounded-md text-xs font-semibold data-[state=active]:bg-background data-[state=active]:text-[var(--k-brand)]">Logs</TabsTrigger>
+          <TabsList className="bg-accent/50 h-auto p-1 mb-6 rounded-lg w-full max-w-2xl flex flex-wrap gap-1">
+            <TabsTrigger value="config" className="flex-1 rounded-md text-xs font-semibold py-1.5 data-[state=active]:bg-background data-[state=active]:text-[var(--k-brand)]">Instruction</TabsTrigger>
+            <TabsTrigger value="voice" className="flex-1 rounded-md text-xs font-semibold py-1.5 data-[state=active]:bg-background data-[state=active]:text-[var(--k-brand)]">Voice & LLM</TabsTrigger>
+            <TabsTrigger value="knowledge" className="flex-1 rounded-md text-xs font-semibold py-1.5 data-[state=active]:bg-background data-[state=active]:text-[var(--k-brand)]">Knowledge</TabsTrigger>
+            <TabsTrigger value="tools" className="flex-1 rounded-md text-xs font-semibold py-1.5 data-[state=active]:bg-background data-[state=active]:text-[var(--k-brand)]">Tools</TabsTrigger>
+            <TabsTrigger value="test" className="flex-1 rounded-md text-xs font-semibold py-1.5 data-[state=active]:bg-background data-[state=active]:text-[var(--k-brand)]">Live Test</TabsTrigger>
+            <TabsTrigger value="logs" className="flex-1 rounded-md text-xs font-semibold py-1.5 data-[state=active]:bg-background data-[state=active]:text-[var(--k-brand)]">Logs</TabsTrigger>
           </TabsList>
 
           <TabsContent value="config" className="space-y-6 animate-fade-up">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Agent Name</label>
                 <input
@@ -579,7 +611,7 @@ function AgentDetail({ agent, onClose, onUpdate }) {
           </TabsContent>
 
           <TabsContent value="voice" className="space-y-6 animate-fade-up">
-            <div className="grid grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
               <div className="space-y-2">
                 <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Voice Engine</label>
                 <select
@@ -636,7 +668,7 @@ function AgentDetail({ agent, onClose, onUpdate }) {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
               <div className="space-y-2">
                 <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">LLM Back-end</label>
                 <select
@@ -683,7 +715,7 @@ function AgentDetail({ agent, onClose, onUpdate }) {
           </TabsContent>
 
           <TabsContent value="knowledge" className="space-y-6 animate-fade-up">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <label className="relative p-6 rounded-xl border border-dashed border-[var(--k-border)] hover:border-[var(--k-brand)]/40 bg-accent/10 cursor-pointer text-center">
                 <input
                   type="file"
@@ -870,6 +902,117 @@ function AgentDetail({ agent, onClose, onUpdate }) {
              </div>
           </TabsContent>
 
+          <TabsContent value="tools" className="space-y-6 animate-fade-up">
+            <div className="p-4 rounded-xl border border-[var(--k-border)] bg-accent/5">
+              <h4 className="text-sm font-semibold text-foreground mb-1">Integration Capabilities</h4>
+              <p className="text-xs text-muted-foreground">
+                Your agent can automatically perform tasks using your connected tools. Hook them up under settings to enable them.
+              </p>
+            </div>
+            
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Available Integration Tools</span>
+                <button
+                  onClick={() => navigate('/dashboard/integrations')}
+                  className="text-xs font-bold text-[var(--k-brand)] hover:underline"
+                >
+                  Manage Integrations →
+                </button>
+              </div>
+              
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* CRM Leads sync */}
+                <div className="p-4 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] flex flex-col justify-between h-36">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-foreground">CRM Leads Sync</span>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        (integrationsStatus.hubspot || integrationsStatus.zoho) 
+                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                          : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
+                      }`}>
+                        {(integrationsStatus.hubspot || integrationsStatus.zoho) ? 'Active' : 'Inactive'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      Automatically queries client details in HubSpot or Zoho CRM during a call/chat, creates new contacts, and updates interaction notes.
+                    </p>
+                  </div>
+                  {!((integrationsStatus.hubspot || integrationsStatus.zoho)) && (
+                    <button onClick={() => navigate('/dashboard/integrations')} className="text-[10px] font-bold text-[var(--k-brand)] hover:underline text-left">Connect HubSpot/Zoho CRM</button>
+                  )}
+                </div>
+
+                {/* Google Calendar */}
+                <div className="p-4 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] flex flex-col justify-between h-36">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-foreground">Google Calendar</span>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        integrationsStatus.google_calendar 
+                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                          : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
+                      }`}>
+                        {integrationsStatus.google_calendar ? 'Active' : 'Inactive'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      Allows the voice/chat agent to book calendar events, check schedule slots, and send calendar invites directly to callers.
+                    </p>
+                  </div>
+                  {!integrationsStatus.google_calendar && (
+                    <button onClick={() => navigate('/dashboard/integrations')} className="text-[10px] font-bold text-[var(--k-brand)] hover:underline text-left">Connect Google Calendar</button>
+                  )}
+                </div>
+
+                {/* WhatsApp Follow-ups */}
+                <div className="p-4 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] flex flex-col justify-between h-36">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-foreground">WhatsApp Reporting</span>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        integrationsStatus.whatsapp 
+                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                          : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
+                      }`}>
+                        {integrationsStatus.whatsapp ? 'Active' : 'Inactive'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      Sends post-call summaries, booking confirmations, or automated customer support follow-up messages using WhatsApp Business templates.
+                    </p>
+                  </div>
+                  {!integrationsStatus.whatsapp && (
+                    <button onClick={() => navigate('/dashboard/integrations')} className="text-[10px] font-bold text-[var(--k-brand)] hover:underline text-left">Connect WhatsApp API</button>
+                  )}
+                </div>
+
+                {/* Slack Notifications */}
+                <div className="p-4 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] flex flex-col justify-between h-36">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-foreground">Slack Alerts</span>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        integrationsStatus.slack 
+                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                          : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
+                      }`}>
+                        {integrationsStatus.slack ? 'Active' : 'Inactive'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      Enables the agent to post internal notifications to Slack channels for urgent human handoffs or important call outcome alerts.
+                    </p>
+                  </div>
+                  {!integrationsStatus.slack && (
+                    <button onClick={() => navigate('/dashboard/integrations')} className="text-[10px] font-bold text-[var(--k-brand)] hover:underline text-left">Connect Slack webhook</button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </TabsContent>
+
           <TabsContent value="logs" className="space-y-4 animate-fade-up">
             {logsLoading ? (
               <div className="p-8 text-center text-sm text-muted-foreground">Loading recent activity...</div>
@@ -971,7 +1114,7 @@ function CreateAgentForm({ onClose, onSuccess }) {
           required
         />
       </div>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div className="space-y-1.5">
           <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Brain Model</label>
           <select
