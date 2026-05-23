@@ -237,24 +237,97 @@ def generate_full_audio_sync(request: SpeechRequest):
 
 def split_text(text: str):
     """
-    Advanced splitting logic to minimize TTFB. 
-    Splits by sentences and major pauses to start streaming audio ASAP.
+    Advanced splitting logic to minimize TTFB.
+    Splits by sentences, punctuation, and natural conjunctions to start streaming audio ASAP.
     """
-    # Split by [.!?] followed by space, or by newlines, or by semicolons
-    segments = re.split(r'(?<=[.!?])\s+|\n+|(?<=;)\s+', text)
-    return [s.strip() for s in segments if s.strip()]
+    # 1. First split by major sentence boundaries, Hindi full stops, and newlines
+    sentences = re.split(r'(?<=[.!?।])\s+|\n+|(?<=;)\s+', text)
+    result = []
+    
+    conjunctions = [
+        # English
+        " and ", " but ", " or ", " because ", " so ", " then ", 
+        " with ", " that ", " to ", " for ", " how ", " who ", 
+        " what ", " why ", " when ", " if ", " as ", " about ",
+        # Hindi
+        " और ", " या ", " लेकिन ", " कि ", " क्योंकि ", " इसलिए ", " अगर "
+    ]
+    
+    for s in sentences:
+        s = s.strip()
+        if not s:
+            continue
+            
+        words = s.split()
+        if len(words) <= 8:
+            result.append(s)
+            continue
+            
+        # If there is a comma, split by comma first
+        if "," in s:
+            parts = [p.strip() for p in s.split(",") if p.strip()]
+            for p in parts:
+                p_words = p.split()
+                if len(p_words) > 8:
+                    split_subsegment(p, result, conjunctions)
+                else:
+                    result.append(p)
+            continue
+            
+        # No commas, split by conjunctions or space
+        split_subsegment(s, result, conjunctions)
+        
+    return [r for r in result if r]
+
+def split_subsegment(s: str, result_list: list, conjunctions: list):
+    words = s.split()
+    if len(words) <= 8:
+        result_list.append(s)
+        return
+        
+    best_pos = -1
+    best_len = 999
+    
+    mid_word_idx = len(words) // 2
+    
+    for conj in conjunctions:
+        # Search for conjunction in the string (case insensitive)
+        pattern = re.compile(re.escape(conj), re.IGNORECASE)
+        for match in pattern.finditer(s):
+            start_char = match.start()
+            word_idx = len(s[:start_char].split())
+            distance = abs(word_idx - mid_word_idx)
+            if distance < best_len:
+                best_len = distance
+                best_pos = start_char
+                
+    # If a good conjunction is found (not too far from middle), split there
+    if best_pos != -1 and best_len < (len(words) // 3 + 2):
+        left = s[:best_pos].strip()
+        right = s[best_pos:].strip()
+        if left and right:
+            split_subsegment(left, result_list, conjunctions)
+            split_subsegment(right, result_list, conjunctions)
+            return
+            
+    # Fallback: split exactly at the space closest to the middle
+    mid_idx = len(words) // 2
+    left = " ".join(words[:mid_idx])
+    right = " ".join(words[mid_idx:])
+    if left and right:
+        split_subsegment(left, result_list, conjunctions)
+        split_subsegment(right, result_list, conjunctions)
+    else:
+        result_list.append(s)
 
 
 # --- Ultra-Fast Streaming Implementation ---
 
-# Pre-compiled regex for text splitting (faster than re.split)
-TEXT_SPLIT_PATTERN = re.compile(r'(?<=[.!?,;:])\s+|\n+')
-
 def generate_voice_thread(loop, queue, text, model_name, voice, speed):
     try:
         pipeline = get_pipeline(model_name)
-        # Pre-split text for faster streaming using pre-compiled regex
-        sentences = [s.strip() for s in TEXT_SPLIT_PATTERN.split(text) if s.strip()]
+        # Pre-split text for faster streaming using smart splitting
+        sentences = split_text(text)
         
         with torch.inference_mode():
             # Pre-allocate audio buffer for better performance
@@ -294,25 +367,24 @@ async def stream_audio_generator(request: SpeechRequest):
     )
     thread.start()
     
-    # Ultra-fast streaming loop with minimal latency
+    # Ultra-fast streaming loop with zero polling latency
     while True:
-        try:
-            # Non-blocking get with minimal timeout for maximum responsiveness
-            chunk = await asyncio.wait_for(queue.get(), timeout=0.01)
-            if chunk is None:
-                break
-            yield chunk
-        except asyncio.TimeoutError:
-            # Continue loop on timeout
-            continue
+        chunk = await queue.get()
+        if chunk is None:
+            break
+        yield chunk
 
 async def pcm_to_mp3_stream(pcm_generator):
     """
     Transcode raw PCM (s16le, 24000Hz, mono) to MP3 on-the-fly using an async ffmpeg subprocess.
+    Optimized for zero latency and real-time streaming.
     """
     cmd = [
         'ffmpeg',
         '-y',
+        '-fflags', 'nobuffer',
+        '-analyzeduration', '0',
+        '-probesize', '32',
         '-f', 's16le',
         '-ar', '24000',
         '-ac', '1',
@@ -320,6 +392,8 @@ async def pcm_to_mp3_stream(pcm_generator):
         '-f', 'mp3',
         '-acodec', 'libmp3lame',
         '-ab', '64k',
+        '-reservoir', '0',
+        '-flush_packets', '1',
         'pipe:1'
     ]
     
@@ -356,7 +430,8 @@ async def pcm_to_mp3_stream(pcm_generator):
 
     try:
         while True:
-            chunk = await process.stdout.read(4096)
+            # Read smaller buffers to feed client immediately
+            chunk = await process.stdout.read(1024)
             if not chunk:
                 break
             yield chunk
