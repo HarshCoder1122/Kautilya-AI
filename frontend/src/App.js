@@ -2,7 +2,7 @@ import { useState, useEffect, lazy, Suspense } from "react";
 import "./App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { getAuthInstance } from "./lib/firebase.js";
-import { onAuthStateChanged } from "firebase/auth";
+import { onAuthStateChanged, getRedirectResult } from "firebase/auth";
 
 // Lazy load route components
 const ChatPage = lazy(() => import("./pages/ChatPage"));
@@ -34,6 +34,17 @@ function App() {
     }
     let refreshInterval = null;
 
+    // Resolve Google Redirect Sign-In results if coming back from redirect flow
+    getRedirectResult(auth)
+      .then((result) => {
+        if (result?.user) {
+          console.log("[Auth] Redirect sign-in success:", result.user);
+        }
+      })
+      .catch((e) => {
+        console.warn("[Auth] Redirect sign-in error:", e);
+      });
+
     const refreshToken = async (authUser) => {
       try {
         const token = await authUser.getIdToken(true);
@@ -49,6 +60,12 @@ function App() {
         try {
           const token = await authUser.getIdToken();
           localStorage.setItem('firebase_token', token);
+          localStorage.setItem('user', JSON.stringify({
+            uid: authUser.uid,
+            email: authUser.email,
+            displayName: authUser.displayName,
+            photoURL: authUser.photoURL
+          }));
           setUser(authUser);
         } catch (e) {
           console.warn('[Auth] Initial token retrieval failed, using fallback:', e);
@@ -58,6 +75,7 @@ function App() {
         refreshInterval = setInterval(() => refreshToken(authUser), 55 * 60 * 1000);
       } else {
         localStorage.removeItem('firebase_token');
+        localStorage.removeItem('user');
         setUser(null);
       }
       setLoading(false);

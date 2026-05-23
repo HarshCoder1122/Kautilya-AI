@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
-import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "firebase/auth";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut } from "firebase/auth";
 
 let authInstance;
 let googleProvider;
@@ -154,22 +154,28 @@ export const getAuthInstance = () => {
 export const loginWithGoogle = async () => {
   const auth = await initFirebase();
   try {
-    const result = await signInWithPopup(auth, googleProvider);
-    const token = await result.user.getIdToken();
-    localStorage.setItem('firebase_token', token);
-    localStorage.setItem('user', JSON.stringify({
-      uid: result.user.uid,
-      email: result.user.email,
-      displayName: result.user.displayName,
-      photoURL: result.user.photoURL
-    }));
-    // Fire-and-forget: backend writes users/{uid} on first sight and emails
-    // the welcome message. Idempotent — safe on every login.
-    try {
-      const { userAPI } = await import('./api');
-      userAPI.welcomeCheck().catch(() => {});
-    } catch {}
-    return result.user;
+    const isAndroidApp = typeof navigator !== 'undefined' && navigator.userAgent.includes('KautilyaAndroidApp');
+    if (isAndroidApp) {
+      await signInWithRedirect(auth, googleProvider);
+      return null;
+    } else {
+      const result = await signInWithPopup(auth, googleProvider);
+      const token = await result.user.getIdToken();
+      localStorage.setItem('firebase_token', token);
+      localStorage.setItem('user', JSON.stringify({
+        uid: result.user.uid,
+        email: result.user.email,
+        displayName: result.user.displayName,
+        photoURL: result.user.photoURL
+      }));
+      // Fire-and-forget: backend writes users/{uid} on first sight and emails
+      // the welcome message. Idempotent — safe on every login.
+      try {
+        const { userAPI } = await import('./api');
+        userAPI.welcomeCheck().catch(() => {});
+      } catch {}
+      return result.user;
+    }
   } catch (error) {
     console.error("Login failed:", error);
     throw error;
