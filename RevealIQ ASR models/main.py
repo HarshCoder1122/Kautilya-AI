@@ -23,8 +23,11 @@ print(f"DEBUG: Using device: {device}")
 
 # Optimize for CPU performance
 if device == "cpu":
-    # Set CPU threads to 1 for optimal performance on HF free tier
-    torch.set_num_threads(1)
+    # Set CPU threads to use up to 4 cores for optimal performance on HF free/pro tiers
+    import os
+    cores = min(4, os.cpu_count() or 2)
+    torch.set_num_threads(cores)
+    print(f"DEBUG: Set PyTorch CPU threads to {cores}")
     
 # Enable optimizations for faster inference
 torch.backends.cudnn.benchmark = True
@@ -245,7 +248,7 @@ def split_text(text: str):
 # --- Ultra-Fast Streaming Implementation ---
 
 # Pre-compiled regex for text splitting (faster than re.split)
-TEXT_SPLIT_PATTERN = re.compile(r'(?<=[.!?])\s+|\n+|(?<=;)\s+')
+TEXT_SPLIT_PATTERN = re.compile(r'(?<=[.!?,;:])\s+|\n+')
 
 def generate_voice_thread(loop, queue, text, model_name, voice, speed):
     try:
@@ -253,23 +256,24 @@ def generate_voice_thread(loop, queue, text, model_name, voice, speed):
         # Pre-split text for faster streaming using pre-compiled regex
         sentences = [s.strip() for s in TEXT_SPLIT_PATTERN.split(text) if s.strip()]
         
-        # Pre-allocate audio buffer for better performance
-        for sentence in sentences:
-            # Process in smaller chunks for real-time streaming
-            generator = pipeline(sentence, voice=voice, speed=speed)
-            for _, _, audio in generator:
-                if audio is not None:
-                    # Trim silence from the audio chunk to keep the flow continuous
-                    audio = trim_silence(audio)
-                    # Ultra-fast conversion: Direct memory copy
-                    if torch.is_tensor(audio):
-                        # Use faster tensor operations with pre-determined device
-                        audio_int16 = (audio * 32767).to(torch.int16).cpu().numpy()
-                    else:
-                        audio_int16 = (audio * 32767).astype(np.int16)
-                    
-                    # Stream immediately without queue overhead
-                    loop.call_soon_threadsafe(queue.put_nowait, audio_int16.tobytes())
+        with torch.inference_mode():
+            # Pre-allocate audio buffer for better performance
+            for sentence in sentences:
+                # Process in smaller chunks for real-time streaming
+                generator = pipeline(sentence, voice=voice, speed=speed)
+                for _, _, audio in generator:
+                    if audio is not None:
+                        # Trim silence from the audio chunk to keep the flow continuous
+                        audio = trim_silence(audio)
+                        # Ultra-fast conversion: Direct memory copy
+                        if torch.is_tensor(audio):
+                            # Use faster tensor operations with pre-determined device
+                            audio_int16 = (audio * 32767).to(torch.int16).cpu().numpy()
+                        else:
+                            audio_int16 = (audio * 32767).astype(np.int16)
+                        
+                        # Stream immediately without queue overhead
+                        loop.call_soon_threadsafe(queue.put_nowait, audio_int16.tobytes())
                     
         # Signal end of stream
         loop.call_soon_threadsafe(queue.put_nowait, None)
