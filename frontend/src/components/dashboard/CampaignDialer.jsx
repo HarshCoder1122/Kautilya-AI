@@ -82,8 +82,8 @@ export default function CampaignDialer() {
   return (
     <div className="h-full" data-testid="campaign-dialer">
       {/* Header */}
-      <div className="px-8 py-6 border-b border-[var(--k-border)]">
-        <div className="flex items-center justify-between">
+      <div className="px-4 sm:px-8 py-6 border-b border-[var(--k-border)]">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-medium k-heading tracking-tight text-foreground">Campaign Dialer</h1>
             <p className="text-sm text-muted-foreground mt-1">Manage outbound calling campaigns</p>
@@ -92,7 +92,7 @@ export default function CampaignDialer() {
             <DialogTrigger asChild>
               <button
                 data-testid="create-campaign-btn"
-                className="flex items-center gap-2 px-4 py-2.5 rounded-md bg-[var(--k-brand)] text-white text-sm font-medium hover:bg-[var(--k-brand-hover)] transition-all duration-200 hover:-translate-y-px"
+                className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-md bg-[var(--k-brand)] text-white text-sm font-medium hover:bg-[var(--k-brand-hover)] transition-all duration-200 w-full sm:w-auto"
               >
                 <Plus className="w-4 h-4" />
                 New Campaign
@@ -111,7 +111,7 @@ export default function CampaignDialer() {
 
       {/* Campaign Cards */}
       <ScrollArea className="h-[calc(100vh-120px)]">
-        <div className="px-8 py-6 space-y-4">
+        <div className="px-4 sm:px-8 py-6 space-y-4">
           {loading ? (
             <div className="text-center py-8 text-sm text-muted-foreground">Loading campaigns...</div>
           ) : campaigns.length === 0 ? (
@@ -162,7 +162,7 @@ export default function CampaignDialer() {
                   </div>
 
                   {/* Stats */}
-                  <div className="grid grid-cols-4 gap-4 pt-4 border-t border-[var(--k-border)]">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-4 border-t border-[var(--k-border)]">
                     <div>
                       <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Total Leads</div>
                       <div className="text-lg font-medium text-foreground k-heading">{campaign.total_leads || 0}</div>

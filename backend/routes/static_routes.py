@@ -38,7 +38,7 @@ def firebase_auth_proxy(subpath):
             params=request.args,
             data=request.get_data() if request.method != 'GET' else None,
             headers={k: v for k, v in request.headers.items()
-                     if k.lower() not in ('host', 'cookie')},
+                     if k.lower() != 'host'},
             cookies=request.cookies,
             allow_redirects=False,
             stream=True,

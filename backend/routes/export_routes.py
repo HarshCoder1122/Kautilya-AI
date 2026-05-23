@@ -9,7 +9,7 @@ from flask import Blueprint, request, jsonify, send_file
 export_bp = Blueprint('export', __name__)
 
 
-@export_bp.route('/api/export/pdf', methods=['POST'])
+@export_bp.route('/export/pdf', methods=['POST'])
 def export_pdf():
     try:
         data = request.json
@@ -56,7 +56,7 @@ def export_pdf():
         return jsonify({"error": str(e)}), 500
 
 
-@export_bp.route('/api/export/docx', methods=['POST'])
+@export_bp.route('/export/docx', methods=['POST'])
 def export_docx():
     try:
         data = request.json
@@ -98,7 +98,7 @@ def export_docx():
          return jsonify({"error": str(e)}), 500
 
 
-@export_bp.route('/api/export/excel', methods=['POST'])
+@export_bp.route('/export/excel', methods=['POST'])
 def export_excel():
     try:
         data = request.json

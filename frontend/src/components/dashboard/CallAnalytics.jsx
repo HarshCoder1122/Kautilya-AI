@@ -98,19 +98,19 @@ export default function CallAnalytics() {
 
   return (
     <div className="h-full flex flex-col bg-background" data-testid="call-analytics">
-      <div className="px-8 py-6 border-b border-[var(--k-border)]">
+      <div className="px-4 sm:px-8 py-6 border-b border-[var(--k-border)]">
         <h1 className="text-2xl font-medium k-heading tracking-tight text-foreground">Call Analytics</h1>
         <p className="text-sm text-muted-foreground mt-1">AI-powered call summaries and insights</p>
       </div>
 
       <ScrollArea className="flex-1">
-        <div className="px-8 py-8 space-y-8">
+        <div className="px-4 sm:px-8 py-8 space-y-8">
           {loading ? (
             <div className="text-center py-20 text-sm text-muted-foreground animate-pulse">Analyzing call data...</div>
           ) : (
             <>
               {/* Stats Row */}
-              <div className="grid grid-cols-4 gap-6">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
                 {[
                   { label: 'Total Calls', val: callStats.total_calls, color: 'text-foreground' },
                   { label: 'Failed Calls', val: callStats.failed_calls, color: 'text-rose-400' },
@@ -125,8 +125,8 @@ export default function CallAnalytics() {
               </div>
 
               {/* Charts Row */}
-              <div className="grid grid-cols-5 gap-6">
-                <div className="col-span-3 p-6 rounded-2xl border border-[var(--k-border)] bg-[var(--k-surface)]">
+              <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+                <div className="col-span-1 lg:col-span-3 p-6 rounded-2xl border border-[var(--k-border)] bg-[var(--k-surface)]">
                   <div className="text-sm font-bold text-foreground mb-6 k-heading tracking-tight">Call Volume Activity</div>
                   <ResponsiveContainer width="100%" height={220}>
                     <BarChart data={callVolumeData}>
@@ -142,7 +142,7 @@ export default function CallAnalytics() {
                   </ResponsiveContainer>
                 </div>
 
-                <div className="col-span-2 p-6 rounded-2xl border border-[var(--k-border)] bg-[var(--k-surface)]">
+                <div className="col-span-1 lg:col-span-2 p-6 rounded-2xl border border-[var(--k-border)] bg-[var(--k-surface)]">
                   <div className="text-sm font-bold text-foreground mb-6 k-heading tracking-tight">Sentiment Breakdown</div>
                   <div className="flex flex-col items-center justify-center h-[220px]">
                     <ResponsiveContainer width="100%" height={160}>

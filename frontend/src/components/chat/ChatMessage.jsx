@@ -19,8 +19,9 @@ function linkifyContent(text) {
   // Skip URLs that are already part of a markdown link/image:
   //   [text](url)  or  ![alt](url)  or  <url>
   // We only autolink BARE URLs that appear after whitespace / start-of-string.
+  // Using negative lookbehind to make sure we don't match if preceded by '](' (markdown link target) or '="' (HTML attribute)
   return text.replace(
-    /(^|[\s(])(https?:\/\/[^\s\)\]"<>]+)/g,
+    /(^|[\s(])(?<!\]\()(?<!=")(https?:\/\/[^\s\)\]"<>]+)/g,
     (full, pre, url) => `${pre}[${url}](${url})`
   );
 }

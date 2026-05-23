@@ -249,6 +249,12 @@ export const agentsAPI = {
     });
     return response.data;
   },
+
+  // Generate/Rotate public embed token
+  rotateEmbedToken: async (agentId, allowedOrigins = ['*']) => {
+    const response = await api.post(`/api/agents/${agentId}/embed-token`, { allowed_origins: allowedOrigins });
+    return response.data;
+  },
 };
 
 // Campaigns API
