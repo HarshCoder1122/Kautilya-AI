@@ -1036,7 +1036,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                   Tools & Capabilities
                 </DropdownMenuLabel>
                 <DropdownMenuItem
-                  onSelect={(e) => { e.preventDefault(); setShowMcpDialog(true); }}
+                  onSelect={() => setShowMcpDialog(true)}
                   className="flex items-center gap-2.5 px-2.5 py-2 text-sm rounded-lg cursor-pointer hover:bg-accent text-foreground transition-colors duration-150"
                 >
                   <Cpu className="w-4 h-4 text-indigo-400" weight="duotone" />
