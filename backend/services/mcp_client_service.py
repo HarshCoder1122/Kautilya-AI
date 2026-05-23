@@ -37,6 +37,7 @@ _sessions: Dict[str, Any] = {}        # server_key -> ClientSession
 _exit_stacks: Dict[str, Any] = {}     # server_key -> AsyncExitStack (keeps stdio open)
 _tools_by_server: Dict[str, List[Dict[str, Any]]] = {}  # server_key -> [tool_spec]
 _server_status: Dict[str, Dict[str, Any]] = {}  # server_key -> {state, error, category, description, tool_count}
+_initialized_users = set()            # Set of user IDs that have run init_user_mcp
 _initialized = False
 _lock = threading.Lock()
 
@@ -163,7 +164,7 @@ async def _spawn_server(server_key: str, cfg: Dict[str, Any]) -> None:
             "description": cfg.get("description", ""),
             "tool_count": len(specs),
         }
-        print(f"[MCP] ✓ '{server_key}' connected with {len(specs)} tools")
+        print(f"[MCP] OK: '{server_key}' connected with {len(specs)} tools")
     except Exception as e:
         # Clean up partial stack on failure
         try:
@@ -177,7 +178,7 @@ async def _spawn_server(server_key: str, cfg: Dict[str, Any]) -> None:
             "description": cfg.get("description", ""),
             "tool_count": 0,
         }
-        print(f"[MCP] ✗ '{server_key}' failed: {e}")
+        print(f"[MCP] ERR: '{server_key}' failed: {e}")
 
 
 async def _init_all(config: Dict[str, Any]):
@@ -225,16 +226,163 @@ def init_mcp():
 
 
 # ---------- Sync facade for agent_loop ----------
-def available_mcp_tools() -> List[Dict[str, Any]]:
+# ---------- User Custom MCP Server lifecycle ----------
+async def _spawn_user_mcp(uid: str, server_key: str, cfg: Dict[str, Any]) -> None:
+    from contextlib import AsyncExitStack
+    from mcp import ClientSession
+    from mcp.client.sse import sse_client
+    
+    db_key = f"user:{uid}:{server_key}"
+    url = cfg.get("url")
+    if not url:
+        _server_status[db_key] = {
+            "state": "error",
+            "error": "Missing url in config",
+            "category": cfg.get("category", "Custom"),
+            "description": cfg.get("description", ""),
+            "tool_count": 0,
+            "url": "",
+        }
+        return
+        
+    stack = AsyncExitStack()
+    try:
+        # Connect via SSE client
+        read, write = await stack.enter_async_context(sse_client(url))
+        session = await stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        
+        # Discover tools
+        tools_resp = await session.list_tools()
+        specs = []
+        for t in tools_resp.tools:
+            tool_name = f"mcp_{_sanitize_name(server_key)}_{_sanitize_name(t.name)}"
+            schema = t.inputSchema or {"type": "object", "properties": {}}
+            specs.append({
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "description": (t.description or t.name)[:512],
+                    "parameters": schema,
+                    "_mcp_server": server_key,
+                    "_mcp_tool": t.name,
+                    "_mcp_user_id": uid,
+                },
+            })
+            
+        _sessions[db_key] = session
+        _exit_stacks[db_key] = stack
+        _tools_by_server[db_key] = specs
+        _server_status[db_key] = {
+            "state": "active",
+            "error": None,
+            "category": cfg.get("category", "Custom"),
+            "description": cfg.get("description", ""),
+            "tool_count": len(specs),
+            "url": url,
+        }
+        print(f"[MCP] OK: User {uid} '{server_key}' connected with {len(specs)} tools via SSE")
+    except Exception as e:
+        try:
+            await stack.aclose()
+        except Exception:
+            pass
+        _server_status[db_key] = {
+            "state": "error",
+            "error": str(e)[:200],
+            "category": cfg.get("category", "Custom"),
+            "description": cfg.get("description", ""),
+            "tool_count": 0,
+            "url": url,
+        }
+        print(f"[MCP] ERR: User {uid} '{server_key}' failed: {e}")
+
+
+def init_user_mcp(uid: str):
+    """Fetch enabled custom MCP servers for this user from Firestore and connect to them."""
+    if not uid:
+        return
+    with _lock:
+        if uid in _initialized_users:
+            return
+        _initialized_users.add(uid)
+
+    from extensions import db
+    if not db:
+        return
+
+    try:
+        docs = db.collection('users').document(uid).collection('mcp_servers').stream()
+        for doc in docs:
+            cfg = doc.to_dict()
+            key = doc.id
+            if cfg.get("enabled", True):
+                init_user_mcp_server(uid, key, cfg)
+    except Exception as e:
+        print(f"[MCP] Failed to init custom servers for user {uid}: {e}")
+
+
+def init_user_mcp_server(uid: str, key: str, cfg: Dict[str, Any]):
+    """Connect to a single user custom MCP server (or reconnect if configuration changed)."""
+    close_user_mcp_server(uid, key)
+    
+    if _loop and _loop.is_running():
+        try:
+            _run_coro(_spawn_user_mcp(uid, key, cfg), timeout=15.0)
+        except Exception as e:
+            print(f"[MCP] Failed to connect user custom server {key}: {e}")
+
+
+def close_user_mcp_server(uid: str, key: str):
+    """Gracefully close and clean up connection resources for a user server."""
+    db_key = f"user:{uid}:{key}"
+    
+    async def _close():
+        stack = _exit_stacks.get(db_key)
+        if stack:
+            try:
+                await stack.aclose()
+            except Exception:
+                pass
+            _exit_stacks.pop(db_key, None)
+        _sessions.pop(db_key, None)
+        _tools_by_server.pop(db_key, None)
+        _server_status.pop(db_key, None)
+        
+    if _loop and _loop.is_running():
+        try:
+            _run_coro(_close(), timeout=10.0)
+        except Exception:
+            pass
+
+
+# ---------- Sync facade for agent_loop ----------
+def available_mcp_tools(uid: Optional[str] = None) -> List[Dict[str, Any]]:
     """All tool specs from connected MCP servers, OpenAI function format.
     Safe to call even before init_mcp — returns []."""
     out = []
-    for specs in _tools_by_server.values():
-        out.extend(specs)
+    
+    # 1. Global tools
+    for key, specs in _tools_by_server.items():
+        if not key.startswith("user:"):
+            out.extend(specs)
+            
+    # 2. User specific tools
+    if uid:
+        try:
+            init_user_mcp(uid)
+        except Exception as e:
+            print(f"[MCP] Failed to init user {uid} custom MCP tools: {e}")
+        
+        user_prefix = f"user:{uid}:"
+        for key, specs in _tools_by_server.items():
+            if key.startswith(user_prefix):
+                out.extend(specs)
+                
     return out
 
 
-def execute_mcp_tool(name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+def execute_mcp_tool(name: str, args: Dict[str, Any], timeout: float = 30.0, uid: Optional[str] = None) -> Dict[str, Any]:
     """Sync dispatcher. `name` is the full `mcp_<server>_<tool>` namespaced name.
     Returns {ok, result | error}."""
     if not name.startswith("mcp_"):
@@ -243,14 +391,31 @@ def execute_mcp_tool(name: str, args: Dict[str, Any], timeout: float = 30.0) -> 
     # Find which server owns it
     target_server = None
     target_tool = None
-    for server_key, specs in _tools_by_server.items():
-        for spec in specs:
-            if spec["function"]["name"] == name:
-                target_server = server_key
-                target_tool = spec["function"]["_mcp_tool"]
+    
+    # First search user-specific servers if uid is passed
+    if uid:
+        user_prefix = f"user:{uid}:"
+        for server_key, specs in _tools_by_server.items():
+            if server_key.startswith(user_prefix):
+                for spec in specs:
+                    if spec["function"]["name"] == name:
+                        target_server = server_key
+                        target_tool = spec["function"]["_mcp_tool"]
+                        break
+            if target_server:
                 break
-        if target_server:
-            break
+                
+    # If not found in user servers, search global servers
+    if not target_server:
+        for server_key, specs in _tools_by_server.items():
+            if not server_key.startswith("user:"):
+                for spec in specs:
+                    if spec["function"]["name"] == name:
+                        target_server = server_key
+                        target_tool = spec["function"]["_mcp_tool"]
+                        break
+            if target_server:
+                break
 
     if not target_server:
         return {"ok": False, "error": f"unknown MCP tool: {name}"}
@@ -264,7 +429,6 @@ def execute_mcp_tool(name: str, args: Dict[str, Any], timeout: float = 30.0) -> 
 
     try:
         result = _run_coro(_call(), timeout=timeout)
-        # MCP tool results are wrapped in CallToolResult with content list
         content = []
         for c in (result.content or []):
             if hasattr(c, "text"):
@@ -276,7 +440,7 @@ def execute_mcp_tool(name: str, args: Dict[str, Any], timeout: float = 30.0) -> 
         return {
             "ok": not getattr(result, "isError", False),
             "result": content,
-            "server": target_server,
+            "server": target_server.split(":")[-1] if ":" in target_server else target_server,
         }
     except asyncio.TimeoutError:
         return {"ok": False, "error": f"MCP tool '{name}' timed out after {timeout}s"}
@@ -292,11 +456,13 @@ def is_mcp_tool(name: str) -> bool:
     )
 
 
-def get_mcp_status() -> Dict[str, Any]:
+def get_mcp_status(uid: Optional[str] = None) -> Dict[str, Any]:
     """Snapshot used by /api/mcp/status and the UI dialog."""
     config = _load_config()
     servers_cfg = config.get("servers", {})
     out_servers = []
+    
+    # 1. Global servers
     for key, cfg in servers_cfg.items():
         status = _server_status.get(key, {
             "state": "disabled",
@@ -321,6 +487,36 @@ def get_mcp_status() -> Dict[str, Any]:
                 for t in tools
             ],
         })
+        
+    # 2. User custom servers
+    if uid:
+        try:
+            init_user_mcp(uid)
+        except Exception as e:
+            print(f"[MCP] Failed to init custom servers on status: {e}")
+            
+        user_prefix = f"user:{uid}:"
+        for db_key, status in _server_status.items():
+            if db_key.startswith(user_prefix):
+                server_key = db_key[len(user_prefix):]
+                tools = _tools_by_server.get(db_key, [])
+                out_servers.append({
+                    "key": server_key,
+                    "name": f"mcp-{server_key.replace('_', '-')}-server",
+                    "category": status.get("category", "Custom"),
+                    "description": status.get("description", ""),
+                    "state": status["state"],
+                    "error": status.get("error"),
+                    "tool_count": status["tool_count"],
+                    "enabled_in_config": True,
+                    "is_custom": True,
+                    "url": status.get("url", ""),
+                    "tools": [
+                        {"name": t["function"]["name"], "underlying": t["function"]["_mcp_tool"]}
+                        for t in tools
+                    ],
+                })
+                
     total_active = sum(1 for s in out_servers if s["state"] == "active")
     return {
         "initialized": _initialized,
@@ -345,6 +541,10 @@ def shutdown_mcp():
                 print(f"[MCP] shutdown error for {key}: {e}")
         _exit_stacks.clear()
         _sessions.clear()
+        _tools_by_server.clear()
+        _server_status.clear()
+        with _lock:
+            _initialized_users.clear()
 
     try:
         _run_coro(_close(), timeout=10)
@@ -354,3 +554,4 @@ def shutdown_mcp():
         _loop.call_soon_threadsafe(_loop.stop)
     except Exception:
         pass
+

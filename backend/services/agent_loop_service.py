@@ -117,10 +117,12 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     # We append to the existing system message so the model always sees an
     # up-to-date "today / now" reference and can reason about "tomorrow", etc.
     try:
-        import time as _t
-        now_str = _t.strftime("%A, %d %B %Y, %I:%M %p %Z").strip()
-        today = _t.strftime("%Y-%m-%d (%A)")
-        tomorrow = _t.strftime("%Y-%m-%d", _t.localtime(_t.time() + 86400)) + f" ({_t.strftime('%A', _t.localtime(_t.time() + 86400))})"
+        from datetime import datetime, timezone, timedelta
+        ist_tz = timezone(timedelta(hours=5, minutes=30))
+        now_ist = datetime.now(ist_tz)
+        now_str = now_ist.strftime("%A, %d %B %Y, %I:%M %p IST").strip()
+        today = now_ist.strftime("%Y-%m-%d (%A)")
+        tomorrow = (now_ist + timedelta(days=1)).strftime("%Y-%m-%d (%A)")
         time_block = (
             f"\n\nCRITICAL TEMPORAL ANCHOR (OVERRIDE YOUR INTERNAL CLOCK):\n"
             f"The current year is STRICTLY 2026. Do NOT say it is 2024. Your internal clock and knowledge cutoff are outdated.\n"
@@ -165,7 +167,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     # answer it). Token cost is bounded since most deployments enable <10 servers.
     try:
         from services.mcp_client_service import available_mcp_tools
-        mcp_specs = available_mcp_tools()
+        mcp_specs = available_mcp_tools(uid=uid)
         if mcp_specs:
             mcp_lines = [f"\n\nAVAILABLE MCP TOOLS ({len(mcp_specs)} from connected servers). Use ONLY when the task genuinely needs external data/action — do NOT call for opinions, math, or general knowledge you already have:"]
             for s in mcp_specs:
@@ -885,7 +887,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                     try:
                         if is_mcp:
                             from services.mcp_client_service import execute_mcp_tool
-                            result = execute_mcp_tool(tool_name, tool_args)
+                            result = execute_mcp_tool(tool_name, tool_args, uid=uid)
                             label = "MCP"
                         else:
                             from services.integration_tools import execute_tool
