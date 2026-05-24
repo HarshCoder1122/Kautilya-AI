@@ -1,5 +1,5 @@
 import { Brain, Code, ChartBar, ArrowSquareOut, Play, Pause, Copy, Check, ArrowsClockwise, SpeakerHigh, StopCircle, CalendarCheck, VideoCamera, Link } from "@phosphor-icons/react";
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -366,6 +366,96 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
     normalizedContent = String(normalizedContent);
   }
 
+  const { sources: extractedSources, cleanText } = extractSources(message.responseText || normalizedContent || '');
+  const agent = message.agentType ? agentBadge[message.agentType] : null;
+  const rawContent = cleanText
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .trim();
+
+  const [typedRawContent, setTypedRawContent] = useState(() => {
+    return !message.streaming ? rawContent : '';
+  });
+
+  const targetContentRef = useRef(rawContent);
+  const typedRawContentRef = useRef(typedRawContent);
+  const timerRef = useRef(null);
+
+  useEffect(() => {
+    targetContentRef.current = rawContent;
+    // Immediately bump rendering when new chunk arrives to ensure zero lag
+    if (message.streaming) {
+      const target = rawContent;
+      const current = typedRawContentRef.current;
+      if (current.length === 0 && target.length > 0) {
+        setTypedRawContent(target.substring(0, Math.min(target.length, 3)));
+      }
+    }
+  }, [rawContent, message.streaming]);
+
+  useEffect(() => {
+    typedRawContentRef.current = typedRawContent;
+  }, [typedRawContent]);
+
+  // Reset when changing message ID or role
+  useEffect(() => {
+    if (!message.streaming) {
+      setTypedRawContent(rawContent);
+    } else {
+      setTypedRawContent('');
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }, [message.id, message.role]);
+
+  // Immediately catch up when streaming ends
+  useEffect(() => {
+    if (!message.streaming) {
+      setTypedRawContent(rawContent);
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    }
+  }, [message.streaming, rawContent]);
+
+  // Smooth typing effect
+  useEffect(() => {
+    if (!message.streaming) return;
+
+    if (!timerRef.current) {
+      timerRef.current = setInterval(() => {
+        const target = targetContentRef.current;
+        const current = typedRawContentRef.current;
+
+        if (!target.startsWith(current) || current.length > target.length) {
+          setTypedRawContent(target);
+        } else if (current.length < target.length) {
+          const remaining = target.length - current.length;
+          let charsToAppend = 1;
+          if (remaining > 50) {
+            charsToAppend = Math.ceil(remaining / 5);
+          } else if (remaining > 15) {
+            charsToAppend = 4;
+          } else if (remaining > 5) {
+            charsToAppend = 2;
+          }
+          setTypedRawContent(target.substring(0, current.length + charsToAppend));
+        }
+      }, 15);
+    }
+  }, [message.streaming]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+    };
+  }, []);
+
   const handleCopy = (text) => {
     const copyText = text || normalizedContent || message.responseText || '';
     if (!copyText) return;
@@ -507,19 +597,15 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
     );
   }
 
-  const { sources: extractedSources, cleanText } = extractSources(message.responseText || normalizedContent || '');
-  
-  const agent = message.agentType ? agentBadge[message.agentType] : null;
-  const rawContent = cleanText
-    .replace(/<think>[\s\S]*?<\/think>/g, '')
-    .trim();
+
+
   // Mid-stream code-fence safety: if the response has an odd number of ```
   // fences, the markdown parser will treat everything after the last opener
   // as code — including narrative text the model emits after a code block.
   // Auto-balance by appending a virtual closer. The real closer (when it
   // streams in) just replaces this, so no UX regression.
-  const _fenceCount = (rawContent.match(/```/g) || []).length;
-  let _normalized = _fenceCount % 2 === 1 ? rawContent + '\n```' : rawContent;
+  const _fenceCount = (typedRawContent.match(/```/g) || []).length;
+  let _normalized = _fenceCount % 2 === 1 ? typedRawContent + '\n```' : typedRawContent;
   // Normalize LaTeX delimiters to markdown-math form so remark-math picks
   // them up. Models routinely emit \[ ... \] and \( ... \) instead of
   // $$ ... $$ / $ ... $. Convert only OUTSIDE code blocks.
