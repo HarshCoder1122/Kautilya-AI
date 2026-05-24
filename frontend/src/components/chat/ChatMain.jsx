@@ -1215,7 +1215,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                   </span>
                 </div>
 
-                <ScrollArea className="flex-1 mt-3 pr-1">
+                <div className="flex-1 mt-3 pr-2 overflow-y-auto min-h-0 max-h-[60vh] scrollbar-thin scrollbar-thumb-muted-foreground/30">
                   <div className="space-y-6">
                     {filtered.length === 0 && (
                       <div className="text-center py-12 text-xs text-muted-foreground">
@@ -1225,7 +1225,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                     {filtered.map(cat => (
                       <div key={cat.category}>
                         <div className="text-[10px] uppercase font-bold tracking-[0.18em] text-muted-foreground/70 mb-3 px-1">
-                          {cat.category} <span className="text-muted-foreground/40 normal-case font-medium">· {cat.servers.length}</span>
+                           {cat.category} <span className="text-muted-foreground/40 normal-case font-medium">· {cat.servers.length}</span>
                         </div>
                         <div className="space-y-3">
                           {cat.servers.map(server => {
@@ -1259,7 +1259,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                                   isActive
                                     ? 'border-[var(--k-border)] bg-[var(--k-surface)] hover:bg-[var(--k-surface-elevated)]'
                                     : 'border-[var(--k-border)] bg-[var(--k-surface)]/60 hover:bg-[var(--k-surface)] opacity-85 hover:opacity-100'
-                                }`}
+                                  }`}
                               >
                                 <div className="flex items-start justify-between mb-2 gap-3">
                                   <div className="min-w-0">
@@ -1324,7 +1324,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                       </div>
                     ))}
                   </div>
-                </ScrollArea>
+                </div>
               </>
             );
           })()}

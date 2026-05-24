@@ -195,11 +195,21 @@ def connect(provider):
 
     cfg = _get_cfg(uid, provider) or {}
     client_id = cfg.get('client_id') or request.args.get('client_id')
+    
+    # Fallback to system environment variables for central OAuth registration
+    if not client_id:
+        client_id = os.environ.get(f"{provider.upper()}_CLIENT_ID")
+    if not client_id and provider in ('gmail', 'google_calendar'):
+        client_id = os.environ.get("GOOGLE_CLIENT_ID") or os.environ.get("GOOGLE_CALENDAR_CLIENT_ID") or os.environ.get("GMAIL_CLIENT_ID")
+
     if not client_id:
         return jsonify({"error": "client_id missing — save it in Settings first."}), 400
+
     client_secret = cfg.get('client_secret') or request.args.get('client_secret')
-    if client_secret:
-        _save_cfg(uid, provider, {"client_id": client_id, "client_secret": client_secret})
+    if not client_secret:
+        client_secret = os.environ.get(f"{provider.upper()}_CLIENT_SECRET")
+    if not client_secret and provider in ('gmail', 'google_calendar'):
+        client_secret = os.environ.get("GOOGLE_CLIENT_SECRET") or os.environ.get("GOOGLE_CALENDAR_CLIENT_SECRET") or os.environ.get("GMAIL_CLIENT_SECRET")
 
     # Force https — Flask behind HF Spaces / Render proxy sees http internally
     _host = request.host_url.rstrip('/')
@@ -207,8 +217,14 @@ def connect(provider):
         _host = 'https://' + _host[7:]
     redirect_uri = request.args.get('redirect_uri') or (_host + f'/api/integrations/{provider}/callback')
     state = secrets.token_urlsafe(24)
-    # Store state → uid for callback verification
-    _save_cfg(uid, provider, {"oauth_state": state, "redirect_uri": redirect_uri})
+
+    # Store credentials and oauth state in user integration doc for callback verification & exchange
+    _save_cfg(uid, provider, {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "oauth_state": state,
+        "redirect_uri": redirect_uri
+    })
 
     params = {
         "client_id": client_id,
