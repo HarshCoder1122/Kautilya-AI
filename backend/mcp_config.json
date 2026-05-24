@@ -21,10 +21,8 @@
       "description": "Fetch any URL, returns HTML\u2192markdown. Respects robots.txt.",
       "category": "Analytics & Web",
       "transport": "stdio",
-      "command": "uvx",
-      "args": [
-        "mcp-server-fetch"
-      ],
+      "command": "mcp-server-fetch",
+      "args": [],
       "env_required": []
     },
     "brave_search": {
@@ -137,10 +135,8 @@
       "description": "Timezone conversion and time queries.",
       "category": "Productivity",
       "transport": "stdio",
-      "command": "uvx",
-      "args": [
-        "mcp-server-time"
-      ],
+      "command": "mcp-server-time",
+      "args": [],
       "env_required": []
     }
   }
