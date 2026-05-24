@@ -583,8 +583,10 @@ export const integrationsAPI = {
     const res = await api.post(`/api/integrations/${provider}/disconnect`);
     return res.data;
   },
-  connectOAuth: async (provider) => {
-    const res = await api.get(`/api/integrations/${provider}/connect`);
+  connectOAuth: async (provider, redirectUri) => {
+    const res = await api.get(`/api/integrations/${provider}/connect`, {
+      params: redirectUri ? { redirect_uri: redirectUri } : undefined,
+    });
     return res.data;
   },
   getMcpStatus: async () => {

@@ -1,14 +1,13 @@
-import os
+import sys
 from huggingface_hub import HfApi
 
 api = HfApi()
+repo_id = "HarshSharma1212/KAUTILYABACKEND"
+
 try:
-    print("Listing files in HarshSharma1212/KAUTILYABACKEND space...")
-    files = api.list_repo_files(repo_id="HarshSharma1212/KAUTILYABACKEND", repo_type="space")
-    print("Files found in space:")
-    for f in files[:30]:
-        print(f"  - {f}")
-    if len(files) > 30:
-        print(f"  ... and {len(files) - 30} more files")
+    files = api.list_repo_files(repo_id=repo_id, repo_type="space")
+    print(f"Files in {repo_id}:")
+    for f in sorted(files):
+         print(f"- {f}")
 except Exception as e:
-    print(f"Failed to list files: {e}")
+    print(f"Error: {e}")

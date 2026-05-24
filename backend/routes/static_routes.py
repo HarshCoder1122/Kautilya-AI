@@ -71,8 +71,11 @@ def home(subpath=None):
 
 @static_bp.route('/favicon.ico')
 def favicon():
-    """Serve favicon."""
-    return send_from_directory(STATIC_FOLDER, 'favicon.ico', mimetype='image/vnd.microsoft.icon')
+    """Serve favicon, falling back to logo.png when favicon.ico is absent."""
+    favicon_path = os.path.join(STATIC_FOLDER, 'favicon.ico')
+    if os.path.exists(favicon_path):
+        return send_from_directory(STATIC_FOLDER, 'favicon.ico', mimetype='image/vnd.microsoft.icon')
+    return send_from_directory(STATIC_FOLDER, 'logo.png', mimetype='image/png')
 
 
 @static_bp.route('/system/status', methods=['GET'])
