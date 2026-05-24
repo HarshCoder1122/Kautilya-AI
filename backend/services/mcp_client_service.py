@@ -26,6 +26,7 @@ import os
 import re
 import threading
 import time
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -40,6 +41,7 @@ _server_status: Dict[str, Dict[str, Any]] = {}  # server_key -> {state, error, c
 _initialized_users = set()            # Set of user IDs that have run init_user_mcp
 _initialized = False
 _lock = threading.Lock()
+_SERVER_START_TIMEOUT_SECONDS = float(os.environ.get("MCP_SERVER_START_TIMEOUT", "20"))
 
 
 def _config_path() -> Path:
@@ -133,12 +135,24 @@ async def _spawn_server(server_key: str, cfg: Dict[str, Any]) -> None:
 
     stack = AsyncExitStack()
     try:
-        read, write = await stack.enter_async_context(stdio_client(params))
-        session = await stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
+        read, write = await asyncio.wait_for(
+            stack.enter_async_context(stdio_client(params)),
+            timeout=_SERVER_START_TIMEOUT_SECONDS,
+        )
+        session = await asyncio.wait_for(
+            stack.enter_async_context(ClientSession(read, write)),
+            timeout=_SERVER_START_TIMEOUT_SECONDS,
+        )
+        await asyncio.wait_for(
+            session.initialize(),
+            timeout=_SERVER_START_TIMEOUT_SECONDS,
+        )
 
         # Discover tools
-        tools_resp = await session.list_tools()
+        tools_resp = await asyncio.wait_for(
+            session.list_tools(),
+            timeout=_SERVER_START_TIMEOUT_SECONDS,
+        )
         specs = []
         for t in tools_resp.tools:
             tool_name = f"mcp_{_sanitize_name(server_key)}_{_sanitize_name(t.name)}"
@@ -171,14 +185,15 @@ async def _spawn_server(server_key: str, cfg: Dict[str, Any]) -> None:
             await stack.aclose()
         except Exception:
             pass
+        err_text = f"{type(e).__name__}: {str(e)}".strip()
         _server_status[server_key] = {
             "state": "error",
-            "error": str(e)[:200],
+            "error": err_text[:200],
             "category": cfg.get("category", "Other"),
             "description": cfg.get("description", ""),
             "tool_count": 0,
         }
-        print(f"[MCP] ERR: '{server_key}' failed: {e}")
+        print(f"[MCP] ERR: '{server_key}' failed: {err_text}")
 
 
 async def _init_all(config: Dict[str, Any]):
@@ -220,8 +235,10 @@ def init_mcp():
             print(f"[MCP] initialised: {active}/{len(_server_status)} servers active, {total_tools} tools available")
         except ImportError:
             print("[MCP] mcp SDK not installed — skipping (pip install mcp to enable)")
+        except FutureTimeoutError:
+            print("[MCP] init failed: FutureTimeoutError: overall MCP init timed out")
         except Exception as e:
-            print(f"[MCP] init failed: {e}")
+            print(f"[MCP] init failed: {type(e).__name__}: {e}")
         _initialized = True
 
 
@@ -649,4 +666,3 @@ def shutdown_mcp():
         _loop.call_soon_threadsafe(_loop.stop)
     except Exception:
         pass
-
