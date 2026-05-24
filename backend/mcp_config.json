@@ -17,7 +17,7 @@
       ]
     },
     "fetch": {
-      "enabled": false,
+      "enabled": true,
       "description": "Fetch any URL, returns HTML\u2192markdown. Respects robots.txt.",
       "category": "Analytics & Web",
       "transport": "stdio",
@@ -42,7 +42,7 @@
       ]
     },
     "github": {
-      "enabled": false,
+      "enabled": true,
       "description": "GitHub API \u2014 repos, issues, PRs, code search.",
       "category": "Developer Tools",
       "transport": "stdio",
@@ -68,7 +68,7 @@
       "env_required": []
     },
     "sequential_thinking": {
-      "enabled": false,
+      "enabled": true,
       "description": "Structured step-by-step reasoning with branchable thoughts.",
       "category": "AI & Knowledge",
       "transport": "stdio",
@@ -95,7 +95,7 @@
       ]
     },
     "google_drive": {
-      "enabled": false,
+      "enabled": true,
       "description": "Google Drive \u2014 list, search, read files (OAuth).",
       "category": "Productivity",
       "transport": "stdio",
@@ -136,7 +136,7 @@
       "env_required": []
     },
     "time": {
-      "enabled": false,
+      "enabled": true,
       "description": "Timezone conversion and time queries.",
       "category": "Productivity",
       "transport": "stdio",
