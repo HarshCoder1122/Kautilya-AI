@@ -39,6 +39,61 @@ def _is_connected(uid: str, provider: str) -> bool:
     return bool(cfg.get('access_token') or cfg.get('api_key') or cfg.get('webhook_url'))
 
 
+def _refresh_google_oauth_token(uid: str, provider: str) -> Dict[str, Any]:
+    cfg = _get_cfg(uid, provider) or {}
+    refresh_token = cfg.get("refresh_token")
+    client_id = cfg.get("client_id")
+    client_secret = cfg.get("client_secret")
+    if not refresh_token or not client_id or not client_secret:
+        raise Exception(f"{provider} not connected or missing refresh credentials")
+
+    r = requests.post(
+        "https://oauth2.googleapis.com/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+            "client_secret": client_secret,
+        },
+        timeout=15,
+    )
+    if not r.ok:
+        raise Exception(f"{provider} token refresh failed: {r.text[:200]}")
+
+    data = r.json()
+    access_token = data.get("access_token")
+    if not access_token:
+        raise Exception(f"{provider} refresh returned no access_token")
+
+    from extensions import db
+    db.collection('users').document(uid).collection('integrations').document(provider).set({
+        "access_token": access_token,
+        "obtained_at": int(time.time()),
+        "expires_in": data.get("expires_in", 3600),
+    }, merge=True)
+    cfg["access_token"] = access_token
+    cfg["obtained_at"] = int(time.time())
+    cfg["expires_in"] = data.get("expires_in", 3600)
+    return cfg
+
+
+def _get_valid_google_token(uid: str, provider: str) -> str:
+    cfg = _get_cfg(uid, provider) or {}
+    access_token = cfg.get("access_token")
+    if not access_token:
+        raise Exception(f"{provider} not connected")
+
+    obtained_at = int(cfg.get("obtained_at") or 0)
+    expires_in = int(cfg.get("expires_in") or 3600)
+    if time.time() > obtained_at + expires_in - 300:
+        try:
+            cfg = _refresh_google_oauth_token(uid, provider)
+            access_token = cfg.get("access_token") or access_token
+        except Exception:
+            pass
+    return access_token
+
+
 # ---------- Handlers ----------
 def _send_whatsapp(uid, args):
     cfg = _get_cfg(uid, 'whatsapp') or {}
@@ -66,9 +121,11 @@ def _post_slack(uid, args):
 
 
 def _create_calendar_event(uid, args):
-    cfg = _get_cfg(uid, 'google_calendar') or {}
-    if not cfg.get('access_token'):
-        return {"ok": False, "error": "Google Calendar not connected"}
+    try:
+        token = _get_valid_google_token(uid, 'google_calendar')
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    
     body = {
         "summary": args["title"],
         "description": args.get("description", ""),
@@ -76,12 +133,165 @@ def _create_calendar_event(uid, args):
         "end":   {"dateTime": args["end"],   "timeZone": args.get("tz", "Asia/Kolkata")},
         "attendees": [{"email": e} for e in (args.get("attendees") or []) if '@' in e],
     }
+
+    url = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+    params = {}
+    
+    if args.get("create_meet_link"):
+        params["conferenceDataVersion"] = 1
+        body["conferenceData"] = {
+            "createRequest": {
+                "requestId": f"meet_{int(time.time())}",
+                "conferenceSolutionKey": {"type": "eventHangout"}
+            }
+        }
+
     r = requests.post(
-        "https://www.googleapis.com/calendar/v3/calendars/primary/events",
-        headers={"Authorization": f"Bearer {cfg['access_token']}", "Content-Type": "application/json"},
-        json=body, timeout=15,
+        url,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        params=params,
+        json=body,
+        timeout=15,
     )
-    return {"ok": r.ok, "status": r.status_code, "event_id": (r.json().get('id') if r.ok else None)}
+    if not r.ok:
+        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+
+    res = r.json()
+    return {
+        "ok": True,
+        "status": r.status_code,
+        "event_id": res.get("id"),
+        "meet_link": res.get("hangoutLink")
+    }
+
+
+def _append_sheet_row(uid, args):
+    try:
+        token = _get_valid_google_token(uid, 'google_sheets')
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    spreadsheet_id = (args.get("spreadsheet_id") or "").strip()
+    if not spreadsheet_id:
+        return {"ok": False, "error": "spreadsheet_id is required"}
+
+    values = args.get("values")
+    if not isinstance(values, list):
+        return {"ok": False, "error": "values must be a list of cell values"}
+
+    sheet_name = (args.get("sheet_name") or "Sheet1").strip()
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{sheet_name}:append"
+    params = {
+        "valueInputOption": "USER_ENTERED",
+        "insertDataOption": "INSERT_ROWS"
+    }
+    body = {
+        "values": [values]
+    }
+    r = requests.post(
+        url,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        params=params,
+        json=body,
+        timeout=15,
+    )
+    if not r.ok:
+        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+    
+    return {"ok": True, "status": r.status_code, "response": r.json()}
+
+
+def _create_google_task(uid, args):
+    try:
+        token = _get_valid_google_token(uid, 'google_tasks')
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    title = (args.get("title") or "").strip()
+    if not title:
+        return {"ok": False, "error": "title is required"}
+
+    notes = args.get("notes") or ""
+    due = args.get("due")
+
+    body = {
+        "title": title,
+    }
+    if notes:
+        body["notes"] = notes
+    if due:
+        body["due"] = due
+
+    r = requests.post(
+        "https://tasks.googleapis.com/v1/users/@default/lists/@default/tasks",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=body,
+        timeout=15,
+    )
+    if not r.ok:
+        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+
+    data = r.json()
+    return {"ok": True, "status": r.status_code, "task_id": data.get("id"), "self_link": data.get("selfLink")}
+
+
+def _list_drive_files(uid, args):
+    try:
+        token = _get_valid_google_token(uid, 'google_drive')
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    query = (args.get("query") or "").strip()
+    page_size = max(1, min(int(args.get("page_size") or 10), 50))
+    params = {
+        "pageSize": page_size,
+        "fields": "files(id,name,mimeType,modifiedTime,webViewLink,iconLink,size),nextPageToken",
+        "orderBy": "modifiedTime desc",
+        "supportsAllDrives": "true",
+        "includeItemsFromAllDrives": "true",
+    }
+    if query:
+        safe_query = query.replace("'", "\\'")
+        params["q"] = f"name contains '{safe_query}' and trashed = false"
+    else:
+        params["q"] = "trashed = false"
+
+    r = requests.get(
+        "https://www.googleapis.com/drive/v3/files",
+        headers={"Authorization": f"Bearer {token}"},
+        params=params,
+        timeout=20,
+    )
+    if not r.ok:
+        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+    data = r.json()
+    return {"ok": True, "files": data.get("files", []), "next_page_token": data.get("nextPageToken")}
+
+
+def _read_drive_file(uid, args):
+    try:
+        token = _get_valid_google_token(uid, 'google_drive')
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    file_id = (args.get("file_id") or "").strip()
+    if not file_id:
+        return {"ok": False, "error": "file_id is required"}
+
+    meta = requests.get(
+        f"https://www.googleapis.com/drive/v3/files/{file_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        params={
+            "fields": "id,name,mimeType,modifiedTime,webViewLink,webContentLink,size,exportLinks",
+            "supportsAllDrives": "true",
+        },
+        timeout=20,
+    )
+    if not meta.ok:
+        return {"ok": False, "status": meta.status_code, "error": meta.text[:300]}
+
+    info = meta.json()
+    return {"ok": True, "file": info}
 
 
 def _trigger_zapier(uid, args):
@@ -258,14 +468,58 @@ REGISTRY: Dict[str, Dict[str, Any]] = {
         "handler": _create_calendar_event,
         "spec": {"type": "function", "function": {
             "name": "create_calendar_event",
-            "description": "Create a Google Calendar event on the user's primary calendar.",
+            "description": "Create a Google Calendar event on the user's primary calendar with optional Google Meet link.",
             "parameters": {"type": "object", "required": ["title", "start", "end"], "properties": {
                 "title": {"type": "string"},
                 "start": {"type": "string", "description": "RFC3339 datetime"},
                 "end":   {"type": "string", "description": "RFC3339 datetime"},
                 "description": {"type": "string"},
                 "attendees": {"type": "array", "items": {"type": "string", "description": "email"}},
+                "create_meet_link": {"type": "boolean", "description": "Set to true to generate an automatic Google Meet video conference link for this event"},
                 "tz": {"type": "string", "description": "IANA timezone, defaults to Asia/Kolkata"}}}}},
+    },
+    "append_sheet_row": {
+        "provider": "google_sheets",
+        "handler": _append_sheet_row,
+        "spec": {"type": "function", "function": {
+            "name": "append_sheet_row",
+            "description": "Append a new row of values to a Google Sheet spreadsheet.",
+            "parameters": {"type": "object", "required": ["spreadsheet_id", "values"], "properties": {
+                "spreadsheet_id": {"type": "string", "description": "Google Sheet ID from the sheet URL"},
+                "values": {"type": "array", "items": {"type": "string"}, "description": "List of cell values to add to the new row (e.g. ['John Doe', 'john@example.com'])"},
+                "sheet_name": {"type": "string", "description": "Tab sheet name, defaults to Sheet1"}}}}},
+    },
+    "create_google_task": {
+        "provider": "google_tasks",
+        "handler": _create_google_task,
+        "spec": {"type": "function", "function": {
+            "name": "create_google_task",
+            "description": "Create a new task in the user's Google Tasks.",
+            "parameters": {"type": "object", "required": ["title"], "properties": {
+                "title": {"type": "string", "description": "Title of the task"},
+                "notes": {"type": "string", "description": "Details or notes about the task"},
+                "due": {"type": "string", "description": "RFC3339 timestamp for when the task is due (e.g. 2026-05-25T12:00:00Z)"}}}}},
+    },
+    "list_drive_files": {
+        "provider": "google_drive",
+        "handler": _list_drive_files,
+        "spec": {"type": "function", "function": {
+            "name": "list_drive_files",
+            "description": "List or search files in the user's connected Google Drive.",
+            "parameters": {"type": "object", "properties": {
+                "query": {"type": "string", "description": "Optional file name search text"},
+                "page_size": {"type": "integer", "description": "Max results, default 10, max 50"}
+            }}}}
+    },
+    "read_drive_file": {
+        "provider": "google_drive",
+        "handler": _read_drive_file,
+        "spec": {"type": "function", "function": {
+            "name": "read_drive_file",
+            "description": "Fetch metadata and view/download links for a Google Drive file by file_id.",
+            "parameters": {"type": "object", "required": ["file_id"], "properties": {
+                "file_id": {"type": "string", "description": "Google Drive file ID"}
+            }}}}
     },
     "trigger_zapier": {
         "provider": "zapier",

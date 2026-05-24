@@ -78,6 +78,12 @@ def favicon():
     return send_from_directory(STATIC_FOLDER, 'logo.png', mimetype='image/png')
 
 
+@static_bp.route('/logo.png')
+def logo():
+    """Serve the SPA logo from the root path used by the frontend."""
+    return send_from_directory(STATIC_FOLDER, 'logo.png', mimetype='image/png')
+
+
 @static_bp.route('/system/status', methods=['GET'])
 def system_status():
     """Basic unauthenticated system status metrics."""
