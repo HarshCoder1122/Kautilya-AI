@@ -144,7 +144,9 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     # short messages. The keyword gate is cheap and accurate enough.
     _intent_kw = ('send', 'whatsapp', 'slack', 'calendar', 'schedule', 'meeting',
                   'crm', 'hubspot', 'zoho', 'contact', 'lead', 'zapier', 'event',
-                  'email', 'remind', 'follow up', 'follow-up')
+                  'email', 'remind', 'follow up', 'follow-up', 'drive', 'file',
+                  'files', 'document', 'documents', 'doc', 'docs', 'sheet', 'sheets',
+                  'spreadsheet', 'spreadsheets')
     _msg_low = (last_user_msg or "").lower() if last_user_msg else ""
     if uid and any(k in _msg_low for k in _intent_kw):
         try:
@@ -186,7 +188,9 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     # Gated by intent keywords so chitchat doesn't pay the HTTP round-trip
     # to Google/HubSpot — that was adding 400-800ms TTFT on every message.
     _prefetch_kw = ('calendar', 'schedule', 'meeting', 'event', 'crm', 'contact',
-                    'lead', 'email', 'gmail', 'remind', 'agenda', 'tomorrow', 'today')
+                    'lead', 'email', 'gmail', 'remind', 'agenda', 'tomorrow', 'today',
+                    'drive', 'file', 'files', 'document', 'documents', 'doc', 'docs',
+                    'sheet', 'sheets', 'spreadsheet', 'spreadsheets')
     if uid and last_user_msg and any(k in (last_user_msg or "").lower() for k in _prefetch_kw):
         integration_context = _pre_fetch_integrations(uid, last_user_msg)
         if integration_context:
@@ -1192,6 +1196,44 @@ def _pre_fetch_integrations(uid, user_msg):
                 )
         except:
             pass
+
+    # ── Google Drive: list/view files intent ──────────────────────────────
+    drive_view_kw  = {'drive', 'file', 'files', 'document', 'documents', 'doc', 'docs', 'sheet', 'sheets', 'spreadsheet', 'spreadsheets'}
+    drive_view_act = {'show', 'what', 'list', 'check', 'see', 'any', 'get', 'search', 'find', 'fetch', 'retrieve', 'look', 'view', 'display', 'my', 'are there'}
+    
+    if (drive_view_kw & set(msg.split())) or any(k in msg for k in drive_view_kw):
+        if (drive_view_act & set(msg.split())) or any(k in msg for k in drive_view_act) or 'google drive' in msg or 'my drive' in msg:
+            try:
+                from services.integration_tools import execute_tool
+                res = execute_tool(uid, 'list_drive_files', {"page_size": 15})
+                if res.get('ok'):
+                    files = res.get('files', [])
+                    if files:
+                        lines = []
+                        for f in files:
+                            lines.append(f"  • {f.get('name')} (ID: {f.get('id')} | Type: {f.get('mimeType')} | Size: {f.get('size', 'N/A')} bytes | Link: {f.get('webViewLink')})")
+                        parts.append(
+                            "\n\n[LIVE DATA — Google Drive, recent files]\n"
+                            + "\n".join(lines)
+                            + "\n[Use this data to answer the user. Do NOT say you can't access drive/files.]\n"
+                        )
+                    else:
+                        parts.append(
+                            "\n\n[LIVE DATA — Google Drive: No files found in the user's Google Drive.]\n"
+                        )
+                else:
+                    err = res.get('error', 'unknown error')
+                    if "not connected" in err.lower():
+                        parts.append(
+                            "\n\n[SYSTEM: Google Drive is NOT connected for this user. "
+                            "Tell them to go to Dashboard → Integrations → Google Drive to connect it.]\n"
+                        )
+                    else:
+                        parts.append(
+                            f"\n\n[SYSTEM: Google Drive fetch failed: {err}]\n"
+                        )
+            except Exception as e:
+                parts.append(f"\n\n[SYSTEM: Google Drive fetch exception: {e}]\n")
 
     return "".join(parts)
 
