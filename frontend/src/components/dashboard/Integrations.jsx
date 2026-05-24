@@ -26,16 +26,6 @@ const MANUAL_FIELDS = {
                     { key: "business_account_id", label: "Business Account ID", type: "text" }],
   slack:           [{ key: "webhook_url", label: "Incoming Webhook URL", type: "url" }],
   zapier:          [{ key: "webhook_url", label: "Zap Webhook URL", type: "url" }],
-  hubspot:         [{ key: "client_id", label: "Client ID", type: "text" },
-                    { key: "client_secret", label: "Client Secret", type: "password" }],
-  salesforce:      [{ key: "client_id", label: "Client ID", type: "text" },
-                    { key: "client_secret", label: "Client Secret", type: "password" }],
-  zoho:            [{ key: "client_id", label: "Client ID", type: "text" },
-                    { key: "client_secret", label: "Client Secret", type: "password" }],
-  google_calendar: [{ key: "client_id", label: "Client ID", type: "text" },
-                    { key: "client_secret", label: "Client Secret", type: "password" }],
-  gmail:           [{ key: "client_id", label: "Client ID", type: "text" },
-                    { key: "client_secret", label: "Client Secret", type: "password" }],
 };
 
 export default function Integrations() {
@@ -285,17 +275,19 @@ export default function Integrations() {
                             ))}
 
                             <div className="flex items-center gap-2 pt-1">
-                              <button
-                                onClick={() => handleSave(item.id)}
-                                disabled={saving === item.id}
-                                className="px-4 py-1.5 text-xs rounded-lg bg-[var(--k-brand)] text-white font-medium hover:bg-[var(--k-brand-hover)] transition-colors disabled:opacity-50"
-                              >
-                                {saving === item.id ? "Saving…" : "Save Credentials"}
-                              </button>
+                              {fields.length > 0 && (
+                                <button
+                                  onClick={() => handleSave(item.id)}
+                                  disabled={saving === item.id}
+                                  className="px-4 py-1.5 text-xs rounded-lg bg-[var(--k-brand)] text-white font-medium hover:bg-[var(--k-brand-hover)] transition-colors disabled:opacity-50"
+                                >
+                                  {saving === item.id ? "Saving…" : "Save Credentials"}
+                                </button>
+                              )}
                               {isOAuth && (
                                 <button
                                   onClick={() => handleOAuth(item.id)}
-                                  className="flex items-center gap-1.5 px-4 py-1.5 text-xs rounded-lg border border-[var(--k-border)] text-foreground hover:bg-accent transition-colors"
+                                  className="flex items-center gap-1.5 px-4 py-1.5 text-xs rounded-lg bg-[var(--k-brand)] text-white font-medium hover:bg-[var(--k-brand-hover)] transition-colors"
                                 >
                                   <ArrowSquareOut className="w-3.5 h-3.5" />
                                   Connect via OAuth
