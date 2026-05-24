@@ -260,9 +260,7 @@ export default function WidgetPreview() {
                     {/* Widget Header */}
                     <div className="px-4 py-3 bg-[var(--k-brand)]">
                       <div className="flex items-center gap-2">
-                        <div className="w-6 h-6 rounded-md bg-white/20 flex items-center justify-center">
-                          <span className="text-white text-[10px] font-bold">K</span>
-                        </div>
+                        <img src="/logo.png" alt="Kautilya Logo" className="w-6 h-6 object-contain" />
                         <div>
                           <div className="text-xs font-medium text-white">Kautilya AI</div>
                           <div className="text-[10px] text-white/70">Online</div>

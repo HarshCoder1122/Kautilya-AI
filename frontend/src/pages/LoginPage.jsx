@@ -65,9 +65,7 @@ export default function LoginPage() {
 
         {/* Logo */}
         <div className="relative flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shadow-lg shadow-indigo-500/25">
-            <span className="text-white text-lg font-black tracking-tight">K</span>
-          </div>
+          <img src="/logo.png" alt="Kautilya Logo" className="w-9 h-9 object-contain" />
           <div>
             <span className="text-white font-bold text-lg tracking-tight">Kautilya AI</span>
             <span className="ml-2 text-[10px] uppercase tracking-[0.2em] text-indigo-400/70 font-semibold">by RevealIQ</span>
@@ -132,9 +130,7 @@ export default function LoginPage() {
         <div className="w-full max-w-[400px] relative">
           {/* Mobile logo */}
           <div className="lg:hidden flex items-center gap-3 mb-10">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center">
-              <span className="text-white text-lg font-black">K</span>
-            </div>
+            <img src="/logo.png" alt="Kautilya Logo" className="w-9 h-9 object-contain" />
             <span className="text-white font-bold text-lg">Kautilya AI</span>
           </div>
 

@@ -160,12 +160,12 @@
         width: 36px;
         height: 36px;
         border-radius: 10px;
-        background: rgba(255,255,255,0.2);
+        background: rgba(255,255,255,0.25);
         display: flex;
         align-items: center;
         justify-content: center;
-        font-weight: bold;
-        font-size: 16px;
+        object-fit: contain;
+        padding: 4px;
       }
       .k-header-title {
         font-size: 14px;
@@ -452,7 +452,7 @@
       <div id="k-widget-box">
         <div class="k-widget-header">
           <div class="k-header-info">
-            <div class="k-header-avatar">K</div>
+            <img class="k-header-avatar" src="${baseUrl}/logo.png" alt="Logo" />
             <div>
               <div class="k-header-title">${widgetConfig.name || 'Assistant'}</div>
               <div class="k-header-status"><span class="k-status-dot"></span> Online</div>
