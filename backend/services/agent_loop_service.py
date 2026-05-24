@@ -192,7 +192,14 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                     'drive', 'file', 'files', 'document', 'documents', 'doc', 'docs',
                     'sheet', 'sheets', 'spreadsheet', 'spreadsheets')
     if uid and last_user_msg and any(k in (last_user_msg or "").lower() for k in _prefetch_kw):
-        integration_context = _pre_fetch_integrations(uid, last_user_msg)
+        # Run pre-fetch in background with a tight 1.5s timeout so slow APIs never freeze Kautilya
+        future_integration = _executor.submit(_pre_fetch_integrations, uid, last_user_msg)
+        try:
+            integration_context = future_integration.result(timeout=1.5)
+        except Exception as e:
+            print(f"[Agent] Integration prefetch timed out or failed: {e}")
+            integration_context = ""
+
         if integration_context:
             last_idx = len(current_messages) - 1
             if current_messages[last_idx]["role"] == "user":
@@ -1111,13 +1118,13 @@ def _pre_fetch_integrations(uid, user_msg):
             cfg = _get_integration_cfg(uid, 'gmail')
             if cfg.get('access_token'):
                 try:
-                    emails = _gmail_list(uid, 10)
+                    emails = _gmail_list(uid, 4)
                     if emails:
                         lines = [f"  • From: {e['from']} | Subject: {e['subject']} | Date: {e['date']}"
                                  + (f"\n    Snippet: {e['snippet']}" if e.get('snippet') else '')
                                  for e in emails]
                         parts.append(
-                            "\n\n[LIVE DATA — Gmail inbox, last 10 messages]\n"
+                            "\n\n[LIVE DATA — Gmail inbox, last 4 messages]\n"
                             + "\n".join(lines)
                             + "\n[Use this data to answer the user. Do NOT say you can't access email.]\n"
                         )
@@ -1573,6 +1580,7 @@ def _python_run(code, timeout_sec=15):
 def _gmail_list(uid, max_results=10, query=''):
     """List recent emails. Returns list of {from, subject, snippet, date, id}."""
     import requests as _req
+    import concurrent.futures
     token = _get_valid_token(uid, 'gmail')
     params = {"maxResults": min(int(max_results or 10), 25)}
     if query:
@@ -1588,7 +1596,8 @@ def _gmail_list(uid, max_results=10, query=''):
         raise Exception(f"Gmail API error {r.status_code}: {r.text[:200]}")
     items = r.json().get('messages', [])
     out = []
-    for m in items[:max_results]:
+
+    def fetch_email_detail(m):
         try:
             mid = m['id']
             dr = _req.get(
@@ -1598,18 +1607,28 @@ def _gmail_list(uid, max_results=10, query=''):
                 timeout=10,
             )
             if not dr.ok:
-                continue
+                return None
             md = dr.json()
             headers = {h['name']: h['value'] for h in md.get('payload', {}).get('headers', [])}
-            out.append({
+            return {
                 "id": mid,
                 "from": headers.get('From', ''),
                 "subject": headers.get('Subject', '(no subject)'),
                 "date": headers.get('Date', ''),
                 "snippet": md.get('snippet', '')[:160],
-            })
+            }
         except Exception:
-            continue
+            return None
+
+    # Parallelize fetches using ThreadPoolExecutor to prevent blocking sequential latency
+    max_workers = min(len(items[:max_results]) or 1, 8)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(fetch_email_detail, m) for m in items[:max_results]]
+        for fut in concurrent.futures.as_completed(futures):
+            res = fut.result()
+            if res:
+                out.append(res)
+
     return out
 
 

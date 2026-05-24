@@ -105,7 +105,7 @@ export function ReActSteps({ steps, isSynthesizing }) {
   if (!steps || steps.length === 0) return null;
 
   return (
-    <div className="mb-5 p-3 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)]/50 space-y-0">
+    <div className="mb-5 p-3 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)]/50 space-y-0 w-full max-w-full min-w-0 overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-2 mb-3 pb-2 border-b border-[var(--k-border)]/50">
         <div className="w-1.5 h-1.5 rounded-full bg-[var(--k-brand)] animate-pulse" />

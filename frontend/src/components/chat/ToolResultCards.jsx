@@ -117,7 +117,7 @@ function PythonRunCard({ code = "", stdout = "", stderr = "", images = [], ok = 
         {showCode ? "Hide code" : "Show code"}
       </button>
       {showCode && (
-        <pre className="text-[11px] bg-[var(--k-surface-elevated)] rounded-md p-3 overflow-x-auto border border-[var(--k-border)]/60 mb-3">
+        <pre className="text-[11px] bg-[var(--k-surface-elevated)] rounded-md p-3 w-full max-w-full overflow-x-auto border border-[var(--k-border)]/60 mb-3">
           <code className="k-mono whitespace-pre">{code}</code>
         </pre>
       )}
@@ -133,13 +133,13 @@ function PythonRunCard({ code = "", stdout = "", stderr = "", images = [], ok = 
       {stdout && (
         <div>
           <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">stdout</div>
-          <pre className="text-[12px] bg-[var(--k-surface-elevated)]/60 rounded-md p-2.5 overflow-x-auto border border-[var(--k-border)]/40 whitespace-pre-wrap k-mono max-h-[260px] overflow-y-auto">{stdout}</pre>
+          <pre className="text-[12px] bg-[var(--k-surface-elevated)]/60 rounded-md p-2.5 w-full max-w-full overflow-x-auto border border-[var(--k-border)]/40 whitespace-pre-wrap k-mono max-h-[260px] overflow-y-auto">{stdout}</pre>
         </div>
       )}
       {stderr && !ok && (
         <div className="mt-2">
           <div className="text-[10px] uppercase tracking-wider text-rose-400 mb-1">error</div>
-          <pre className="text-[12px] bg-rose-500/5 rounded-md p-2.5 overflow-x-auto border border-rose-500/20 whitespace-pre-wrap text-rose-300 k-mono max-h-[200px] overflow-y-auto">{stderr}</pre>
+          <pre className="text-[12px] bg-rose-500/5 rounded-md p-2.5 w-full max-w-full overflow-x-auto border border-rose-500/20 whitespace-pre-wrap text-rose-300 k-mono max-h-[200px] overflow-y-auto">{stderr}</pre>
         </div>
       )}
     </CardShell>
@@ -174,7 +174,7 @@ function CardShell({ icon: Icon, accent = "brand", label, children }) {
     violet: "text-violet-400",
   };
   return (
-    <div className="rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] p-4">
+    <div className="rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] p-4 w-full max-w-full min-w-0 overflow-hidden">
       <div className="flex items-center gap-2 mb-2">
         <Icon weight="duotone" className={`w-4 h-4 ${accents[accent]}`} />
         <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">{label}</span>
