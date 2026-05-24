@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Terms of Service — Kautilya AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #07070a;
+      --surface: #0f0f15;
+      --border: #1f2029;
+      --text: #f5f5f7;
+      --muted: #a8a8b3;
+      --brand: #FF6D3F;
+      --brand-glow: rgba(255, 109, 63, 0.15);
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      line-height: 1.6;
+      padding: 40px 20px;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 48px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    }
+    header {
+      text-align: center;
+      margin-bottom: 40px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 30px;
+    }
+    .logo-container {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .logo-text {
+      font-family: 'Outfit', sans-serif;
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--brand);
+      letter-spacing: -0.5px;
+    }
+    h1 {
+      font-family: 'Outfit', sans-serif;
+      font-size: 32px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .date {
+      color: var(--muted);
+      font-size: 14px;
+    }
+    h2 {
+      font-family: 'Outfit', sans-serif;
+      font-size: 20px;
+      font-weight: 600;
+      color: var(--brand);
+      margin-top: 32px;
+      margin-bottom: 16px;
+    }
+    p {
+      color: var(--muted);
+      margin-bottom: 16px;
+      font-size: 15px;
+    }
+    ul {
+      margin-left: 24px;
+      margin-bottom: 16px;
+      color: var(--muted);
+    }
+    li {
+      margin-bottom: 8px;
+      font-size: 15px;
+    }
+    .compliance-box {
+      border: 1px solid var(--border);
+      background: rgba(255, 109, 63, 0.02);
+      padding: 24px;
+      border-radius: 16px;
+      margin: 24px 0;
+    }
+    footer {
+      text-align: center;
+      margin-top: 40px;
+      padding-top: 30px;
+      border-top: 1px solid var(--border);
+      font-size: 13px;
+      color: var(--muted);
+    }
+    a {
+      color: var(--brand);
+      text-decoration: none;
+      transition: opacity 0.2s;
+    }
+    a:hover {
+      opacity: 0.8;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <header>
+      <div class="logo-container">
+        <div class="logo-text">Kautilya AI</div>
+      </div>
+      <h1>Terms of Service</h1>
+      <div class="date">Last Updated: May 24, 2026</div>
+    </header>
+
+    <main>
+      <p>Welcome to Kautilya AI ("Platform," "we," "our," or "us"). By accessing or utilizing our single-page React app, API services, conversational widgets, voice workers, or third-party integrations, you agree to comply with and be bound by the following Terms of Service. If you do not agree to these terms, do not access or use the Platform.</p>
+
+      <h2>1. Account Eligibility and Security</h2>
+      <p>To access the advanced dashboard and integrations settings, you must register through our secure Google SSO protocol. You are entirely responsible for the security of your account and any strategic agent creations or API key uses occurring under your account.</p>
+
+      <h2>2. Customer Telephony & Campaign Regulations</h2>
+      <p>Our platform includes a background outbound dialer engine (`campaign_worker.py`) that makes automated voice calls on your behalf via SIP provider channels. You agree to use the dialer solely in accordance with regulatory laws:</p>
+
+      <div class="compliance-box">
+        <strong>TRAI, TCPA, and FCC Regulatory Compliance:</strong>
+        <p style="margin-top: 10px; margin-bottom: 0;">You explicitly agree to comply with all regional cold-calling and outbound campaign regulations, including the <strong>TCPA (Telephone Consumer Protection Act)</strong> in the United States and the <strong>TRAI (Telecom Regulatory Authority of India)</strong> Do-Not-Disturb (DND) registries in India. You must possess explicit opt-in consent before staging leads inside the campaign system. We disclaim all liability for regulatory fines resulting from unsolicited outbound campaign configurations.</p>
+      </div>
+
+      <h2>3. Third-Party Integrations and OAuth API Use</h2>
+      <p>Our platform lets you connect external developer services and Google APIs (Sheets, Tasks, Calendar, Drive, Gmail) using secure, central OAuth. Your authorization gives our background agent workers isolated, limited permissions to interact with these systems on your behalf. We are not responsible for the uptime or operations of external API providers.</p>
+
+      <h2>4. Prohibited Uses</h2>
+      <p>You agree not to use the Platform to:</p>
+      <ul>
+        <li>Generate spam or fraudulent outbound telephony campaigns.</li>
+        <li>Deploy deceptive, misleading, or malicious conversational agents.</li>
+        <li>Bypass rate-limits or system security sandboxes (such as the Python code interpreter).</li>
+        <li>Reverse-engineer or exploit Platform assets and models.</li>
+      </ul>
+
+      <h2>5. Limitation of Liability</h2>
+      <p>TO THE MAXIMUM EXTENT PERMITTED BY LAW, KAUTILYA AI AND ITS PARENT REVEALIQ INDUSTRIES SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, INCLUDING LOSS OF DATA, REVENUE, OR API CHARGES RESULTING FROM PLATFORM CONVERSATIONS AND SCHEDULINGS.</p>
+
+      <h2>6. Modifications to Terms</h2>
+      <p>We reserve the right to modify these Terms at any time. Your continued use of Kautilya AI after the posting of modifications indicates your active acceptance of the updated Terms.</p>
+    </main>
+
+    <footer>
+      &copy; 2026 Kautilya AI by RevealIQ. All rights reserved.
+    </footer>
+  </div>
+
+</body>
+</html>
