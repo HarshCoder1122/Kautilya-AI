@@ -34,3 +34,5 @@ openai
 flask-compress
 googlesearch-python
 mcp>=1.2.0
+uv
+
