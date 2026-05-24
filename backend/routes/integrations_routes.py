@@ -88,6 +88,10 @@ PROVIDERS = {
         "label": "Zapier", "category": "automation",
         "api_manual": True,  # user pastes their Zap hook URL
     },
+    "github": {
+        "label": "GitHub", "category": "developer",
+        "api_manual": True,  # user pastes Personal Access Token
+    },
 }
 
 
@@ -304,12 +308,21 @@ def disconnect(provider):
     if ref:
         try: ref.delete()
         except Exception: pass
+    if provider == "github":
+        try:
+            from services.mcp_client_service import close_user_mcp_server
+            import services.mcp_client_service as mcs
+            with mcs._lock:
+                mcs._initialized_users.discard(uid)
+            close_user_mcp_server(uid, "github")
+        except Exception as e:
+            print(f"[Integrations] failed to disconnect user GitHub server: {e}")
     return jsonify({"status": "ok"})
 
 
 @integrations_bp.route('/integrations/<provider>/save', methods=['POST'])
 def save_manual(provider):
-    """Save manual API credentials for WhatsApp / Slack / Zapier / OAuth client_id."""
+    """Save manual API credentials for WhatsApp / Slack / Zapier / OAuth client_id / GitHub."""
     uid = _require_auth()
     if not uid:
         return jsonify({"error": "Authentication required"}), 401
@@ -323,11 +336,22 @@ def save_manual(provider):
         "zoho":      {"client_id", "client_secret"},
         "google_calendar": {"client_id", "client_secret"},
         "gmail":           {"client_id", "client_secret"},
+        "github":          {"access_token"},
     }.get(provider)
     if allowed is None:
         return jsonify({"error": "unknown provider"}), 400
     patch = {k: v for k, v in data.items() if k in allowed}
     _save_cfg(uid, provider, patch)
+    if provider == "github" and patch.get("access_token"):
+        try:
+            from services.mcp_client_service import close_user_mcp_server, init_user_github_server
+            import services.mcp_client_service as mcs
+            with mcs._lock:
+                mcs._initialized_users.discard(uid)
+            close_user_mcp_server(uid, "github")
+            init_user_github_server(uid, patch["access_token"])
+        except Exception as e:
+            print(f"[Integrations] failed to restart user GitHub server: {e}")
     return jsonify({"status": "ok"})
 
 

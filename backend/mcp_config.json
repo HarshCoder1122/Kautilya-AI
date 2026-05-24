@@ -42,7 +42,7 @@
       ]
     },
     "github": {
-      "enabled": true,
+      "enabled": false,
       "description": "GitHub API \u2014 repos, issues, PRs, code search.",
       "category": "Developer Tools",
       "transport": "stdio",

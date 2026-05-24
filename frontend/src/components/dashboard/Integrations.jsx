@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import {
-  Link, WhatsappLogo, SlackLogo, GoogleLogo,
+  Link, WhatsappLogo, SlackLogo, GoogleLogo, GithubLogo,
   Lightning, CheckCircle, XCircle, ArrowSquareOut,
   PlugsConnected, Spinner, EnvelopeSimple,
   Cpu, Plus, Trash
@@ -16,9 +16,10 @@ const PROVIDER_ICONS = {
   slack:           { icon: SlackLogo,     color: "text-purple-400",  bg: "bg-purple-400/10" },
   zapier:          { icon: Lightning,     color: "text-amber-400",   bg: "bg-amber-400/10"  },
   gmail:           { icon: EnvelopeSimple, color: "text-rose-400",    bg: "bg-rose-400/10"   },
+  github:          { icon: GithubLogo,    color: "text-zinc-300",    bg: "bg-zinc-300/10"   },
 };
 
-const CATEGORY_LABELS = { crm: "CRM", messaging: "Messaging", calendar: "Calendar", automation: "Automation" };
+const CATEGORY_LABELS = { crm: "CRM", messaging: "Messaging", calendar: "Calendar", automation: "Automation", developer: "Developer Tools" };
 
 const MANUAL_FIELDS = {
   whatsapp:        [{ key: "access_token", label: "Access Token", type: "password" },
@@ -26,6 +27,7 @@ const MANUAL_FIELDS = {
                     { key: "business_account_id", label: "Business Account ID", type: "text" }],
   slack:           [{ key: "webhook_url", label: "Incoming Webhook URL", type: "url" }],
   zapier:          [{ key: "webhook_url", label: "Zap Webhook URL", type: "url" }],
+  github:          [{ key: "access_token", label: "GitHub Personal Access Token", type: "password" }],
 };
 
 export default function Integrations() {
