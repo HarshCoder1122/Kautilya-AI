@@ -212,9 +212,15 @@ def connect(provider):
         client_secret = os.environ.get("GOOGLE_CLIENT_SECRET") or os.environ.get("GOOGLE_CALENDAR_CLIENT_SECRET") or os.environ.get("GMAIL_CLIENT_SECRET")
 
     # Force https — Flask behind HF Spaces / Render proxy sees http internally
-    _host = request.host_url.rstrip('/')
-    if _host.startswith('http://') and not _host.startswith('http://localhost'):
-        _host = 'https://' + _host[7:]
+    central_domain = os.environ.get("CENTRAL_DOMAIN") or os.environ.get("OAUTH_REDIRECT_DOMAIN")
+    if central_domain:
+        if '://' in central_domain:
+            central_domain = central_domain.split('://', 1)[1]
+        _host = f"https://{central_domain.rstrip('/')}"
+    else:
+        _host = request.host_url.rstrip('/')
+        if _host.startswith('http://') and not _host.startswith('http://localhost'):
+            _host = 'https://' + _host[7:]
     redirect_uri = request.args.get('redirect_uri') or (_host + f'/api/integrations/{provider}/callback')
     state = secrets.token_urlsafe(24)
 
