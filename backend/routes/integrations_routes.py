@@ -221,6 +221,8 @@ def connect(provider):
     client_id = cfg.get('client_id') or request.args.get('client_id')
     
     # Fallback to system environment variables for central OAuth registration
+    if not client_id:
+        client_id = os.environ.get(f"{provider.upper()}_CLIENT_ID")
     if not client_id and provider in ('gmail', 'google_calendar', 'google_drive', 'google_sheets', 'google_tasks'):
         client_id = (
             os.environ.get("GOOGLE_CLIENT_ID")
