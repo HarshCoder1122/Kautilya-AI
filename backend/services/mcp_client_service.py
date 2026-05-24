@@ -43,7 +43,7 @@ _initialized_users = set()            # Set of user IDs that have run init_user_
 _initialized = False
 _init_started = False
 _lock = threading.Lock()
-_SERVER_START_TIMEOUT_SECONDS = float(os.environ.get("MCP_SERVER_START_TIMEOUT", "20"))
+_SERVER_START_TIMEOUT_SECONDS = float(os.environ.get("MCP_SERVER_START_TIMEOUT", "45"))
 _HF_SPACE_ENV_PRESENT = bool(os.environ.get("SPACE_AUTHOR_NAME") and os.environ.get("SPACE_REPO_NAME"))
 _HF_SKIP_STDIO_DEFAULTS = {"google_drive"}
 
