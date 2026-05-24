@@ -701,7 +701,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
 
             table({ children }) {
               return (
-                <div className="overflow-x-auto my-6 rounded-xl border border-[var(--k-border)] bg-black/20 shadow-sm">
+                <div className="overflow-x-auto w-full max-w-full min-w-0 my-6 rounded-xl border border-[var(--k-border)] bg-black/20 shadow-sm">
                   <table className="min-w-full divide-y divide-[var(--k-border)] text-sm">
                     {children}
                   </table>
@@ -750,7 +750,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
 
               const lineCount = codeString.split('\n').length;
               return (
-                <div className="relative group/code my-4 rounded-xl overflow-hidden border border-[var(--k-border)] bg-black/40 max-w-full min-w-0">
+                <div className="relative group/code my-4 rounded-xl overflow-hidden border border-[var(--k-border)] bg-black/40 w-full max-w-full min-w-0">
                   <div className="flex items-center justify-between px-4 py-2 bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-pink-500/10 border-b border-white/5">
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="flex items-center gap-1.5">
@@ -785,7 +785,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
                       </button>
                     </div>
                   </div>
-                  <div className="overflow-x-auto max-w-full">
+                  <div className="overflow-x-auto w-full max-w-full">
                     <SyntaxHighlighter
                       language={lang}
                       style={vscDarkPlus}
