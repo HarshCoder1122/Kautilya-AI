@@ -10,6 +10,9 @@ RUN apt-get update && apt-get install -y \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# Install global MCP servers as root to make them globally available
+RUN npm install -g @modelcontextprotocol/server-github @modelcontextprotocol/server-sequential-thinking
+
 # Use a non-root user for security (HF requirement)
 RUN useradd -m -u 1000 user
 USER user
