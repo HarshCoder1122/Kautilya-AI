@@ -84,6 +84,18 @@ def logo():
     return send_from_directory(STATIC_FOLDER, 'logo.png', mimetype='image/png')
 
 
+@static_bp.route('/privacy')
+def privacy_policy():
+    """Serve the Privacy Policy HTML page."""
+    return send_from_directory(STATIC_FOLDER, 'privacy.html')
+
+
+@static_bp.route('/terms')
+def terms_of_service():
+    """Serve the Terms of Service HTML page."""
+    return send_from_directory(STATIC_FOLDER, 'terms.html')
+
+
 @static_bp.route('/system/status', methods=['GET'])
 def system_status():
     """Basic unauthenticated system status metrics."""
