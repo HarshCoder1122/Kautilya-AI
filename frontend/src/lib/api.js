@@ -405,7 +405,8 @@ export const telephonyAPI = {
 
   outbound: async ({ agent_id, agentId, to, to_number }) => {
     const resolvedAgentId = agent_id || agentId;
-    const response = await api.post(`/api/agents/${resolvedAgentId}/call-outbound`, {
+    const response = await api.post(`/api/telephony/outbound-call`, {
+      agent_id: resolvedAgentId,
       to_number: to_number || to,
     });
     return response.data;

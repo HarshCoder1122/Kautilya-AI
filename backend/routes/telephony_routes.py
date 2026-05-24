@@ -133,15 +133,17 @@ def api_telephony_save():
         return jsonify({"error": str(e)}), 500
 
 
-@telephony_bp.route('/agents/<agent_id>/call-outbound', methods=['POST'])
-def api_agent_call_outbound(agent_id):
+@telephony_bp.route('/telephony/outbound-call', methods=['POST'])
+def api_agent_call_outbound():
     from extensions import db
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
     if not uid: return jsonify({"error": "Unauthorized"}), 401
     
     data = request.get_json() or {}
+    agent_id = data.get('agent_id')
     to_number = data.get('to_number')
+    if not agent_id: return jsonify({"error": "Agent ID required"}), 400
     if not to_number: return jsonify({"error": "Destination number required"}), 400
     
     try:
