@@ -5,7 +5,7 @@ import {
   PlugsConnected, Spinner, EnvelopeSimple,
   Cpu, Plus, Trash
 } from "@phosphor-icons/react";
-import api from "../../lib/api";
+import api, { integrationsAPI } from "../../lib/api";
 
 const PROVIDER_ICONS = {
   hubspot:         { icon: Lightning,     color: "text-orange-400",  bg: "bg-orange-400/10" },
@@ -145,8 +145,9 @@ export default function Integrations() {
 
   const handleOAuth = async (provider) => {
     try {
-      const res = await api.get(`/api/integrations/${provider}/connect`);
-      const url = res.data.redirect_url;
+      const redirectUri = `${window.location.origin}/api/integrations/${provider}/callback`;
+      const res = await integrationsAPI.connectOAuth(provider, redirectUri);
+      const url = res.redirect_url;
       if (!url) { showToast("Save client_id first", "error"); return; }
       const popup = window.open(url, "_blank", "width=600,height=700");
       const handler = (e) => {
