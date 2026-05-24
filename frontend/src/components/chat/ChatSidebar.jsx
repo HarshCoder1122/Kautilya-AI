@@ -39,9 +39,7 @@ export function ChatSidebar({ selectedConversation, onSelectConversation, onColl
         {/* Header */}
         <div className="p-4 flex items-center justify-between border-b border-[var(--k-border)]">
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-md bg-[var(--k-brand)] flex items-center justify-center">
-              <span className="text-white text-xs font-bold k-heading">K</span>
-            </div>
+            <img src="/logo.png" alt="Kautilya Logo" className="w-7 h-7 object-contain" />
             <span className="text-sm font-semibold k-heading tracking-tight text-foreground">Kautilya AI</span>
           </div>
           <div className="flex items-center gap-1">

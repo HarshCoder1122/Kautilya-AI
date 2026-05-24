@@ -17,9 +17,20 @@ const PROVIDER_ICONS = {
   zapier:          { icon: Lightning,     color: "text-amber-400",   bg: "bg-amber-400/10"  },
   gmail:           { icon: EnvelopeSimple, color: "text-rose-400",    bg: "bg-rose-400/10"   },
   github:          { icon: GithubLogo,    color: "text-zinc-300",    bg: "bg-zinc-300/10"   },
+  google_drive:    { icon: GoogleLogo,    color: "text-yellow-400",  bg: "bg-yellow-400/10" },
+  google_sheets:   { icon: GoogleLogo,    color: "text-emerald-400", bg: "bg-emerald-400/10"},
+  google_tasks:    { icon: GoogleLogo,    color: "text-blue-400",    bg: "bg-blue-400/10"   },
 };
 
-const CATEGORY_LABELS = { crm: "CRM", messaging: "Messaging", calendar: "Calendar", automation: "Automation", developer: "Developer Tools" };
+const CATEGORY_LABELS = { 
+  crm: "CRM", 
+  messaging: "Messaging", 
+  calendar: "Calendar", 
+  automation: "Automation", 
+  developer: "Developer Tools",
+  productivity: "Productivity",
+  storage: "Cloud Storage"
+};
 
 const MANUAL_FIELDS = {
   whatsapp:        [{ key: "access_token", label: "Access Token", type: "password" },
@@ -27,7 +38,6 @@ const MANUAL_FIELDS = {
                     { key: "business_account_id", label: "Business Account ID", type: "text" }],
   slack:           [{ key: "webhook_url", label: "Incoming Webhook URL", type: "url" }],
   zapier:          [{ key: "webhook_url", label: "Zap Webhook URL", type: "url" }],
-  github:          [{ key: "access_token", label: "GitHub Personal Access Token", type: "password" }],
 };
 
 export default function Integrations() {

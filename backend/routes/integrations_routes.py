@@ -76,6 +76,24 @@ PROVIDERS = {
         "token_url": "https://oauth2.googleapis.com/token",
         "scopes": "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly",
     },
+    "google_drive": {
+        "label": "Google Drive", "category": "storage",
+        "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_url": "https://oauth2.googleapis.com/token",
+        "scopes": "https://www.googleapis.com/auth/drive.readonly",
+    },
+    "google_sheets": {
+        "label": "Google Sheets", "category": "storage",
+        "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_url": "https://oauth2.googleapis.com/token",
+        "scopes": "https://www.googleapis.com/auth/spreadsheets",
+    },
+    "google_tasks": {
+        "label": "Google Tasks", "category": "productivity",
+        "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_url": "https://oauth2.googleapis.com/token",
+        "scopes": "https://www.googleapis.com/auth/tasks",
+    },
     "whatsapp": {
         "label": "WhatsApp Business", "category": "messaging",
         "api_manual": True,  # API-key based (Meta Business API), no OAuth
@@ -90,7 +108,9 @@ PROVIDERS = {
     },
     "github": {
         "label": "GitHub", "category": "developer",
-        "api_manual": True,  # user pastes Personal Access Token
+        "authorize_url": "https://github.com/login/oauth/authorize",
+        "token_url": "https://github.com/login/oauth/access_token",
+        "scopes": "repo,read:user",
     },
 }
 
@@ -201,10 +221,15 @@ def connect(provider):
     client_id = cfg.get('client_id') or request.args.get('client_id')
     
     # Fallback to system environment variables for central OAuth registration
-    if not client_id:
-        client_id = os.environ.get(f"{provider.upper()}_CLIENT_ID")
-    if not client_id and provider in ('gmail', 'google_calendar'):
-        client_id = os.environ.get("GOOGLE_CLIENT_ID") or os.environ.get("GOOGLE_CALENDAR_CLIENT_ID") or os.environ.get("GMAIL_CLIENT_ID")
+    if not client_id and provider in ('gmail', 'google_calendar', 'google_drive', 'google_sheets', 'google_tasks'):
+        client_id = (
+            os.environ.get("GOOGLE_CLIENT_ID")
+            or os.environ.get("GOOGLE_CALENDAR_CLIENT_ID")
+            or os.environ.get("GMAIL_CLIENT_ID")
+            or os.environ.get("GOOGLE_DRIVE_CLIENT_ID")
+            or os.environ.get("GOOGLE_SHEETS_CLIENT_ID")
+            or os.environ.get("GOOGLE_TASKS_CLIENT_ID")
+        )
 
     if not client_id:
         return jsonify({"error": "client_id missing — save it in Settings first."}), 400
@@ -212,8 +237,15 @@ def connect(provider):
     client_secret = cfg.get('client_secret') or request.args.get('client_secret')
     if not client_secret:
         client_secret = os.environ.get(f"{provider.upper()}_CLIENT_SECRET")
-    if not client_secret and provider in ('gmail', 'google_calendar'):
-        client_secret = os.environ.get("GOOGLE_CLIENT_SECRET") or os.environ.get("GOOGLE_CALENDAR_CLIENT_SECRET") or os.environ.get("GMAIL_CLIENT_SECRET")
+    if not client_secret and provider in ('gmail', 'google_calendar', 'google_drive', 'google_sheets', 'google_tasks'):
+        client_secret = (
+            os.environ.get("GOOGLE_CLIENT_SECRET")
+            or os.environ.get("GOOGLE_CALENDAR_CLIENT_SECRET")
+            or os.environ.get("GMAIL_CLIENT_SECRET")
+            or os.environ.get("GOOGLE_DRIVE_CLIENT_SECRET")
+            or os.environ.get("GOOGLE_SHEETS_CLIENT_SECRET")
+            or os.environ.get("GOOGLE_TASKS_CLIENT_SECRET")
+        )
 
     # Force https — Flask behind HF Spaces / Render proxy sees http internally
     central_domain = os.environ.get("CENTRAL_DOMAIN") or os.environ.get("OAUTH_REDIRECT_DOMAIN")
@@ -284,6 +316,17 @@ def oauth_callback(provider):
             "raw": data,
             "oauth_state": None,
         })
+
+        if provider == "github" and data.get("access_token"):
+            try:
+                from services.mcp_client_service import close_user_mcp_server, init_user_github_server
+                import services.mcp_client_service as mcs
+                with mcs._lock:
+                    mcs._initialized_users.discard(uid)
+                close_user_mcp_server(uid, "github")
+                init_user_github_server(uid, data["access_token"])
+            except Exception as e:
+                print(f"[Integrations] failed to start user GitHub server on callback: {e}")
     except Exception as e:
         return f"Callback error: {e}", 502
 
@@ -334,9 +377,12 @@ def save_manual(provider):
         "hubspot":   {"client_id", "client_secret"},
         "salesforce":{"client_id", "client_secret"},
         "zoho":      {"client_id", "client_secret"},
-        "google_calendar": {"client_id", "client_secret"},
-        "gmail":           {"client_id", "client_secret"},
-        "github":          {"access_token"},
+        "google_calendar": {},
+        "gmail":           {},
+        "google_drive":    {},
+        "google_sheets":   {},
+        "google_tasks":    {},
+        "github":          {},
     }.get(provider)
     if allowed is None:
         return jsonify({"error": "unknown provider"}), 400

@@ -24,6 +24,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import threading
 import time
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -40,8 +41,11 @@ _tools_by_server: Dict[str, List[Dict[str, Any]]] = {}  # server_key -> [tool_sp
 _server_status: Dict[str, Dict[str, Any]] = {}  # server_key -> {state, error, category, description, tool_count}
 _initialized_users = set()            # Set of user IDs that have run init_user_mcp
 _initialized = False
+_init_started = False
 _lock = threading.Lock()
 _SERVER_START_TIMEOUT_SECONDS = float(os.environ.get("MCP_SERVER_START_TIMEOUT", "20"))
+_HF_SPACE_ENV_PRESENT = bool(os.environ.get("SPACE_AUTHOR_NAME") and os.environ.get("SPACE_REPO_NAME"))
+_HF_SKIP_STDIO_DEFAULTS = {"google_drive"}
 
 
 def _config_path() -> Path:
@@ -74,6 +78,30 @@ def _expand_env(value: Any) -> Any:
 def _sanitize_name(s: str) -> str:
     """Tool names must match ^[a-z0-9_]+$ for the [INTEGRATION:] regex."""
     return re.sub(r"[^a-z0-9_]", "_", s.lower())
+
+
+def _server_enabled_in_runtime(server_key: str, cfg: Dict[str, Any]) -> tuple[bool, Optional[str]]:
+    """Decide whether a configured server should be attempted in this runtime."""
+    allowlist_raw = os.environ.get("MCP_ENABLED_SERVERS", "").strip()
+    if allowlist_raw:
+        allowlist = {item.strip() for item in allowlist_raw.split(",") if item.strip()}
+        if server_key not in allowlist:
+            return False, "Not allowlisted by MCP_ENABLED_SERVERS"
+
+    skiplist_raw = os.environ.get("MCP_SKIP_SERVERS", "").strip()
+    if skiplist_raw:
+        skiplist = {item.strip() for item in skiplist_raw.split(",") if item.strip()}
+        if server_key in skiplist:
+            return False, "Skipped by MCP_SKIP_SERVERS"
+
+    if _HF_SPACE_ENV_PRESENT and not allowlist_raw and server_key in _HF_SKIP_STDIO_DEFAULTS:
+        return False, "Skipped by default on Hugging Face Spaces"
+
+    command = _expand_env(cfg.get("command"))
+    if command and command not in {"npx", "uvx"} and not shutil.which(command):
+        return False, f"Command not found: {command}"
+
+    return True, None
 
 
 def _start_loop():
@@ -211,6 +239,16 @@ async def _init_all(config: Dict[str, Any]):
                 "tool_count": 0,
             }
             continue
+        should_start, reason = _server_enabled_in_runtime(key, cfg)
+        if not should_start:
+            _server_status[key] = {
+                "state": "skipped",
+                "error": reason,
+                "category": cfg.get("category", "Other"),
+                "description": cfg.get("description", ""),
+                "tool_count": 0,
+            }
+            continue
         tasks.append(_spawn_server(key, cfg))
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -240,6 +278,48 @@ def init_mcp():
         except Exception as e:
             print(f"[MCP] init failed: {type(e).__name__}: {e}")
         _initialized = True
+
+
+def init_mcp_background():
+    """Start MCP initialisation without blocking Flask worker boot."""
+    global _init_started, _initialized
+    with _lock:
+        if _init_started:
+            return
+        _init_started = True
+        if os.environ.get("MCP_DISABLED", "").lower() in ("1", "true", "yes"):
+            print("[MCP] disabled via MCP_DISABLED env")
+            _initialized = True
+            return
+        try:
+            _start_loop()
+            config = _load_config()
+        except ImportError:
+            print("[MCP] mcp SDK not installed - skipping")
+            _initialized = True
+            return
+        except Exception as e:
+            print(f"[MCP] init failed before background start: {type(e).__name__}: {e}")
+            _initialized = True
+            return
+
+        def _background_init():
+            global _initialized
+            try:
+                _run_coro(_init_all(config), timeout=90)
+                active = sum(1 for s in _server_status.values() if s["state"] == "active")
+                total_tools = sum(s["tool_count"] for s in _server_status.values())
+                print(f"[MCP] initialised: {active}/{len(_server_status)} servers active, {total_tools} tools available")
+            except ImportError:
+                print("[MCP] mcp SDK not installed - skipping")
+            except FutureTimeoutError:
+                print("[MCP] init failed: FutureTimeoutError: overall MCP init timed out")
+            except Exception as e:
+                print(f"[MCP] init failed: {type(e).__name__}: {e}")
+            finally:
+                _initialized = True
+
+        threading.Thread(target=_background_init, daemon=True, name="mcp-init").start()
 
 
 # ---------- Sync facade for agent_loop ----------
