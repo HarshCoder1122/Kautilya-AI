@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { loginWithGoogle } from "../lib/firebase";
 import { GoogleLogo, ArrowRight, Brain, ChartLineUp, Robot, ShieldCheck, Sparkle } from "@phosphor-icons/react";
 
@@ -183,9 +183,9 @@ export default function LoginPage() {
           {/* Footer */}
           <p className="mt-8 text-center text-white/25 text-xs leading-relaxed">
             By signing in, you agree to our{" "}
-            <a href="#" className="text-indigo-400/70 hover:text-indigo-400 transition-colors underline underline-offset-2">Terms</a>
+            <Link to="/terms" className="text-indigo-400/70 hover:text-indigo-400 transition-colors underline underline-offset-2">Terms</Link>
             {" "}and{" "}
-            <a href="#" className="text-indigo-400/70 hover:text-indigo-400 transition-colors underline underline-offset-2">Privacy Policy</a>
+            <Link to="/privacy" className="text-indigo-400/70 hover:text-indigo-400 transition-colors underline underline-offset-2">Privacy Policy</Link>
           </p>
         </div>
       </div>
