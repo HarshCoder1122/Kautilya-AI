@@ -368,8 +368,8 @@ def init_user_github_server(uid: str, token: str):
     if db_key in _sessions:
         return
     cfg = {
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "command": "mcp-server-github",
+        "args": [],
         "category": "Developer Tools",
         "description": "User-specific GitHub integration",
         "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": token}

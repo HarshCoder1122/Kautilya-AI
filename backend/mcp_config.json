@@ -72,11 +72,8 @@
       "description": "Structured step-by-step reasoning with branchable thoughts.",
       "category": "AI & Knowledge",
       "transport": "stdio",
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-sequential-thinking"
-      ],
+      "command": "mcp-server-sequential-thinking",
+      "args": [],
       "env_required": []
     },
     "slack": {
