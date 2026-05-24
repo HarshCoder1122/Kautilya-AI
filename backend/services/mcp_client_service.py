@@ -298,8 +298,91 @@ async def _spawn_user_mcp(uid: str, server_key: str, cfg: Dict[str, Any]) -> Non
         print(f"[MCP] ERR: User {uid} '{server_key}' failed: {e}")
 
 
+async def _spawn_user_stdio_mcp(uid: str, server_key: str, cfg: Dict[str, Any]) -> None:
+    from contextlib import AsyncExitStack
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    
+    db_key = f"user:{uid}:{server_key}"
+    command = cfg["command"]
+    args = cfg.get("args", [])
+    
+    params = StdioServerParameters(
+        command=command,
+        args=args,
+        env={**os.environ, **cfg.get("env", {})},
+    )
+    
+    stack = AsyncExitStack()
+    try:
+        read, write = await stack.enter_async_context(stdio_client(params))
+        session = await stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        
+        # Discover tools
+        tools_resp = await session.list_tools()
+        specs = []
+        for t in tools_resp.tools:
+            tool_name = f"mcp_{_sanitize_name(server_key)}_{_sanitize_name(t.name)}"
+            schema = t.inputSchema or {"type": "object", "properties": {}}
+            specs.append({
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "description": (t.description or t.name)[:512],
+                    "parameters": schema,
+                    "_mcp_server": server_key,
+                    "_mcp_tool": t.name,
+                    "_mcp_user_id": uid,
+                },
+            })
+            
+        _sessions[db_key] = session
+        _exit_stacks[db_key] = stack
+        _tools_by_server[db_key] = specs
+        _server_status[db_key] = {
+            "state": "active",
+            "error": None,
+            "category": cfg.get("category", "Other"),
+            "description": cfg.get("description", ""),
+            "tool_count": len(specs),
+        }
+        print(f"[MCP] OK: User {uid} '{server_key}' connected with {len(specs)} tools via stdio")
+    except Exception as e:
+        try:
+            await stack.aclose()
+        except Exception:
+            pass
+        _server_status[db_key] = {
+            "state": "error",
+            "error": str(e)[:200],
+            "category": cfg.get("category", "Other"),
+            "description": cfg.get("description", ""),
+            "tool_count": 0,
+        }
+        print(f"[MCP] ERR: User {uid} '{server_key}' failed: {e}")
+
+
+def init_user_github_server(uid: str, token: str):
+    db_key = f"user:{uid}:github"
+    if db_key in _sessions:
+        return
+    cfg = {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "category": "Developer Tools",
+        "description": "User-specific GitHub integration",
+        "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": token}
+    }
+    if _loop and _loop.is_running():
+        try:
+            _run_coro(_spawn_user_stdio_mcp(uid, "github", cfg), timeout=25.0)
+        except Exception as e:
+            print(f"[MCP] Failed to connect user GitHub server: {e}")
+
+
 def init_user_mcp(uid: str):
-    """Fetch enabled custom MCP servers for this user from Firestore and connect to them."""
+    """Fetch enabled custom MCP servers and integrations (like GitHub) for this user from Firestore and connect."""
     if not uid:
         return
     with _lock:
@@ -311,6 +394,7 @@ def init_user_mcp(uid: str):
     if not db:
         return
 
+    # 1. Custom SSE-based servers
     try:
         docs = db.collection('users').document(uid).collection('mcp_servers').stream()
         for doc in docs:
@@ -320,6 +404,17 @@ def init_user_mcp(uid: str):
                 init_user_mcp_server(uid, key, cfg)
     except Exception as e:
         print(f"[MCP] Failed to init custom servers for user {uid}: {e}")
+
+    # 2. Native user-specific integrations that map to stdio MCP (like GitHub)
+    try:
+        git_doc = db.collection('users').document(uid).collection('integrations').document('github').get()
+        if git_doc.exists:
+            git_cfg = git_doc.to_dict()
+            token = git_cfg.get('access_token')
+            if token:
+                init_user_github_server(uid, token)
+    except Exception as e:
+        print(f"[MCP] Failed to init GitHub for user {uid}: {e}")
 
 
 def init_user_mcp_server(uid: str, key: str, cfg: Dict[str, Any]):
