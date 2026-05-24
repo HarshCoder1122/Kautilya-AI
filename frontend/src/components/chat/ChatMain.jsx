@@ -377,9 +377,9 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       const response = activeMode === 'research'
         ? await chatAPI.streamResearch(currentInput, currentSessionId, { signal: abortControllerRef.current.signal })
         : await chatAPI.streamMessage(currentInput, currentSessionId, model, currentFiles, {
-            maxThinking: maxThinking || activeMode === 'code',
-            signal: abortControllerRef.current.signal,
-          });
+          maxThinking: maxThinking || activeMode === 'code',
+          signal: abortControllerRef.current.signal,
+        });
 
       if (!response.ok || !response.body) {
         let detail = '';
@@ -472,10 +472,10 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
           const attrs = parseAttrs(tagMatch[1] || '');
           const startIndex = tagMatch.index + openTag.length;
           const closeIndex = fullContent.indexOf('</artifact>', startIndex);
-          const code = closeIndex >= 0 
+          const code = closeIndex >= 0
             ? fullContent.slice(startIndex, closeIndex)
             : fullContent.slice(startIndex);
-          
+
           artifactData = {
             type: attrs.type || 'document',
             title: attrs.title || 'Analysis',
@@ -686,7 +686,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
         leftMidStreamRef.current = false;
         return;
       }
-      
+
       console.error('Failed to send message:', error);
       setIsThinking(false);
       setIsStreaming(false);
@@ -770,13 +770,12 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
             onClick={toggleRecording}
             disabled={isTranscribing}
             title={isRecording ? 'Stop recording' : 'Voice input'}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all duration-200 ${
-              isRecording
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all duration-200 ${isRecording
                 ? 'bg-rose-500/15 text-rose-400 animate-pulse'
                 : isTranscribing
-                ? 'bg-accent text-muted-foreground'
-                : 'hover:bg-accent text-muted-foreground'
-            }`}
+                  ? 'bg-accent text-muted-foreground'
+                  : 'hover:bg-accent text-muted-foreground'
+              }`}
           >
             {isRecording
               ? <MicrophoneSlash className="w-3.5 h-3.5" weight="fill" />
@@ -798,11 +797,10 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
           <button
             data-testid="toggle-canvas-btn"
             onClick={onToggleCanvas}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200 ${
-              canvasOpen
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200 ${canvasOpen
                 ? 'bg-[var(--k-brand)] text-white'
                 : 'hover:bg-accent text-muted-foreground'
-            }`}
+              }`}
           >
             <Columns className="w-3.5 h-3.5" weight="duotone" />
             <span>Canvas</span>
@@ -820,8 +818,8 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
         <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
           {messages.length === 0 && !isThinking && (
             <div className="flex flex-col items-center justify-center h-[60vh] animate-fade-up px-4 text-center">
-              <div className="w-14 h-14 rounded-xl bg-[var(--k-brand)] flex items-center justify-center mb-6">
-                <span className="text-white text-xl font-bold k-heading">K</span>
+              <div className="flex items-center justify-center mb-6">
+                <img src="/logo.png" alt="Kautilya Logo" className="w-14 h-14 rounded-xl" />
               </div>
               <h2 className="text-2xl font-medium k-heading tracking-tight text-foreground mb-2">
                 How can I help you today?
@@ -1031,7 +1029,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                 </DropdownMenuItem>
 
                 <DropdownMenuSeparator className="border-t border-[var(--k-border)] my-1" />
-                
+
                 <DropdownMenuLabel className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground/70 px-2.5 py-1">
                   Tools & Capabilities
                 </DropdownMenuLabel>
@@ -1072,11 +1070,11 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
               onKeyDown={handleKeyDown}
               placeholder={
                 isRecording ? 'Recording voice...'
-                : activeMode === 'research'
-                ? 'Ask a research question...'
-                : activeMode === 'code'
-                ? 'Describe what you want to analyze...'
-                : 'Message Kautilya...'
+                  : activeMode === 'research'
+                    ? 'Ask a research question...'
+                    : activeMode === 'code'
+                      ? 'Describe what you want to analyze...'
+                      : 'Message Kautilya...'
               }
               rows={1}
               disabled={isRecording}
@@ -1097,11 +1095,10 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                 data-testid="send-message-btn"
                 onClick={handleSend}
                 disabled={(!inputValue.trim() && selectedFiles.length === 0) || isRecording}
-                className={`p-3 transition-colors ${
-                  inputValue.trim() && !isRecording
+                className={`p-3 transition-colors ${inputValue.trim() && !isRecording
                     ? 'text-[var(--k-brand)] hover:text-[var(--k-brand-hover)]'
                     : 'text-muted-foreground/40'
-                }`}
+                  }`}
               >
                 <ArrowRight className="w-5 h-5" weight="bold" />
               </button>
@@ -1114,11 +1111,10 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                   key={mode.id}
                   data-testid={`quick-mode-${mode.id}`}
                   onClick={() => onSetMode(mode.id)}
-                  className={`flex items-center gap-1 text-[11px] transition-colors ${
-                    activeMode === mode.id
+                  className={`flex items-center gap-1 text-[11px] transition-colors ${activeMode === mode.id
                       ? 'text-[var(--k-brand)] font-medium'
                       : 'text-muted-foreground hover:text-foreground'
-                  }`}
+                    }`}
                 >
                   <mode.icon className="w-3 h-3" weight="duotone" />
                   {mode.label}
@@ -1148,7 +1144,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
           ) : !mcpStatus ? (
             <div className="flex-1 flex flex-col items-center justify-center py-12 gap-3">
               <span className="text-xs text-rose-400">Failed to load MCP server configuration.</span>
-              <button 
+              <button
                 onClick={async () => {
                   setLoadingMcp(true);
                   try {
@@ -1167,7 +1163,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
             </div>
           ) : (() => {
             const servers = mcpStatus?.servers || [];
-            
+
             // Group by category
             const categoriesMap = {};
             servers.forEach(s => {
@@ -1177,7 +1173,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
               }
               categoriesMap[catName].push(s);
             });
-            
+
             const groupedCategories = Object.keys(categoriesMap).map(catName => ({
               category: catName,
               servers: categoriesMap[catName]
@@ -1190,10 +1186,10 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                 ...cat,
                 servers: q
                   ? cat.servers.filter(s =>
-                      s.name.toLowerCase().includes(q) ||
-                      (s.description || "").toLowerCase().includes(q) ||
-                      s.tools.some(t => t.name.toLowerCase().includes(q) || t.underlying.toLowerCase().includes(q))
-                    )
+                    s.name.toLowerCase().includes(q) ||
+                    (s.description || "").toLowerCase().includes(q) ||
+                    s.tools.some(t => t.name.toLowerCase().includes(q) || t.underlying.toLowerCase().includes(q))
+                  )
                   : cat.servers,
               }))
               .filter(cat => cat.servers.length > 0);
@@ -1225,7 +1221,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                     {filtered.map(cat => (
                       <div key={cat.category}>
                         <div className="text-[10px] uppercase font-bold tracking-[0.18em] text-muted-foreground/70 mb-3 px-1">
-                           {cat.category} <span className="text-muted-foreground/40 normal-case font-medium">· {cat.servers.length}</span>
+                          {cat.category} <span className="text-muted-foreground/40 normal-case font-medium">· {cat.servers.length}</span>
                         </div>
                         <div className="space-y-3">
                           {cat.servers.map(server => {
@@ -1233,11 +1229,11 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                             const isActive = state === 'active';
                             const isError = state === 'error';
                             const isMissingEnv = state === 'missing_env';
-                            
+
                             let pillStyle = "text-muted-foreground bg-muted border-[var(--k-border)]";
                             let pillText = "Disabled";
                             let hasDot = false;
-                            
+
                             if (isActive) {
                               pillStyle = "text-emerald-400 bg-emerald-400/10 border-emerald-400/20";
                               pillText = "Active";
@@ -1255,8 +1251,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                             return (
                               <div
                                 key={server.name}
-                                className={`p-4 rounded-xl border transition-all duration-200 ${
-                                  isActive
+                                className={`p-4 rounded-xl border transition-all duration-200 ${isActive
                                     ? 'border-[var(--k-border)] bg-[var(--k-surface)] hover:bg-[var(--k-surface-elevated)]'
                                     : 'border-[var(--k-border)] bg-[var(--k-surface)]/60 hover:bg-[var(--k-surface)] opacity-85 hover:opacity-100'
                                   }`}
@@ -1269,10 +1264,9 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                                       </span>
                                       <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-medium border ${pillStyle}`}>
                                         {hasDot && (
-                                          <span className={`w-1.5 h-1.5 rounded-full ${
-                                            isActive ? 'bg-emerald-400 animate-pulse' :
-                                            isError ? 'bg-rose-500' : 'bg-amber-400'
-                                          }`} />
+                                          <span className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-emerald-400 animate-pulse' :
+                                              isError ? 'bg-rose-500' : 'bg-amber-400'
+                                            }`} />
                                         )}
                                         {pillText}
                                       </span>
@@ -1280,13 +1274,13 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                                     <p className={`text-xs mt-1 ${isActive ? 'text-muted-foreground' : 'text-muted-foreground/80'}`}>
                                       {server.description}
                                     </p>
-                                    
+
                                     {isError && server.error && (
                                       <div className="mt-2 text-[10px] font-mono text-rose-400 bg-rose-950/20 border border-rose-900/30 rounded p-1.5 max-h-20 overflow-y-auto">
                                         Error: {server.error}
                                       </div>
                                     )}
-                                    
+
                                     {isMissingEnv && server.env_required && (
                                       <div className="mt-2 text-[10px] text-amber-300">
                                         Required keys: {server.env_required.join(', ')}
@@ -1294,7 +1288,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                                     )}
                                   </div>
                                 </div>
-                                
+
                                 {server.tools && server.tools.length > 0 && (
                                   <div className={`mt-3 pt-3 border-t ${isActive ? 'border-[var(--k-border)]/50' : 'border-[var(--k-border)]/30'}`}>
                                     <span className={`text-[10px] uppercase font-bold tracking-wider block mb-2 ${isActive ? 'text-muted-foreground/80' : 'text-muted-foreground/60'}`}>
@@ -1305,11 +1299,10 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                                         <code
                                           key={t.name}
                                           title={`Underlying: ${t.underlying}`}
-                                          className={`text-[10px] font-mono px-2 py-0.5 rounded ${
-                                            isActive
+                                          className={`text-[10px] font-mono px-2 py-0.5 rounded ${isActive
                                               ? 'bg-muted border border-[var(--k-border)]/50 text-indigo-300'
                                               : 'bg-muted/30 border border-[var(--k-border)]/20 text-muted-foreground'
-                                          }`}
+                                            }`}
                                         >
                                           {t.name}
                                         </code>
