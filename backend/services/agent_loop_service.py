@@ -355,9 +355,14 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                              tools=kw.get('tools'), tool_choice=kw.get('tool_choice'))
         return _wrap_with_placeholder_thinking(groq_gen) if groq_gen else None
 
-    # One turn for the initial answer (may emit tool tags) + one synthesis turn
-    # after tools run. All tools in a single response execute in parallel.
-    MAX_TURNS = 2
+    # Turn budget:
+    #   turn 1 — initial answer (may emit tool tags, all run in parallel)
+    #   turn 2 — synthesis OR error recovery (if a tool failed)
+    #   turn 3 — final synthesis after recovery
+    # The parallel-tool refactor cuts the *common* case to 2 turns, but we
+    # keep the budget at 3 so a single tool error doesn't strand the user
+    # without a final answer.
+    MAX_TURNS = 3
     for turn in range(MAX_TURNS):
         print(f"[Agent] Turn {turn+1}/{MAX_TURNS}")
 
