@@ -143,10 +143,14 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     # injection bloated prompts and slowed NVIDIA TTFT by 100-300ms on
     # short messages. The keyword gate is cheap and accurate enough.
     _intent_kw = ('send', 'whatsapp', 'slack', 'calendar', 'schedule', 'meeting',
-                  'crm', 'hubspot', 'zoho', 'contact', 'lead', 'zapier', 'event',
+                  'crm', 'hubspot', 'zoho', 'contact', 'contacts', 'lead', 'zapier', 'event',
                   'email', 'remind', 'follow up', 'follow-up', 'drive', 'file',
                   'files', 'document', 'documents', 'doc', 'docs', 'sheet', 'sheets',
-                  'spreadsheet', 'spreadsheets')
+                  'spreadsheet', 'spreadsheets',
+                  # YouTube + Google Contacts + Docs additions
+                  'youtube', 'video', 'videos', 'watch', 'channel', 'channels',
+                  'subscription', 'subscriptions', 'phone', 'phones',
+                  'people', 'address book', 'addressbook')
     _msg_low = (last_user_msg or "").lower() if last_user_msg else ""
     if uid and any(k in _msg_low for k in _intent_kw):
         try:
