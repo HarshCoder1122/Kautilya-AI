@@ -414,7 +414,10 @@ def jarvis_stream():
         # Reserve a streaming-message doc id up-front; the LLM thread flushes into it.
         assistant_msg_id = save_to_firestore(uid, session_id, "assistant", "", streaming=True)
         last_flush_ts = [time.time()]
-        FLUSH_INTERVAL_SEC = 1.5
+        # Tighter flush cadence so remounting the chat (route change, tab
+        # switch, refresh) finds an almost-up-to-date partial in Firestore
+        # — the visible "vanished output" window is bounded by this.
+        FLUSH_INTERVAL_SEC = 0.5
 
         def _maybe_flush_partial(force=False):
             """Periodically write the current partial response back to Firestore."""
