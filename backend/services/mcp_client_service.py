@@ -43,7 +43,14 @@ _initialized_users = set()            # Set of user IDs that have run init_user_
 _initialized = False
 _init_started = False
 _lock = threading.Lock()
-_SERVER_START_TIMEOUT_SECONDS = float(os.environ.get("MCP_SERVER_START_TIMEOUT", "45"))
+_SERVER_START_TIMEOUT_SECONDS = float(os.environ.get("MCP_SERVER_START_TIMEOUT", "90"))
+# When this module is imported inside a multi-worker gunicorn deployment
+# (e.g. workers=12 on HF Space), every worker would race to spawn the same
+# MCP child processes simultaneously and starve each other on CPU/stdio.
+# A small random delay before kickoff spreads that load across time so
+# binaries like mcp-server-fetch / mcp-server-time can hand-shake without
+# tripping the start timeout. Tunable via env for ops debugging.
+_INIT_JITTER_MAX_SECONDS = float(os.environ.get("MCP_INIT_JITTER_MAX", "8"))
 _HF_SPACE_ENV_PRESENT = bool(os.environ.get("SPACE_AUTHOR_NAME") and os.environ.get("SPACE_REPO_NAME"))
 _HF_SKIP_STDIO_DEFAULTS = {"google_drive"}
 
@@ -161,6 +168,24 @@ async def _spawn_server(server_key: str, cfg: Dict[str, Any]) -> None:
         env={**os.environ, **cfg.get("env", {})},
     )
 
+    # Pre-flight: if the command isn't on PATH at all, fail fast with a
+    # message that actually tells you what's wrong. The previous behaviour
+    # was a bare "TimeoutError:" because stdio_client would hang waiting
+    # for an EOF on a process that never started.
+    import shutil as _shutil
+    if not _shutil.which(command):
+        _server_status[server_key] = {
+            "state": "error",
+            "error": f"binary '{command}' not found on PATH",
+            "category": cfg.get("category", "Other"),
+            "description": cfg.get("description", ""),
+            "tool_count": 0,
+        }
+        print(f"[MCP] ERR: '{server_key}' binary '{command}' not on PATH — install it or remove from mcp_config.json")
+        return
+
+    import time as _t_mod
+    started_at = _t_mod.monotonic()
     stack = AsyncExitStack()
     try:
         read, write = await asyncio.wait_for(
@@ -213,15 +238,19 @@ async def _spawn_server(server_key: str, cfg: Dict[str, Any]) -> None:
             await stack.aclose()
         except Exception:
             pass
-        err_text = f"{type(e).__name__}: {str(e)}".strip()
+        elapsed = _t_mod.monotonic() - started_at
+        ename = type(e).__name__
+        emsg = str(e) or "<no message>"
+        cmd_preview = (command + " " + " ".join(args)).strip()[:120]
+        err_text = f"{ename}: {emsg} (after {elapsed:.1f}s; cmd={cmd_preview})"
         _server_status[server_key] = {
             "state": "error",
-            "error": err_text[:200],
+            "error": err_text[:300],
             "category": cfg.get("category", "Other"),
             "description": cfg.get("description", ""),
             "tool_count": 0,
         }
-        print(f"[MCP] ERR: '{server_key}' failed: {err_text}")
+        print(f"[MCP] ERR: '{server_key}' failed after {elapsed:.1f}s — {ename}: {emsg} | cmd: {cmd_preview}")
 
 
 async def _init_all(config: Dict[str, Any]):
@@ -305,15 +334,28 @@ def init_mcp_background():
 
         def _background_init():
             global _initialized
+            # Spread the spawn moment across workers. With gunicorn workers=12
+            # every worker calls this at the same instant — without jitter,
+            # 12 × N child processes start handshakes simultaneously and
+            # starve each other. A few seconds of randomized delay is plenty
+            # to break the herd.
+            if _INIT_JITTER_MAX_SECONDS > 0:
+                import random
+                import time as _t
+                _t.sleep(random.uniform(0, _INIT_JITTER_MAX_SECONDS))
             try:
-                _run_coro(_init_all(config), timeout=90)
+                # Per-server timeout is _SERVER_START_TIMEOUT_SECONDS; overall
+                # init wraps that with a comfortable margin so a single slow
+                # server can't drag the whole batch into a hard cap.
+                overall_timeout = max(120.0, _SERVER_START_TIMEOUT_SECONDS * 1.5)
+                _run_coro(_init_all(config), timeout=overall_timeout)
                 active = sum(1 for s in _server_status.values() if s["state"] == "active")
                 total_tools = sum(s["tool_count"] for s in _server_status.values())
                 print(f"[MCP] initialised: {active}/{len(_server_status)} servers active, {total_tools} tools available")
             except ImportError:
                 print("[MCP] mcp SDK not installed - skipping")
             except FutureTimeoutError:
-                print("[MCP] init failed: FutureTimeoutError: overall MCP init timed out")
+                print(f"[MCP] init failed: overall MCP init timed out after {overall_timeout}s")
             except Exception as e:
                 print(f"[MCP] init failed: {type(e).__name__}: {e}")
             finally:
