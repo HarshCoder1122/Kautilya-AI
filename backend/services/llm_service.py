@@ -5,12 +5,16 @@ Unified LLM call interface: Groq, NVIDIA NIM, OpenRouter, Gemini.
 import json
 import time
 import requests
+import sqlite3
+import hashlib
+import threading
 from requests.adapters import HTTPAdapter
 from config import (
     GROQ_API_KEYS, GROQ_COOLDOWN_SECONDS,
     OPENROUTER_API_KEY, NVIDIA_API_KEY,
     NVIDIA_API_KEYS,
     GEMINI_API_KEYS,
+    CHAT_DATA_DIR,
 )
 
 # Groq key rotation state
@@ -219,6 +223,140 @@ def call_openrouter(messages, temperature=0.7, max_tokens=16384, stream=True, mo
     return None
 
 
+# ==========================================
+# Kautilya AI Heavy Caching Engine
+# ==========================================
+_db_lock = threading.Lock()
+_in_memory_cache = {}
+_cache_init_done = False
+
+def _get_cache_db():
+    import os
+    db_path = os.path.join(CHAT_DATA_DIR, "llm_cache.db")
+    conn = sqlite3.connect(db_path, timeout=15.0)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+    except Exception:
+        pass
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS nvidia_cache (
+            cache_key TEXT PRIMARY KEY,
+            response_type TEXT,
+            response_data TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    return conn
+
+def _init_cache_db_safe():
+    global _cache_init_done
+    if _cache_init_done:
+        return True
+    try:
+        conn = _get_cache_db()
+        conn.close()
+        _cache_init_done = True
+        return True
+    except Exception as e:
+        print(f"[NVIDIA Cache] SQLite initialization failed, using in-memory only: {e}")
+        return False
+
+def _get_from_cache(cache_key):
+    if cache_key in _in_memory_cache:
+        print("[NVIDIA Cache] In-memory cache HIT!")
+        return _in_memory_cache[cache_key]
+    
+    if not _init_cache_db_safe():
+        return None
+    
+    try:
+        with _db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT response_type, response_data FROM nvidia_cache WHERE cache_key = ?", (cache_key,))
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                res_type, res_data = row
+                print("[NVIDIA Cache] SQLite cache HIT!")
+                if res_type == "stream":
+                    parsed = json.loads(res_data)
+                else:
+                    parsed = res_data
+                _in_memory_cache[cache_key] = (res_type, parsed)
+                return res_type, parsed
+    except Exception as e:
+        print(f"[NVIDIA Cache] Error reading cache: {e}")
+    return None
+
+def _save_to_cache(cache_key, response_type, response_data):
+    try:
+        _in_memory_cache[cache_key] = (response_type, response_data if response_type == "string" else json.loads(response_data))
+    except Exception:
+        pass
+    
+    if not _init_cache_db_safe():
+        return
+        
+    try:
+        with _db_lock:
+            conn = _get_cache_db()
+            conn.execute(
+                "INSERT OR REPLACE INTO nvidia_cache (cache_key, response_type, response_data) VALUES (?, ?, ?)",
+                (cache_key, response_type, response_data)
+            )
+            conn.commit()
+            conn.close()
+            print("[NVIDIA Cache] Saved to SQLite cache!")
+    except Exception as e:
+        print(f"[NVIDIA Cache] Error writing cache: {e}")
+
+def _hash_payload(messages, model, temperature, max_tokens, tools, tool_choice, top_p, reasoning_budget, reasoning_effort):
+    try:
+        payload = {
+            "model": str(model),
+            "messages": messages,
+            "temperature": float(temperature) if temperature is not None else 0.7,
+            "max_tokens": int(max_tokens) if max_tokens is not None else None,
+            "tools": tools,
+            "tool_choice": tool_choice,
+            "top_p": float(top_p) if top_p is not None else 0.9,
+            "reasoning_budget": reasoning_budget,
+            "reasoning_effort": reasoning_effort
+        }
+        payload_str = json.dumps(payload, sort_keys=True, default=str)
+        return hashlib.sha256(payload_str.encode('utf-8')).hexdigest()
+    except Exception as e:
+        print(f"[NVIDIA Cache] Error hashing payload: {e}")
+        return hashlib.sha256(str(messages).encode('utf-8')).hexdigest()
+
+def _hash_groq_payload(messages, model, temperature, max_tokens, tools, tool_choice):
+    try:
+        payload = {
+            "model": str(model),
+            "messages": messages,
+            "temperature": float(temperature) if temperature is not None else 0.7,
+            "max_tokens": int(max_tokens) if max_tokens is not None else None,
+            "tools": tools,
+            "tool_choice": tool_choice
+        }
+        payload_str = json.dumps(payload, sort_keys=True, default=str)
+        return hashlib.sha256(payload_str.encode('utf-8')).hexdigest()
+    except Exception as e:
+        print(f"[Groq Cache] Error hashing payload: {e}")
+        return hashlib.sha256(str(messages).encode('utf-8')).hexdigest()
+
+def generate_cached_stream(chunks, expose_thinking=True):
+    for chunk in chunks:
+        if "thinking" in chunk and not expose_thinking:
+            continue
+        if "thinking_done" in chunk and not expose_thinking:
+            continue
+        yield chunk
+        time.sleep(0.001)
+
+
 def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                 model="nvidia/nemotron-3-super-120b-a12b", tools=None, tool_choice=None,
                 expose_thinking=True, max_thinking=False, top_p=0.9,
@@ -240,6 +378,29 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
     """
     if not NVIDIA_API_KEYS:
         return None
+
+    # Compute cache key and check Kautilya Heavy Caching Engine
+    cache_key = _hash_payload(messages, model, temperature, max_tokens, tools, tool_choice, top_p, reasoning_budget, reasoning_effort)
+    cached_val = _get_from_cache(cache_key)
+    if cached_val is not None:
+        res_type, res_data = cached_val
+        if res_type == "stream":
+            if stream:
+                return generate_cached_stream(res_data, expose_thinking=expose_thinking)
+            else:
+                full_text = ""
+                for chunk in res_data:
+                    if "chunk" in chunk:
+                        full_text += chunk["chunk"]
+                return full_text
+        else:
+            if stream:
+                def _stream_str():
+                    yield {"chunk": res_data}
+                return _stream_str()
+            else:
+                return res_data
+
     try:
         clean_messages = []
         has_dropped_image = False
@@ -311,6 +472,8 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                 def generate():
                     try:
                         thinking_active = False
+                        collected_chunks = []
+                        has_tool_calls = False
                         for line in resp.iter_lines():
                             if not line:
                                 continue
@@ -320,6 +483,7 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                             json_str = line[6:]
                             if json_str.strip() == '[DONE]':
                                 if thinking_active:
+                                    collected_chunks.append({"thinking_done": True})
                                     yield {"thinking_done": True}
                                 break
                             try:
@@ -334,24 +498,36 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                             if reasoning:
                                 if expose_thinking:
                                     thinking_active = True
+                                    collected_chunks.append({"thinking": reasoning})
                                     yield {"thinking": reasoning}
                                 continue
 
                             if "tool_calls" in delta:
+                                has_tool_calls = True
+                                collected_chunks.append({"tool_calls": delta["tool_calls"]})
                                 yield {"tool_calls": delta["tool_calls"]}
                                 continue
 
                             content = delta.get("content")
                             if content is not None:
                                 if thinking_active:
+                                    collected_chunks.append({"thinking_done": True})
                                     yield {"thinking_done": True}
                                     thinking_active = False
+                                collected_chunks.append({"chunk": content})
                                 yield {"chunk": content}
+                        
+                        # Save successful non-tool generation to cache
+                        if not has_tool_calls and collected_chunks:
+                            _save_to_cache(cache_key, "stream", json.dumps(collected_chunks))
                     finally:
                         resp.close()
                 return generate()
             else:
-                return resp.json()["choices"][0]["message"].get("content", "")
+                content = resp.json()["choices"][0]["message"].get("content", "")
+                if content:
+                    _save_to_cache(cache_key, "string", content)
+                return content
         else:
             print(f"[NVIDIA] Error {resp.status_code}: {resp.text[:200]}")
             return None
@@ -365,6 +541,33 @@ def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False,
     """Call Groq API with automatic multi-key rotation and 429 handling."""
     if not GROQ_API_KEYS:
         return None
+
+    # Compute cache key and check Kautilya Heavy Caching Engine
+    cache_key = _hash_groq_payload(messages, model, temperature, max_tokens, tools, tool_choice)
+    cached_val = _get_from_cache(cache_key)
+    if cached_val is not None:
+        res_type, res_data = cached_val
+        if res_type == "stream":
+            if stream:
+                return generate_cached_stream(res_data)
+            else:
+                full_text = ""
+                for chunk in res_data:
+                    if "chunk" in chunk:
+                        full_text += chunk["chunk"]
+                if tools:
+                    return {"content": full_text, "tool_calls": None}
+                return full_text
+        else:
+            if stream:
+                def _stream_str():
+                    yield {"chunk": res_data}
+                return _stream_str()
+            else:
+                if tools:
+                    return {"content": res_data, "tool_calls": None}
+                return res_data
+
     is_vision = "vision" in model.lower() or "scout" in model.lower()
     clean_messages = []
     image_count = 0
@@ -439,17 +642,24 @@ def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False,
                 json=payload, timeout=(5, 3600), stream=stream
             )
             if resp.status_code == 200:
-                # Distinguish between classifier and regular calls
-                is_classifier = max_tokens <= 20 and stream is False
+                is_classifier = max_tokens <= 20 and stream is False if max_tokens else False
                 tag = "[Classifier]" if is_classifier else "[Groq]"
                 print(f"{tag} Success with {key_label} (model: {model})")
                 if not stream:
                     msg = resp.json()["choices"][0]["message"]
+                    content = msg.get("content", "")
+                    t_calls = msg.get("tool_calls")
                     if tools:
-                        return {"content": msg.get("content", ""), "tool_calls": msg.get("tool_calls")}
-                    return msg.get("content", "")
+                        if not t_calls and content:
+                            _save_to_cache(cache_key, "string", content)
+                        return {"content": content, "tool_calls": t_calls}
+                    if content:
+                        _save_to_cache(cache_key, "string", content)
+                    return content
 
                 def generate():
+                    collected_chunks = []
+                    has_tool_calls = False
                     for line in resp.iter_lines():
                         if line:
                             line = line.decode('utf-8')
@@ -465,14 +675,20 @@ def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False,
                                         continue
                                     content = data["choices"][0]["delta"].get("content", "")
                                     if content:
+                                        collected_chunks.append({"chunk": content})
                                         yield {"chunk": content}
                                     tool_calls = data["choices"][0]["delta"].get("tool_calls")
                                     if tool_calls:
+                                        has_tool_calls = True
+                                        collected_chunks.append({"tool_calls": tool_calls})
                                         yield {"tool_calls": tool_calls}
                                 except GeneratorExit:
                                     return
                                 except Exception:
                                     pass
+                    # Save successful non-tool generation to cache
+                    if not has_tool_calls and collected_chunks:
+                        _save_to_cache(cache_key, "stream", json.dumps(collected_chunks))
                 return generate()
             elif resp.status_code == 429:
                 _mark_groq_key_exhausted(key_idx)

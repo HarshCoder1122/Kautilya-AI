@@ -1,5 +1,5 @@
 """
-Kautilya AI — Transactional Email Service (Zoho SMTP)
+Kautilya AI — Transactional Email Service (Resend HTTP API)
 
 Sends lifecycle emails from hello@revealiq.in:
   • welcome           — first time a user signs in
@@ -9,28 +9,31 @@ Sends lifecycle emails from hello@revealiq.in:
 All sends are best-effort and run in a background thread so they never
 block the request that triggered them. Failures are logged, not raised.
 
+We switched off raw SMTP because most cloud hosts (Render, Heroku, Cloud
+Run, App Engine, etc.) block outbound TCP on ports 25 / 465 / 587 to
+prevent spam abuse — every Zoho connection attempt timed out from
+production. Resend speaks HTTPS on 443 which is always allowed.
+
 Env vars:
-  ZOHO_SMTP_HOST       (default: smtp.zoho.in)
-  ZOHO_SMTP_PORT       (default: 587 — STARTTLS)
-  ZOHO_SMTP_USER       (default: hello@revealiq.in)
-  ZOHO_SMTP_PASSWORD   (REQUIRED — Zoho app-specific password)
-  ZOHO_FROM_NAME       (default: Kautilya AI)
-  APP_URL              (default: https://ai.revealiq.in — for CTA links)
+  RESEND_API_KEY   (REQUIRED — get from https://resend.com/api-keys)
+  RESEND_FROM      (default: "Kautilya AI <hello@revealiq.in>" — the
+                    domain part MUST be verified in Resend or sends 403)
+  APP_URL          (default: https://ai.revealiq.in — for CTA links)
 """
 import os
-import smtplib
 import threading
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.utils import formataddr
+
+import requests
 
 
-SMTP_HOST = os.environ.get("ZOHO_SMTP_HOST", "smtp.zoho.in")
-SMTP_PORT = int(os.environ.get("ZOHO_SMTP_PORT", "587"))
-SMTP_USER = os.environ.get("ZOHO_SMTP_USER", "hello@revealiq.in")
-SMTP_PASS = os.environ.get("ZOHO_SMTP_PASSWORD", "")
-FROM_NAME = os.environ.get("ZOHO_FROM_NAME", "Kautilya AI")
-APP_URL = os.environ.get("APP_URL", "https://ai.revealiq.in")
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+RESEND_FROM    = os.environ.get("RESEND_FROM", "Kautilya AI <hello@revealiq.in>")
+APP_URL        = os.environ.get("APP_URL", "https://ai.revealiq.in")
+
+_RESEND_ENDPOINT = "https://api.resend.com/emails"
+
+if not RESEND_API_KEY:
+    print("[Email] WARNING: RESEND_API_KEY not set — lifecycle emails will be skipped.")
 
 
 # ---------- HTML templates ----------
@@ -138,90 +141,49 @@ def _pro_demoted_html(name: str) -> str:
     return _shell("Your Kautilya Pro plan has ended", "You've been moved back to the Free tier. Re-subscribe anytime.", inner)
 
 
-# ---------- SMTP send ----------
+# ---------- Resend HTTP send ----------
 def _send_raw(to_email: str, subject: str, html_body: str) -> bool:
+    """POST one transactional email via the Resend API. Best-effort: returns
+    False on any failure and the caller (a background thread) absorbs it."""
     if not to_email:
         return False
-    if not SMTP_PASS:
-        print("[Email] ZOHO_SMTP_PASSWORD not set — skipping send")
+    if not RESEND_API_KEY:
+        print("[Email] RESEND_API_KEY not set — skipping send to", to_email)
         return False
-    
-    # Prepare message
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = formataddr((FROM_NAME, SMTP_USER))
-    msg["To"] = to_email
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-    # Define connection attempts
-    # We will try:
-    # 1. Configured SMTP_HOST + SMTP_PORT
-    # 2. If SMTP_PORT was 587, try port 465 (SSL) on SMTP_HOST
-    # 3. Try port 465 (SSL) on smtp.zoho.in (India fallback)
-    # 4. Try port 465 (SSL) on smtp.zoho.com (US/Global fallback)
-    # 5. Try port 587 (STARTTLS) on smtp.zoho.in
-    # 6. Try port 587 (STARTTLS) on smtp.zoho.com
-    
-    attempts = []
-    
-    # Add primary configured attempt
-    attempts.append({
-        "host": SMTP_HOST,
-        "port": SMTP_PORT,
-        "use_ssl": SMTP_PORT == 465
-    })
-    
-    # If primary was on port 587, add port 465 SSL fallback on same host
-    if SMTP_PORT == 587:
-        attempts.append({
-            "host": SMTP_HOST,
-            "port": 465,
-            "use_ssl": True
-        })
-        
-    # Add other zoho endpoints just in case
-    zoho_endpoints = ["smtp.zoho.in", "smtp.zoho.com"]
-    for host in zoho_endpoints:
-        # Avoid duplicate configurations
-        if not any(a["host"] == host and a["port"] == 465 for a in attempts):
-            attempts.append({
-                "host": host,
-                "port": 465,
-                "use_ssl": True
-            })
-        if not any(a["host"] == host and a["port"] == 587 for a in attempts):
-            attempts.append({
-                "host": host,
-                "port": 587,
-                "use_ssl": False
-            })
+    payload = {
+        "from": RESEND_FROM,
+        "to": [to_email],
+        "subject": subject,
+        "html": html_body,
+    }
+    try:
+        resp = requests.post(
+            _RESEND_ENDPOINT,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            timeout=15,
+        )
+    except Exception as e:
+        print(f"[Email] Resend request to {to_email} failed: {e}")
+        return False
 
-    last_error = None
-    for attempt in attempts:
-        host = attempt["host"]
-        port = attempt["port"]
-        use_ssl = attempt["use_ssl"]
-        
-        print(f"[Email] Attempting to send via {host}:{port} ({'SSL' if use_ssl else 'STARTTLS'})...")
+    if 200 <= resp.status_code < 300:
         try:
-            if use_ssl:
-                s = smtplib.SMTP_SSL(host, port, timeout=15)
-            else:
-                s = smtplib.SMTP(host, port, timeout=15)
-                s.ehlo()
-                s.starttls()
-            
-            with s:
-                s.ehlo()
-                s.login(SMTP_USER, SMTP_PASS)
-                s.sendmail(SMTP_USER, [to_email], msg.as_string())
-            print(f"[Email] Successfully sent '{subject}' to {to_email} via {host}:{port}")
-            return True
-        except Exception as e:
-            print(f"[Email] Attempt via {host}:{port} failed: {e}")
-            last_error = e
+            msg_id = (resp.json() or {}).get("id", "?")
+        except Exception:
+            msg_id = "?"
+        print(f"[Email] Sent '{subject}' to {to_email} via Resend (id={msg_id})")
+        return True
 
-    print(f"[Email] All email send attempts to {to_email} failed. Last error: {last_error}")
+    # 4xx: usually domain not verified, invalid From, or bad API key.
+    # 5xx: Resend hiccup — caller will not retry; lifecycle emails are
+    # idempotent enough that a single miss isn't worth a retry queue.
+    print(f"[Email] Resend rejected send to {to_email}: "
+          f"HTTP {resp.status_code} — {resp.text[:300]}")
     return False
 
 

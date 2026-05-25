@@ -47,8 +47,34 @@ function parseAttrs(s) {
   return out;
 }
 
+// Cache key for the per-session message mirror. We keep one slot per session
+// in sessionStorage so unmounting (route change, tab close) doesn't blank the
+// last in-progress response — remounting reads this synchronously and shows
+// the user exactly what was on screen before, while history/polling catches
+// up in the background.
+const _streamCacheKey = (sid) => `chat:lastMessages:${sid || 'none'}`;
+const _readStreamCache = (sid) => {
+  if (!sid) return null;
+  try {
+    const raw = sessionStorage.getItem(_streamCacheKey(sid));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed?.messages) ? parsed : null;
+  } catch { return null; }
+};
+const _writeStreamCache = (sid, messages, streaming) => {
+  if (!sid) return;
+  try {
+    sessionStorage.setItem(_streamCacheKey(sid), JSON.stringify({
+      messages, streaming: !!streaming, ts: Date.now(),
+    }));
+  } catch { /* quota / private mode — soft-fail */ }
+};
+
 export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSidebar, canvasOpen, onToggleCanvas, onOpenCanvas, activeMode, onSetMode, theme, toggleTheme, sessionId, onSessionChange, onNewSession, onStreamComplete }) {
-  const [messages, setMessages] = useState([]);
+  // Restore previous in-progress messages synchronously so a remount (after
+  // navigating to dashboard / switching tabs) never shows a blank screen.
+  const [messages, setMessages] = useState(() => _readStreamCache(sessionId)?.messages || []);
   const [inputValue, setInputValue] = useState("");
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [isThinking, setIsThinking] = useState(false);
@@ -148,8 +174,30 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       pendingSessionRef.current = null;
       return;
     }
+    // If we just hydrated from the sessionStorage cache for this session and
+    // it was mid-stream, kick off polling immediately so the UI keeps growing
+    // without waiting on a full history fetch (avoids a flash of "Thinking…"
+    // over a stale placeholder).
+    const cached = _readStreamCache(sessionId);
+    if (cached?.streaming) {
+      setIsStreaming(true);
+      pollStreamingMessage(sessionId);
+    }
     loadHistory(sessionId);
   }, [sessionId]);
+
+  // Mirror messages to sessionStorage so unmount/remount restores the exact
+  // last-rendered state. Only writes while streaming or right after — idle
+  // sessions don't need the churn.
+  useEffect(() => {
+    if (!sessionId) return;
+    if (!isStreaming && !isThinking) {
+      // Final snapshot once the stream settles, then stop mirroring.
+      _writeStreamCache(sessionId, messages, false);
+      return;
+    }
+    _writeStreamCache(sessionId, messages, true);
+  }, [sessionId, messages, isStreaming, isThinking]);
 
   // Stale-response detector: if thinking with no first chunk for 90s, surface a recovery button
   useEffect(() => {

@@ -355,7 +355,9 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                              tools=kw.get('tools'), tool_choice=kw.get('tool_choice'))
         return _wrap_with_placeholder_thinking(groq_gen) if groq_gen else None
 
-    MAX_TURNS = 3
+    # One turn for the initial answer (may emit tool tags) + one synthesis turn
+    # after tools run. All tools in a single response execute in parallel.
+    MAX_TURNS = 2
     for turn in range(MAX_TURNS):
         print(f"[Agent] Turn {turn+1}/{MAX_TURNS}")
 
@@ -369,12 +371,10 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             if isinstance(last_mc, list) and any(p.get("type") == "image_url" for p in last_mc):
                 has_image = True
 
-        # Auto-toggle thinking: if the user didn't explicitly request max_thinking,
-        # decide based on prompt complexity. Keeps simple questions fast and
-        # routes hard questions into the reasoning path.
-        effective_max_thinking = max_thinking or _should_auto_think(last_user_msg, model_choice)
-        if effective_max_thinking and not max_thinking:
-            print(f"[Agent] Auto-thinking enabled (heuristic match on prompt)")
+        # Thinking is OPT-IN only. The user toggles "max thinking" in the
+        # files dropdown — without it, always answer at the earliest (low
+        # reasoning) regardless of how complex the prompt looks.
+        effective_max_thinking = bool(max_thinking)
         reasoning_budget = _estimate_reasoning_budget(max_tokens, effective_max_thinking)
 
         if model_choice == 'coder':
@@ -533,403 +533,488 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             yield json.dumps({"chunk": f"\n[Stream interrupted: {e}]"})
             return
 
-        # --- ReAct Action Parsing ---
-        # Detect tool call patterns from the accumulated response and emit
-        # structured react_* events so the frontend can render a step timeline.
-        action_found = False
-        action_counter = 0  # reset per-conversation-turn, not per-call
+        # --- ReAct Action Parsing (parallel) ---
+        # Detect ALL tool call patterns from the accumulated response, run
+        # them concurrently, then continue to a single synthesis turn. This
+        # collapses N sequential LLM round-trips (one per tool) into one.
+        action_counter = getattr(agent_loop, '_action_counter', 0)
+        planned_actions = _plan_actions(accumulated_response, uid, start_id=action_counter + 1)
 
-        # 1. [SEARCH: query]
-        search_match = re.search(r'\[SEARCH:\s*(.*?)\]', accumulated_response)
-        if search_match:
-            query = search_match.group(1).strip()
-            action_counter += 1
-            action_id = str(action_counter)
-
-            # Announce the action visually in the UI
-            yield json.dumps({
-                "event": "react_action",
-                "id": action_id,
-                "tool": "web_search",
-                "input": query,
-                "status": "running"
-            })
-
-            from services.research_service import _gather_sources
-            try:
-                sources = _gather_sources([query])
-                if sources:
-                    obs_text = "SEARCH RESULTS:\n"
-                    for i, s in enumerate(sources[:4], 1):
-                        obs_text += f"[{i}] {s['title']} ({s['url']}): {s['snippet']}\n"
-                    yield json.dumps({
-                        "event": "react_action_done",
-                        "id": action_id,
-                        "status": "done",
-                        "preview": f"Found {len(sources)} sources",
-                        "sources": [{"title": s["title"], "url": s["url"]} for s in sources[:4]]
-                    })
-                    current_messages.append({"role": "assistant", "content": accumulated_response})
-                    current_messages.append({"role": "user", "content": f"OBSERVATION: {obs_text}\n\nNow provide a final comprehensive answer using these findings. Do NOT use [SEARCH:] again."})
-                else:
-                    yield json.dumps({
-                        "event": "react_action_done",
-                        "id": action_id,
-                        "status": "empty",
-                        "preview": "No results found"
-                    })
-                    current_messages.append({"role": "assistant", "content": accumulated_response})
-                    current_messages.append({"role": "user", "content": "OBSERVATION: No relevant results found. Answer from internal knowledge or state that you don't know."})
-            except Exception as e:
-                print(f"[Agent] Search failed: {e}")
+        if planned_actions:
+            # Announce every action up-front so the timeline renders immediately.
+            for act in planned_actions:
                 yield json.dumps({
-                    "event": "react_action_done",
-                    "id": action_id,
-                    "status": "error",
-                    "preview": str(e)[:80]
+                    "event": "react_action",
+                    "id": act["id"],
+                    "tool": act["tool"],
+                    "input": act["input"],
+                    "status": "running",
                 })
-                current_messages.append({"role": "assistant", "content": accumulated_response})
-                current_messages.append({"role": "user", "content": f"OBSERVATION: Search service error: {e}. Continue without web results."})
-            action_found = True
 
-        # 2. [CALCULATE: expression]
-        calc_match = re.search(r'\[CALCULATE:\s*(.*?)\]', accumulated_response)
-        if calc_match and not action_found:
-            expr = calc_match.group(1).strip()
-            action_counter += 1
-            action_id = str(action_counter)
-            yield json.dumps({
-                "event": "react_action",
-                "id": action_id,
-                "tool": "calculator",
-                "input": expr,
-                "status": "running"
-            })
-            try:
-                # Safe eval for math expressions
-                safe_globals = {"__builtins__": {}}
-                import math
-                safe_globals.update({k: getattr(math, k) for k in dir(math) if not k.startswith('_')})
-                result = eval(expr, safe_globals)  # noqa: S307
-                result_str = str(round(float(result), 8)) if isinstance(result, float) else str(result)
-                yield json.dumps({
-                    "event": "react_action_done",
-                    "id": action_id,
-                    "status": "done",
-                    "preview": f"= {result_str}"
-                })
-                obs = f"CALCULATION RESULT: {expr} = {result_str}"
-            except Exception as e:
-                result_str = f"Error: {e}"
-                yield json.dumps({
-                    "event": "react_action_done",
-                    "id": action_id,
-                    "status": "error",
-                    "preview": result_str
-                })
-                obs = f"CALCULATION ERROR: {e}"
-            current_messages.append({"role": "assistant", "content": accumulated_response})
-            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nContinue with your answer."})
-            action_found = True
+            # Submit all runners concurrently. The executor is module-level
+            # and bounded (max_workers=10) — safe for I/O-bound tool calls.
+            futures = {}
+            for act in planned_actions:
+                fut = _executor.submit(act["runner"])
+                futures[fut] = act
 
-        # 3. [CALENDAR_CREATE: title | start | end | description?]
-        cal_create_match = re.search(r'\[CALENDAR_CREATE:\s*(.*?)\]', accumulated_response, re.DOTALL)
-        if cal_create_match and not action_found:
-            parts = [p.strip() for p in cal_create_match.group(1).split('|')]
-            title       = parts[0] if len(parts) > 0 else 'New Event'
-            start_dt    = parts[1] if len(parts) > 1 else None
-            end_dt      = parts[2] if len(parts) > 2 else None
-            description = parts[3] if len(parts) > 3 else ''
-            action_counter += 1
-            action_id = str(action_counter)
-            yield json.dumps({"event": "react_action", "id": action_id, "tool": "calendar", "input": title, "status": "running"})
-            try:
-                result = _calendar_create(uid, title, start_dt, end_dt, description)
-                event_link = result.get('htmlLink', '')
-                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done",
-                                  "preview": f"Created: {title}", "sources": [{"title": "Open in Calendar", "url": event_link}] if event_link else []})
-                obs = f"CALENDAR: Event '{title}' created successfully for {start_dt}. Link: {event_link}"
-            except Exception as e:
-                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
-                obs = f"CALENDAR ERROR: {e}"
-            current_messages.append({"role": "assistant", "content": accumulated_response})
-            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nConfirm the result to the user."})
-            action_found = True
-
-        # 3.5 [CALENDAR_DELETE: event_id_or_title_keyword]
-        cal_del_match = re.search(r'\[CALENDAR_DELETE:\s*(.*?)\]', accumulated_response, re.DOTALL)
-        if cal_del_match and not action_found:
-            q = cal_del_match.group(1).strip()
-            action_counter += 1
-            action_id = str(action_counter)
-            yield json.dumps({"event": "react_action", "id": action_id, "tool": "calendar", "input": f"Delete: {q}", "status": "running"})
-            try:
-                result = _calendar_delete(uid, q)
-                deleted = result.get('deleted', [])
-                if deleted:
-                    obs = f"CALENDAR: Deleted {len(deleted)} event(s): {', '.join(deleted)}"
-                    yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done",
-                                      "preview": f"Deleted: {', '.join(deleted)[:80]}"})
-                else:
-                    obs = f"CALENDAR: No event found matching '{q}' in the next 60 days."
-                    yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done",
-                                      "preview": f"No match for '{q}'"})
-            except Exception as e:
-                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
-                obs = f"CALENDAR ERROR: {e}"
-            current_messages.append({"role": "assistant", "content": accumulated_response})
-            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nConfirm the result to the user."})
-            action_found = True
-
-        # 4. [CALENDAR_LIST: days]
-        cal_list_match = re.search(r'\[CALENDAR_LIST:\s*(\d*)\]', accumulated_response)
-        if cal_list_match and not action_found:
-            days = int(cal_list_match.group(1) or 7)
-            action_counter += 1
-            action_id = str(action_counter)
-            yield json.dumps({"event": "react_action", "id": action_id, "tool": "calendar", "input": f"Next {days} days", "status": "running"})
-            try:
-                events = _calendar_list(uid, days)
-                # Structured payload for the UI card
-                card_events = []
-                if events:
-                    for e in events:
-                        start = e.get('start', {}).get('dateTime') or e.get('start', {}).get('date', '')
-                        end   = e.get('end', {}).get('dateTime')   or e.get('end', {}).get('date', '')
-                        card_events.append({
-                            "summary": e.get('summary', 'Untitled'),
-                            "start": start, "end": end,
-                            "location": e.get('location', ''),
-                            "hangoutLink": e.get('hangoutLink', '') or
-                                           (e.get('conferenceData', {}) or {}).get('entryPoints', [{}])[0].get('uri', ''),
-                            "htmlLink": e.get('htmlLink', ''),
-                            "description": (e.get('description') or '')[:240],
-                        })
-                yield json.dumps({"event": "tool_result", "tool": "calendar_list",
-                                  "data": {"events": card_events, "days": days}})
-                if card_events:
-                    lines = [f"- {ev['summary']} at {ev['start']}" for ev in card_events]
-                    obs = f"CALENDAR EVENTS (next {days} days):\n" + "\n".join(lines)
-                    yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done",
-                                      "preview": f"{len(card_events)} event(s) found"})
-                else:
-                    obs = f"CALENDAR: No events found in the next {days} days."
-                    yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done", "preview": "No events"})
-            except Exception as e:
-                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
-                obs = f"CALENDAR ERROR: {e}"
-            current_messages.append({"role": "assistant", "content": accumulated_response})
-            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nThe events are already shown to the user as cards — just give a one-line confirmation, no need to list them again."})
-            action_found = True
-
-        # 4.5 [GMAIL_SEND: to@email.com | Subject | Body]
-        gm_send_match = re.search(r'\[GMAIL_SEND:\s*(.*?)\]', accumulated_response, re.DOTALL)
-        if gm_send_match and not action_found:
-            gm_parts = [p.strip() for p in gm_send_match.group(1).split('|', 2)]
-            gm_to   = gm_parts[0] if len(gm_parts) > 0 else ''
-            gm_subj = gm_parts[1] if len(gm_parts) > 1 else ''
-            gm_body = gm_parts[2] if len(gm_parts) > 2 else ''
-            action_counter += 1
-            action_id = str(action_counter)
-            yield json.dumps({"event": "react_action", "id": action_id, "tool": "gmail", "input": f"Email → {gm_to}", "status": "running"})
-            try:
-                _gmail_send(uid, gm_to, gm_subj, gm_body)
-                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done",
-                                  "preview": f"Sent to {gm_to}"})
-                obs = f"GMAIL: Email sent to {gm_to} with subject '{gm_subj}'."
-            except Exception as e:
-                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
-                obs = f"GMAIL ERROR: {e}"
-            current_messages.append({"role": "assistant", "content": accumulated_response})
-            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nConfirm to the user."})
-            action_found = True
-
-        # 4.6 [GMAIL_LIST: max | optional_search_query]
-        gm_list_match = re.search(r'\[GMAIL_LIST:\s*(.*?)\]', accumulated_response)
-        if gm_list_match and not action_found:
-            gm_parts = [p.strip() for p in gm_list_match.group(1).split('|', 1)]
-            gm_max = int(gm_parts[0]) if gm_parts and gm_parts[0].isdigit() else 10
-            gm_q   = gm_parts[1] if len(gm_parts) > 1 else ''
-            action_counter += 1
-            action_id = str(action_counter)
-            yield json.dumps({"event": "react_action", "id": action_id, "tool": "gmail", "input": f"Inbox (last {gm_max})", "status": "running"})
-            try:
-                emails = _gmail_list(uid, gm_max, gm_q)
-                yield json.dumps({"event": "tool_result", "tool": "gmail_list",
-                                  "data": {"emails": emails or [], "query": gm_q}})
-                if emails:
-                    lines = []
-                    for e in emails:
-                        lines.append(f"- From: {e['from']} | Subject: {e['subject']} | {e['date']}\n  Snippet: {e['snippet']}")
-                    obs = f"GMAIL INBOX ({len(emails)} message(s)):\n" + "\n".join(lines)
-                    yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done",
-                                      "preview": f"{len(emails)} email(s)"})
-                else:
-                    obs = "GMAIL: No emails found."
-                    yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done", "preview": "Empty inbox"})
-            except Exception as e:
-                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
-                obs = f"GMAIL ERROR: {e}"
-            current_messages.append({"role": "assistant", "content": accumulated_response})
-            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nThe inbox is already shown to the user as styled email cards — give a one-line summary only, do not re-list emails."})
-            action_found = True
-
-        # 5. [WHATSAPP_SEND: number | message]
-        wa_match = re.search(r'\[WHATSAPP_SEND:\s*(.*?)\]', accumulated_response, re.DOTALL)
-        if wa_match and not action_found:
-            wa_parts = [p.strip() for p in wa_match.group(1).split('|', 1)]
-            wa_to  = wa_parts[0] if len(wa_parts) > 0 else ''
-            wa_msg = wa_parts[1] if len(wa_parts) > 1 else ''
-            action_counter += 1
-            action_id = str(action_counter)
-            yield json.dumps({"event": "react_action", "id": action_id, "tool": "whatsapp", "input": f"WhatsApp → {wa_to}", "status": "running"})
-            try:
-                _whatsapp_send(uid, wa_to, wa_msg)
-                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done", "preview": f"Sent to {wa_to}"})
-                obs = f"WHATSAPP: Message sent to {wa_to}."
-            except Exception as e:
-                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
-                obs = f"WHATSAPP ERROR: {e}"
-            current_messages.append({"role": "assistant", "content": accumulated_response})
-            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nConfirm to the user."})
-            action_found = True
-
-        # 6. [SLACK_POST: message]
-        slack_match = re.search(r'\[SLACK_POST:\s*(.*?)\]', accumulated_response, re.DOTALL)
-        if slack_match and not action_found:
-            sl_msg = slack_match.group(1).strip()
-            action_counter += 1
-            action_id = str(action_counter)
-            yield json.dumps({"event": "react_action", "id": action_id, "tool": "slack", "input": "Slack message", "status": "running"})
-            try:
-                _slack_post(uid, sl_msg)
-                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done", "preview": "Message posted"})
-                obs = "SLACK: Message posted successfully."
-            except Exception as e:
-                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
-                obs = f"SLACK ERROR: {e}"
-            current_messages.append({"role": "assistant", "content": accumulated_response})
-            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nConfirm to the user."})
-            action_found = True
-
-        # 7. [HUBSPOT_CREATE_CONTACT: email | firstname | lastname | company | phone]
-        hs_match = re.search(r'\[HUBSPOT_CREATE_CONTACT:\s*(.*?)\]', accumulated_response, re.DOTALL)
-        if hs_match and not action_found:
-            hs_parts = [p.strip() for p in hs_match.group(1).split('|')]
-            hs_email = hs_parts[0] if len(hs_parts) > 0 else ''
-            hs_first = hs_parts[1] if len(hs_parts) > 1 else ''
-            hs_last  = hs_parts[2] if len(hs_parts) > 2 else ''
-            hs_co    = hs_parts[3] if len(hs_parts) > 3 else ''
-            hs_ph    = hs_parts[4] if len(hs_parts) > 4 else ''
-            action_counter += 1
-            action_id = str(action_counter)
-            yield json.dumps({"event": "react_action", "id": action_id, "tool": "hubspot", "input": f"HubSpot contact: {hs_email}", "status": "running"})
-            try:
-                result = _hubspot_create_contact(uid, hs_email, hs_first, hs_last, hs_co, hs_ph)
-                contact_id = result.get('id', '')
-                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done", "preview": f"Contact created: {hs_email}"})
-                obs = f"HUBSPOT: Contact '{hs_email}' created (id: {contact_id})."
-            except Exception as e:
-                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
-                obs = f"HUBSPOT ERROR: {e}"
-            current_messages.append({"role": "assistant", "content": accumulated_response})
-            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nConfirm to the user."})
-            action_found = True
-
-        # 11. [RUN_PYTHON: ```code```] — sandboxed Python (pandas / matplotlib charts)
-        py_match = re.search(r'\[RUN_PYTHON:\s*```(?:python)?\s*([\s\S]*?)```\s*\]', accumulated_response)
-        if not py_match:
-            # Permissive fallback: [RUN_PYTHON: ...code...] without fences
-            py_match = re.search(r'\[RUN_PYTHON:\s*([\s\S]+?)\]\s*$', accumulated_response.strip())
-        if py_match and not action_found:
-            code = py_match.group(1).strip()
-            action_counter += 1
-            action_id = str(action_counter)
-            yield json.dumps({"event": "react_action", "id": action_id, "tool": "python",
-                              "input": code[:80] + ("…" if len(code) > 80 else ""), "status": "running"})
-            try:
-                py_res = _python_run(code)
-                yield json.dumps({"event": "tool_result", "tool": "python_run",
-                                  "data": {
-                                      "code": code,
-                                      "stdout": py_res["stdout"],
-                                      "stderr": py_res["stderr"],
-                                      "images": py_res["images"],
-                                      "ok": py_res["ok"],
-                                  }})
-                if py_res["ok"]:
-                    chart_note = f" (+{len(py_res['images'])} chart(s))" if py_res["images"] else ""
-                    yield json.dumps({"event": "react_action_done", "id": action_id, "status": "done",
-                                      "preview": f"Ran successfully{chart_note}"})
-                    # Truncated output for the model's context (full version went to the UI card)
-                    short_out = (py_res["stdout"] or "")[:1500]
-                    obs = f"PYTHON EXECUTED OK.\nStdout (first 1500 chars):\n{short_out}"
-                else:
-                    yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error",
-                                      "preview": (py_res["stderr"] or "error")[:80]})
-                    obs = f"PYTHON ERROR (exit {py_res['exit_code']}):\n{py_res['stderr'][:1500]}"
-            except Exception as e:
-                yield json.dumps({"event": "react_action_done", "id": action_id, "status": "error", "preview": str(e)[:100]})
-                obs = f"PYTHON RUNNER ERROR: {e}"
-            current_messages.append({"role": "assistant", "content": accumulated_response})
-            current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nThe code + output + any charts are already shown to the user. Give a one-line interpretation; do not re-paste code or output."})
-            action_found = True
-
-        # Generic integration tool dispatch (shared registry with voice agent).
-        # Syntax: [INTEGRATION: tool_name | {"arg":"value",...}]
-        # Tools available: send_whatsapp, post_slack, create_calendar_event,
-        # lookup_crm_contact, log_crm_activity, trigger_zapier — only those whose
-        # provider the user has connected.
-        if not action_found:
-            int_match = re.search(r'\[INTEGRATION:\s*([a-z0-9_]+)\s*\|\s*(\{.*?\})\s*\]', accumulated_response, re.DOTALL)
-            if int_match:
-                tool_name = int_match.group(1).strip()
+            # Collect results in original order (so the OBSERVATION block reads
+            # naturally) but yield UI events as they finish.
+            results_by_id = {}
+            for fut in concurrent.futures.as_completed(futures):
+                act = futures[fut]
                 try:
-                    tool_args = json.loads(int_match.group(2))
-                except Exception:
-                    tool_args = {}
-                # MCP tools don't require uid (server-level creds); per-user integrations do.
-                is_mcp = tool_name.startswith("mcp_")
-                if is_mcp or uid:
-                    action_counter += 1
-                    action_id = str(action_counter)
-                    yield json.dumps({"event": "react_action", "id": action_id, "tool": tool_name,
-                                      "input": json.dumps(tool_args)[:80], "status": "running"})
-                    try:
-                        if is_mcp:
-                            from services.mcp_client_service import execute_mcp_tool
-                            result = execute_mcp_tool(tool_name, tool_args, uid=uid)
-                            label = "MCP"
-                        else:
-                            from services.integration_tools import execute_tool
-                            result = execute_tool(uid, tool_name, tool_args)
-                            label = "INTEGRATION"
-                        if result.get("ok"):
-                            yield json.dumps({"event": "react_action_done", "id": action_id,
-                                              "status": "done", "preview": f"{tool_name} succeeded"})
-                            obs = f"{label} RESULT ({tool_name}): {json.dumps(result)[:1500]}"
-                        else:
-                            yield json.dumps({"event": "react_action_done", "id": action_id,
-                                              "status": "error", "preview": str(result.get('error', ''))[:80]})
-                            obs = f"{label} ERROR ({tool_name}): {result.get('error', 'unknown')}"
-                    except Exception as e:
-                        yield json.dumps({"event": "react_action_done", "id": action_id,
-                                          "status": "error", "preview": str(e)[:80]})
-                        obs = f"TOOL EXCEPTION ({tool_name}): {e}"
-                    current_messages.append({"role": "assistant", "content": accumulated_response})
-                    current_messages.append({"role": "user", "content": f"OBSERVATION: {obs}\n\nSynthesize a concise user-facing answer from this result. Do not call [INTEGRATION:] again for the same action."})
-                    action_found = True
+                    res = fut.result()
+                except Exception as e:
+                    res = {
+                        "ok": False,
+                        "preview": str(e)[:100],
+                        "observation": f"{act['tool'].upper()} EXCEPTION: {e}",
+                        "done_extras": {},
+                        "extra_events": [],
+                    }
+                results_by_id[act["id"]] = res
 
-        agent_loop._action_counter = action_counter
+                # Stream any auxiliary events first (e.g. tool_result cards),
+                # then the react_action_done so the card shows before the tick.
+                for ev in res.get("extra_events", []):
+                    yield json.dumps(ev)
 
-        # Signal synthesis phase if we just executed actions
-        if action_found:
+                done_event = {
+                    "event": "react_action_done",
+                    "id": act["id"],
+                    "status": "done" if res["ok"] else ("empty" if res.get("empty") else "error"),
+                    "preview": res.get("preview", ""),
+                }
+                done_event.update(res.get("done_extras", {}))
+                yield json.dumps(done_event)
+
+            # Consolidate observations in plan order for the synthesis turn.
+            obs_lines = []
+            continue_prompts = []
+            for act in planned_actions:
+                res = results_by_id.get(act["id"], {})
+                if res.get("observation"):
+                    obs_lines.append(res["observation"])
+                cp = res.get("continue_prompt") or act.get("continue_prompt")
+                if cp and cp not in continue_prompts:
+                    continue_prompts.append(cp)
+
+            current_messages.append({"role": "assistant", "content": accumulated_response})
+            current_messages.append({
+                "role": "user",
+                "content": "OBSERVATION:\n" + "\n\n".join(obs_lines) + "\n\n" + " ".join(continue_prompts),
+            })
+
+            agent_loop._action_counter = planned_actions[-1]["id_int"]
             yield json.dumps({"event": "react_synthesizing"})
+            continue
 
-        # If an action was performed, continue to the next turn for synthesis.
-        # Otherwise, we are done.
-        if not action_found:
-            return
+        # No tool actions detected — we're done.
+        return
+
+# ──────────────────────────────────────────────────────────────────────
+# Tool planner — parses [TAG: …] tool tags out of an LLM response and
+# returns a list of "actions" the agent loop will execute in parallel.
+# Each action item is a dict with:
+#   id        : str (numeric, displayed in UI)
+#   id_int    : int (for advancing the global counter)
+#   tool      : str (UI label / icon key)
+#   input     : str (UI preview of what the tool received)
+#   runner    : callable -> {ok, preview, observation, done_extras,
+#                            extra_events, continue_prompt, empty?}
+#   continue_prompt : str (instruction the synthesis turn should follow)
+# ──────────────────────────────────────────────────────────────────────
+
+def _plan_actions(text, uid, start_id=1):
+    """Scan an LLM response for tool tags and produce a parallelizable plan.
+    Multiple tags (including repeats of the same tool) are all included.
+    Order in the list = order they appear in the text = order shown in the UI.
+    """
+    actions = []
+    next_id = start_id
+
+    def _mk(tool, input_str, runner, continue_prompt, start):
+        nonlocal next_id
+        item = {
+            "id": str(next_id), "id_int": next_id,
+            "tool": tool, "input": input_str,
+            "runner": runner, "continue_prompt": continue_prompt,
+            "_start": start,
+        }
+        next_id += 1
+        return item
+
+    # 1. [SEARCH: query]
+    for m in re.finditer(r'\[SEARCH:\s*(.*?)\]', text):
+        q = m.group(1).strip()
+        actions.append(_mk("web_search", q, _runner_search(q),
+                           "Now answer using the findings above. Do NOT call [SEARCH:] again.",
+                           m.start()))
+
+    # 2. [CALCULATE: expr]
+    for m in re.finditer(r'\[CALCULATE:\s*(.*?)\]', text):
+        expr = m.group(1).strip()
+        actions.append(_mk("calculator", expr, _runner_calc(expr),
+                           "Continue with your answer using the calculation above.",
+                           m.start()))
+
+    # 3. [CALENDAR_CREATE: title | start | end | description?]
+    for m in re.finditer(r'\[CALENDAR_CREATE:\s*(.*?)\]', text, re.DOTALL):
+        parts = [p.strip() for p in m.group(1).split('|')]
+        title       = parts[0] if len(parts) > 0 else 'New Event'
+        start_dt    = parts[1] if len(parts) > 1 else None
+        end_dt      = parts[2] if len(parts) > 2 else None
+        description = parts[3] if len(parts) > 3 else ''
+        actions.append(_mk("calendar", title,
+                           _runner_cal_create(uid, title, start_dt, end_dt, description),
+                           "Confirm the results to the user in one short message.",
+                           m.start()))
+
+    # 3.5 [CALENDAR_DELETE: event_id_or_title_keyword]
+    for m in re.finditer(r'\[CALENDAR_DELETE:\s*(.*?)\]', text, re.DOTALL):
+        q = m.group(1).strip()
+        actions.append(_mk("calendar", f"Delete: {q}",
+                           _runner_cal_delete(uid, q),
+                           "Confirm the results to the user in one short message.",
+                           m.start()))
+
+    # 4. [CALENDAR_LIST: days]
+    for m in re.finditer(r'\[CALENDAR_LIST:\s*(\d*)\]', text):
+        days = int(m.group(1) or 7)
+        actions.append(_mk("calendar", f"Next {days} days",
+                           _runner_cal_list(uid, days),
+                           "Events are shown as cards — give a one-line summary only.",
+                           m.start()))
+
+    # 4.5 [GMAIL_SEND: to | subject | body]
+    for m in re.finditer(r'\[GMAIL_SEND:\s*(.*?)\]', text, re.DOTALL):
+        parts = [p.strip() for p in m.group(1).split('|', 2)]
+        to   = parts[0] if len(parts) > 0 else ''
+        subj = parts[1] if len(parts) > 1 else ''
+        body = parts[2] if len(parts) > 2 else ''
+        actions.append(_mk("gmail", f"Email → {to}",
+                           _runner_gmail_send(uid, to, subj, body),
+                           "Confirm the results to the user in one short message.",
+                           m.start()))
+
+    # 4.6 [GMAIL_LIST: max | optional_search_query]
+    for m in re.finditer(r'\[GMAIL_LIST:\s*(.*?)\]', text):
+        parts = [p.strip() for p in m.group(1).split('|', 1)]
+        mx = int(parts[0]) if parts and parts[0].isdigit() else 10
+        q  = parts[1] if len(parts) > 1 else ''
+        actions.append(_mk("gmail", f"Inbox (last {mx})",
+                           _runner_gmail_list(uid, mx, q),
+                           "Inbox is already shown as cards — give a one-line summary only.",
+                           m.start()))
+
+    # 5. [WHATSAPP_SEND: number | message]
+    for m in re.finditer(r'\[WHATSAPP_SEND:\s*(.*?)\]', text, re.DOTALL):
+        parts = [p.strip() for p in m.group(1).split('|', 1)]
+        to  = parts[0] if len(parts) > 0 else ''
+        msg = parts[1] if len(parts) > 1 else ''
+        actions.append(_mk("whatsapp", f"WhatsApp → {to}",
+                           _runner_whatsapp(uid, to, msg),
+                           "Confirm the results to the user in one short message.",
+                           m.start()))
+
+    # 6. [SLACK_POST: message]
+    for m in re.finditer(r'\[SLACK_POST:\s*(.*?)\]', text, re.DOTALL):
+        msg = m.group(1).strip()
+        actions.append(_mk("slack", "Slack message",
+                           _runner_slack(uid, msg),
+                           "Confirm the results to the user in one short message.",
+                           m.start()))
+
+    # 7. [HUBSPOT_CREATE_CONTACT: email | first | last | company | phone]
+    for m in re.finditer(r'\[HUBSPOT_CREATE_CONTACT:\s*(.*?)\]', text, re.DOTALL):
+        parts = [p.strip() for p in m.group(1).split('|')]
+        email = parts[0] if len(parts) > 0 else ''
+        first = parts[1] if len(parts) > 1 else ''
+        last  = parts[2] if len(parts) > 2 else ''
+        co    = parts[3] if len(parts) > 3 else ''
+        ph    = parts[4] if len(parts) > 4 else ''
+        actions.append(_mk("hubspot", f"HubSpot contact: {email}",
+                           _runner_hubspot(uid, email, first, last, co, ph),
+                           "Confirm the results to the user in one short message.",
+                           m.start()))
+
+    # 11. [RUN_PYTHON: ```code```]
+    py_iter = list(re.finditer(r'\[RUN_PYTHON:\s*```(?:python)?\s*([\s\S]*?)```\s*\]', text))
+    if not py_iter:
+        m = re.search(r'\[RUN_PYTHON:\s*([\s\S]+?)\]\s*$', text.strip())
+        if m:
+            py_iter = [m]
+    for m in py_iter:
+        code = m.group(1).strip()
+        preview = code[:80] + ("…" if len(code) > 80 else "")
+        actions.append(_mk("python", preview,
+                           _runner_python(code),
+                           "Code, output, and any charts are already shown. Give a one-line interpretation.",
+                           m.start()))
+
+    # 12. [INTEGRATION: tool_name | {json}]
+    for m in re.finditer(r'\[INTEGRATION:\s*([a-z0-9_]+)\s*\|\s*(\{.*?\})\s*\]', text, re.DOTALL):
+        tool_name = m.group(1).strip()
+        try:
+            tool_args = json.loads(m.group(2))
+        except Exception:
+            tool_args = {}
+        is_mcp = tool_name.startswith("mcp_")
+        if not (is_mcp or uid):
+            continue
+        actions.append(_mk(tool_name, json.dumps(tool_args)[:80],
+                           _runner_integration(uid, tool_name, tool_args, is_mcp),
+                           "Synthesize a concise user-facing answer from the result. Do not call [INTEGRATION:] again for the same action.",
+                           m.start()))
+
+    # Sort by appearance order so the UI timeline matches the response text.
+    actions.sort(key=lambda a: a["_start"])
+    for a in actions:
+        a.pop("_start", None)
+    return actions
+
+
+# ──────────── Per-tool runner factories ────────────
+# Each factory closes over its arguments and returns a zero-arg callable.
+# The callable returns a result dict consumed by the agent loop.
+
+def _runner_search(query):
+    def run():
+        from services.research_service import _gather_sources
+        try:
+            sources = _gather_sources([query])
+            if sources:
+                obs = "SEARCH RESULTS:\n"
+                for i, s in enumerate(sources[:4], 1):
+                    obs += f"[{i}] {s['title']} ({s['url']}): {s['snippet']}\n"
+                return {"ok": True, "preview": f"Found {len(sources)} sources",
+                        "observation": obs,
+                        "done_extras": {"sources": [{"title": s["title"], "url": s["url"]} for s in sources[:4]]},
+                        "extra_events": []}
+            return {"ok": True, "empty": True, "preview": "No results found",
+                    "observation": "SEARCH: No relevant results found.",
+                    "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:80],
+                    "observation": f"SEARCH ERROR: {e}",
+                    "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_calc(expr):
+    def run():
+        try:
+            import math
+            safe_globals = {"__builtins__": {}}
+            safe_globals.update({k: getattr(math, k) for k in dir(math) if not k.startswith('_')})
+            result = eval(expr, safe_globals)  # noqa: S307
+            rs = str(round(float(result), 8)) if isinstance(result, float) else str(result)
+            return {"ok": True, "preview": f"= {rs}",
+                    "observation": f"CALCULATION: {expr} = {rs}",
+                    "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": f"Error: {e}",
+                    "observation": f"CALCULATION ERROR: {e}",
+                    "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_cal_create(uid, title, start_dt, end_dt, description):
+    def run():
+        try:
+            result = _calendar_create(uid, title, start_dt, end_dt, description)
+            link = result.get('htmlLink', '')
+            extras = {"sources": [{"title": "Open in Calendar", "url": link}]} if link else {}
+            return {"ok": True, "preview": f"Created: {title}",
+                    "observation": f"CALENDAR: Event '{title}' created for {start_dt}. Link: {link}",
+                    "done_extras": extras, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"CALENDAR ERROR: {e}",
+                    "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_cal_delete(uid, q):
+    def run():
+        try:
+            result = _calendar_delete(uid, q)
+            deleted = result.get('deleted', [])
+            if deleted:
+                return {"ok": True, "preview": f"Deleted: {', '.join(deleted)[:80]}",
+                        "observation": f"CALENDAR: Deleted {len(deleted)} event(s): {', '.join(deleted)}",
+                        "done_extras": {}, "extra_events": []}
+            return {"ok": True, "preview": f"No match for '{q}'",
+                    "observation": f"CALENDAR: No event found matching '{q}' in the next 60 days.",
+                    "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"CALENDAR ERROR: {e}",
+                    "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_cal_list(uid, days):
+    def run():
+        try:
+            events = _calendar_list(uid, days)
+            card_events = []
+            if events:
+                for e in events:
+                    start = e.get('start', {}).get('dateTime') or e.get('start', {}).get('date', '')
+                    end   = e.get('end', {}).get('dateTime')   or e.get('end', {}).get('date', '')
+                    card_events.append({
+                        "summary": e.get('summary', 'Untitled'),
+                        "start": start, "end": end,
+                        "location": e.get('location', ''),
+                        "hangoutLink": e.get('hangoutLink', '') or
+                                       (e.get('conferenceData', {}) or {}).get('entryPoints', [{}])[0].get('uri', ''),
+                        "htmlLink": e.get('htmlLink', ''),
+                        "description": (e.get('description') or '')[:240],
+                    })
+            extra = [{"event": "tool_result", "tool": "calendar_list",
+                      "data": {"events": card_events, "days": days}}]
+            if card_events:
+                lines = [f"- {ev['summary']} at {ev['start']}" for ev in card_events]
+                return {"ok": True, "preview": f"{len(card_events)} event(s) found",
+                        "observation": f"CALENDAR EVENTS (next {days} days):\n" + "\n".join(lines),
+                        "done_extras": {}, "extra_events": extra}
+            return {"ok": True, "preview": "No events",
+                    "observation": f"CALENDAR: No events found in the next {days} days.",
+                    "done_extras": {}, "extra_events": extra}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"CALENDAR ERROR: {e}",
+                    "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_gmail_send(uid, to, subj, body):
+    def run():
+        try:
+            _gmail_send(uid, to, subj, body)
+            return {"ok": True, "preview": f"Sent to {to}",
+                    "observation": f"GMAIL: Email sent to {to} with subject '{subj}'.",
+                    "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"GMAIL ERROR: {e}",
+                    "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_gmail_list(uid, mx, q):
+    def run():
+        try:
+            emails = _gmail_list(uid, mx, q)
+            extra = [{"event": "tool_result", "tool": "gmail_list",
+                      "data": {"emails": emails or [], "query": q}}]
+            if emails:
+                lines = [f"- From: {e['from']} | Subject: {e['subject']} | {e['date']}\n  Snippet: {e['snippet']}" for e in emails]
+                return {"ok": True, "preview": f"{len(emails)} email(s)",
+                        "observation": f"GMAIL INBOX ({len(emails)} message(s)):\n" + "\n".join(lines),
+                        "done_extras": {}, "extra_events": extra}
+            return {"ok": True, "preview": "Empty inbox",
+                    "observation": "GMAIL: No emails found.",
+                    "done_extras": {}, "extra_events": extra}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"GMAIL ERROR: {e}",
+                    "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_whatsapp(uid, to, msg):
+    def run():
+        try:
+            _whatsapp_send(uid, to, msg)
+            return {"ok": True, "preview": f"Sent to {to}",
+                    "observation": f"WHATSAPP: Message sent to {to}.",
+                    "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"WHATSAPP ERROR: {e}",
+                    "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_slack(uid, msg):
+    def run():
+        try:
+            _slack_post(uid, msg)
+            return {"ok": True, "preview": "Message posted",
+                    "observation": "SLACK: Message posted successfully.",
+                    "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"SLACK ERROR: {e}",
+                    "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_hubspot(uid, email, first, last, co, ph):
+    def run():
+        try:
+            result = _hubspot_create_contact(uid, email, first, last, co, ph)
+            cid = result.get('id', '')
+            return {"ok": True, "preview": f"Contact created: {email}",
+                    "observation": f"HUBSPOT: Contact '{email}' created (id: {cid}).",
+                    "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"HUBSPOT ERROR: {e}",
+                    "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_python(code):
+    def run():
+        try:
+            res = _python_run(code)
+            extra = [{"event": "tool_result", "tool": "python_run",
+                      "data": {"code": code, "stdout": res["stdout"],
+                               "stderr": res["stderr"], "images": res["images"],
+                               "ok": res["ok"]}}]
+            if res["ok"]:
+                chart_note = f" (+{len(res['images'])} chart(s))" if res["images"] else ""
+                short = (res["stdout"] or "")[:1500]
+                return {"ok": True, "preview": f"Ran successfully{chart_note}",
+                        "observation": f"PYTHON EXECUTED OK.\nStdout (first 1500 chars):\n{short}",
+                        "done_extras": {}, "extra_events": extra}
+            return {"ok": False, "preview": (res["stderr"] or "error")[:80],
+                    "observation": f"PYTHON ERROR (exit {res['exit_code']}):\n{res['stderr'][:1500]}",
+                    "done_extras": {}, "extra_events": extra}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"PYTHON RUNNER ERROR: {e}",
+                    "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_integration(uid, tool_name, tool_args, is_mcp):
+    def run():
+        try:
+            if is_mcp:
+                from services.mcp_client_service import execute_mcp_tool
+                result = execute_mcp_tool(tool_name, tool_args, uid=uid)
+                label = "MCP"
+            else:
+                from services.integration_tools import execute_tool
+                result = execute_tool(uid, tool_name, tool_args)
+                label = "INTEGRATION"
+            if result.get("ok"):
+                return {"ok": True, "preview": f"{tool_name} succeeded",
+                        "observation": f"{label} RESULT ({tool_name}): {json.dumps(result)[:1500]}",
+                        "done_extras": {}, "extra_events": []}
+            return {"ok": False, "preview": str(result.get('error', ''))[:80],
+                    "observation": f"{label} ERROR ({tool_name}): {result.get('error', 'unknown')}",
+                    "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:80],
+                    "observation": f"TOOL EXCEPTION ({tool_name}): {e}",
+                    "done_extras": {}, "extra_events": []}
+    return run
 
 
 def _estimate_tokens(user_msg, mode):
@@ -960,48 +1045,6 @@ def _estimate_reasoning_budget(max_tokens, max_thinking=False):
         return min(8192, max_tokens)
     # Deep thinking: up to 2× the answer budget, capped at 32k
     return min(32768, max_tokens * 2)
-
-
-# Heuristic auto-thinking. Triggers when the prompt looks hard enough that
-# reasoning tokens pay off (math, multi-step, code debugging, analysis).
-# Cheap chitchat and lookups stay fast.
-_AUTO_THINK_KEYWORDS = (
-    "why", "how does", "how do", "explain", "analyze", "compare", "debug",
-    "optimize", "refactor", "prove", "derive", "design", "architect",
-    "step by step", "step-by-step", "reason", "trade-off", "tradeoff",
-    "complex", "deep dive", "walk me through", "root cause", "edge case",
-    "algorithm", "complexity", "big-o", "big o",
-)
-_AUTO_THINK_CODE_HINTS = (
-    "bug", "stack trace", "traceback", "exception", "segfault",
-    "race condition", "deadlock", "memory leak", "performance",
-    "regex", "recursion", "concurrency",
-)
-
-
-def _should_auto_think(user_msg: str, model_choice: str) -> bool:
-    """Decide whether to flip on deep thinking based on the prompt itself.
-    Only applies to reasoning-capable modes (pro / coder). Daily stays fast.
-    """
-    if model_choice not in ('pro', 'coder'):
-        return False
-    if not user_msg:
-        return False
-    text = user_msg.lower()
-    # Long prompts almost always need real reasoning.
-    if len(text) > 400:
-        return True
-    # Multi-question prompts ("X? Y? Z?")
-    if text.count("?") >= 2:
-        return True
-    # Code presence + a "why/bug/explain" signal → think
-    has_code_block = "```" in user_msg or user_msg.count("\n") >= 6
-    if has_code_block and any(k in text for k in _AUTO_THINK_CODE_HINTS + _AUTO_THINK_KEYWORDS):
-        return True
-    # Plain keyword match anywhere
-    if any(k in text for k in _AUTO_THINK_KEYWORDS):
-        return True
-    return False
 
 
 # ──────────────────────────────────────────────
@@ -1547,7 +1590,7 @@ def _python_run(code, timeout_sec=15):
 
         try:
             proc = subprocess.run(
-                [_sys.executable, '-I', '-S', script_path],
+                [_sys.executable, '-I', script_path],
                 cwd=workdir, env=env,
                 capture_output=True, text=True,
                 timeout=timeout_sec,

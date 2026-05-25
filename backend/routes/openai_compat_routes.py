@@ -157,6 +157,17 @@ KAUTILYA_MODEL_MAP = {
     "kautilya-daily":   "mistralai/mistral-medium-3.5-128b",  # NVIDIA (reasoning_effort=low)
 }
 
+# Per-model context windows. Match each upstream model's actual capability so
+# Cline/Cursor users on Pro/Coder don't see silently-truncated context (which
+# was making the model "hallucinate / not understand complex tasks" — it was
+# being fed only the last 64k of what the client sent).
+# Free tier gets a smaller share to keep latency/cost predictable.
+KAUTILYA_MODEL_CONTEXT = {
+    "kautilya-coder":   {"free":  64_000, "pro": 256_000},
+    "kautilya-pro":     {"free":  64_000, "pro": 128_000},
+    "kautilya-daily":   {"free":  32_000, "pro":  64_000},
+}
+
 PUBLIC_MODELS = [
     {"id": "kautilya-coder",  "object": "model", "owned_by": "kautilya",
      "description": "Frontier code generation with extended thinking."},
@@ -224,25 +235,43 @@ def chat_completions():
     # Inject Kautilya identity so model doesn't reveal Qwen/Nemotron underneath.
     messages = _inject_kautilya_prompt(requested_model, messages)
 
-    # Trim messages to fit within the context window limits (64k tokens for Pro, 32k for Free)
-    max_context_tokens = 64000 if is_pro else 32000
+    # Trim messages to fit within the context window for this (model, tier).
+    # The Pro/Coder windows now match the underlying model's real native
+    # context — Cline/Cursor users were losing context to a hard 64k cap.
+    tier_key = "pro" if is_pro else "free"
+    max_context_tokens = KAUTILYA_MODEL_CONTEXT.get(requested_model, {}).get(tier_key, 32_000)
     messages = _trim_to_context_window(messages, max_tokens=max_context_tokens)
 
     stream = bool(body.get('stream', False))
     temperature = body.get('temperature', 0.7)
     top_p = body.get('top_p', 0.95)
-    max_tokens = body.get('max_tokens', 16384)
+    # OpenAI spec: prefer max_completion_tokens (newer field), fall back to max_tokens.
+    max_tokens = body.get('max_completion_tokens') or body.get('max_tokens') or 16384
     tools = body.get('tools')
     tool_choice = body.get('tool_choice')
 
-    # Thinking toggle resolution
+    # Reasoning effort + thinking toggle resolution.
+    # Honors the OpenAI top-level `reasoning_effort` field (low|medium|high|none)
+    # so Cline/Cursor's standard reasoning slider just works.
     extra = body.get('extra_body') or {}
     ctk = extra.get('chat_template_kwargs') or body.get('chat_template_kwargs') or {}
+    reasoning_effort = (
+        body.get('reasoning_effort')
+        or extra.get('reasoning_effort')
+        or None
+    )
+    if isinstance(reasoning_effort, str):
+        reasoning_effort = reasoning_effort.strip().lower() or None
+    # `max_thinking` is the on/off switch we pass to call_nvidia. Treat
+    # high effort OR an explicit toggle as "on"; anything else (low / none /
+    # unspecified) means "answer at earliest" so external clients aren't
+    # silently paying for reasoning latency they didn't ask for.
     max_thinking = bool(
         extra.get('max_thinking')
         or body.get('max_thinking')
         or ctk.get('enable_thinking')
         or ctk.get('thinking')
+        or (reasoning_effort == 'high')
     )
     reasoning_budget = extra.get('reasoning_budget') or body.get('reasoning_budget')
 
@@ -303,17 +332,32 @@ def chat_completions():
 
     # Same path the dashboard chat uses — call_nvidia handles streaming with
     # proper thinking/content separation for nemotron/qwen, and reasoning_effort
-    # for Mistral (kautilya-daily). Daily tier hides thinking and uses low effort.
+    # for Mistral (kautilya-daily). Daily tier always uses lowest effort so
+    # Cline/Cursor stay snappy.
     is_daily = 'mistral' in upstream_model.lower()
     rb = reasoning_budget if (max_thinking and not is_daily) else 0
+    # Map OpenAI-style reasoning_effort to the upstream value:
+    #   high → enable thinking path (handled via max_thinking above)
+    #   low / medium / none / unspecified → fastest path, no reasoning tokens
+    if is_daily:
+        # Mistral only accepts 'none' or 'high'.
+        upstream_effort = 'high' if max_thinking else 'none'
+    else:
+        # For nemotron / qwen we use max_thinking to decide; pass effort hint
+        # through only when explicitly low/medium so the model can dial it down.
+        if max_thinking:
+            upstream_effort = None  # default high path via reasoning_budget
+        elif reasoning_effort in ('low', 'medium', 'none'):
+            upstream_effort = reasoning_effort
+        else:
+            upstream_effort = 'low'  # default: answer at earliest
     gen = call_nvidia(
         messages, stream=True, max_tokens=max_tokens,
         model=upstream_model, tools=tools, tool_choice=tool_choice,
         temperature=temperature, top_p=top_p,
         max_thinking=(max_thinking and not is_daily), reasoning_budget=rb,
         expose_thinking=(not is_daily),
-        # Mistral daily only accepts 'none' or 'high'; 'none' = fastest.
-        reasoning_effort=('none' if is_daily else None),
+        reasoning_effort=upstream_effort,
     )
     if gen is None:
         return jsonify({"error": {"message": "Upstream unavailable", "type": "upstream_error"}}), 503

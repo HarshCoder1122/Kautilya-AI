@@ -9,6 +9,11 @@ PyPDF2
 Pillow
 google-genai
 numpy
+pandas
+matplotlib
+seaborn
+scipy
+scikit-learn
 beautifulsoup4
 duckduckgo-search
 wikipedia
