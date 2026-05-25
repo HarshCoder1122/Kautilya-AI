@@ -4,6 +4,8 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { getAuthInstance } from "./lib/firebase.js";
 import { onAuthStateChanged, getRedirectResult } from "firebase/auth";
 
+import InstallPWA from "./components/shared/InstallPWA";
+
 // Lazy load route components
 const ChatPage = lazy(() => import("./pages/ChatPage"));
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
@@ -100,6 +102,7 @@ function App() {
 
   return (
     <BrowserRouter>
+      <InstallPWA />
       <Suspense fallback={<LoadingScreen />}>
         <Routes>
           <Route path="/login" element={!user ? <LoginPage /> : <Navigate to="/" />} />

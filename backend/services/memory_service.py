@@ -212,7 +212,40 @@ def build_personalized_prompt(base_prompt, user_name=None, memories=None, user_e
         personalization += f"- User email (for reference, do not greet with it): {user_email}\n"
     if memories:
         personalization += "- Known facts about this user:\n  " + "\n  ".join([f"• {m}" for m in memories[:20]]) + "\n"
-    return base_prompt + system_context + personalization
+
+    # Connected integrations identity — so the agent knows e.g. the user's
+    # GitHub login when they say "check my repo" without having to ask.
+    integrations_block = ""
+    if uid:
+        try:
+            from extensions import db, FIREBASE_AVAILABLE
+            if FIREBASE_AVAILABLE and db:
+                idocs = db.collection('users').document(uid).collection('integrations').stream()
+                lines = []
+                for d in idocs:
+                    cfg = d.to_dict() or {}
+                    if not (cfg.get('access_token') or cfg.get('api_key') or cfg.get('webhook_url')):
+                        continue
+                    pid = d.id
+                    bits = [pid]
+                    if cfg.get('username'):
+                        bits.append(f"username: {cfg['username']}")
+                    if cfg.get('email') and pid != 'github':
+                        bits.append(f"email: {cfg['email']}")
+                    if cfg.get('name') and not cfg.get('username'):
+                        bits.append(f"name: {cfg['name']}")
+                    if cfg.get('profile_url'):
+                        bits.append(cfg['profile_url'])
+                    lines.append("• " + " — ".join(bits))
+                if lines:
+                    integrations_block = (
+                        "\n\nCONNECTED INTEGRATIONS (use these identities when calling tools — do NOT ask the user "
+                        "for their username/handle if it's listed here):\n" + "\n".join(lines) + "\n"
+                    )
+        except Exception as e:
+            print(f"[Prompt] integrations block failed: {e}")
+
+    return base_prompt + system_context + personalization + integrations_block
 
 
 def build_cli_system_prompt(base_prompt, env_context=None):
