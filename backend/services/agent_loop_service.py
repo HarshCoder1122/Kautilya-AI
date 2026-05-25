@@ -163,6 +163,17 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                     req = fn.get("parameters", {}).get("required", [])
                     lines.append(f"- {fn['name']}({', '.join(req)}): {fn['description']}")
                 lines.append("Syntax: [INTEGRATION: tool_name | {\"arg\": \"value\"}]  — JSON args, single line, double-quoted.")
+                lines.append(
+                    "STRICT TOOL-SELECTION RULES (violating these is hallucination):\n"
+                    "1. Use ONLY the tool whose name AND description exactly match the user's intent. Do NOT substitute a different tool because it's 'close enough'.\n"
+                    "2. The tool name in [INTEGRATION: …] must be COPIED VERBATIM from the list above. Never invent a tool name (no 'youtube_search', no 'gdocs_create' — only what is listed).\n"
+                    "3. If the user wants YouTube → use search_youtube / list_youtube_subscriptions. NEVER use list_drive_files or a web-search MCP for YouTube.\n"
+                    "4. If the user wants Google Docs → use create_google_doc / read_google_doc / append_google_doc. NEVER append text via list_drive_files or append_sheet_row.\n"
+                    "5. If the user wants Google Sheets → use append_sheet_row. NEVER use a Docs tool for spreadsheets.\n"
+                    "6. If the user wants their Google Contacts → use search_google_contacts. NEVER guess phone numbers/emails from memory.\n"
+                    "7. If NO listed tool matches the request, say so plainly — do NOT call a wrong tool and fabricate the result. Tell the user which integration they'd need to connect.\n"
+                    "8. Never invent results. If a tool returns an error or empty, report that fact; do not pretend it succeeded."
+                )
                 if current_messages and current_messages[0].get("role") == "system":
                     current_messages[0]["content"] = str(current_messages[0].get("content", "")) + "\n".join(lines)
         except Exception as _e:
@@ -182,6 +193,10 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 desc = (fn.get("description") or "")[:160]
                 mcp_lines.append(f"- {fn['name']}({', '.join(req)}): {desc}")
             mcp_lines.append("Syntax: [INTEGRATION: mcp_<server>_<tool> | {\"arg\":\"value\"}]  — same dispatch format. Wait for OBSERVATION before continuing.")
+            mcp_lines.append(
+                "PRIORITY RULE: if a task is covered by an entry in AVAILABLE INTEGRATIONS above (Google Docs, Sheets, Tasks, Drive, Calendar, Contacts, YouTube, GitHub, CRM, WhatsApp, Slack), "
+                "use THAT integration — do NOT route the same request through a generic MCP fetch/web/search server. MCP tools are only for tasks no integration covers."
+            )
             if current_messages and current_messages[0].get("role") == "system":
                 current_messages[0]["content"] = str(current_messages[0].get("content", "")) + "\n".join(mcp_lines)
     except Exception as _e:
