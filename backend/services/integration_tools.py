@@ -398,6 +398,120 @@ def _append_google_doc(uid, args):
     return {"ok": True, "document_id": doc_id, "appended_chars": len(text)}
 
 
+def _search_youtube(uid, args):
+    try:
+        token = _get_valid_google_token(uid, 'youtube')
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    q = (args.get("query") or "").strip()
+    if not q:
+        return {"ok": False, "error": "query is required"}
+    max_results = max(1, min(int(args.get("max_results") or 8), 25))
+    r = requests.get(
+        "https://www.googleapis.com/youtube/v3/search",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"part": "snippet", "q": q, "maxResults": max_results, "type": "video"},
+        timeout=15,
+    )
+    if not r.ok:
+        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+    items = []
+    for it in r.json().get("items", []):
+        vid = (it.get("id") or {}).get("videoId")
+        sn = it.get("snippet") or {}
+        if not vid:
+            continue
+        items.append({
+            "video_id": vid,
+            "title": sn.get("title"),
+            "channel": sn.get("channelTitle"),
+            "description": (sn.get("description") or "")[:240],
+            "published_at": sn.get("publishedAt"),
+            "url": f"https://www.youtube.com/watch?v={vid}",
+            "thumbnail": (((sn.get("thumbnails") or {}).get("medium") or {}).get("url")),
+        })
+    return {"ok": True, "videos": items, "count": len(items)}
+
+
+def _list_youtube_subscriptions(uid, args):
+    try:
+        token = _get_valid_google_token(uid, 'youtube')
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    max_results = max(1, min(int(args.get("max_results") or 20), 50))
+    r = requests.get(
+        "https://www.googleapis.com/youtube/v3/subscriptions",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"part": "snippet", "mine": "true", "maxResults": max_results},
+        timeout=15,
+    )
+    if not r.ok:
+        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+    subs = []
+    for it in r.json().get("items", []):
+        sn = it.get("snippet") or {}
+        subs.append({
+            "title": sn.get("title"),
+            "channel_id": (sn.get("resourceId") or {}).get("channelId"),
+            "description": (sn.get("description") or "")[:200],
+        })
+    return {"ok": True, "subscriptions": subs, "count": len(subs)}
+
+
+def _search_google_contacts(uid, args):
+    try:
+        token = _get_valid_google_token(uid, 'google_contacts')
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    q = (args.get("query") or "").strip()
+    page_size = max(1, min(int(args.get("page_size") or 10), 30))
+    # People API: searchContacts requires a one-time warmup; we fall back
+    # to listing if search returns empty.
+    base_params = {
+        "readMask": "names,emailAddresses,phoneNumbers,organizations,photos",
+        "pageSize": page_size,
+    }
+    if q:
+        r = requests.get(
+            "https://people.googleapis.com/v1/people:searchContacts",
+            headers={"Authorization": f"Bearer {token}"},
+            params={**base_params, "query": q},
+            timeout=15,
+        )
+        if r.ok and (r.json().get("results") or []):
+            results = []
+            for it in r.json().get("results", []):
+                p = it.get("person") or {}
+                results.append(_format_person(p))
+            return {"ok": True, "contacts": results, "count": len(results)}
+    # Fallback: list connections
+    r = requests.get(
+        "https://people.googleapis.com/v1/people/me/connections",
+        headers={"Authorization": f"Bearer {token}"},
+        params=base_params,
+        timeout=15,
+    )
+    if not r.ok:
+        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+    results = [_format_person(p) for p in (r.json().get("connections") or [])]
+    if q:
+        ql = q.lower()
+        results = [c for c in results if ql in (c.get("name") or "").lower()
+                   or any(ql in (e or "").lower() for e in c.get("emails", []))]
+    return {"ok": True, "contacts": results, "count": len(results)}
+
+
+def _format_person(p):
+    names = (p.get("names") or [{}])[0]
+    return {
+        "name": names.get("displayName") or names.get("givenName"),
+        "emails": [e.get("value") for e in (p.get("emailAddresses") or []) if e.get("value")],
+        "phones": [ph.get("value") for ph in (p.get("phoneNumbers") or []) if ph.get("value")],
+        "organization": ((p.get("organizations") or [{}])[0]).get("name"),
+        "photo_url": ((p.get("photos") or [{}])[0]).get("url"),
+    }
+
+
 def _trigger_zapier(uid, args):
     cfg = _get_cfg(uid, 'zapier') or {}
     hook = args.get("hook_url") or cfg.get('webhook_url')
@@ -655,6 +769,38 @@ REGISTRY: Dict[str, Dict[str, Any]] = {
             "parameters": {"type": "object", "required": ["document_id", "text"], "properties": {
                 "document_id": {"type": "string"},
                 "text": {"type": "string", "description": "Text to append (prepend a newline if you want a new paragraph)"}
+            }}}}
+    },
+    "search_youtube": {
+        "provider": "youtube",
+        "handler": _search_youtube,
+        "spec": {"type": "function", "function": {
+            "name": "search_youtube",
+            "description": "Search YouTube videos. Returns titles, channels, descriptions, and URLs for the top results.",
+            "parameters": {"type": "object", "required": ["query"], "properties": {
+                "query": {"type": "string", "description": "What to search on YouTube"},
+                "max_results": {"type": "integer", "description": "Max videos to return (default 8, max 25)"}
+            }}}}
+    },
+    "list_youtube_subscriptions": {
+        "provider": "youtube",
+        "handler": _list_youtube_subscriptions,
+        "spec": {"type": "function", "function": {
+            "name": "list_youtube_subscriptions",
+            "description": "List the channels the user is subscribed to on YouTube.",
+            "parameters": {"type": "object", "properties": {
+                "max_results": {"type": "integer", "description": "Max channels to return (default 20, max 50)"}
+            }}}}
+    },
+    "search_google_contacts": {
+        "provider": "google_contacts",
+        "handler": _search_google_contacts,
+        "spec": {"type": "function", "function": {
+            "name": "search_google_contacts",
+            "description": "Search or list the user's Google Contacts. Returns name, emails, phones, organization.",
+            "parameters": {"type": "object", "properties": {
+                "query": {"type": "string", "description": "Optional name/email to filter by; omit to list all"},
+                "page_size": {"type": "integer", "description": "Max results, default 10, max 30"}
             }}}}
     },
     "trigger_zapier": {
