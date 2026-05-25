@@ -21,6 +21,9 @@ from services.memory_service import (
 )
 from services.agent_loop_service import get_llm_response, normalize_model_choice
 from services.research_service import deep_research_stream
+from services.fast_response_cache import (
+    try_canned_reply, cache_get as fast_cache_get, cache_put as fast_cache_put,
+)
 from middleware.rate_limiter import check_message_rate_limit
 from middleware.security import block_sensitive_query
 
@@ -268,6 +271,41 @@ def jarvis_stream():
             yield f"data: {json.dumps({'chunk': err_msg})}\n\n"
         return Response(rate_err(), mimetype='text/event-stream')
 
+    # ───────────────────────── Fast-response cache ─────────────────────────
+    # Trivial chat ("hi", "ok", "thanks", "who are you", repeated short
+    # questions) bypasses the agent loop entirely and returns a canned or
+    # cached reply in ~5 ms instead of ~1-2 s of LLM round-trip. Skipped
+    # when files are attached or for modes that have a custom flow
+    # (research has its own pipeline; coder/pro should always get real
+    # model output even on small queries).
+    fast_eligible = (
+        message
+        and not files
+        and model in ('auto', 'daily')
+    )
+    fast_reply = None
+    if fast_eligible:
+        fast_reply = try_canned_reply(message) or fast_cache_get(message, model)
+    if fast_reply:
+        # Persist both sides of the exchange so chat history stays correct.
+        try:
+            save_to_firestore(uid, session_id, "user", message)
+            save_to_firestore(uid, session_id, "assistant", fast_reply, streaming=False)
+        except Exception as e:
+            print(f"[FastCache] Firestore save failed (non-fatal): {e}")
+
+        def fast_sse():
+            # Emit as a single chunk — the frontend renders SSE chunks
+            # incrementally, so a one-shot reply lands as fast as the
+            # client can read the socket.
+            yield f"data: {json.dumps({'chunk': fast_reply})}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return Response(fast_sse(), mimetype='text/event-stream', headers={
+            'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no', 'Connection': 'keep-alive',
+            'X-Kautilya-Cache': 'hit',
+        })
+
     # Build conversation (user-scoped)
     conv = _get_conversation(uid, session_id)
     restored_messages = None
@@ -478,6 +516,14 @@ def jarvis_stream():
                         save_to_firestore(uid, session_id, "assistant", full_response,
                                           message_id=assistant_msg_id, streaming=False)
                         print(f"[Stream] Saved response ({len(full_response)} chars) for session {session_id}")
+                        # Feed the fast-response LRU: short query + short reply
+                        # = a future hit. The cache itself decides whether
+                        # the lengths qualify, we just hand it the pair.
+                        try:
+                            if message and isinstance(message, str) and model in ('auto', 'daily'):
+                                fast_cache_put(message, model, full_response)
+                        except Exception:
+                            pass
                         # AI-generated 3-4 word title for the sidebar (background job)
                         _generate_chat_title(uid, session_id, message, full_response)
                     except Exception as e:
