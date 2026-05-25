@@ -158,12 +158,14 @@ def _generate_chat_title(uid, session_id, user_msg, assistant_msg):
     threading.Thread(target=_worker, daemon=True).start()
 
 
-def save_to_firestore(uid, session_id, role, content, message_id=None, streaming=False):
+def save_to_firestore(uid, session_id, role, content, message_id=None, streaming=False, extras=None):
     """Save a chat message.
     - If `message_id` is provided, the message doc is updated (used for live
       streaming so reopening the app reveals in-progress responses).
     - `streaming=True` marks the message as still generating; the frontend
       polls until this flips false.
+    - `extras` (dict) carries structured side-data so it survives reload:
+        tool_results, react_steps, citations, artifact (type/title/code).
     """
     from extensions import db
     if not db or not uid:
@@ -189,23 +191,32 @@ def save_to_firestore(uid, session_id, role, content, message_id=None, streaming
             'streaming': bool(streaming),
         }, merge=True)
         saved_content = json.dumps(content) if isinstance(content, list) else content
-        msgs = conv_ref.collection('messages')
-        if message_id:
-            msg_ref = msgs.document(message_id)
-            msg_ref.set({
-                'role': role,
-                'content': saved_content,
-                'streaming': bool(streaming),
-                'timestamp': firestore.SERVER_TIMESTAMP,
-            }, merge=True)
-            return message_id
-        new_ref = msgs.document()
-        new_ref.set({
+        payload = {
             'role': role,
             'content': saved_content,
             'streaming': bool(streaming),
             'timestamp': firestore.SERVER_TIMESTAMP,
-        })
+        }
+        if extras and isinstance(extras, dict):
+            # Firestore disallows None values; strip them, and JSON-encode
+            # nested structures so we don't hit nested-array limits.
+            for k in ('tool_results', 'react_steps', 'citations', 'artifact', 'agent_type'):
+                v = extras.get(k)
+                if v in (None, [], {}, ''):
+                    continue
+                if isinstance(v, (list, dict)):
+                    try:
+                        payload[k] = json.dumps(v)[:200_000]
+                    except Exception:
+                        continue
+                else:
+                    payload[k] = v
+        msgs = conv_ref.collection('messages')
+        if message_id:
+            msgs.document(message_id).set(payload, merge=True)
+            return message_id
+        new_ref = msgs.document()
+        new_ref.set(payload)
         return new_ref.id
     except Exception as e:
         print(f"[History] Save failed: {e}")
@@ -449,6 +460,15 @@ def jarvis_stream():
         """
         chunk_queue = queue.Queue()
         full_response_holder = [""]  # list so the thread can mutate via closure
+        # Collected structured side-data — persisted alongside the text so
+        # tool-result cards / ReAct steps / citations don't vanish on reload.
+        side_data = {
+            'tool_results': [],
+            'react_steps': {},  # id → step dict
+            'citations': [],
+            'artifact': None,
+            'agent_type': None,
+        }
         # Reserve a streaming-message doc id up-front; the LLM thread flushes into it.
         assistant_msg_id = save_to_firestore(uid, session_id, "assistant", "", streaming=True)
         last_flush_ts = [time.time()]
@@ -482,18 +502,51 @@ def jarvis_stream():
                     chunk_queue.put(json.dumps({'chunk': 'Service temporarily unavailable.'}))
                     return
 
+                def _capture(parsed):
+                    """Extract structured side-data from one event so it survives reload."""
+                    if not isinstance(parsed, dict):
+                        return
+                    if "chunk" in parsed:
+                        full_response_holder[0] += parsed["chunk"]
+                        return
+                    ev = parsed.get("event") or parsed.get("type")
+                    if ev == "tool_result":
+                        side_data['tool_results'].append({
+                            'tool': parsed.get('tool'),
+                            'data': parsed.get('data'),
+                        })
+                    elif ev in ("react_action", "react_action_done"):
+                        sid = parsed.get('id') or f"s{len(side_data['react_steps'])}"
+                        prev = side_data['react_steps'].get(sid, {})
+                        prev.update({
+                            'id': sid,
+                            'tool': parsed.get('tool') or prev.get('tool'),
+                            'input': parsed.get('input') if parsed.get('input') is not None else prev.get('input'),
+                            'status': parsed.get('status') or prev.get('status'),
+                            'preview': parsed.get('preview') or prev.get('preview'),
+                            'sources': parsed.get('sources') or prev.get('sources'),
+                        })
+                        side_data['react_steps'][sid] = prev
+                    elif ev == "sources":
+                        side_data['citations'] = parsed.get('sources') or []
+                    elif ev == "artifact":
+                        side_data['artifact'] = {
+                            'type': parsed.get('artifactType'),
+                            'title': parsed.get('artifactTitle'),
+                        }
+                    elif ev == "agent":
+                        side_data['agent_type'] = parsed.get('agent') or side_data['agent_type']
+
                 for item in gen:
                     if isinstance(item, str):
                         try:
                             parsed = json.loads(item)
-                            if "chunk" in parsed:
-                                full_response_holder[0] += parsed["chunk"]
+                            _capture(parsed)
                         except json.JSONDecodeError:
                             full_response_holder[0] += item
                         chunk_queue.put(item)
                     elif isinstance(item, dict):
-                        if "chunk" in item:
-                            full_response_holder[0] += item["chunk"]
+                        _capture(item)
                         chunk_queue.put(json.dumps(item))
                     # Periodic Firestore flush so reopening the app shows progress
                     _maybe_flush_partial()
@@ -513,8 +566,17 @@ def jarvis_stream():
                             title = full_response.strip().split('\n')[0][:60]
                             conv['title'] = title if title else "New Chat"
                         # Final write — flip streaming flag off so the frontend stops polling.
-                        save_to_firestore(uid, session_id, "assistant", full_response,
-                                          message_id=assistant_msg_id, streaming=False)
+                        save_to_firestore(
+                            uid, session_id, "assistant", full_response,
+                            message_id=assistant_msg_id, streaming=False,
+                            extras={
+                                'tool_results': side_data['tool_results'],
+                                'react_steps': list(side_data['react_steps'].values()),
+                                'citations': side_data['citations'],
+                                'artifact': side_data['artifact'],
+                                'agent_type': side_data['agent_type'],
+                            },
+                        )
                         print(f"[Stream] Saved response ({len(full_response)} chars) for session {session_id}")
                         # Feed the fast-response LRU: short query + short reply
                         # = a future hit. The cache itself decides whether
@@ -675,12 +737,32 @@ def get_chat_history(session_id):
             is_streaming = bool(data.get("streaming", False))
             if is_streaming:
                 streaming_any = True
-            messages.append({
+
+            def _unjson(val):
+                if not isinstance(val, str):
+                    return val
+                s = val.strip()
+                if not s:
+                    return None
+                if s[0] in '[{':
+                    try:
+                        return json.loads(s)
+                    except Exception:
+                        return val
+                return val
+
+            msg = {
                 "id": doc.id,
                 "role": data.get("role"),
                 "content": content,
                 "streaming": is_streaming,
-            })
+            }
+            for k in ('tool_results', 'react_steps', 'citations', 'artifact'):
+                if data.get(k) is not None:
+                    msg[k] = _unjson(data.get(k))
+            if data.get('agent_type'):
+                msg['agent_type'] = data.get('agent_type')
+            messages.append(msg)
         return jsonify({
             "messages": messages,
             "session_id": session_id,

@@ -465,40 +465,69 @@ def _search_google_contacts(uid, args):
         return {"ok": False, "error": str(e)}
     q = (args.get("query") or "").strip()
     page_size = max(1, min(int(args.get("page_size") or 10), 30))
-    # People API: searchContacts requires a one-time warmup; we fall back
-    # to listing if search returns empty.
-    base_params = {
-        "readMask": "names,emailAddresses,phoneNumbers,organizations,photos",
-        "pageSize": page_size,
-    }
+    headers = {"Authorization": f"Bearer {token}"}
+    person_fields = "names,emailAddresses,phoneNumbers,organizations,photos"
+
     if q:
+        # People API quirk: searchContacts needs a warmup request (empty query)
+        # before it will return results for the first real query of a session.
+        # Schema also requires `readMask` + `sources` query params (not in body).
+        try:
+            requests.get(
+                "https://people.googleapis.com/v1/people:searchContacts",
+                headers=headers,
+                params={"query": "", "readMask": person_fields,
+                        "sources": "READ_SOURCE_TYPE_CONTACT"},
+                timeout=8,
+            )
+        except Exception:
+            pass
         r = requests.get(
             "https://people.googleapis.com/v1/people:searchContacts",
-            headers={"Authorization": f"Bearer {token}"},
-            params={**base_params, "query": q},
+            headers=headers,
+            params={
+                "query": q,
+                "pageSize": page_size,
+                "readMask": person_fields,
+                "sources": "READ_SOURCE_TYPE_CONTACT",
+            },
             timeout=15,
         )
-        if r.ok and (r.json().get("results") or []):
-            results = []
-            for it in r.json().get("results", []):
-                p = it.get("person") or {}
-                results.append(_format_person(p))
-            return {"ok": True, "contacts": results, "count": len(results)}
-    # Fallback: list connections
+        if r.ok:
+            results = [_format_person(it.get("person") or {})
+                       for it in (r.json().get("results") or [])]
+            if results:
+                return {"ok": True, "contacts": results, "count": len(results),
+                        "source": "search"}
+        elif r.status_code not in (200, 404):
+            # Don't bail — fall through to the listConnections path which has
+            # better permission coverage on read-only scope.
+            print(f"[Contacts] search returned {r.status_code}: {r.text[:200]}")
+
+    # Fallback: list all connections, then filter client-side.
     r = requests.get(
         "https://people.googleapis.com/v1/people/me/connections",
-        headers={"Authorization": f"Bearer {token}"},
-        params=base_params,
-        timeout=15,
+        headers=headers,
+        params={
+            "pageSize": min(max(page_size * 5, 50), 200),
+            "personFields": person_fields,
+            "sortOrder": "LAST_MODIFIED_DESCENDING",
+        },
+        timeout=20,
     )
     if not r.ok:
         return {"ok": False, "status": r.status_code, "error": r.text[:300]}
     results = [_format_person(p) for p in (r.json().get("connections") or [])]
     if q:
         ql = q.lower()
-        results = [c for c in results if ql in (c.get("name") or "").lower()
-                   or any(ql in (e or "").lower() for e in c.get("emails", []))]
-    return {"ok": True, "contacts": results, "count": len(results)}
+        results = [
+            c for c in results
+            if ql in (c.get("name") or "").lower()
+            or any(ql in (e or "").lower() for e in (c.get("emails") or []))
+            or any(ql in (ph or "") for ph in (c.get("phones") or []))
+        ]
+    return {"ok": True, "contacts": results[:page_size], "count": len(results),
+            "source": "connections"}
 
 
 def _format_person(p):

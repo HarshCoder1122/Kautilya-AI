@@ -213,16 +213,40 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     return () => clearTimeout(staleTimerRef.current);
   }, [isThinking, isStreaming]);
 
+  // Hydrate a Firestore-saved message back into the live message shape used
+  // by ChatMessage. Tool-result cards / ReAct steps / citations are stored
+  // as JSON strings on the backend so they survive serialization — we
+  // re-parse them here so they render exactly like they did during streaming.
+  const hydrateHistoryMessage = (m) => {
+    const safeParse = (v) => {
+      if (v == null) return v;
+      if (typeof v !== 'string') return v;
+      try { return JSON.parse(v); } catch (e) { return v; }
+    };
+    const toolResults = safeParse(m.tool_results);
+    const reactStepsRaw = safeParse(m.react_steps);
+    const citations = safeParse(m.citations);
+    const artifact = safeParse(m.artifact);
+    return {
+      ...m,
+      id: m.id || `msg-${Math.random()}`,
+      timestamp: m.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      toolResults: Array.isArray(toolResults) ? toolResults : undefined,
+      reactSteps: Array.isArray(reactStepsRaw) ? reactStepsRaw : undefined,
+      citations: Array.isArray(citations) ? citations : undefined,
+      agentType: m.agent_type || m.agentType,
+      hasArtifact: !!artifact,
+      artifactType: artifact?.type,
+      artifactTitle: artifact?.title,
+    };
+  };
+
   const loadHistory = async (sid) => {
     try {
       setIsThinking(true);
       const data = await chatAPI.getConversation(sid);
       if (data && data.messages && data.messages.length > 0) {
-        setMessages(data.messages.map(m => ({
-          ...m,
-          id: m.id || `msg-${Math.random()}`,
-          timestamp: m.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        })));
+        setMessages(data.messages.map(m => hydrateHistoryMessage(m)));
         // If the server is still generating the last assistant message
         // (user closed/reloaded the app mid-stream), poll for live updates
         // until the streaming flag flips off. Keep "thinking" UI active so
@@ -252,11 +276,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       try {
         const data = await chatAPI.getConversation(sid);
         if (!data || !data.messages) continue;
-        setMessages(data.messages.map(m => ({
-          ...m,
-          id: m.id || `msg-${Math.random()}`,
-          timestamp: m.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        })));
+        setMessages(data.messages.map(m => hydrateHistoryMessage(m)));
         const lastMsg = data.messages[data.messages.length - 1];
         const lastContent = typeof lastMsg?.content === 'string' ? lastMsg.content : '';
         // Keep thinking bubble visible while server has nothing to show yet

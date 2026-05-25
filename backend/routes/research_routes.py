@@ -57,10 +57,13 @@ def api_research_stream():
         # Persist the final assistant answer (best-effort, never raises).
         if session_id and full_answer:
             try:
-                payload = full_answer
-                if sources_collected:
-                    payload = full_answer + "\n\n__sources__: " + json.dumps(sources_collected)
-                save_to_firestore(uid, session_id, "assistant", payload)
+                save_to_firestore(
+                    uid, session_id, "assistant", full_answer,
+                    extras={
+                        'citations': sources_collected,
+                        'agent_type': 'researcher',
+                    },
+                )
                 print(f"[Research] Saved response ({len(full_answer)} chars) for session {session_id}")
             except Exception as e:
                 print(f"[Research] Save failed: {e}")
