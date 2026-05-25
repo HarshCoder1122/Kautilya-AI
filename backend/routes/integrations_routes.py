@@ -94,6 +94,24 @@ PROVIDERS = {
         "token_url": "https://oauth2.googleapis.com/token",
         "scopes": "https://www.googleapis.com/auth/tasks",
     },
+    "google_docs": {
+        "label": "Google Docs", "category": "storage",
+        "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_url": "https://oauth2.googleapis.com/token",
+        "scopes": "https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/drive.file",
+    },
+    "google_contacts": {
+        "label": "Google Contacts", "category": "productivity",
+        "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_url": "https://oauth2.googleapis.com/token",
+        "scopes": "https://www.googleapis.com/auth/contacts.readonly",
+    },
+    "youtube": {
+        "label": "YouTube", "category": "productivity",
+        "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_url": "https://oauth2.googleapis.com/token",
+        "scopes": "https://www.googleapis.com/auth/youtube.readonly",
+    },
     "whatsapp": {
         "label": "WhatsApp Business", "category": "messaging",
         "api_manual": True,  # API-key based (Meta Business API), no OAuth
@@ -223,7 +241,7 @@ def connect(provider):
     # Fallback to system environment variables for central OAuth registration
     if not client_id:
         client_id = os.environ.get(f"{provider.upper()}_CLIENT_ID")
-    if not client_id and provider in ('gmail', 'google_calendar', 'google_drive', 'google_sheets', 'google_tasks'):
+    if not client_id and provider in ('gmail', 'google_calendar', 'google_drive', 'google_sheets', 'google_tasks', 'google_docs', 'google_contacts', 'youtube'):
         client_id = (
             os.environ.get("GOOGLE_CLIENT_ID")
             or os.environ.get("GOOGLE_CALENDAR_CLIENT_ID")
@@ -239,7 +257,7 @@ def connect(provider):
     client_secret = cfg.get('client_secret') or request.args.get('client_secret')
     if not client_secret:
         client_secret = os.environ.get(f"{provider.upper()}_CLIENT_SECRET")
-    if not client_secret and provider in ('gmail', 'google_calendar', 'google_drive', 'google_sheets', 'google_tasks'):
+    if not client_secret and provider in ('gmail', 'google_calendar', 'google_drive', 'google_sheets', 'google_tasks', 'google_docs', 'google_contacts', 'youtube'):
         client_secret = (
             os.environ.get("GOOGLE_CLIENT_SECRET")
             or os.environ.get("GOOGLE_CALENDAR_CLIENT_SECRET")
@@ -308,7 +326,7 @@ def oauth_callback(provider):
         if resp.status_code != 200:
             return f"Token exchange failed: {resp.status_code} {resp.text[:300]}", 502
         data = resp.json()
-        _save_cfg(uid, provider, {
+        cfg_patch = {
             "access_token": data.get("access_token"),
             "refresh_token": data.get("refresh_token"),
             "token_type": data.get("token_type"),
@@ -317,7 +335,47 @@ def oauth_callback(provider):
             "scope": data.get("scope"),
             "raw": data,
             "oauth_state": None,
-        })
+        }
+
+        # Fetch provider-side identity so the agent can address the user
+        # correctly (e.g. "check my repo" → knows the github login).
+        try:
+            if provider == "github" and data.get("access_token"):
+                ur = requests.get(
+                    "https://api.github.com/user",
+                    headers={
+                        "Authorization": f"Bearer {data['access_token']}",
+                        "Accept": "application/vnd.github+json",
+                    },
+                    timeout=10,
+                )
+                if ur.status_code == 200:
+                    udata = ur.json()
+                    cfg_patch.update({
+                        "username": udata.get("login"),
+                        "user_id": udata.get("id"),
+                        "name": udata.get("name"),
+                        "avatar_url": udata.get("avatar_url"),
+                        "profile_url": udata.get("html_url"),
+                    })
+            elif provider in ("gmail", "google_calendar", "google_drive",
+                              "google_sheets", "google_tasks", "google_docs") and data.get("access_token"):
+                ur = requests.get(
+                    "https://www.googleapis.com/oauth2/v3/userinfo",
+                    headers={"Authorization": f"Bearer {data['access_token']}"},
+                    timeout=10,
+                )
+                if ur.status_code == 200:
+                    udata = ur.json()
+                    cfg_patch.update({
+                        "email": udata.get("email"),
+                        "name": udata.get("name"),
+                        "picture": udata.get("picture"),
+                    })
+        except Exception as e:
+            print(f"[Integrations] identity fetch failed for {provider}: {e}")
+
+        _save_cfg(uid, provider, cfg_patch)
 
         if provider == "github" and data.get("access_token"):
             try:

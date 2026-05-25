@@ -294,6 +294,110 @@ def _read_drive_file(uid, args):
     return {"ok": True, "file": info}
 
 
+def _create_google_doc(uid, args):
+    try:
+        token = _get_valid_google_token(uid, 'google_docs')
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    title = (args.get("title") or "Untitled Document").strip()
+    content = args.get("content") or ""
+    r = requests.post(
+        "https://docs.googleapis.com/v1/documents",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"title": title},
+        timeout=15,
+    )
+    if not r.ok:
+        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+    doc = r.json()
+    doc_id = doc.get("documentId")
+    if content and doc_id:
+        try:
+            requests.post(
+                f"https://docs.googleapis.com/v1/documents/{doc_id}:batchUpdate",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"requests": [{"insertText": {"location": {"index": 1}, "text": content}}]},
+                timeout=15,
+            )
+        except Exception as e:
+            print(f"[integration_tools] insert text failed: {e}")
+    return {
+        "ok": True,
+        "document_id": doc_id,
+        "title": title,
+        "url": f"https://docs.google.com/document/d/{doc_id}/edit" if doc_id else None,
+    }
+
+
+def _read_google_doc(uid, args):
+    try:
+        token = _get_valid_google_token(uid, 'google_docs')
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    doc_id = (args.get("document_id") or "").strip()
+    if not doc_id:
+        return {"ok": False, "error": "document_id is required"}
+    r = requests.get(
+        f"https://docs.googleapis.com/v1/documents/{doc_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=20,
+    )
+    if not r.ok:
+        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+    data = r.json()
+    text_parts = []
+    for element in (data.get("body", {}).get("content") or []):
+        para = element.get("paragraph")
+        if not para:
+            continue
+        for el in (para.get("elements") or []):
+            tr = (el.get("textRun") or {}).get("content")
+            if tr:
+                text_parts.append(tr)
+    return {
+        "ok": True,
+        "title": data.get("title"),
+        "document_id": doc_id,
+        "text": "".join(text_parts)[:20000],
+        "url": f"https://docs.google.com/document/d/{doc_id}/edit",
+    }
+
+
+def _append_google_doc(uid, args):
+    try:
+        token = _get_valid_google_token(uid, 'google_docs')
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    doc_id = (args.get("document_id") or "").strip()
+    text = args.get("text") or ""
+    if not doc_id or not text:
+        return {"ok": False, "error": "document_id and text are required"}
+    # Fetch end index then insert at end
+    meta = requests.get(
+        f"https://docs.googleapis.com/v1/documents/{doc_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"fields": "body(content(endIndex))"},
+        timeout=15,
+    )
+    if not meta.ok:
+        return {"ok": False, "status": meta.status_code, "error": meta.text[:300]}
+    contents = meta.json().get("body", {}).get("content") or []
+    end_index = 1
+    for c in contents:
+        if c.get("endIndex"):
+            end_index = max(end_index, c["endIndex"])
+    insert_at = max(1, end_index - 1)
+    r = requests.post(
+        f"https://docs.googleapis.com/v1/documents/{doc_id}:batchUpdate",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"requests": [{"insertText": {"location": {"index": insert_at}, "text": text}}]},
+        timeout=15,
+    )
+    if not r.ok:
+        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+    return {"ok": True, "document_id": doc_id, "appended_chars": len(text)}
+
+
 def _trigger_zapier(uid, args):
     cfg = _get_cfg(uid, 'zapier') or {}
     hook = args.get("hook_url") or cfg.get('webhook_url')
@@ -519,6 +623,38 @@ REGISTRY: Dict[str, Dict[str, Any]] = {
             "description": "Fetch metadata and view/download links for a Google Drive file by file_id.",
             "parameters": {"type": "object", "required": ["file_id"], "properties": {
                 "file_id": {"type": "string", "description": "Google Drive file ID"}
+            }}}}
+    },
+    "create_google_doc": {
+        "provider": "google_docs",
+        "handler": _create_google_doc,
+        "spec": {"type": "function", "function": {
+            "name": "create_google_doc",
+            "description": "Create a new Google Doc with optional initial content. Returns the document URL.",
+            "parameters": {"type": "object", "required": ["title"], "properties": {
+                "title": {"type": "string", "description": "Title of the new document"},
+                "content": {"type": "string", "description": "Optional initial body text (markdown not supported — plain text)"}
+            }}}}
+    },
+    "read_google_doc": {
+        "provider": "google_docs",
+        "handler": _read_google_doc,
+        "spec": {"type": "function", "function": {
+            "name": "read_google_doc",
+            "description": "Read the full text content of a Google Doc by its document_id.",
+            "parameters": {"type": "object", "required": ["document_id"], "properties": {
+                "document_id": {"type": "string", "description": "Google Docs document ID (from URL /document/d/<ID>/edit)"}
+            }}}}
+    },
+    "append_google_doc": {
+        "provider": "google_docs",
+        "handler": _append_google_doc,
+        "spec": {"type": "function", "function": {
+            "name": "append_google_doc",
+            "description": "Append text to the end of an existing Google Doc.",
+            "parameters": {"type": "object", "required": ["document_id", "text"], "properties": {
+                "document_id": {"type": "string"},
+                "text": {"type": "string", "description": "Text to append (prepend a newline if you want a new paragraph)"}
             }}}}
     },
     "trigger_zapier": {

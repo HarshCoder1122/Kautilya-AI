@@ -1,17 +1,21 @@
 """
-Kautilya AI — Deep Research Service.
+Kautilya AI — Deep Research Service (Perplexity-grade).
 
-Perplexity-style multi-source research:
-  1. Query expansion    → LLM rewrites user question into 2-3 search queries
-  2. Parallel search    → SerpAPI (fallback: googlesearch, wikipedia)
-  3. URL fetch          → pull readable content from top-N results
-  4. Synthesis          → LLM writes structured report with [N] citations
-  5. Stream back        → emit source cards first, then report tokens
+Streaming flow:
+  1. Query expansion          → LLM rewrites question into 3-4 search queries
+  2. Parallel web search      → SerpAPI (fallback: googlesearch, wikipedia)
+  3. Source cards emitted     → frontend renders citation cards immediately
+  4. Parallel content fetch   → readable text from top-N sources
+  5. Direct streaming synth   → tokens flow to UI in real-time (no draft phase)
 
-Each result yield is one of:
+Event protocol (each yield is a dict):
   { "event": "query",   "queries": [...] }
-  { "event": "sources", "sources": [{title, url, snippet, site}...] }
-  { "event": "chunk",   "chunk": "..." }
+  { "event": "sources", "sources": [{title, url, snippet, site, favicon}...] }
+  { "event": "status",  "message": "..." }
+  { "thinking": "..." }              (reasoning trace)
+  { "thinking_done": true }
+  { "event": "chunk",   "chunk": "..." }   (visible answer tokens)
+  { "event": "artifact", artifactType, artifactTitle }
   { "event": "done" }
 """
 from __future__ import annotations
@@ -28,28 +32,38 @@ import requests
 from config import SERPAPI_API_KEY
 from services.llm_service import call_groq, call_nvidia
 
-MAX_SOURCES = 6
+MAX_SOURCES = 8
 FETCH_TIMEOUT = 6
-MAX_DOC_CHARS = 2000
+MAX_DOC_CHARS = 4000
+
+
+def _favicon(url: str) -> str:
+    try:
+        return f"https://www.google.com/s2/favicons?sz=64&domain={urlparse(url).netloc}"
+    except Exception:
+        return ""
 
 
 def _expand_queries(question: str) -> List[str]:
-    """Ask the LLM to generate 2-3 diversified search queries."""
+    """Generate 3-4 diversified search queries via Groq Llama (fast)."""
     prompt = [
         {"role": "system", "content":
-         "You are a research query planner. Given a user question, output 2-3 short search queries that together cover the topic. "
-         "Return a raw JSON array of strings. No prose. No markdown."},
+         "You are a research query planner. Given a user question, output 3-4 short, diverse search queries "
+         "that together give broad and deep coverage. Use different angles (definitions, recent news, "
+         "comparisons, statistics, expert opinions). Return a RAW JSON array of strings. No prose. No markdown."},
         {"role": "user", "content": question.strip()[:600]},
     ]
     try:
         resp = call_groq(prompt, model="llama-3.3-70b-versatile",
-                         temperature=0.2, max_tokens=200, stream=False)
+                         temperature=0.2, max_tokens=240, stream=False)
         if isinstance(resp, str):
-            m = re.search(r'\[[^\]]+\]', resp)
+            m = re.search(r'\[[\s\S]+?\]', resp)
             if m:
                 arr = json.loads(m.group(0))
                 if isinstance(arr, list):
-                    return [str(x).strip() for x in arr if str(x).strip()][:3]
+                    qs = [str(x).strip() for x in arr if str(x).strip()][:4]
+                    if qs:
+                        return qs
     except Exception as e:
         print(f"[Research] query expansion failed: {e}")
     return [question.strip()]
@@ -80,6 +94,7 @@ def _serpapi_search(query: str, k: int = 6) -> List[Dict[str, Any]]:
                 "url": url,
                 "snippet": r.get("snippet", ""),
                 "site": urlparse(url).netloc,
+                "favicon": _favicon(url),
             })
         return results
     except Exception as e:
@@ -100,6 +115,7 @@ def _googlesearch_fallback(query: str, k: int = 6) -> List[Dict[str, Any]]:
                 "url": url,
                 "snippet": getattr(r, 'description', '') or '',
                 "site": urlparse(url).netloc,
+                "favicon": _favicon(url),
             })
         return results
     except Exception as e:
@@ -119,6 +135,7 @@ def _wikipedia_fallback(query: str) -> List[Dict[str, Any]]:
                 out.append({
                     "title": t, "url": page,
                     "snippet": summary, "site": "en.wikipedia.org",
+                    "favicon": _favicon(page),
                 })
             except Exception:
                 pass
@@ -139,7 +156,7 @@ def _gather_sources(queries: List[str]) -> List[Dict[str, Any]]:
             seen.add(u)
             merged.append(it)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(queries)) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(2, len(queries))) as ex:
         if SERPAPI_API_KEY:
             results = list(ex.map(_serpapi_search, queries))
         else:
@@ -161,7 +178,6 @@ def _fetch_readable(url: str) -> str:
         })
         if resp.status_code != 200:
             return ""
-        # Lightweight HTML → text (avoid heavy deps)
         from html.parser import HTMLParser
 
         class TextExtractor(HTMLParser):
@@ -170,10 +186,10 @@ def _fetch_readable(url: str) -> str:
                 self.parts = []
                 self._skip = 0
             def handle_starttag(self, tag, _attrs):
-                if tag in ('script', 'style', 'nav', 'footer', 'header', 'aside'):
+                if tag in ('script', 'style', 'nav', 'footer', 'header', 'aside', 'noscript', 'svg', 'form'):
                     self._skip += 1
             def handle_endtag(self, tag):
-                if tag in ('script', 'style', 'nav', 'footer', 'header', 'aside') and self._skip:
+                if tag in ('script', 'style', 'nav', 'footer', 'header', 'aside', 'noscript', 'svg', 'form') and self._skip:
                     self._skip -= 1
             def handle_data(self, data):
                 if not self._skip:
@@ -189,149 +205,135 @@ def _fetch_readable(url: str) -> str:
 
 
 def deep_research_stream(question: str) -> Iterator[Dict[str, Any]]:
-    """Streaming generator for Kautilya Deep Research.
-    
-    Architecture:
-    1. Query expansion via Llama-3.
-    2. Parallel search via SerpAPI/Google.
-    3. Content extraction.
-    4. Phase 1 (Reasoning): Stream deep thinking via NVIDIA Nemotron-3 (120b) or DeepSeek-R1.
-    5. Phase 2 (Synthesis): Generate high-signal report via GPT-OSS-120b.
+    """Stream a Perplexity-style deep research answer.
+
+    Single-phase streaming synthesis: we expand queries → gather sources →
+    fetch pages in parallel → stream the final report directly to the UI.
+    No hidden "draft" phase that buffers tokens server-side; every visible
+    chunk reaches the user as soon as the LLM emits it.
     """
+    t0 = time.time()
+    yield {"event": "status", "message": "🧭 Planning search queries…"}
     queries = _expand_queries(question)
     yield {"event": "query", "queries": queries}
 
+    yield {"event": "status", "message": "🔎 Searching the web in parallel…"}
     sources = _gather_sources(queries)
     if not sources:
-        yield {"event": "chunk", "chunk": "I couldn't find relevant sources for this question. Try rephrasing."}
+        yield {"event": "chunk", "chunk": "I couldn't find relevant sources for this question. Try rephrasing or adding more specifics."}
         yield {"event": "done"}
         return
 
     yield {"event": "sources", "sources": sources}
 
-    # Fetch in parallel
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(sources))) as ex:
+    yield {"event": "status", "message": f"📑 Reading {len(sources)} sources…"}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(sources))) as ex:
         bodies = list(ex.map(_fetch_readable, [s["url"] for s in sources]))
 
     ctx_lines = []
     for i, (s, body) in enumerate(zip(sources, bodies), 1):
         body = body or s.get("snippet", "")
-        ctx_lines.append(f"SOURCE [{i}]: {s['title']} ({s['url']})\nCONTENT: {body[:MAX_DOC_CHARS]}")
+        ctx_lines.append(
+            f"SOURCE [{i}] — {s['title']} ({s['site']})\nURL: {s['url']}\nCONTENT: {body[:MAX_DOC_CHARS]}"
+        )
     context = "\n\n".join(ctx_lines)
 
-    # PHASE 1: Initial Synthesis using GPT-OSS-120B (OpenAI's open-weight 120B MoE, available on Groq)
-    # Best for: structured extraction, reasoning, tool-use-style analysis at low cost
-    yield {"event": "status", "message": "🔬 Phase 1 — GPT-OSS-120B extracting key facts…"}
-
-    draft_system = (
-        "You are a Senior Research Analyst. Your job is to extract key facts, data points, and arguments from the provided sources "
-        "and produce a structured preliminary report. Use chain-of-thought reasoning. "
-        "Organize your output under: Background, Key Data Points, Arguments For/Against, and Open Questions. "
-        "This draft will be refined into a final report by a Lead Analyst."
-    )
-    draft_messages = [
-        {"role": "system", "content": draft_system},
-        {"role": "user", "content": f"QUESTION: {question}\n\nSOURCES:\n{context}"}
-    ]
-
-    draft_parts = []
-    try:
-        # openai/gpt-oss-120b: OpenAI's open-weight 120B MoE model on Groq (day-zero support)
-        draft_gen = call_groq(draft_messages, stream=True, model="openai/gpt-oss-120b",
-                             temperature=0.7, max_tokens=2048)
-        if not draft_gen:
-            draft_gen = call_groq(draft_messages, stream=True, model="llama-3.3-70b-versatile",
-                                 temperature=0.7, max_tokens=2048)
-        
-        if draft_gen:
-            for item in draft_gen:
-                if "chunk" in item:
-                    draft_parts.append(item["chunk"])
-                    # We don't stream the draft chunks to the user yet, 
-                    # as it's an internal step for the final reasoning.
-    except Exception as e:
-        print(f"[Research] Phase 1 Draft Failed: {e}")
-        draft_parts = ["No preliminary draft available due to service error."]
-
-    initial_draft = "".join(draft_parts)
-
-    # PHASE 2: Heavy Reasoning & Refinement
-    # Now use Kautilya Pro (Nemotron) to reason over the draft + sources and generate the final report.
-    yield {"event": "status", "message": "Applying Kautilya Pro Heavy Reasoning & Refinement..."}
+    yield {"event": "status", "message": "🧠 Synthesizing answer…"}
 
     system = (
-        "You are KAUTILYA Lead Research Analyst. Your goal is to produce a 'Claude-level' high-signal research report.\n\n"
-        "REASONING PROTOCOL:\n"
-        "1. Review the initial draft provided below.\n"
-        "2. Cross-reference it with the original sources to identify gaps or inaccuracies.\n"
-        "3. Apply deep reasoning to provide strategic implications and critical insights.\n"
-        "4. Produce the final report in clean, high-signal Markdown.\n\n"
-        "STRICT STRUCTURE:\n"
-        "## Executive Summary\n"
-        "## Key Findings (with [N] citations)\n"
-        "## Strategic Implications\n"
-        "## Critical Uncertainties\n\n"
+        "You are KAUTILYA Deep Research — a Perplexity-grade research analyst. "
+        "Produce a thorough, high-signal answer using ONLY the SOURCES provided. "
+        "Cite every non-trivial claim inline as [1], [2], etc. matching the source numbers.\n\n"
+        "REQUIRED STRUCTURE (markdown):\n"
+        "## TL;DR\n"
+        "Two-sentence direct answer to the user's question.\n\n"
+        "## Key Findings\n"
+        "- 4-7 bullet points, each with [N] citations.\n\n"
+        "## Detailed Analysis\n"
+        "2-4 short paragraphs unpacking the nuances, trade-offs, and context. "
+        "Compare/contrast sources when they disagree.\n\n"
+        "## Numbers & Facts\n"
+        "Tight bulleted list of concrete data points (stats, dates, prices, names) with [N].\n\n"
+        "## Caveats & Open Questions\n"
+        "Honest limitations of the available evidence.\n\n"
         "RULES:\n"
-        "- NO '????' or placeholders.\n"
-        "- Cite sources using [1], [2], etc.\n"
-        "- Stream your reasoning trace before the final answer."
+        "- Never invent citations. Only use [N] numbers that exist in SOURCES.\n"
+        "- Prefer specific data over vague generalities.\n"
+        "- If sources conflict, say so explicitly.\n"
+        "- No filler. No 'Sure, here is...' preamble. Start directly with `## TL;DR`."
     )
-    
-    user_prompt = (
-        f"QUESTION: {question}\n\n"
-        f"INITIAL DRAFT:\n{initial_draft[:4000]}\n\n"
-        f"ORIGINAL SOURCES:\n{context[:6000]}"
-    )
-    
+    user_prompt = f"USER QUESTION: {question}\n\nSOURCES:\n{context}"
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user_prompt}]
 
-    full_report_content = []
+    full_report = []
+    streamed_anything = False
+
+    def _emit_from(gen):
+        nonlocal streamed_anything
+        for item in gen:
+            if isinstance(item, dict):
+                if "thinking" in item:
+                    yield {"thinking": item["thinking"]}
+                    continue
+                if "thinking_done" in item:
+                    yield {"thinking_done": True}
+                    continue
+                chunk = item.get("chunk", "")
+            else:
+                chunk = item
+            if chunk:
+                chunk = chunk.replace("�", "")
+                full_report.append(chunk)
+                streamed_anything = True
+                yield {"event": "chunk", "chunk": chunk}
+
+    # Primary synthesis: NVIDIA Nemotron — heavy reasoning, much higher
+    # output quality and depth than Groq Llama for research-grade tasks.
+    # Thinking trace is streamed live so the user sees the reasoning unfold
+    # while the final answer is being composed. Groq is the fallback if the
+    # NVIDIA edge is unavailable.
+    gen = None
     try:
-        # Final Reasoning & Synthesis: NVIDIA Nemotron (with fallback to Groq)
         gen = call_nvidia(
             messages,
             model="nvidia/nemotron-3-super-120b-a12b",
-            temperature=0.7,
+            temperature=0.5,
             stream=True,
             expose_thinking=True,
-            max_tokens=6000
+            max_tokens=8000,
         )
-
-        if not gen:
-            # Fallback to Groq Llama for synthesis
-            gen = call_groq(messages, stream=True, model="llama-3.3-70b-versatile",
-                           temperature=0.7, max_tokens=4096)
-
-        if gen:
-            for item in gen:
-                if isinstance(item, dict):
-                    if "thinking" in item:
-                        yield {"thinking": item["thinking"]}
-                        continue
-                    if "thinking_done" in item:
-                        yield {"thinking_done": True}
-                        continue
-                    chunk = item.get("chunk", "")
-                else:
-                    chunk = item
-
-                if chunk:
-                    chunk = chunk.replace("\ufffd", "")
-                    full_report_content.append(chunk)
-                    yield {"event": "chunk", "chunk": chunk}
-
-            # ARTIFACT GENERATION \u2014 send a special artifact marker (no content duplication)
-            # The frontend will detect this tag and open the Canvas with the full collected content.
-            final_report = "".join(full_report_content)
-            if len(final_report) > 300:
-                artifact_title = f"Deep Research: {question[:50]}..."
-                # Send a lightweight artifact open-tag so frontend knows to display in canvas
-                # The actual content is already in fullContent on the frontend side
-                yield {"event": "artifact", "artifactType": "document", "artifactTitle": artifact_title}
-        else:
-            yield {"event": "chunk", "chunk": "Research refinement unavailable. Here is the initial draft:\n\n" + initial_draft}
-
     except Exception as e:
-        yield {"event": "chunk", "chunk": f"\n\n[Reasoning Error: {e}]"}
+        print(f"[Research] NVIDIA synth failed: {e}")
 
+    if gen:
+        try:
+            for ev in _emit_from(gen):
+                yield ev
+        except Exception as e:
+            print(f"[Research] NVIDIA stream error: {e}")
+
+    # Fallback to Groq Llama if NVIDIA produced nothing
+    if not streamed_anything:
+        try:
+            gq_gen = call_groq(messages, stream=True, model="llama-3.3-70b-versatile",
+                               temperature=0.4, max_tokens=4096)
+            if gq_gen:
+                for ev in _emit_from(gq_gen):
+                    yield ev
+        except Exception as e:
+            print(f"[Research] Groq fallback failed: {e}")
+
+    if not streamed_anything:
+        yield {"event": "chunk", "chunk":
+               "I gathered sources but the synthesis step is temporarily unavailable. "
+               "Please try again in a moment."}
+
+    final = "".join(full_report)
+    if len(final) > 400:
+        yield {"event": "artifact",
+               "artifactType": "document",
+               "artifactTitle": f"Deep Research: {question[:60]}"}
+
+    elapsed = round(time.time() - t0, 1)
+    yield {"event": "status", "message": f"✓ Done in {elapsed}s · {len(sources)} sources"}
     yield {"event": "done"}

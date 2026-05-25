@@ -236,6 +236,77 @@ def get_user_memory_endpoint():
         return jsonify({"error": str(e)}), 500
 
 
+@user_bp.route('/memory/refresh-from-chats', methods=['POST'])
+def refresh_memory_from_chats():
+    """Memory from Chats: scan recent conversation history and extract
+    personalization facts (preferences, role, projects, habits) into the
+    user's memory bank. Idempotent — dedupes against existing facts."""
+    from extensions import db, FIREBASE_AVAILABLE
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
+    if not (FIREBASE_AVAILABLE and db):
+        return jsonify({"error": "Database not available"}), 503
+    try:
+        from services.memory_service import (
+            get_user_memory, save_user_memory, extract_memories,
+        )
+        limit = int((request.get_json(silent=True) or {}).get('session_limit') or 20)
+        limit = max(1, min(limit, 50))
+
+        existing = list(get_user_memory(uid))
+        before = len(existing)
+
+        # Collect recent (user, assistant) pairs from the most recent N sessions.
+        sessions_ref = (db.collection('users').document(uid)
+                          .collection('sessions')
+                          .order_by('updated_at', direction='DESCENDING')
+                          .limit(limit))
+        pairs = []
+        for sdoc in sessions_ref.stream():
+            msgs_ref = (sdoc.reference.collection('messages')
+                          .order_by('timestamp').limit(40))
+            buf = []
+            for m in msgs_ref.stream():
+                d = m.to_dict() or {}
+                role = d.get('role')
+                content = d.get('content') or ''
+                if role in ('user', 'assistant') and content:
+                    buf.append((role, content))
+            # Pair up consecutive user→assistant turns
+            for i in range(len(buf) - 1):
+                if buf[i][0] == 'user' and buf[i + 1][0] == 'assistant':
+                    pairs.append((buf[i][1], buf[i + 1][1]))
+
+        # Cap pairs to keep extraction fast.
+        pairs = pairs[-60:]
+        new_count = 0
+        for user_text, assistant_text in pairs:
+            try:
+                new_facts = extract_memories(user_text, assistant_text, existing)
+                for f in new_facts:
+                    if f not in existing:
+                        existing.append(f)
+                        new_count += 1
+            except Exception as e:
+                print(f"[Memory] pair extract failed: {e}")
+                continue
+
+        save_user_memory(uid, existing)
+        return jsonify({
+            "status": "ok",
+            "scanned_sessions": limit,
+            "scanned_pairs": len(pairs),
+            "added": new_count,
+            "total": len(existing),
+            "before": before,
+        })
+    except Exception as e:
+        print(f"[Memory] refresh failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @user_bp.route('/memory', methods=['DELETE'])
 def delete_memory_item():
     """Delete a specific memory fact by index."""

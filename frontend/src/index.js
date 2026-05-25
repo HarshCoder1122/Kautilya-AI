@@ -3,6 +3,9 @@ import ReactDOM from "react-dom/client";
 import "./index.css";
 import App from "./App";
 import { initFirebase } from "./lib/firebase.js";
+import { registerPWA } from "./lib/pwa.js";
+
+registerPWA();
 
 function Root() {
   const [initialized, setInitialized] = useState(false);
