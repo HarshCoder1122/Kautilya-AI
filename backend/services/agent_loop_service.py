@@ -64,6 +64,15 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         elif isinstance(content, list):
             last_user_msg = " ".join([p["text"] for p in content if p.get("type") == "text"])
 
+    # Pre-warm the answer-size classifier in parallel with location / RAG /
+    # MCP setup. By the time we need max_tokens for the LLM call (after
+    # prompt assembly), the classifier has typically resolved and is in
+    # the cache — so the synchronous _adaptive_max_tokens call below is
+    # free. If the user is on Pro/coder and we hit this twice (turn 2+),
+    # the cache hit makes the second call instant.
+    if last_user_msg:
+        _executor.submit(_classify_answer_size, last_user_msg, model_choice)
+
     # Fetch context in parallel
     def fetch_loc():
         if not user_ip or user_ip in ('127.0.0.1', 'localhost', '::1', 'unknown'):
@@ -438,8 +447,11 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     for turn in range(MAX_TURNS):
         print(f"[Agent] Turn {turn+1}/{MAX_TURNS}")
 
-        max_tokens = _estimate_tokens(last_user_msg, model_choice)
-        print(f"[Agent] Smart tokens: {max_tokens} (msg length: {len(last_user_msg)}, mode: {model_choice})")
+        # Adaptive: classifier-predicted budget (cached/parallel-prewarmed),
+        # heuristic fallback. On turn 2+ the classifier is already in the
+        # cache from turn 1, so this is free.
+        max_tokens = _adaptive_max_tokens(last_user_msg, model_choice)
+        print(f"[Agent] Adaptive tokens: {max_tokens} (msg length: {len(last_user_msg)}, mode: {model_choice})")
 
         # Auto-detect image in last message
         has_image = False
@@ -619,11 +631,25 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         # before the response is persisted/displayed. If anything was stripped,
         # tell the user the call was discarded so they don't think it ran.
         sanitized_response = _strip_truncated_tool_tags(accumulated_response)
-        if sanitized_response != accumulated_response:
-            # Notify the user so they don't think the doc was written.
+        truncation_detected = (sanitized_response != accumulated_response)
+        if truncation_detected:
+            # ADAPTIVE BUDGET BUMP: the model hit the cap. Bump the cached
+            # size label up one tier so the next turn / retry has more room
+            # without us having to keep guessing. S→M→L→XL ratchet upward.
+            try:
+                ck = _budget_cache_key(last_user_msg, model_choice)
+                cur = _BUDGET_CACHE.get(ck)
+                cur_label = cur[0] if cur else 'M'
+                tier = ['S', 'M', 'L', 'XL']
+                idx = tier.index(cur_label) if cur_label in tier else 1
+                new_label = tier[min(idx + 1, len(tier) - 1)]
+                _BUDGET_CACHE[ck] = (new_label, time.time() + _BUDGET_CACHE_TTL_SEC)
+                print(f"[Agent] Budget bumped {cur_label}→{new_label} after truncation")
+            except Exception as _e:
+                print(f"[Agent] budget bump failed: {_e}")
             yield json.dumps({
                 "event": "status",
-                "message": "⚠ Tool call was truncated mid-response and discarded — break large documents into smaller chunks via append_google_doc.",
+                "message": "⚠ Response hit the token cap and was truncated — retrying with a larger budget…",
             })
             # The live stream already shipped the raw tag; the frontend's
             # stripToolTags now handles unterminated tags. Keep the sanitized
@@ -701,11 +727,23 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             yield json.dumps({"event": "react_synthesizing"})
             continue
 
-        # No tool actions detected. But if the model wrote a "preparing-to-call"
-        # preamble ('Checking your X…', 'Searching for…', 'Pulling your…') and
-        # then stopped without emitting the [INTEGRATION:] tag, the user just
-        # sees a useless half-promise. Force ONE retry turn that nudges the
-        # model to either actually emit the tag or ask for missing info.
+        # No tool actions detected. Two possible retry conditions:
+        # (1) Truncation just occurred — we already bumped the budget above;
+        #     fire another turn so the bigger budget is actually used.
+        # (2) Orphan preamble — model promised action without emitting a tag.
+        if truncation_detected and turn < MAX_TURNS - 1:
+            current_messages.append({"role": "assistant", "content": accumulated_response})
+            current_messages.append({
+                "role": "user",
+                "content": (
+                    "[SYSTEM] Your previous response was cut off because it exceeded the token cap. "
+                    "The budget has been increased. Please re-do the answer in full — if it was a "
+                    "tool call, emit the complete [INTEGRATION: …] tag. If it was a long document, "
+                    "send it in smaller chunks via multiple append_google_doc calls instead of one mega call."
+                ),
+            })
+            continue
+
         if _looks_like_orphan_preamble(accumulated_response) and turn < MAX_TURNS - 1:
             current_messages.append({"role": "assistant", "content": accumulated_response})
             current_messages.append({
@@ -1317,6 +1355,139 @@ def _runner_integration(uid, tool_name, tool_args, is_mcp):
                     "observation": f"TOOL EXCEPTION ({tool_name}): {e}",
                     "done_extras": {}, "extra_events": []}
     return run
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Adaptive answer-size budgeting
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Static heuristics (char-count buckets, keyword lists) inevitably mis-size:
+#   - "create a doc" is 12 chars but the answer could be 4000 tokens of body
+#   - "summarise this 5000-word article in one line" is long input, tiny output
+#
+# Solution: a tiny Groq Llama classifier predicts the answer size class
+# (S/M/L/XL) and maps to a budget. The classifier:
+#   - Runs in parallel with other agent_loop setup work — no TTFT cost on
+#     the warm path because the budget isn't needed until we actually call
+#     the main LLM.
+#   - Has a 200ms hard timeout; on miss/error we fall back to the static
+#     _estimate_tokens heuristic so a Groq blip never freezes the chat.
+#   - Caches per (msg-hash, mode) for 1 hour — re-asking the same question
+#     pays zero classifier latency.
+#   - Skips itself for trivially short messages (<8 chars) which are
+#     always small.
+#
+# Size → token budget mapping (and the derived reasoning_budget):
+#   S   1024     short factual / conversational
+#   M   4096     paragraph answer, short structured reply
+#   L  16384     long structured answer, multi-section response
+#   XL 32768     full doc body, big code file, deep research synthesis
+
+_BUDGET_CACHE: Dict[str, tuple] = {}    # msg_hash -> (size_label, expires_at)
+_BUDGET_CACHE_TTL_SEC = 3600
+
+_SIZE_TO_TOKENS = {'S': 1024, 'M': 4096, 'L': 16384, 'XL': 32768}
+
+
+def _budget_cache_key(msg: str, mode: str) -> str:
+    import hashlib
+    h = hashlib.md5((msg[:1000] + "|" + mode).encode('utf-8', errors='ignore')).hexdigest()
+    return h
+
+
+def _classify_answer_size(user_msg: str, mode: str, timeout_sec: float = 0.2) -> Optional[str]:
+    """Return 'S' | 'M' | 'L' | 'XL', or None on timeout / error.
+
+    Cheap shortcuts first (greetings → S, generative-intent keywords → XL),
+    then a Groq Llama-3.3-70B call with a 200ms cap. The classifier itself
+    is small (max_tokens=4) and Groq is the fastest provider we have, so
+    even cold it usually returns in 80-150ms.
+    """
+    if not user_msg:
+        return 'S'
+    msg = user_msg.strip()
+    if len(msg) < 8:
+        return 'S'
+
+    cache_key = _budget_cache_key(msg, mode)
+    now = time.time()
+    cached = _BUDGET_CACHE.get(cache_key)
+    if cached and cached[1] > now:
+        return cached[0]
+
+    ml = msg.lower()
+    # Hard XL signals — these are unambiguous and skipping the classifier
+    # round-trip saves ~100ms.
+    _xl_kw = ('write a full', 'detailed report', 'comprehensive report',
+              'research report', 'whole article', 'long-form', 'full document',
+              'entire codebase', 'complete script', 'full implementation',
+              'create a doc', 'create doc', 'append_google_doc', 'create_google_doc')
+    if any(k in ml for k in _xl_kw):
+        result = 'XL'
+        _BUDGET_CACHE[cache_key] = (result, now + _BUDGET_CACHE_TTL_SEC)
+        return result
+
+    # Hard S signals — conversational acks, single-word queries.
+    _s_kw = {'thanks', 'thank you', 'ok', 'okay', 'cool', 'nice', 'got it',
+             'understood', 'haan', 'nahi', 'theek hai', 'haan ji', 'great'}
+    if ml in _s_kw:
+        _BUDGET_CACHE[cache_key] = ('S', now + _BUDGET_CACHE_TTL_SEC)
+        return 'S'
+
+    # LLM classifier
+    try:
+        from services.llm_service import call_groq
+        from config import GROQ_API_KEY
+        if not GROQ_API_KEY:
+            return None
+        sys_prompt = (
+            "Predict the size of the assistant's answer to the user request below. "
+            "Output EXACTLY one of: S, M, L, XL. No explanation. Rules:\n"
+            "- S: <120 words. Factual answer, conversational, simple lookup, yes/no.\n"
+            "- M: 120-600 words. Paragraph explanation, short summary, brief list.\n"
+            "- L: 600-2500 words. Multi-section structured answer, long explanation, medium document body.\n"
+            "- XL: >2500 words or a full document/article/code-file/research-report body.\n"
+            "When in doubt between two sizes, pick the LARGER (truncation is worse than over-allocation)."
+        )
+        msgs = [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": msg[:800]},
+        ]
+        # Run with a tight timeout via thread + future so a slow Groq call
+        # never freezes the request.
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        with _TPE(max_workers=1) as ex:
+            fut = ex.submit(call_groq, msgs, model="llama-3.3-70b-versatile",
+                            temperature=0, max_tokens=4, stream=False)
+            out = fut.result(timeout=timeout_sec)
+        if isinstance(out, str):
+            label = re.sub(r'[^A-Za-z]', '', out.strip()).upper()[:2]
+            if label in _SIZE_TO_TOKENS:
+                _BUDGET_CACHE[cache_key] = (label, now + _BUDGET_CACHE_TTL_SEC)
+                return label
+    except Exception as e:
+        # Timeout, network blip, missing key — silently fall back to heuristic.
+        pass
+    return None
+
+
+def _adaptive_max_tokens(user_msg: str, mode: str) -> int:
+    """Adaptive budget: classifier first, heuristic fallback.
+
+    The classifier runs synchronously here with a 200ms cap. Callers can
+    pre-warm by calling `_classify_answer_size` in a background thread
+    during setup; the cache will then make this call instant.
+    """
+    label = _classify_answer_size(user_msg, mode)
+    if label:
+        budget = _SIZE_TO_TOKENS[label]
+        # Coder mode gets a floor of 8k — code answers often go over what
+        # a generic 'M' classification would suggest.
+        if mode == 'coder' and budget < 8192:
+            budget = 8192
+        return budget
+    # Fallback to the original char-bucket heuristic.
+    return _estimate_tokens(user_msg, mode)
 
 
 def _estimate_tokens(user_msg, mode):
