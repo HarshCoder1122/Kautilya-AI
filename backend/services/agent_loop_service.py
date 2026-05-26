@@ -769,10 +769,17 @@ def _is_placeholder_arg(v):
 
 
 def _looks_hallucinated(args):
-    """True when every required-looking arg matches its own param name (or a
-    common placeholder), i.e. the model emitted the schema instead of values."""
-    if not isinstance(args, dict) or not args:
+    """True when every arg matches its own param name (or a common placeholder),
+    i.e. the model emitted the schema instead of values.
+
+    Note: empty dict `{}` is NOT hallucinated — it's the correct payload for
+    tools with no required args (e.g. list_youtube_subscriptions, list_drive_files).
+    Previously rejecting `{}` made every zero-arg tool silently no-op.
+    """
+    if not isinstance(args, dict):
         return True
+    if not args:
+        return False  # empty dict is a legitimate no-arg call
     bad = 0
     for k, v in args.items():
         if isinstance(v, str) and v.strip().lower() == str(k).strip().lower():
