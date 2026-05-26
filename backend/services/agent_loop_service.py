@@ -164,6 +164,15 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                     lines.append(f"- {fn['name']}({', '.join(req)}): {fn['description']}")
                 lines.append("Syntax: [INTEGRATION: tool_name | {\"arg\": \"value\"}]  — JSON args, single line, double-quoted.")
                 lines.append(
+                    "PAYLOAD SIZE LIMIT: keep the JSON for any single [INTEGRATION:] call under ~1500 characters total. "
+                    "If a tag exceeds the response token budget it is silently TRUNCATED and the user sees nothing happen.\n"
+                    "GOOGLE DOCS WORKFLOW (CRITICAL): when the user asks you to write a doc with content:\n"
+                    "  • If the body is ≤ ~1200 chars: ONE call — [INTEGRATION: create_google_doc | {\"title\":\"...\", \"content\":\"...the full body...\"}]. Do not follow it with an append.\n"
+                    "  • If the body is longer: FIRST [INTEGRATION: create_google_doc | {\"title\":\"...\"}], wait for OBSERVATION (it returns document_id), THEN call append_google_doc REPEATEDLY with chunks of ≤1000 chars each, one call per turn.\n"
+                    "  • NEVER inline a full report/article inside a single append_google_doc text field — split it into multiple appends.\n"
+                    "  • A bare create_google_doc with no `content` and no follow-up append leaves the user with an EMPTY document — always either include content or queue an append."
+                )
+                lines.append(
                     "STRICT TOOL-SELECTION RULES (violating these is hallucination):\n"
                     "1. Use ONLY the tool whose name AND description exactly match the user's intent. Do NOT substitute a different tool because it's 'close enough'.\n"
                     "2. The tool name in [INTEGRATION: …] must be COPIED VERBATIM from the list above. Never invent a tool name (no 'youtube_search', no 'gdocs_create' — only what is listed).\n"
@@ -562,6 +571,20 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         # them concurrently, then continue to a single synthesis turn. This
         # collapses N sequential LLM round-trips (one per tool) into one.
         action_counter = getattr(agent_loop, '_action_counter', 0)
+        # Strip silently-truncated [INTEGRATION:] tags before planning AND
+        # before the response is persisted/displayed. If anything was stripped,
+        # tell the user the call was discarded so they don't think it ran.
+        sanitized_response = _strip_truncated_tool_tags(accumulated_response)
+        if sanitized_response != accumulated_response:
+            # Notify the user so they don't think the doc was written.
+            yield json.dumps({
+                "event": "status",
+                "message": "⚠ Tool call was truncated mid-response and discarded — break large documents into smaller chunks via append_google_doc.",
+            })
+            # The live stream already shipped the raw tag; the frontend's
+            # stripToolTags now handles unterminated tags. Keep the sanitized
+            # text for what gets persisted and fed to the next turn.
+            accumulated_response = sanitized_response
         planned_actions = _plan_actions(accumulated_response, uid, start_id=action_counter + 1)
 
         if planned_actions:
@@ -650,6 +673,112 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
 #   continue_prompt : str (instruction the synthesis turn should follow)
 # ──────────────────────────────────────────────────────────────────────
 
+# Common placeholders models emit when they "copy the schema" instead of
+# producing a real value. Treating these as no-ops prevents the calculator
+# from receiving `"expression"` and web_search from receiving `"query"`.
+_PLACEHOLDER_ARGS = {
+    "", "query", "expression", "expr", "text", "string", "value", "input",
+    "search query", "your query", "your search query", "the query",
+    "calculation", "math expression", "the expression",
+    "title", "document_id", "<query>", "<expression>", "...", "null", "none",
+}
+
+
+def _is_placeholder_arg(v):
+    if v is None:
+        return True
+    if not isinstance(v, str):
+        return False
+    return v.strip().lower() in _PLACEHOLDER_ARGS
+
+
+def _looks_hallucinated(args):
+    """True when every required-looking arg matches its own param name (or a
+    common placeholder), i.e. the model emitted the schema instead of values."""
+    if not isinstance(args, dict) or not args:
+        return True
+    bad = 0
+    for k, v in args.items():
+        if isinstance(v, str) and v.strip().lower() == str(k).strip().lower():
+            bad += 1
+        elif _is_placeholder_arg(v):
+            bad += 1
+    return bad == len(args)
+
+
+def _find_json_end(text, start):
+    """Return the index of the `}` that closes the JSON object beginning at
+    `text[start] == '{'`, or -1 if the object is truncated. Respects string
+    quoting and backslash escapes so embedded braces inside strings are
+    ignored."""
+    if start >= len(text) or text[start] != '{':
+        return -1
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if escape:
+            escape = False
+            continue
+        if ch == '\\':
+            escape = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def _strip_truncated_tool_tags(text):
+    """Remove silently-truncated `[INTEGRATION: ...` tags from text that will
+    be shown to the user. Models occasionally run out of max_tokens mid-JSON;
+    without this, the raw tag (including the entire prompt-style payload)
+    bleeds into the chat bubble."""
+    if not text or "[INTEGRATION:" not in text:
+        return text
+    out = []
+    i = 0
+    while i < len(text):
+        idx = text.find("[INTEGRATION:", i)
+        if idx == -1:
+            out.append(text[i:])
+            break
+        # Look ahead for a closing `]` on the same tag, with JSON awareness.
+        json_start = text.find('{', idx)
+        if json_start != -1:
+            end = _find_json_end(text, json_start)
+            if end != -1:
+                tail = text[end + 1:]
+                m = re.match(r'\s*\]', tail)
+                if m:
+                    # Complete tag — keep it; the parser will execute it.
+                    out.append(text[i:end + 1 + m.end()])
+                    i = end + 1 + m.end()
+                    continue
+        # Truncated or malformed — drop everything from `[INTEGRATION:` on.
+        # We deliberately stop at the first newline that's followed by a
+        # non-JSON-looking line so we don't eat unrelated trailing content,
+        # but in practice the truncation runs to end-of-text, so drop the rest.
+        out.append(text[i:idx])
+        # Conservative: only strip to end-of-text if no `]` ever appears after.
+        rest = text[idx:]
+        if ']' not in rest:
+            break
+        # If a stray `]` exists later, skip up to and including it.
+        close = rest.find(']')
+        i = idx + close + 1
+    return ''.join(out).rstrip()
+
+
 def _plan_actions(text, uid, start_id=1):
     """Scan an LLM response for tool tags and produce a parallelizable plan.
     Multiple tags (including repeats of the same tool) are all included.
@@ -672,6 +801,8 @@ def _plan_actions(text, uid, start_id=1):
     # 1. [SEARCH: query]
     for m in re.finditer(r'\[SEARCH:\s*(.*?)\]', text):
         q = m.group(1).strip()
+        if _is_placeholder_arg(q):
+            continue
         actions.append(_mk("web_search", q, _runner_search(q),
                            "Now answer using the findings above. Do NOT call [SEARCH:] again.",
                            m.start()))
@@ -679,6 +810,8 @@ def _plan_actions(text, uid, start_id=1):
     # 2. [CALCULATE: expr]
     for m in re.finditer(r'\[CALCULATE:\s*(.*?)\]', text):
         expr = m.group(1).strip()
+        if _is_placeholder_arg(expr):
+            continue
         actions.append(_mk("calculator", expr, _runner_calc(expr),
                            "Continue with your answer using the calculation above.",
                            m.start()))
@@ -778,12 +911,35 @@ def _plan_actions(text, uid, start_id=1):
                            m.start()))
 
     # 12. [INTEGRATION: tool_name | {json}]
-    for m in re.finditer(r'\[INTEGRATION:\s*([a-z0-9_]+)\s*\|\s*(\{.*?\})\s*\]', text, re.DOTALL):
+    # JSON-aware scan: tracks quote state so embedded `}` inside string values
+    # don't terminate the match prematurely, and skips silently-truncated tags
+    # (no closing `}]`) so they get stripped from the user-visible text below
+    # instead of being parsed into half-baked tool calls.
+    for m in re.finditer(r'\[INTEGRATION:\s*([a-z0-9_]+)\s*\|\s*', text):
         tool_name = m.group(1).strip()
+        json_start = text.find('{', m.end())
+        if json_start == -1 or json_start - m.end() > 4:
+            continue
+        json_end = _find_json_end(text, json_start)
+        if json_end == -1:
+            # Truncated mid-JSON — leave for the post-stream sanitizer.
+            continue
+        tail = text[json_end + 1:]
+        # Require a closing `]` within a few chars of whitespace.
+        bracket = re.match(r'\s*\]', tail)
+        if not bracket:
+            continue
         try:
-            tool_args = json.loads(m.group(2))
+            tool_args = json.loads(text[json_start:json_end + 1])
         except Exception:
-            tool_args = {}
+            continue
+        if not isinstance(tool_args, dict):
+            continue
+        # Reject hallucinated calls where the value literally equals the
+        # parameter name (e.g. {"query": "query"} from the model copying
+        # the schema placeholder instead of producing a real value).
+        if _looks_hallucinated(tool_args):
+            continue
         is_mcp = tool_name.startswith("mcp_")
         if not (is_mcp or uid):
             continue
@@ -1031,6 +1187,21 @@ def _runner_integration(uid, tool_name, tool_args, is_mcp):
                 return {"ok": True, "preview": f"{tool_name} succeeded",
                         "observation": f"{label} RESULT ({tool_name}): {json.dumps(result)[:1500]}",
                         "done_extras": {}, "extra_events": []}
+            # Special-case Google "API not enabled" so the model is forced to
+            # show the enable link verbatim instead of paraphrasing it away.
+            if result.get("error_kind") == "google_api_disabled":
+                return {
+                    "ok": False,
+                    "preview": f"{result.get('api_label', 'Google API')} not enabled",
+                    "observation": (
+                        f"{label} ERROR ({tool_name}): {result.get('api_label')} is disabled on the user's "
+                        f"Google Cloud project. INSTRUCT THE USER (1-2 sentences) to click this exact link to enable it, "
+                        f"then retry the request after ~30s: {result.get('enable_url')} "
+                        f"— include the URL verbatim as a markdown link so it's clickable. Do NOT retry the tool now."
+                    ),
+                    "done_extras": {"enable_url": result.get("enable_url"), "api_label": result.get("api_label")},
+                    "extra_events": [],
+                }
             return {"ok": False, "preview": str(result.get('error', ''))[:80],
                     "observation": f"{label} ERROR ({tool_name}): {result.get('error', 'unknown')}",
                     "done_extras": {}, "extra_events": []}
@@ -1043,8 +1214,17 @@ def _runner_integration(uid, tool_name, tool_args, is_mcp):
 
 def _estimate_tokens(user_msg, mode):
     """
-    Smart token budget estimator.
-    Returns None to allow maximum unlimited streaming response.
+    Smart token budget estimator. Returns an explicit max_tokens for the
+    response. We used to return None here intending "unlimited", but that
+    actually defers to the provider's server-side default — which for
+    NVIDIA NIM is ~4k–8k completion tokens. Result: long answers (full
+    research reports, multi-section docs) get silently truncated mid-output,
+    which in turn truncates [INTEGRATION:] tool tags mid-JSON and the user
+    sees nothing happen.
+
+    So we now return a high EXPLICIT ceiling — large enough that no
+    realistic answer hits it, but bounded so a runaway loop can't burn
+    unlimited tokens.
     """
     msg_lower = user_msg.lower().strip()
     msg_len = len(msg_lower)
@@ -1053,7 +1233,18 @@ def _estimate_tokens(user_msg, mode):
     if msg_lower in greetings or msg_len < 10:
         return 1024  # short reply for simple greetings
 
-    return None # Return None to let model stream as much as it wants
+    # Coder mode and deep-research-style prompts can need very long output
+    # (whole files, multi-page reports). Give them more headroom.
+    if mode == 'coder':
+        return 32768
+    long_intent_kw = ('report', 'research', 'document', 'doc', 'article',
+                      'essay', 'write a', 'draft', 'full', 'detailed',
+                      'comprehensive', 'append_google_doc', 'create_google_doc')
+    if any(k in msg_lower for k in long_intent_kw) or msg_len > 400:
+        return 32768
+
+    # Default: comfortable ceiling for normal answers including a tool-tag JSON.
+    return 16384
 
 
 def _estimate_reasoning_budget(max_tokens, max_thinking=False):

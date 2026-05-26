@@ -154,34 +154,38 @@ function findBalancedCommand(text, startIndex) {
 
 function stripToolTags(text) {
   if (!text || typeof text !== 'string') return text;
-  
+
   const toolNamesPattern = new RegExp(`^\\[(?:${TOOL_NAMES})(?::|\\])`);
   let result = '';
   let pos = 0;
-  
+
   while (pos < text.length) {
     const nextBracket = text.indexOf('[', pos);
     if (nextBracket === -1) {
       result += text.substring(pos);
       break;
     }
-    
+
     result += text.substring(pos, nextBracket);
     const remaining = text.substring(nextBracket);
     const match = remaining.match(toolNamesPattern);
-    
+
     if (match) {
       const endIdx = findBalancedCommand(text, nextBracket);
       if (endIdx !== -1) {
         pos = endIdx + 1;
         continue;
       }
+      // Unterminated tool tag (model ran out of max_tokens mid-JSON).
+      // Drop everything from `[TOOL:` to end-of-text so the raw payload
+      // doesn't leak into the chat bubble as garbage markdown.
+      break;
     }
-    
+
     result += '[';
     pos = nextBracket + 1;
   }
-  
+
   return result
     .replace(/^[ \t]+$/gm, '')                       // trailing whitespace on lines
     // ReAct scaffolding — case-sensitive so we don't mangle prose like "Action:"
@@ -690,7 +694,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
       )}
 
       {/* Response with markdown */}
-      <div className="message-content animate-fade-up">
+      <div className="message-content animate-fade-up w-full max-w-full min-w-0 [overflow-wrap:anywhere]">
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false, output: 'html' }]]}
@@ -742,7 +746,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
 
               if (!className) {
                 return (
-                  <pre className="my-2 p-3 bg-accent/20 rounded-lg overflow-x-auto text-xs font-mono whitespace-pre-wrap leading-relaxed border border-[var(--k-border)]/30 text-foreground/90">
+                  <pre className="my-2 p-3 bg-accent/20 rounded-lg overflow-x-auto text-xs font-mono whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-relaxed border border-[var(--k-border)]/30 text-foreground/90 w-full max-w-full min-w-0">
                     <code {...props}>{children}</code>
                   </pre>
                 );
