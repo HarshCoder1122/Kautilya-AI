@@ -164,13 +164,16 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                     lines.append(f"- {fn['name']}({', '.join(req)}): {fn['description']}")
                 lines.append("Syntax: [INTEGRATION: tool_name | {\"arg\": \"value\"}]  — JSON args, single line, double-quoted.")
                 lines.append(
+                    "WHEN TO USE INTEGRATIONS — minimal, intent-driven:\n"
+                    "  • Call an integration ONLY when the user explicitly requests that exact action in THIS message (or directly references a previous request).\n"
+                    "  • 'Remember it', 'note this', 'got it' are conversational — they DO NOT mean call any tool. Just acknowledge in text.\n"
+                    "  • After a tool succeeds, the next turn should be PLAIN TEXT to the user. Do not auto-chain another integration (e.g. don't save a fetched profile to a doc unless asked).\n"
                     "PAYLOAD SIZE LIMIT: keep the JSON for any single [INTEGRATION:] call under ~1500 characters total. "
-                    "If a tag exceeds the response token budget it is silently TRUNCATED and the user sees nothing happen.\n"
-                    "GOOGLE DOCS WORKFLOW (CRITICAL): when the user asks you to write a doc with content:\n"
-                    "  • If the body is ≤ ~1200 chars: ONE call — [INTEGRATION: create_google_doc | {\"title\":\"...\", \"content\":\"...the full body...\"}]. Do not follow it with an append.\n"
-                    "  • If the body is longer: FIRST [INTEGRATION: create_google_doc | {\"title\":\"...\"}], wait for OBSERVATION (it returns document_id), THEN call append_google_doc REPEATEDLY with chunks of ≤1000 chars each, one call per turn.\n"
-                    "  • NEVER inline a full report/article inside a single append_google_doc text field — split it into multiple appends.\n"
-                    "  • A bare create_google_doc with no `content` and no follow-up append leaves the user with an EMPTY document — always either include content or queue an append."
+                    "If a tag exceeds the response token budget it is silently truncated and the user sees nothing happen.\n"
+                    "GOOGLE DOCS WORKFLOW (only when user asks for a doc):\n"
+                    "  • Body ≤ ~1200 chars: ONE call — [INTEGRATION: create_google_doc | {\"title\":\"...\", \"content\":\"...full body...\"}].\n"
+                    "  • Body longer: create_google_doc with just title → wait for document_id → call append_google_doc with ≤1000-char chunks, one per turn.\n"
+                    "  • Never inline a full report inside one append_google_doc text field."
                 )
                 lines.append(
                     "STRICT TOOL-SELECTION RULES (violating these is hallucination):\n"
@@ -204,7 +207,9 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             mcp_lines.append("Syntax: [INTEGRATION: mcp_<server>_<tool> | {\"arg\":\"value\"}]  — same dispatch format. Wait for OBSERVATION before continuing.")
             mcp_lines.append(
                 "PRIORITY RULE: if a task is covered by an entry in AVAILABLE INTEGRATIONS above (Google Docs, Sheets, Tasks, Drive, Calendar, Contacts, YouTube, GitHub, CRM, WhatsApp, Slack), "
-                "use THAT integration — do NOT route the same request through a generic MCP fetch/web/search server. MCP tools are only for tasks no integration covers."
+                "use THAT integration — do NOT route the same request through a generic MCP fetch/web/search server. MCP tools are only for tasks no integration covers.\n"
+                "ONE-AND-DONE RULE: after an MCP tool returns a result, the next turn is PLAIN TEXT to the user. Do NOT chain another MCP call to 'save', 'remember', or 'process' the result unless the user explicitly asked for that follow-up in their original message. "
+                "Keep [INTEGRATION:] JSON payloads under ~1500 chars total — never paste a full API response back into another tool call."
             )
             if current_messages and current_messages[0].get("role") == "system":
                 current_messages[0]["content"] = str(current_messages[0].get("content", "")) + "\n".join(mcp_lines)
@@ -948,7 +953,12 @@ def _plan_actions(text, uid, start_id=1):
             continue
         actions.append(_mk(tool_name, json.dumps(tool_args)[:80],
                            _runner_integration(uid, tool_name, tool_args, is_mcp),
-                           "Synthesize a concise user-facing answer from the result. Do not call [INTEGRATION:] again for the same action.",
+                           "Now write a CONCISE PLAIN-TEXT user-facing answer based on the result above. "
+                           "Do NOT emit another [INTEGRATION:] tag unless the user's ORIGINAL request "
+                           "explicitly requires a follow-up action (e.g. user said 'find X and email it'). "
+                           "Do NOT auto-save results to docs, sheets, or memory just because the data is interesting. "
+                           "'Remember it' from the user means acknowledge in text — it is NOT an instruction to call any tool. "
+                           "Keep the reply under 300 words and never repeat the same tool call.",
                            m.start()))
 
     # Sort by appearance order so the UI timeline matches the response text.
