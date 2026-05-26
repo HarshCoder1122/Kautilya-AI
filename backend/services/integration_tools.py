@@ -23,20 +23,57 @@ from typing import Dict, List, Any, Optional
 import requests
 
 
+# TTL cache for integration configs. Without this, available_tools() does
+# 20+ sequential Firestore reads (one per tool's provider, with duplicates)
+# every time the agent loop assembles the prompt — easily 1-4s on every
+# message. We cache per (uid, provider) for 30s. _refresh_google_oauth_token
+# invalidates the entry so token refreshes are visible immediately.
+_cfg_cache: Dict[str, tuple] = {}        # key -> (cfg_or_none, expires_at)
+_CFG_TTL_SEC = 30.0
+
+
+def _cfg_cache_key(uid: str, provider: str) -> str:
+    return f"{uid}::{provider}"
+
+
+def _cfg_cache_invalidate(uid: str, provider: Optional[str] = None) -> None:
+    """Drop cache entries. If provider is None, drop everything for the uid
+    (used when integrations are connected/disconnected)."""
+    if provider:
+        _cfg_cache.pop(_cfg_cache_key(uid, provider), None)
+        return
+    prefix = f"{uid}::"
+    for k in [k for k in _cfg_cache if k.startswith(prefix)]:
+        _cfg_cache.pop(k, None)
+
+
 def _get_cfg(uid: str, provider: str) -> Optional[Dict[str, Any]]:
     from extensions import db
     if not db or not uid:
         return None
+    key = _cfg_cache_key(uid, provider)
+    now = time.time()
+    cached = _cfg_cache.get(key)
+    if cached and cached[1] > now:
+        return cached[0]
     try:
         doc = db.collection('users').document(uid).collection('integrations').document(provider).get()
-        return doc.to_dict() if doc.exists else None
+        cfg = doc.to_dict() if doc.exists else None
     except Exception:
-        return None
+        cfg = None
+    _cfg_cache[key] = (cfg, now + _CFG_TTL_SEC)
+    return cfg
 
 
 def _is_connected(uid: str, provider: str) -> bool:
     cfg = _get_cfg(uid, provider) or {}
     return bool(cfg.get('access_token') or cfg.get('api_key') or cfg.get('webhook_url'))
+
+
+# Cache of available_tools() result per uid. Same TTL as _cfg_cache — if
+# integrations change, both expire together and the next call refreshes.
+_available_tools_cache: Dict[str, tuple] = {}   # uid -> (specs, expires_at)
+_AVAILABLE_TOOLS_TTL_SEC = 30.0
 
 
 def _refresh_google_oauth_token(uid: str, provider: str) -> Dict[str, Any]:
@@ -74,6 +111,9 @@ def _refresh_google_oauth_token(uid: str, provider: str) -> Dict[str, Any]:
     cfg["access_token"] = access_token
     cfg["obtained_at"] = int(time.time())
     cfg["expires_in"] = data.get("expires_in", 3600)
+    # Invalidate cached config so the next _get_cfg call returns the fresh
+    # access_token instead of the stale one from a few seconds ago.
+    _cfg_cache_invalidate(uid, provider)
     return cfg
 
 
@@ -961,17 +1001,55 @@ REGISTRY: Dict[str, Dict[str, Any]] = {
 
 def available_tools(uid: str) -> List[Dict[str, Any]]:
     """OpenAI-format tool specs for integrations the user has connected.
-    `lookup_crm_contact` is offered if EITHER hubspot or zoho is connected."""
+    `lookup_crm_contact` is offered if EITHER hubspot or zoho is connected.
+
+    Performance: previously did 20+ sequential Firestore reads (one per tool's
+    provider, no dedup, no cache) — ~1-4s every time the agent loop assembled
+    the prompt. Now:
+      1. Result cached per uid for 30s (typical message bursts hit cache).
+      2. On miss, the UNIQUE provider list is collected first, then each
+         provider's config is fetched in parallel via _executor. So a user
+         with 10 tools spanning 4 providers does 4 parallel reads (~150ms)
+         instead of 20 sequential reads (~3000ms).
+    """
     if not uid:
         return []
+    now = time.time()
+    cached = _available_tools_cache.get(uid)
+    if cached and cached[1] > now:
+        return cached[0]
+
+    # Build unique provider list
+    providers = set()
+    for entry in REGISTRY.values():
+        providers.add(entry["provider"])
+    providers.update({'hubspot', 'zoho'})  # for crm aliasing below
+
+    # Parallel Firestore reads — _get_cfg uses the same TTL cache so warm
+    # entries are free. The thread-pool just hides cold-read latency.
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+    with _TPE(max_workers=min(8, max(1, len(providers)))) as ex:
+        futures = {p: ex.submit(_is_connected, uid, p) for p in providers}
+        connected = {p: f.result() for p, f in futures.items()}
+
+    hubspot_or_zoho = connected.get('hubspot', False) or connected.get('zoho', False)
     out = []
-    hubspot_or_zoho = _is_connected(uid, 'hubspot') or _is_connected(uid, 'zoho')
     for name, entry in REGISTRY.items():
         if name in ('lookup_crm_contact', 'log_crm_activity', 'create_or_update_crm_contact'):
-            if hubspot_or_zoho: out.append(entry["spec"])
-        elif _is_connected(uid, entry["provider"]):
+            if hubspot_or_zoho:
+                out.append(entry["spec"])
+        elif connected.get(entry["provider"], False):
             out.append(entry["spec"])
+
+    _available_tools_cache[uid] = (out, now + _AVAILABLE_TOOLS_TTL_SEC)
     return out
+
+
+def invalidate_available_tools_cache(uid: str) -> None:
+    """Call after a user connects/disconnects an integration so the next
+    message picks up the change without waiting for TTL."""
+    _available_tools_cache.pop(uid, None)
+    _cfg_cache_invalidate(uid)
 
 
 def execute_tool(uid: str, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
