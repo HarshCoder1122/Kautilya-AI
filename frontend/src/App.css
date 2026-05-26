@@ -335,15 +335,25 @@
     max-width: 100%;
   }
 
-  /* Long-line content (code blocks, command output) → horizontal scroll
-     inside the bubble, never expand the bubble itself */
+  /* Long-line content (code blocks, command output) on mobile → wrap
+     rather than expand the bubble past the viewport. Unbroken tokens
+     (Google Doc IDs, leaked JSON strings, URLs) need overflow-wrap:anywhere
+     so a single 40-char token can't force the whole bubble wider. */
   .message-ai pre,
   .message-ai pre code,
   .message-user pre {
     max-width: 100%;
     overflow-x: auto;
-    white-space: pre;
-    word-break: normal;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+
+  /* Belt-and-suspenders: any descendant of a message bubble must respect
+     the viewport — long unbroken text in paragraphs/list items wraps too. */
+  .message-ai,
+  .message-ai * {
+    overflow-wrap: anywhere;
   }
 
   /* Inline code wraps instead of forcing horizontal scroll */

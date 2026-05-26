@@ -77,6 +77,75 @@ def _refresh_google_oauth_token(uid: str, provider: str) -> Dict[str, Any]:
     return cfg
 
 
+_GOOGLE_API_LABELS = {
+    "docs.googleapis.com": "Google Docs API",
+    "sheets.googleapis.com": "Google Sheets API",
+    "drive.googleapis.com": "Google Drive API",
+    "calendar-json.googleapis.com": "Google Calendar API",
+    "gmail.googleapis.com": "Gmail API",
+    "people.googleapis.com": "People (Contacts) API",
+    "youtube.googleapis.com": "YouTube Data API",
+    "tasks.googleapis.com": "Google Tasks API",
+}
+
+
+def _google_api_error(resp) -> Optional[Dict[str, Any]]:
+    """If a Google API response is a `SERVICE_DISABLED` 403, return a dict
+    the frontend can render as a one-click "Enable API" prompt. Otherwise
+    return None and let the caller surface the generic error.
+
+    We can't enable APIs on the user's behalf (only the project owner can in
+    their own Cloud Console), but Google's error payload includes the exact
+    deeplink that takes them straight to the Enable button — we just need
+    to lift it out and present it nicely instead of dumping raw JSON.
+    """
+    if resp.status_code != 403:
+        return None
+    try:
+        body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception:
+        return None
+    err = (body or {}).get("error") or {}
+    if err.get("status") != "PERMISSION_DENIED":
+        return None
+    details = err.get("details") or []
+    service = None
+    project = None
+    for d in details:
+        if d.get("reason") == "SERVICE_DISABLED":
+            meta = d.get("metadata") or {}
+            service = meta.get("service")
+            consumer = meta.get("consumer") or ""
+            if consumer.startswith("projects/"):
+                project = consumer.split("/", 1)[1]
+            break
+    if not service:
+        # Fall back to scraping the URL out of the message text.
+        msg = err.get("message") or ""
+        import re as _re
+        m = _re.search(r"https://console\.developers\.google\.com/apis/api/([^/]+)/overview\?project=(\d+)", msg)
+        if m:
+            service = m.group(1)
+            project = m.group(2)
+    if not service:
+        return None
+    api_label = _GOOGLE_API_LABELS.get(service, service)
+    enable_url = f"https://console.developers.google.com/apis/api/{service}/overview"
+    if project:
+        enable_url += f"?project={project}"
+    return {
+        "ok": False,
+        "error_kind": "google_api_disabled",
+        "service": service,
+        "api_label": api_label,
+        "enable_url": enable_url,
+        "error": (
+            f"{api_label} is not enabled on your Google Cloud project yet. "
+            f"Open this link to enable it (one click, then wait ~30s and retry): {enable_url}"
+        ),
+    }
+
+
 def _get_valid_google_token(uid: str, provider: str) -> str:
     cfg = _get_cfg(uid, provider) or {}
     access_token = cfg.get("access_token")
@@ -154,7 +223,7 @@ def _create_calendar_event(uid, args):
         timeout=15,
     )
     if not r.ok:
-        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+        return _google_api_error(r) or {"ok": False, "status": r.status_code, "error": r.text[:300]}
 
     res = r.json()
     return {
@@ -196,7 +265,7 @@ def _append_sheet_row(uid, args):
         timeout=15,
     )
     if not r.ok:
-        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+        return _google_api_error(r) or {"ok": False, "status": r.status_code, "error": r.text[:300]}
     
     return {"ok": True, "status": r.status_code, "response": r.json()}
 
@@ -229,7 +298,7 @@ def _create_google_task(uid, args):
         timeout=15,
     )
     if not r.ok:
-        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+        return _google_api_error(r) or {"ok": False, "status": r.status_code, "error": r.text[:300]}
 
     data = r.json()
     return {"ok": True, "status": r.status_code, "task_id": data.get("id"), "self_link": data.get("selfLink")}
@@ -263,7 +332,7 @@ def _list_drive_files(uid, args):
         timeout=20,
     )
     if not r.ok:
-        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+        return _google_api_error(r) or {"ok": False, "status": r.status_code, "error": r.text[:300]}
     data = r.json()
     return {"ok": True, "files": data.get("files", []), "next_page_token": data.get("nextPageToken")}
 
@@ -288,7 +357,7 @@ def _read_drive_file(uid, args):
         timeout=20,
     )
     if not meta.ok:
-        return {"ok": False, "status": meta.status_code, "error": meta.text[:300]}
+        return _google_api_error(meta) or {"ok": False, "status": meta.status_code, "error": meta.text[:300]}
 
     info = meta.json()
     return {"ok": True, "file": info}
@@ -308,23 +377,32 @@ def _create_google_doc(uid, args):
         timeout=15,
     )
     if not r.ok:
-        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+        return _google_api_error(r) or {"ok": False, "status": r.status_code, "error": r.text[:300]}
     doc = r.json()
     doc_id = doc.get("documentId")
+    insert_warning = None
+    inserted_chars = 0
     if content and doc_id:
         try:
-            requests.post(
+            ins = requests.post(
                 f"https://docs.googleapis.com/v1/documents/{doc_id}:batchUpdate",
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
                 json={"requests": [{"insertText": {"location": {"index": 1}, "text": content}}]},
-                timeout=15,
+                timeout=30,
             )
+            if ins.ok:
+                inserted_chars = len(content)
+            else:
+                err = _google_api_error(ins) or {}
+                insert_warning = err.get("error") or f"insertText failed: HTTP {ins.status_code} {ins.text[:200]}"
         except Exception as e:
-            print(f"[integration_tools] insert text failed: {e}")
+            insert_warning = f"insertText failed: {e}"
     return {
         "ok": True,
         "document_id": doc_id,
         "title": title,
+        "inserted_chars": inserted_chars,
+        "insert_warning": insert_warning,
         "url": f"https://docs.google.com/document/d/{doc_id}/edit" if doc_id else None,
     }
 
@@ -343,7 +421,7 @@ def _read_google_doc(uid, args):
         timeout=20,
     )
     if not r.ok:
-        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+        return _google_api_error(r) or {"ok": False, "status": r.status_code, "error": r.text[:300]}
     data = r.json()
     text_parts = []
     for element in (data.get("body", {}).get("content") or []):
@@ -380,7 +458,7 @@ def _append_google_doc(uid, args):
         timeout=15,
     )
     if not meta.ok:
-        return {"ok": False, "status": meta.status_code, "error": meta.text[:300]}
+        return _google_api_error(meta) or {"ok": False, "status": meta.status_code, "error": meta.text[:300]}
     contents = meta.json().get("body", {}).get("content") or []
     end_index = 1
     for c in contents:
@@ -394,7 +472,7 @@ def _append_google_doc(uid, args):
         timeout=15,
     )
     if not r.ok:
-        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+        return _google_api_error(r) or {"ok": False, "status": r.status_code, "error": r.text[:300]}
     return {"ok": True, "document_id": doc_id, "appended_chars": len(text)}
 
 
@@ -414,7 +492,7 @@ def _search_youtube(uid, args):
         timeout=15,
     )
     if not r.ok:
-        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+        return _google_api_error(r) or {"ok": False, "status": r.status_code, "error": r.text[:300]}
     items = []
     for it in r.json().get("items", []):
         vid = (it.get("id") or {}).get("videoId")
@@ -446,7 +524,7 @@ def _list_youtube_subscriptions(uid, args):
         timeout=15,
     )
     if not r.ok:
-        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+        return _google_api_error(r) or {"ok": False, "status": r.status_code, "error": r.text[:300]}
     subs = []
     for it in r.json().get("items", []):
         sn = it.get("snippet") or {}
@@ -516,7 +594,7 @@ def _search_google_contacts(uid, args):
         timeout=20,
     )
     if not r.ok:
-        return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+        return _google_api_error(r) or {"ok": False, "status": r.status_code, "error": r.text[:300]}
     results = [_format_person(p) for p in (r.json().get("connections") or [])]
     if q:
         ql = q.lower()
