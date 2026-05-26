@@ -25,18 +25,37 @@ def get_user_chat_dir(uid):
     return user_dir
 
 
+# TTL cache for user memory. Memory only changes when extract_memories
+# saves new facts (background) or merge_identity_facts saves directly.
+# Both invalidate via save_user_memory below. Without this, every new
+# chat message did a Firestore read just to build the system prompt.
+_user_memory_cache = {}   # uid -> (facts_list, expires_at)
+_USER_MEMORY_TTL_SEC = 60.0
+
+
+def _invalidate_user_memory_cache(uid):
+    _user_memory_cache.pop(uid, None)
+
+
 def get_user_memory(uid):
     """Load user memories — Firestore-first (user_memory collection), local file fallback.
     NOTE: Uses 'user_memory' collection, NOT 'memories' (that's the vector store)."""
     if not uid:
         return []
+    now = time.time()
+    cached = _user_memory_cache.get(uid)
+    if cached and cached[1] > now:
+        return cached[0]
+    facts = []
     # Primary: Firestore — separate 'user_memory' collection to avoid collision with VectorStore
     try:
         from extensions import db, FIREBASE_AVAILABLE
         if FIREBASE_AVAILABLE and db:
             doc = db.collection('users').document(uid).collection('user_memory').document('facts').get()
             if doc.exists:
-                return doc.to_dict().get('facts', [])
+                facts = doc.to_dict().get('facts', [])
+                _user_memory_cache[uid] = (facts, now + _USER_MEMORY_TTL_SEC)
+                return facts
     except Exception as e:
         print(f"[Memory] Firestore read failed: {e}")
     # Fallback: local file
@@ -44,10 +63,11 @@ def get_user_memory(uid):
     if os.path.exists(mem_file):
         try:
             with open(mem_file, 'r', encoding='utf-8') as f:
-                return json.load(f).get('facts', [])
+                facts = json.load(f).get('facts', [])
         except:
-            return []
-    return []
+            facts = []
+    _user_memory_cache[uid] = (facts, now + _USER_MEMORY_TTL_SEC)
+    return facts
 
 
 def save_user_memory(uid, facts):
@@ -55,6 +75,10 @@ def save_user_memory(uid, facts):
     if not uid:
         return
     capped = facts[-MAX_MEMORIES:]
+    # Update the in-process cache eagerly so subsequent reads in this process
+    # see the new facts immediately (the Firestore write is async-ish under
+    # the hood and the TTL would otherwise serve stale facts for 60s).
+    _user_memory_cache[uid] = (capped, time.time() + _USER_MEMORY_TTL_SEC)
     # Primary: Firestore — separate collection from VectorStore's 'memories'
     try:
         from extensions import db, FIREBASE_AVAILABLE

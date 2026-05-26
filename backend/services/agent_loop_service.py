@@ -36,12 +36,23 @@ def normalize_model_choice(model, default="auto"):
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
 _loc_cache = {} # Cache for IP location lookups
 
+def _ttime(label, start):
+    """Latency-tracing helper; matches the [TIMING] format used in chat_routes."""
+    try:
+        elapsed_ms = int((time.time() - start) * 1000)
+        if elapsed_ms >= 50:
+            print(f"[TIMING] {label}: {elapsed_ms}ms")
+    except Exception:
+        pass
+
+
 def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=None, tool_choice=None, max_thinking=False):
     """
     Agentic Loop: Thoughts -> Actions -> Observations -> Final Answer.
     Yields chunks of text OR special status JSONs.
     """
     from extensions import limit_manager, vector_store
+    _t_loop_start = time.time()
 
     rag_context = ""
     location_context = ""
@@ -155,7 +166,9 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     if uid and any(k in _msg_low for k in _intent_kw):
         try:
             from services.integration_tools import available_tools
+            _t_avail = time.time()
             specs = available_tools(uid)
+            _ttime("available_tools", _t_avail)
             if specs:
                 lines = ["\n\nAVAILABLE INTEGRATIONS (call exactly once when the user explicitly asks):"]
                 for s in specs:
@@ -242,13 +255,19 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                     'drive', 'file', 'files', 'document', 'documents', 'doc', 'docs',
                     'sheet', 'sheets', 'spreadsheet', 'spreadsheets')
     if uid and last_user_msg and any(k in (last_user_msg or "").lower() for k in _prefetch_kw):
-        # Run pre-fetch in background with a tight 1.5s timeout so slow APIs never freeze Kautilya
+        # Tight 600ms cap — the model can ALWAYS fetch via a tool call if the
+        # prefetch misses, so we'd rather lose the prefetch and ship the LLM
+        # call than block the user for a full second on a slow Google API.
+        # (Was 1500ms — too generous; on slow days that's an extra 1s of TTFT
+        # for every calendar/email/drive query.)
+        _t_prefetch = time.time()
         future_integration = _executor.submit(_pre_fetch_integrations, uid, last_user_msg)
         try:
-            integration_context = future_integration.result(timeout=1.5)
+            integration_context = future_integration.result(timeout=0.6)
         except Exception as e:
             print(f"[Agent] Integration prefetch timed out or failed: {e}")
             integration_context = ""
+        _ttime("prefetch-integrations", _t_prefetch)
 
         if integration_context:
             last_idx = len(current_messages) - 1

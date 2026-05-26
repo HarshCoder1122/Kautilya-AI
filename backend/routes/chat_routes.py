@@ -35,6 +35,21 @@ CONVERSATION_TTL = 3600
 MAX_HISTORY = 20
 MAX_INMEM_CONVERSATIONS_PER_USER = 20
 
+# Shared thread pool for parallel Firestore reads + fire-and-forget writes.
+# Sized for I/O-bound work — most threads spend their time waiting on Firestore.
+from concurrent.futures import ThreadPoolExecutor as _ChatTPE
+_chat_executor = _ChatTPE(max_workers=8, thread_name_prefix='chat-io')
+
+
+def _t(label, start):
+    """Print elapsed ms for a step so HF Space logs reveal the slow path."""
+    try:
+        elapsed_ms = int((time.time() - start) * 1000)
+        if elapsed_ms >= 50:  # don't spam sub-50ms steps
+            print(f"[TIMING] {label}: {elapsed_ms}ms")
+    except Exception:
+        pass
+
 
 def _get_conversation(uid, session_id):
     user_id = uid or "guest"
@@ -227,6 +242,7 @@ def save_to_firestore(uid, session_id, role, content, message_id=None, streaming
 def jarvis_stream():
     """Main streaming chat endpoint."""
     from extensions import limit_manager, vector_store, db
+    _t_req_start = time.time()
 
     # NEW: Even more robust extraction
     data = request.get_json(silent=True) or {}
@@ -327,15 +343,26 @@ def jarvis_stream():
 
     if not conv:
         _cleanup_expired_conversations()
-        user_memories = get_user_memory(uid) if uid else []
-        settings = {}
-        if uid and db:
-            try:
-                sdoc = db.collection('users').document(uid).collection('settings').document('profile').get()
-                if sdoc.exists:
-                    settings = sdoc.to_dict()
-            except:
-                pass
+        # PARALLEL FETCH — these two Firestore reads used to be sequential
+        # (~300-600ms total). Now they run concurrently in ~200ms max.
+        _t_setup = time.time()
+        if uid:
+            def _fetch_settings():
+                if not db:
+                    return {}
+                try:
+                    sdoc = db.collection('users').document(uid).collection('settings').document('profile').get()
+                    return sdoc.to_dict() if sdoc.exists else {}
+                except Exception:
+                    return {}
+            f_mem = _chat_executor.submit(get_user_memory, uid)
+            f_set = _chat_executor.submit(_fetch_settings)
+            user_memories = f_mem.result(timeout=2.5) or []
+            settings = f_set.result(timeout=2.5) or {}
+        else:
+            user_memories = []
+            settings = {}
+        _t("setup-firestore-reads", _t_setup)
 
         if model == 'coder':
             sys_prompt = build_cli_system_prompt(CODER_SYSTEM_PROMPT)
@@ -457,21 +484,28 @@ def jarvis_stream():
             from services.memory_service import extract_identity_facts_inline, merge_identity_facts_into_memory
             id_facts = extract_identity_facts_inline(user_message)
             if id_facts:
-                stored = merge_identity_facts_into_memory(uid, id_facts)
+                # Build the inject string from raw facts WITHOUT waiting for
+                # the Firestore write — the model only needs the values for
+                # this turn; persistence can happen in the background.
+                stored = [fact_str for fact_str, _key, _val in id_facts]
                 if stored:
                     inject = (
                         "[SYSTEM: The user just self-disclosed identifying info in this message — "
                         "use these EXACT values for any subsequent tool call, do NOT substitute a "
                         "similar-looking name from training data:\n  • " + "\n  • ".join(stored) + "]"
                     )
-                    # Prepend to the system prompt so this turn already sees it.
                     if conv['messages'] and conv['messages'][0].get('role') == 'system':
                         conv['messages'][0]['content'] = str(conv['messages'][0].get('content', '')) + "\n\n" + inject
+                # Persist asynchronously — never blocks TTFT.
+                _chat_executor.submit(merge_identity_facts_into_memory, uid, id_facts)
         except Exception as _e:
             print(f"[Memory] inline identity capture failed: {_e}")
 
     conv['messages'].append({"role": "user", "content": user_message})
-    save_to_firestore(uid, session_id, "user", user_message)
+    # Fire-and-forget — saving the user message used to add 200-500ms before
+    # we could even start the LLM call. The stream's flush loop will catch
+    # up the assistant side; the user side just needs to land eventually.
+    _chat_executor.submit(save_to_firestore, uid, session_id, "user", user_message)
 
     # Trim history
     if len(conv['messages']) > MAX_HISTORY * 2:
@@ -499,8 +533,26 @@ def jarvis_stream():
             'artifact': None,
             'agent_type': None,
         }
-        # Reserve a streaming-message doc id up-front; the LLM thread flushes into it.
-        assistant_msg_id = save_to_firestore(uid, session_id, "assistant", "", streaming=True)
+        # Reserve a streaming-message doc id up-front, but DON'T block on it.
+        # Used to be a sync ~200-500ms Firestore round-trip before we could
+        # start streaming. Now: submit to executor, resolve lazily when the
+        # first flush actually needs the id. By the time FLUSH_INTERVAL_SEC
+        # (0.5s) passes and a flush is due, the write has typically finished
+        # in the background, so .result() is instant.
+        _msg_id_future = _chat_executor.submit(
+            save_to_firestore, uid, session_id, "assistant", "", message_id=None, streaming=True
+        )
+        _msg_id_holder = [None]   # cache the resolved id once we have it
+
+        def _get_msg_id():
+            if _msg_id_holder[0] is not None:
+                return _msg_id_holder[0]
+            try:
+                _msg_id_holder[0] = _msg_id_future.result(timeout=2.0)
+            except Exception as e:
+                print(f"[Stream] placeholder save lookup failed: {e}")
+            return _msg_id_holder[0]
+
         last_flush_ts = [time.time()]
         # Tighter flush cadence so remounting the chat (route change, tab
         # switch, refresh) finds an almost-up-to-date partial in Firestore
@@ -509,15 +561,18 @@ def jarvis_stream():
 
         def _maybe_flush_partial(force=False):
             """Periodically write the current partial response back to Firestore."""
-            if not assistant_msg_id or not uid:
+            if not uid:
                 return
             now = time.time()
             if not force and now - last_flush_ts[0] < FLUSH_INTERVAL_SEC:
                 return
+            mid = _get_msg_id()
+            if not mid:
+                return
             try:
                 save_to_firestore(uid, session_id, "assistant",
                                   full_response_holder[0],
-                                  message_id=assistant_msg_id, streaming=True)
+                                  message_id=mid, streaming=True)
                 last_flush_ts[0] = now
             except Exception as e:
                 print(f"[Stream] partial flush failed: {e}")
@@ -598,7 +653,7 @@ def jarvis_stream():
                         # Final write — flip streaming flag off so the frontend stops polling.
                         save_to_firestore(
                             uid, session_id, "assistant", full_response,
-                            message_id=assistant_msg_id, streaming=False,
+                            message_id=_get_msg_id(), streaming=False,
                             extras={
                                 'tool_results': side_data['tool_results'],
                                 'react_steps': list(side_data['react_steps'].values()),
@@ -622,11 +677,12 @@ def jarvis_stream():
                         print(f"[Stream] Firestore save failed: {e}")
                 else:
                     # No content produced — clear the placeholder so it doesn't loop forever
-                    if assistant_msg_id and uid:
+                    _mid = _get_msg_id()
+                    if _mid and uid:
                         try:
                             save_to_firestore(uid, session_id, "assistant",
                                               "[no response]",
-                                              message_id=assistant_msg_id, streaming=False)
+                                              message_id=_mid, streaming=False)
                         except Exception:
                             pass
 
@@ -655,6 +711,7 @@ def jarvis_stream():
         # Launch LLM thread — independent of client connection
         t = threading.Thread(target=_run_llm, daemon=True)
         t.start()
+        _t("request->llm-thread-started", _t_req_start)
 
         # SSE: read from queue and forward to client
         # If client disconnects, we stop yielding but the thread keeps running
