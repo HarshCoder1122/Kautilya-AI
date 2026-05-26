@@ -385,12 +385,15 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
 
     # Turn budget:
     #   turn 1 — initial answer (may emit tool tags, all run in parallel)
-    #   turn 2 — synthesis OR error recovery (if a tool failed)
-    #   turn 3 — final synthesis after recovery
-    # The parallel-tool refactor cuts the *common* case to 2 turns, but we
-    # keep the budget at 3 so a single tool error doesn't strand the user
-    # without a final answer.
-    MAX_TURNS = 3
+    #   turn 2 — synthesis after tools (may emit follow-up tool tags)
+    #   turn 3-7 — chained tool calls (e.g. create_google_doc → multiple
+    #              append_google_doc chunks → final synthesis). Multi-step
+    #              workflows (research → write doc → email link) routinely
+    #              need 4-6 rounds; 3 was strangling them mid-task.
+    # Parallel tool execution still collapses N concurrent tools into one
+    # turn each, so the wall-clock cost of a higher cap is small in the
+    # common case, and the cap only bites on genuinely sequential chains.
+    MAX_TURNS = 8
     for turn in range(MAX_TURNS):
         print(f"[Agent] Turn {turn+1}/{MAX_TURNS}")
 
