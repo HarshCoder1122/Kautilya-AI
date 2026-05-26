@@ -369,12 +369,18 @@ def jarvis_stream():
     else:
         conv['last_active'] = time.time()
 
-    # Process file uploads
+    # Process file uploads. process_uploaded_file may return a single block
+    # OR a list of blocks (PDF with text + page images, DOCX with embedded
+    # images) — flatten either way so the LLM gets a clean multipart payload.
     user_content_parts = []
     if files:
         for f in files:
             processed = process_uploaded_file(f)
-            if processed:
+            if not processed:
+                continue
+            if isinstance(processed, list):
+                user_content_parts.extend(processed)
+            else:
                 user_content_parts.append(processed)
 
     if message:
