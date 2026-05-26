@@ -440,6 +440,30 @@ def jarvis_stream():
 
     user_message = user_content_parts if len(user_content_parts) > 1 else (user_content_parts[0].get("text", "") if user_content_parts[0].get("type") == "text" else user_content_parts)
 
+    # Real-time identity capture: scan THIS message for self-disclosed handles
+    # ("my github is harshcoder1122", "my email is …", "I'm Harsh") and (a) save
+    # them to long-term memory and (b) inject a system note into the current
+    # turn so the model can't hallucinate a different handle on its first tool
+    # call. Without this, the fact only landed via the background LLM-based
+    # extraction AFTER the response — too late to prevent the wrong call.
+    if uid and isinstance(user_message, str):
+        try:
+            from services.memory_service import extract_identity_facts_inline, merge_identity_facts_into_memory
+            id_facts = extract_identity_facts_inline(user_message)
+            if id_facts:
+                stored = merge_identity_facts_into_memory(uid, id_facts)
+                if stored:
+                    inject = (
+                        "[SYSTEM: The user just self-disclosed identifying info in this message — "
+                        "use these EXACT values for any subsequent tool call, do NOT substitute a "
+                        "similar-looking name from training data:\n  • " + "\n  • ".join(stored) + "]"
+                    )
+                    # Prepend to the system prompt so this turn already sees it.
+                    if conv['messages'] and conv['messages'][0].get('role') == 'system':
+                        conv['messages'][0]['content'] = str(conv['messages'][0].get('content', '')) + "\n\n" + inject
+        except Exception as _e:
+            print(f"[Memory] inline identity capture failed: {_e}")
+
     conv['messages'].append({"role": "user", "content": user_message})
     save_to_firestore(uid, session_id, "user", user_message)
 

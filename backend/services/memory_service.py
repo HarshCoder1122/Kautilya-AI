@@ -73,6 +73,68 @@ def save_user_memory(uid, facts):
         pass
 
 
+_IDENTITY_PATTERNS = [
+    # (regex with one capture group, fact-template, fact-key for dedup)
+    (r'\bmy\s+github(?:\s+(?:user(?:\s*name)?|id|handle|account|username))?\s+(?:is|:|=)\s+["\']?([A-Za-z0-9][A-Za-z0-9_\-]{0,38})\b', "User's GitHub username is {0}", "github_username"),
+    (r'\b(?:i\s+am|i\'m|im)\s+([A-Za-z0-9][A-Za-z0-9_\-]{2,38})\s+on\s+github\b', "User's GitHub username is {0}", "github_username"),
+    (r'\bmy\s+(?:user\s*id|userid|handle|username)\s+(?:is|:|=)\s+["\']?([A-Za-z0-9][A-Za-z0-9_\-\.]{1,38})\b', "User's primary handle / user id is {0}", "primary_handle"),
+    (r'\bmy\s+(?:twitter|x)(?:\s+handle)?\s+(?:is|:|=)\s+@?([A-Za-z0-9_]{1,15})\b', "User's Twitter/X handle is @{0}", "twitter_handle"),
+    (r'\bmy\s+linkedin\s+(?:is|:|=)\s+(?:https?://[^\s]+/in/)?([A-Za-z0-9\-]{3,80})\b', "User's LinkedIn slug is {0}", "linkedin_slug"),
+    (r'\bmy\s+instagram(?:\s+handle)?\s+(?:is|:|=)\s+@?([A-Za-z0-9_\.]{1,30})\b', "User's Instagram handle is @{0}", "instagram_handle"),
+    (r'\bmy\s+(?:work\s+)?email\s+(?:is|:|=)\s+([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})\b', "User's stated email is {0}", "user_email"),
+    (r'\bmy\s+phone(?:\s+number)?\s+(?:is|:|=)\s+(\+?[\d\s\-]{7,20})\b', "User's phone number is {0}", "phone_number"),
+    (r'\b(?:i\s+am|i\'m|im|call\s+me|my\s+name\s+is)\s+([A-Z][A-Za-z]{1,30})\b', "User's preferred first name is {0}", "first_name"),
+]
+
+
+def extract_identity_facts_inline(user_msg):
+    """Cheap regex scan for self-disclosed identifiers ('my github is harshcoder1122',
+    'my email is X', 'I'm Harsh'). Runs synchronously BEFORE the LLM call so the
+    current turn already sees the fact — unlike the LLM-based extract_memories
+    which only runs AFTER the response and helps subsequent turns.
+
+    Returns: list of (fact_string, dedup_key, raw_value) tuples found.
+    """
+    import re as _re
+    if not user_msg or not isinstance(user_msg, str):
+        return []
+    found = []
+    seen_keys = set()
+    for pattern, template, key in _IDENTITY_PATTERNS:
+        if key in seen_keys:
+            continue
+        m = _re.search(pattern, user_msg, _re.IGNORECASE)
+        if m:
+            value = m.group(1).strip()
+            if not value:
+                continue
+            found.append((template.format(value), key, value))
+            seen_keys.add(key)
+    return found
+
+
+def merge_identity_facts_into_memory(uid, new_facts):
+    """Replace any prior fact with the same dedup key, then save. Returns the
+    list of human-readable fact strings that were newly stored (for logging)."""
+    if not uid or not new_facts:
+        return []
+    existing = get_user_memory(uid) or []
+    # Drop prior facts that share a key prefix with any new one — keeps the
+    # most recent self-disclosure when the user updates their handle.
+    key_prefixes = {f"User's {k.replace('_', ' ')}" for _, k, _ in new_facts}
+    # Above is fuzzy; use template-prefix matching instead for reliability.
+    new_prefixes = [s.split(' is ')[0] for s, _, _ in new_facts]
+    kept = [m for m in existing if not any(m.startswith(p + ' is ') or m.startswith(p) for p in new_prefixes)]
+    stored = []
+    for fact_str, _key, _val in new_facts:
+        if fact_str not in kept:
+            kept.append(fact_str)
+            stored.append(fact_str)
+    if stored:
+        save_user_memory(uid, kept)
+    return stored
+
+
 def extract_memories(user_msg, assistant_msg, existing_memories):
     try:
         def get_text_content(msg):
@@ -141,6 +203,11 @@ def build_personalized_prompt(base_prompt, user_name=None, memories=None, user_e
         f"- Current Date (India Standard Time): {current_date}\n"
         f"- Current Time (India Standard Time): {current_time_str}\n"
         f"- CRITICAL IDENTITY RULE: You are KAUTILYA AI, created solely by Harsh (CEO of RevealIQ). NEVER identify as OpenAI, ChatGPT, GPT, Anthropic, Claude, Meta, or Llama.\n"
+        f"- USER-IDENTITY ZERO-HALLUCINATION RULE (critical for tool calls): NEVER invent or guess the user's:\n"
+        f"  GitHub username, Twitter/X handle, LinkedIn, Instagram, email address, phone number, employee ID, customer ID, or any other identifying handle.\n"
+        f"  These can ONLY come from: (a) the CONNECTED INTEGRATIONS / Known facts block below, (b) something the user said verbatim earlier in THIS chat,\n"
+        f"  (c) the user's message right now. If none of those provide it, you MUST ASK the user — do NOT pick a similar-looking name from your training data\n"
+        f"  (e.g. do NOT call mcp_github_search_users with 'HarshCasper' just because it sounds plausible). Wrong-account calls are a worse failure than asking.\n"
     )
 
     # Load full profile/settings from Firestore if settings is not fully provided
