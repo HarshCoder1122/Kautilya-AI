@@ -374,6 +374,216 @@ MAX_UPLOAD_MB = 25
 MAX_TEXT_CHARS = 60_000  # ~15k tokens — leaves room for the actual chat
 
 
+# ─────────────────────────── PDF / DOCX helpers ───────────────────────────
+# Heuristic constants — tuned for chat context (favor recall over precision).
+_PDF_MAX_RASTERIZED_PAGES = 6        # cap image blocks so we don't blow tokens
+_PDF_RASTERIZE_DPI = 144             # readable for vision OCR without bloat
+_PDF_LOW_TEXT_THRESHOLD = 40         # < N chars on a page → assume scanned
+_DOCX_MAX_EMBEDDED_IMAGES = 6
+
+
+def _img_to_image_block(pil_img, target_max_dim=1280, prefer_jpeg=True):
+    """Standard image → multipart block. Mirrors the existing image branch
+    so PDF page rasters and DOCX embedded images go through the same vision
+    pipeline as direct image uploads."""
+    img = pil_img
+    if prefer_jpeg and img.mode not in ('RGB', 'L'):
+        img = img.convert('RGB')
+    target_fmt = 'JPEG' if (prefer_jpeg and img.mode in ('RGB', 'L')) else 'PNG'
+    img.thumbnail((target_max_dim, target_max_dim))
+    buf = io.BytesIO()
+    if target_fmt == 'JPEG':
+        img.save(buf, format='JPEG', quality=85, optimize=True)
+    else:
+        img.save(buf, format='PNG', optimize=True)
+    b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+    mime = 'image/jpeg' if target_fmt == 'JPEG' else 'image/png'
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
+
+
+def _process_pdf(file, fname):
+    """Claude-style PDF handling.
+
+    Strategy (in order):
+      1. Try PyMuPDF (fitz) for text + native page raster. Best layout
+         fidelity and handles most PDFs cleanly.
+      2. If a page yields very little text, ALSO rasterize that page as an
+         image block so the vision model can read scanned content / charts.
+      3. If PyMuPDF is unavailable, fall back to PyPDF2 (text only — matches
+         old behavior so deployments without pymupdf still work).
+      4. Return either a single text block (text-only case) OR a list of
+         blocks (text + N images) — the caller flattens lists.
+    """
+    blocks = []
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        fitz = None
+
+    if fitz:
+        try:
+            file.stream.seek(0)
+            data = file.stream.read()
+            doc = fitz.open(stream=data, filetype='pdf')
+            text_pages = []
+            scanned_or_visual_pages = []   # indices we should also rasterize
+            for i, page in enumerate(doc):
+                try:
+                    page_text = page.get_text("text") or ""
+                except Exception:
+                    page_text = ""
+                page_text = page_text.strip()
+                if page_text:
+                    text_pages.append(f"--- Page {i+1} ---\n{page_text}")
+                if len(page_text) < _PDF_LOW_TEXT_THRESHOLD:
+                    scanned_or_visual_pages.append(i)
+
+            # If the WHOLE doc has no text, every page is a scan candidate.
+            # Otherwise keep low-text pages + always include page 1 so the
+            # model sees title/cover for context.
+            if not text_pages:
+                pages_to_raster = list(range(min(len(doc), _PDF_MAX_RASTERIZED_PAGES)))
+            else:
+                pages_to_raster = []
+                if 0 not in scanned_or_visual_pages:
+                    pages_to_raster.append(0)
+                pages_to_raster.extend(p for p in scanned_or_visual_pages if p not in pages_to_raster)
+                pages_to_raster = pages_to_raster[:_PDF_MAX_RASTERIZED_PAGES]
+
+            # Build text block
+            text_combined = "\n\n".join(text_pages).strip()
+            if text_combined:
+                truncated = ""
+                if len(text_combined) > MAX_TEXT_CHARS:
+                    truncated = f"\n\n…[truncated — full PDF text is {len(text_combined)} chars]"
+                    text_combined = text_combined[:MAX_TEXT_CHARS]
+                header = f"\n[PDF: {fname} — {len(doc)} pages, text extracted]\n"
+                if pages_to_raster:
+                    header += f"[Plus {len(pages_to_raster)} page image(s) below for layout/scan context.]\n"
+                blocks.append({"type": "text", "text": header + text_combined + truncated + "\n"})
+            else:
+                blocks.append({"type": "text",
+                               "text": f"\n[PDF: {fname} — {len(doc)} pages, no extractable text. "
+                                       f"Rasterized {len(pages_to_raster)} page(s) for vision OCR.]\n"})
+
+            # Rasterize selected pages
+            zoom = _PDF_RASTERIZE_DPI / 72.0
+            mat = fitz.Matrix(zoom, zoom)
+            for pidx in pages_to_raster:
+                try:
+                    pix = doc[pidx].get_pixmap(matrix=mat, alpha=False)
+                    img = Image.open(io.BytesIO(pix.tobytes("png")))
+                    blocks.append({"type": "text", "text": f"\n[PDF page {pidx+1} of {fname}:]\n"})
+                    blocks.append(_img_to_image_block(img, target_max_dim=1280, prefer_jpeg=True))
+                except Exception as e:
+                    print(f"[File] PDF page {pidx+1} raster failed: {e}")
+
+            doc.close()
+            print(f"[File] PDF {fname} → {len(text_pages)} text pages + {len(pages_to_raster)} image pages")
+            return blocks if len(blocks) > 1 else (blocks[0] if blocks else None)
+        except Exception as e:
+            print(f"[File] PyMuPDF processing failed for {fname}: {e} — falling back to PyPDF2")
+
+    # Fallback: PyPDF2 text-only (legacy behavior)
+    try:
+        file.stream.seek(0)
+        reader = PyPDF2.PdfReader(file.stream)
+        pages = []
+        for i, page in enumerate(reader.pages):
+            try:
+                page_text = page.extract_text() or ""
+            except Exception:
+                page_text = ""
+            if page_text.strip():
+                pages.append(f"--- Page {i+1} ---\n{page_text.strip()}")
+        text = "\n\n".join(pages).strip()
+        if not text:
+            return {"type": "text",
+                    "text": f"\n[PDF: {fname} — no extractable text and PyMuPDF unavailable for OCR rasterization. "
+                            f"Install pymupdf on the backend to handle scanned PDFs.]\n"}
+        truncated = ""
+        if len(text) > MAX_TEXT_CHARS:
+            truncated = f"\n\n…[truncated — full PDF is {len(text)} chars]"
+            text = text[:MAX_TEXT_CHARS]
+        return {"type": "text", "text": f"\n[PDF: {fname} — {len(reader.pages)} pages]\n{text}{truncated}\n"}
+    except Exception as e:
+        print(f"[File] PDF processing failed for {fname}: {e}")
+        return {"type": "text", "text": f"\n[PDF: {fname} — could not parse: {e}]\n"}
+
+
+def _process_docx(file, fname):
+    """DOCX → text + embedded images. The old version only pulled paragraph
+    text and tables; charts/screenshots/photos embedded in the doc were lost.
+    We now also unzip the .docx (it's a zip) and pull anything under word/media/
+    as image blocks so the vision model sees them too."""
+    import zipfile
+    blocks = []
+    # Text + tables first (preserve old path)
+    try:
+        file.stream.seek(0)
+        doc = Document(file.stream)
+        parts = []
+        for para in doc.paragraphs:
+            if para.text.strip():
+                style = (para.style.name or '').lower() if para.style else ''
+                if 'heading' in style:
+                    parts.append(f"\n## {para.text.strip()}\n")
+                else:
+                    parts.append(para.text.strip())
+        for table in doc.tables:
+            rows = []
+            for row in table.rows:
+                cells = [c.text.strip() for c in row.cells]
+                rows.append(" | ".join(cells))
+            if rows:
+                parts.append("\n[Table]\n" + "\n".join(rows))
+        text = "\n".join(parts).strip()
+    except Exception as e:
+        print(f"[File] DOCX text extraction failed for {fname}: {e}")
+        text = ""
+
+    # Embedded images (charts, screenshots, photos)
+    embedded = []
+    try:
+        file.stream.seek(0)
+        with zipfile.ZipFile(file.stream) as z:
+            media_names = [n for n in z.namelist()
+                           if n.startswith('word/media/') and
+                           n.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp'))]
+            for n in media_names[:_DOCX_MAX_EMBEDDED_IMAGES]:
+                try:
+                    raw = z.read(n)
+                    img = Image.open(io.BytesIO(raw))
+                    embedded.append((n.split('/')[-1], img))
+                except Exception as e:
+                    print(f"[File] DOCX embedded image {n} failed: {e}")
+    except Exception as e:
+        print(f"[File] DOCX zip scan failed for {fname}: {e}")
+
+    if not text and not embedded:
+        return {"type": "text", "text": f"\n[Word Doc: {fname} — empty or unsupported content]\n"}
+
+    truncated = ""
+    if text and len(text) > MAX_TEXT_CHARS:
+        truncated = f"\n\n…[truncated]"
+        text = text[:MAX_TEXT_CHARS]
+    header = f"\n[Word Doc: {fname}"
+    if embedded:
+        header += f" — {len(embedded)} embedded image(s) included below"
+    header += "]\n"
+    if text:
+        blocks.append({"type": "text", "text": header + text + truncated + "\n"})
+    else:
+        blocks.append({"type": "text", "text": header + "(no extractable paragraph text — see images)\n"})
+
+    for img_name, img in embedded:
+        blocks.append({"type": "text", "text": f"\n[Embedded image '{img_name}' from {fname}:]\n"})
+        blocks.append(_img_to_image_block(img, target_max_dim=1280, prefer_jpeg=True))
+
+    print(f"[File] DOCX {fname} → text + {len(embedded)} embedded images")
+    return blocks if len(blocks) > 1 else blocks[0]
+
+
 def process_uploaded_file(file):
     """Convert an uploaded file into a multipart content block for the LLM.
 
@@ -439,63 +649,13 @@ def process_uploaded_file(file):
             print(f"[File] Text read failed for {fname}: {e}")
             return None
 
-    # ============ PDF ============
+    # ============ PDF (Claude-style: text + page images for layout/scans) ============
     if lower.endswith('.pdf'):
-        try:
-            file.stream.seek(0)
-            reader = PyPDF2.PdfReader(file.stream)
-            pages = []
-            for i, page in enumerate(reader.pages):
-                try:
-                    page_text = page.extract_text() or ""
-                except Exception:
-                    page_text = ""
-                if page_text.strip():
-                    pages.append(f"--- Page {i+1} ---\n{page_text.strip()}")
-            text = "\n\n".join(pages).strip()
-            if not text:
-                return {"type": "text", "text": f"\n[PDF: {fname} — no extractable text. It may be a scanned image; OCR is not yet supported.]\n"}
-            truncated = ""
-            if len(text) > MAX_TEXT_CHARS:
-                truncated = f"\n\n…[truncated — full PDF is {len(text)} chars]"
-                text = text[:MAX_TEXT_CHARS]
-            return {"type": "text", "text": f"\n[PDF: {fname} — {len(reader.pages)} pages]\n{text}{truncated}\n"}
-        except Exception as e:
-            print(f"[File] PDF processing failed for {fname}: {e}")
-            return {"type": "text", "text": f"\n[PDF: {fname} — could not parse: {e}]\n"}
+        return _process_pdf(file, fname)
 
-    # ============ DOCX ============
+    # ============ DOCX (text + extracted embedded images) ============
     if lower.endswith('.docx'):
-        try:
-            file.stream.seek(0)
-            doc = Document(file.stream)
-            parts = []
-            for para in doc.paragraphs:
-                if para.text.strip():
-                    style = (para.style.name or '').lower() if para.style else ''
-                    if 'heading' in style:
-                        parts.append(f"\n## {para.text.strip()}\n")
-                    else:
-                        parts.append(para.text.strip())
-            # Include tables too
-            for table in doc.tables:
-                rows = []
-                for row in table.rows:
-                    cells = [c.text.strip() for c in row.cells]
-                    rows.append(" | ".join(cells))
-                if rows:
-                    parts.append("\n[Table]\n" + "\n".join(rows))
-            text = "\n".join(parts).strip()
-            if not text:
-                return {"type": "text", "text": f"\n[Word Doc: {fname} — empty or unsupported content]\n"}
-            truncated = ""
-            if len(text) > MAX_TEXT_CHARS:
-                truncated = f"\n\n…[truncated]"
-                text = text[:MAX_TEXT_CHARS]
-            return {"type": "text", "text": f"\n[Word Doc: {fname}]\n{text}{truncated}\n"}
-        except Exception as e:
-            print(f"[File] DOCX processing failed for {fname}: {e}")
-            return {"type": "text", "text": f"\n[Word Doc: {fname} — could not parse: {e}]\n"}
+        return _process_docx(file, fname)
 
     # ============ XLSX ============
     if lower.endswith(('.xlsx', '.xls')):

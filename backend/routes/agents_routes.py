@@ -350,12 +350,27 @@ def api_agent_kb(agent_id):
             for file in request.files.getlist('files'):
                 if not file.filename: continue
                 processed = process_uploaded_file(file)
-                if not processed or processed.get('type') != 'text': continue
-                chunks = generate_semantic_chunks(processed.get('text', ''))
+                if not processed:
+                    continue
+                # Agent KB is text-only (semantic chunks for RAG). If the
+                # processor returned a multi-block list (PDF with page images),
+                # concatenate the text blocks and ignore image blocks here —
+                # vision-augmented PDFs only matter for live chat, not KB.
+                if isinstance(processed, list):
+                    text_only = "\n".join(b.get('text', '') for b in processed
+                                          if isinstance(b, dict) and b.get('type') == 'text').strip()
+                    if not text_only:
+                        continue
+                    content = text_only
+                else:
+                    if processed.get('type') != 'text':
+                        continue
+                    content = processed.get('text', '')
+                chunks = generate_semantic_chunks(content)
                 new_files.append({
                     "id": str(uuid.uuid4())[:8], "name": file.filename, "type": file.mimetype,
-                    "size": len(processed.get('text', '')), "created_at": int(time.time()),
-                    "chunks": chunks, "content": processed.get('text', '')
+                    "size": len(content), "created_at": int(time.time()),
+                    "chunks": chunks, "content": content
                 })
             if not new_files: return jsonify({"error": "No valid documents"}), 400
             kb.extend(new_files)

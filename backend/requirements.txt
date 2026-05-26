@@ -6,6 +6,7 @@ edge-tts
 aiohttp
 firebase-admin
 PyPDF2
+pymupdf
 Pillow
 google-genai
 numpy
