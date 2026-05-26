@@ -164,6 +164,14 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                     lines.append(f"- {fn['name']}({', '.join(req)}): {fn['description']}")
                 lines.append("Syntax: [INTEGRATION: tool_name | {\"arg\": \"value\"}]  — JSON args, single line, double-quoted.")
                 lines.append(
+                    "PREAMBLE RULE (UX-critical): ALWAYS write a SHORT one-line natural-language preamble BEFORE any [INTEGRATION:] tag, "
+                    "so the user sees what's happening while the tool call streams. Examples:\n"
+                    "  ✓ 'Searching GitHub for harshcoder1122…\\n[INTEGRATION: mcp_github_search_users | {\"q\":\"harshcoder1122\"}]'\n"
+                    "  ✓ 'Creating the Google Doc now…\\n[INTEGRATION: create_google_doc | {\"title\":\"…\"}]'\n"
+                    "  ✗ Starting the response with `[INTEGRATION: …` — the UI will appear frozen while the JSON streams.\n"
+                    "Keep the preamble under 12 words. One preamble per tool call."
+                )
+                lines.append(
                     "WHEN TO USE INTEGRATIONS — minimal, intent-driven:\n"
                     "  • Call an integration ONLY when the user explicitly requests that exact action in THIS message (or directly references a previous request).\n"
                     "  • 'Remember it', 'note this', 'got it' are conversational — they DO NOT mean call any tool. Just acknowledge in text.\n"
