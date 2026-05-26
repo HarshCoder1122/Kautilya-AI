@@ -643,6 +643,40 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
                      (message.thinking && message.thinking.length > 0) ||
                      (message.toolResults && message.toolResults.length > 0);
 
+  // "Preparing tool…" pulse: during streaming, if the model has started
+  // emitting a tool tag (`[INTEGRATION:` / `[SEARCH:` / `[RUN_PYTHON:` …)
+  // but it isn't closed yet, stripToolTags drops the whole open tag — leaving
+  // the bubble blank until the closing `]` arrives. For long JSON payloads
+  // that's many seconds of dead UI. Show a live placeholder during that gap.
+  const _PREAMBLE_TOOL_RE = /\[(INTEGRATION|SEARCH|CALCULATE|RUN_PYTHON|FETCH_URL|CALENDAR_(?:LIST|CREATE|DELETE)|GMAIL_(?:LIST|SEND|READ)|WHATSAPP_SEND|SLACK_POST|HUBSPOT_CREATE_CONTACT)(?::|\s)/;
+  const _toolPrepLabel = (() => {
+    if (!isLiveStreaming || !rawContent) return null;
+    const m = rawContent.match(_PREAMBLE_TOOL_RE);
+    if (!m) return null;
+    // If the tag has its closing `]` already, the tool card will render —
+    // no need for a placeholder.
+    const after = rawContent.slice(m.index);
+    if (/\]/.test(after) && after.indexOf(']') < after.length - 1) return null;
+    const tag = m[1];
+    if (tag === 'INTEGRATION') {
+      // Try to extract the tool name (e.g. `mcp_github_search_users`) so the
+      // placeholder is specific rather than generic.
+      const nameMatch = after.match(/\[INTEGRATION:\s*([a-z0-9_]+)/i);
+      const toolName = nameMatch ? nameMatch[1] : 'integration';
+      return `Preparing ${toolName.replace(/_/g, ' ')}…`;
+    }
+    if (tag === 'SEARCH') return 'Searching the web…';
+    if (tag === 'CALCULATE') return 'Calculating…';
+    if (tag === 'RUN_PYTHON') return 'Running Python…';
+    if (tag === 'FETCH_URL') return 'Fetching URL…';
+    if (tag.startsWith('CALENDAR_')) return 'Working on calendar…';
+    if (tag.startsWith('GMAIL_')) return 'Working on email…';
+    if (tag === 'WHATSAPP_SEND') return 'Sending WhatsApp…';
+    if (tag === 'SLACK_POST') return 'Posting to Slack…';
+    if (tag === 'HUBSPOT_CREATE_CONTACT') return 'Creating HubSpot contact…';
+    return 'Preparing tool…';
+  })();
+
   return (
     <div className="message-ai animate-fade-up group" data-testid={`message-${message.id}`}>
       {/* Agent Badge */}
@@ -691,6 +725,19 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
       {/* Structured tool output (gmail emails, calendar events, python charts) */}
       {(message.toolResults?.length > 0) && (
         <ToolResultCards results={message.toolResults} />
+      )}
+
+      {/* "Preparing tool…" placeholder during the dead window between when
+          a tool tag starts streaming and when its closing `]` arrives. Without
+          this the bubble looks frozen because stripToolTags drops the open tag. */}
+      {_toolPrepLabel && (
+        <div className="my-2 flex items-center gap-2 text-xs text-muted-foreground/70 italic">
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--k-brand)] opacity-60"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-[var(--k-brand)]"></span>
+          </span>
+          <span>{_toolPrepLabel}</span>
+        </div>
       )}
 
       {/* Response with markdown */}
