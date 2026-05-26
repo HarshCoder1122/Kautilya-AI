@@ -164,12 +164,21 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                     lines.append(f"- {fn['name']}({', '.join(req)}): {fn['description']}")
                 lines.append("Syntax: [INTEGRATION: tool_name | {\"arg\": \"value\"}]  — JSON args, single line, double-quoted.")
                 lines.append(
-                    "PREAMBLE RULE (UX-critical): ALWAYS write a SHORT one-line natural-language preamble BEFORE any [INTEGRATION:] tag, "
-                    "so the user sees what's happening while the tool call streams. Examples:\n"
+                    "PREAMBLE + TAG RULE (UX-critical, both halves are MANDATORY): when you intend to call a tool, "
+                    "your response MUST contain BOTH:\n"
+                    "  (1) a SHORT (≤12 words) natural-language preamble announcing what you're about to do, AND\n"
+                    "  (2) the actual [INTEGRATION: …] tag on the very next line — IN THE SAME RESPONSE.\n"
+                    "The preamble alone is NOT a tool call. If you write 'Checking your YouTube subscriptions…' but no "
+                    "[INTEGRATION:] tag follows, NOTHING runs and the user sees a useless half-response.\n"
+                    "CORRECT examples:\n"
                     "  ✓ 'Searching GitHub for harshcoder1122…\\n[INTEGRATION: mcp_github_search_users | {\"q\":\"harshcoder1122\"}]'\n"
+                    "  ✓ 'Pulling your YouTube subscriptions…\\n[INTEGRATION: list_youtube_subscriptions | {}]'\n"
                     "  ✓ 'Creating the Google Doc now…\\n[INTEGRATION: create_google_doc | {\"title\":\"…\"}]'\n"
-                    "  ✗ Starting the response with `[INTEGRATION: …` — the UI will appear frozen while the JSON streams.\n"
-                    "Keep the preamble under 12 words. One preamble per tool call."
+                    "WRONG examples (DO NOT do this):\n"
+                    "  ✗ 'Checking your YouTube subscriptions…' (no tag → nothing happens)\n"
+                    "  ✗ Starting the response with `[INTEGRATION:` directly (no preamble → UI looks frozen)\n"
+                    "If you genuinely cannot make the call yet (missing info, user must confirm), DO NOT write a "
+                    "progressive preamble like 'Let me check…' — instead ask the question or state what's missing."
                 )
                 lines.append(
                     "WHEN TO USE INTEGRATIONS — minimal, intent-driven:\n"
@@ -673,7 +682,28 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             yield json.dumps({"event": "react_synthesizing"})
             continue
 
-        # No tool actions detected — we're done.
+        # No tool actions detected. But if the model wrote a "preparing-to-call"
+        # preamble ('Checking your X…', 'Searching for…', 'Pulling your…') and
+        # then stopped without emitting the [INTEGRATION:] tag, the user just
+        # sees a useless half-promise. Force ONE retry turn that nudges the
+        # model to either actually emit the tag or ask for missing info.
+        if _looks_like_orphan_preamble(accumulated_response) and turn < MAX_TURNS - 1:
+            current_messages.append({"role": "assistant", "content": accumulated_response})
+            current_messages.append({
+                "role": "user",
+                "content": (
+                    "[SYSTEM NUDGE] Your previous response announced an action ('checking…', "
+                    "'searching…', 'pulling…', 'creating…') but did NOT emit the [INTEGRATION: …] "
+                    "tag — so nothing actually ran. Either: (a) emit the tag NOW in this response "
+                    "with the correct tool name and JSON args, OR (b) if you genuinely need more "
+                    "info from the user, ask one specific question. Do not write another preamble "
+                    "without the tag."
+                ),
+            })
+            yield json.dumps({"event": "status", "message": "↻ Retrying — model forgot to emit the tool tag…"})
+            continue
+
+        # No tool actions detected and no orphan preamble — we're done.
         return
 
 # ──────────────────────────────────────────────────────────────────────
@@ -688,6 +718,36 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
 #                            extra_events, continue_prompt, empty?}
 #   continue_prompt : str (instruction the synthesis turn should follow)
 # ──────────────────────────────────────────────────────────────────────
+
+def _looks_like_orphan_preamble(text):
+    """Detect 'Let me check…' / 'Pulling your subscriptions…' style preambles
+    that the model wrote INSTEAD OF actually emitting a tool tag. Heuristic:
+    short response (< 300 chars), no tool tags, and contains a present-
+    progressive verb phrase suggesting an in-progress action.
+
+    False positives are cheap (one extra LLM turn, capped by MAX_TURNS).
+    False negatives just regress to the old behavior (user sees the half-
+    response and has to ask again), so we tune slightly aggressive."""
+    if not text or not isinstance(text, str):
+        return False
+    t = text.strip()
+    if len(t) > 400:
+        # Long responses are real answers, not orphan preambles.
+        return False
+    # If any tool tag already exists, the loop handled it elsewhere.
+    if re.search(r'\[(INTEGRATION|SEARCH|CALCULATE|RUN_PYTHON|FETCH_URL|CALENDAR_|GMAIL_|WHATSAPP_SEND|SLACK_POST|HUBSPOT_CREATE_CONTACT)', t):
+        return False
+    tl = t.lower()
+    # Verb phrases that promise imminent action.
+    promise_patterns = [
+        r'\b(let me|i(?:\'ll| will)|i am going to|i\'m going to)\b',
+        r'\b(checking|pulling|fetching|searching|looking up|looking for|retrieving|getting|loading|querying|creating|writing|sending|posting|appending|reading|finding)\b\s+(your|the|for|up)',
+        r'\b(check kar|fetch kar|search kar|pull kar|dekh raha|raha hoon|rahi hoon)\b',  # hinglish
+        r'…\s*$|\.\.\.\s*$',  # trailing ellipsis = "more to come"
+    ]
+    hits = sum(1 for p in promise_patterns if re.search(p, tl))
+    return hits >= 1 and not tl.endswith('?')
+
 
 # Common placeholders models emit when they "copy the schema" instead of
 # producing a real value. Treating these as no-ops prevents the calculator
