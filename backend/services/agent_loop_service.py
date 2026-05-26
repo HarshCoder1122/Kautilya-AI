@@ -1321,51 +1321,78 @@ def _runner_integration(uid, tool_name, tool_args, is_mcp):
 
 def _estimate_tokens(user_msg, mode):
     """
-    Smart token budget estimator. Returns an explicit max_tokens for the
-    response. We used to return None here intending "unlimited", but that
-    actually defers to the provider's server-side default — which for
-    NVIDIA NIM is ~4k–8k completion tokens. Result: long answers (full
-    research reports, multi-section docs) get silently truncated mid-output,
-    which in turn truncates [INTEGRATION:] tool tags mid-JSON and the user
-    sees nothing happen.
+    Tiered token budget estimator.
 
-    So we now return a high EXPLICIT ceiling — large enough that no
-    realistic answer hits it, but bounded so a runaway loop can't burn
-    unlimited tokens.
+    Two reasons the cap matters:
+    1. Non-reasoning models (Mistral/Llama) just stop at EOS, so the cap is
+       only a safety bound — bigger isn't slower for short answers.
+    2. Reasoning models (GLM, Qwen-thinking, NVIDIA reasoning variants) burn
+       thinking tokens up to a budget that `_estimate_reasoning_budget`
+       derives FROM this number. So an over-generous 16k cap on a 5-word
+       greeting can buy 8k tokens of unnecessary deliberation before the
+       first content token streams. That's the real speed hit.
+
+    Sizing: enough for the realistic answer + a tool-tag JSON, never more.
     """
     msg_lower = user_msg.lower().strip()
     msg_len = len(msg_lower)
 
-    greetings = {'hi', 'hello', 'hey', 'yo', 'sup', 'namaste', 'thanks', 'ok', 'bye', 'okay'}
-    if msg_lower in greetings or msg_len < 10:
-        return 1024  # short reply for simple greetings
+    greetings = {'hi', 'hello', 'hey', 'yo', 'sup', 'namaste', 'thanks', 'ok',
+                 'bye', 'okay', 'cool', 'nice', 'lol', 'haha', 'haan', 'nahi',
+                 'thik', 'theek', 'good', 'great'}
+    if msg_lower in greetings or msg_len < 6:
+        return 512   # one-line reply, no thinking budget needed
 
-    # Coder mode and deep-research-style prompts can need very long output
-    # (whole files, multi-page reports). Give them more headroom.
-    if mode == 'coder':
-        return 32768
-    long_intent_kw = ('report', 'research', 'document', 'doc', 'article',
+    # Long-content intent dominates — research, draft a doc, code generation.
+    long_intent_kw = ('report', 'research', 'document', 'article',
                       'essay', 'write a', 'draft', 'full', 'detailed',
-                      'comprehensive', 'append_google_doc', 'create_google_doc')
-    if any(k in msg_lower for k in long_intent_kw) or msg_len > 400:
+                      'comprehensive', 'append_google_doc', 'create_google_doc',
+                      'explain in detail', 'in depth', 'long', 'whole')
+    if any(k in msg_lower for k in long_intent_kw):
         return 32768
+    if mode == 'coder':
+        # Code answers can be long but rarely > 16k tokens. Bigger only if
+        # the user explicitly asked for a whole file / full project.
+        return 32768 if msg_len > 200 else 8192
 
-    # Default: comfortable ceiling for normal answers including a tool-tag JSON.
+    # Conversational tiering — match budget to question length so reasoning
+    # models don't over-deliberate on short factual asks.
+    if msg_len < 30:     # 'where am i', 'whats the time', 'check my mail'
+        return 1024
+    if msg_len < 100:    # one-sentence question with light context
+        return 2048
+    if msg_len < 250:    # paragraph question / explanation request
+        return 4096
+    if msg_len < 500:    # long paragraph, multi-part
+        return 8192
+    # Very long user message (pasted code, big context, file content). Give
+    # headroom but not the full 32k — that's reserved for explicit long-form.
     return 16384
 
 
 def _estimate_reasoning_budget(max_tokens, max_thinking=False):
     """
-    Derive a proportional reasoning budget from the answer token budget.
-    Thinking should be ≥ answer budget to allow full deliberation.
+    Reasoning budget per request.
+
+    Default (max_thinking OFF) used to scale up to 8192 thinking tokens for a
+    one-line greeting — reasoning models would deliberate for seconds before
+    emitting any content. That's the bulk of perceived "Kautilya is slow on
+    short answers." Now: tight, proportional to the actual answer budget so
+    a 1k-answer request gets a 256-token reasoning budget, not 8k.
+
+    max_thinking ON keeps the deep budget for hard problems on demand.
     """
     if max_tokens is None:
-        return 32768 if max_thinking else 8192
+        # Provider-default answer budget. Stay modest to keep TTFT snappy.
+        return 16384 if max_thinking else 1024
 
     if not max_thinking:
-        # Light reasoning for standard calls
-        return min(8192, max_tokens)
-    # Deep thinking: up to 2× the answer budget, capped at 32k
+        # Aim for ~1/8 of the answer budget, clamped to a small range so
+        # short asks stay fast and longer asks still get some headroom.
+        # 512 tokens of reasoning is plenty for any non-deliberative answer.
+        derived = max(128, max_tokens // 8)
+        return min(2048, derived)
+    # Deep thinking on: up to 2x the answer budget, capped at 32k.
     return min(32768, max_tokens * 2)
 
 
