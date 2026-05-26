@@ -6,6 +6,7 @@ import re
 import json
 import time
 import concurrent.futures
+from typing import Dict, Optional, List
 
 from services.llm_service import call_groq, call_nvidia
 
