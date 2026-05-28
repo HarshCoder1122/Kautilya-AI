@@ -745,13 +745,24 @@ def jarvis_prewarm():
 
 @chat_bp.route('/chat', methods=['POST'])
 def chat_legacy():
-    """Legacy non-streaming chat endpoint."""
+    """Legacy non-streaming chat endpoint.
+
+    SECURITY: previously read `uid` straight from the request body, so any
+    caller could impersonate any user (and consume their PAYG credits /
+    daily quota / Firestore writes) by passing the target uid in JSON. Now
+    the uid is derived ONLY from a verified Firebase token / API key.
+    """
     from extensions import limit_manager
-    data = request.json
+    data = request.json or {}
     message = data.get("message", "")
-    uid = data.get("uid", None)
     model = normalize_model_choice(data.get("model", "auto"))
     client_ip = request.remote_addr
+
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
+
     if limit_manager.is_banned(uid, client_ip):
         return jsonify({"response": "🚫 Access Denied"}), 403
     if not message:

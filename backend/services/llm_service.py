@@ -417,7 +417,26 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                                       "Tell the user the image is unavailable on this tier and "
                                       "suggest they retry — vision routing will pick a vision model.]")
                 content = "\n".join(text_parts)
-            clean_messages.append({"role": m["role"], "content": str(content)})
+            # Preserve the OpenAI tool-use schema: assistant messages may
+            # carry `tool_calls`, tool messages carry `tool_call_id`, named
+            # function messages carry `name`. Previously we kept only
+            # role+content — that wiped tool-call history, so Cline / any
+            # coding agent's follow-up tool turns saw "tool result" with no
+            # link to the call that produced it. Result: model refuses to
+            # continue or hallucinates a different call. Now we forward the
+            # full envelope and let the upstream model decide.
+            entry = {"role": m["role"]}
+            # Content can legitimately be None for assistant-with-tool_calls
+            # turns — only stringify when actually present.
+            if content is not None and content != "":
+                entry["content"] = str(content) if not isinstance(content, (list, dict)) else content
+            else:
+                # OpenAI permits null content on assistant tool-call turns.
+                entry["content"] = None if m.get("tool_calls") else ""
+            for k in ("tool_calls", "tool_call_id", "name"):
+                if m.get(k) is not None:
+                    entry[k] = m[k]
+            clean_messages.append(entry)
         if has_dropped_image:
             print(f"[NVIDIA] Image dropped — model {model} is text-only")
         payload = {"model": model, "messages": clean_messages, "temperature": temperature,
@@ -474,6 +493,7 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                         thinking_active = False
                         collected_chunks = []
                         has_tool_calls = False
+                        finish_reason = None
                         for line in resp.iter_lines():
                             if not line:
                                 continue
@@ -491,6 +511,11 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                                 choices = data.get("choices", [])
                                 if not choices: continue
                                 delta = choices[0].get("delta", {})
+                                # Capture finish_reason — "length" means max_tokens
+                                # was hit and the answer was truncated mid-flight.
+                                fr = choices[0].get("finish_reason")
+                                if fr:
+                                    finish_reason = fr
                             except Exception:
                                 continue
 
@@ -516,9 +541,20 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                                     thinking_active = False
                                 collected_chunks.append({"chunk": content})
                                 yield {"chunk": content}
-                        
-                        # Save successful non-tool generation to cache
-                        if not has_tool_calls and collected_chunks:
+
+                        # Surface mid-stream truncation so the agent loop can
+                        # auto-continue with a bigger budget. Sentinel only —
+                        # NOT cached (the cached stream should be the complete
+                        # one after the continuation merges in).
+                        if finish_reason == "length":
+                            yield {"_finish_reason": "length"}
+
+                        # Save successful non-tool, non-truncated generation
+                        # to cache. Truncated streams would poison the cache
+                        # with cut-off answers on the next identical request.
+                        if (not has_tool_calls
+                                and collected_chunks
+                                and finish_reason != "length"):
                             _save_to_cache(cache_key, "stream", json.dumps(collected_chunks))
                     finally:
                         resp.close()
@@ -587,18 +623,29 @@ def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False,
                         new_content.append(p)
                 if new_content:
                     new_m["content"] = new_content
-                else:
-                    continue
             else:
                 text_parts = [p["text"] for p in content if p.get("type") == "text"]
                 combined_text = "\n".join(text_parts).strip()
                 if combined_text:
                     new_m["content"] = combined_text
-                else:
-                    continue
-        else:
+        elif content is not None:
             new_m["content"] = content
-        if new_m.get("content"):
+        # Preserve tool-protocol fields so multi-turn tool-use conversations
+        # (Cline / Cursor / Continue) actually thread correctly upstream.
+        # Without these, an assistant tool-call turn would arrive at Groq
+        # with no `tool_calls` and the matching tool-result turn would arrive
+        # with no `tool_call_id` — the model can't reconcile them.
+        for k in ("tool_calls", "tool_call_id", "name"):
+            if m.get(k) is not None:
+                new_m[k] = m[k]
+        # Keep a message if it has content OR carries tool-protocol data
+        # (assistant turns with only tool_calls are legitimate; tool turns
+        # without content are not, but we keep them so the upstream can
+        # reject explicitly rather than have us silently swallow them).
+        if new_m.get("content") or new_m.get("tool_calls") or new_m["role"] == "tool":
+            # OpenAI allows null content on assistant tool-call turns.
+            if "content" not in new_m and new_m.get("tool_calls"):
+                new_m["content"] = None
             clean_messages.append(new_m)
     clean_messages.reverse()
     if not clean_messages:
@@ -660,6 +707,7 @@ def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False,
                 def generate():
                     collected_chunks = []
                     has_tool_calls = False
+                    finish_reason = None
                     for line in resp.iter_lines():
                         if line:
                             line = line.decode('utf-8')
@@ -673,11 +721,15 @@ def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False,
                                     if usage:
                                         yield {"usage": usage}
                                         continue
-                                    content = data["choices"][0]["delta"].get("content", "")
+                                    choice = data["choices"][0]
+                                    fr = choice.get("finish_reason")
+                                    if fr:
+                                        finish_reason = fr
+                                    content = choice["delta"].get("content", "")
                                     if content:
                                         collected_chunks.append({"chunk": content})
                                         yield {"chunk": content}
-                                    tool_calls = data["choices"][0]["delta"].get("tool_calls")
+                                    tool_calls = choice["delta"].get("tool_calls")
                                     if tool_calls:
                                         has_tool_calls = True
                                         collected_chunks.append({"tool_calls": tool_calls})
@@ -686,8 +738,13 @@ def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False,
                                     return
                                 except Exception:
                                     pass
-                    # Save successful non-tool generation to cache
-                    if not has_tool_calls and collected_chunks:
+                    if finish_reason == "length":
+                        yield {"_finish_reason": "length"}
+                    # Don't cache truncated answers — they'd serve cut-off
+                    # responses to identical follow-up prompts.
+                    if (not has_tool_calls
+                            and collected_chunks
+                            and finish_reason != "length"):
                         _save_to_cache(cache_key, "stream", json.dumps(collected_chunks))
                 return generate()
             elif resp.status_code == 429:

@@ -39,32 +39,67 @@ export const getAuthHeaders = () => {
   return headers;
 };
 
-// Add Firebase token to requests if available
+// Proactive Firebase token refresh — used before streaming calls because
+// raw fetch() bypasses the axios 401-retry interceptor. Refreshes if the
+// cached token was issued > 50min ago, or always when `force` is true.
+// Safe to call concurrently: in-flight refresh is shared via the promise
+// cache so we never burn multiple Firebase round-trips for the same tab.
+const TOKEN_STALE_MS = 50 * 60 * 1000;
+let _tokenRefreshInFlight = null;
+export const ensureFreshFirebaseToken = async ({ force = false } = {}) => {
+  try {
+    const issuedAt = parseInt(localStorage.getItem('firebase_token_issued_at') || '0', 10);
+    const age = Date.now() - issuedAt;
+    if (!force && issuedAt && age < TOKEN_STALE_MS) {
+      return localStorage.getItem('firebase_token');
+    }
+    if (_tokenRefreshInFlight) return _tokenRefreshInFlight;
+    _tokenRefreshInFlight = (async () => {
+      try {
+        const { getAuthInstance } = await import('./firebase.js');
+        const auth = getAuthInstance();
+        const u = auth && auth.currentUser;
+        if (!u) return localStorage.getItem('firebase_token');
+        const token = await u.getIdToken(true);
+        localStorage.setItem('firebase_token', token);
+        localStorage.setItem('firebase_token_issued_at', String(Date.now()));
+        return token;
+      } catch (e) {
+        console.warn('[Auth] ensureFreshFirebaseToken failed:', e);
+        return localStorage.getItem('firebase_token');
+      } finally {
+        _tokenRefreshInFlight = null;
+      }
+    })();
+    return _tokenRefreshInFlight;
+  } catch {
+    return localStorage.getItem('firebase_token');
+  }
+};
+
+// Add Firebase token to requests if available. Also refresh the token
+// proactively when it's > 50min old (axios path) — this prevents the very
+// first request after a long tab-background period from 401-ing.
 api.interceptors.request.use(async (config) => {
+  await ensureFreshFirebaseToken({ force: false });
   const authHeaders = getAuthHeaders();
   Object.assign(config.headers, authHeaders);
   return config;
-}, (error) => {
-  return Promise.reject(error);
-});
+}, (error) => Promise.reject(error));
 
-// On 401, force-refresh the Firebase token and retry once
+// On 401, force-refresh the Firebase token and retry once. Reapply the
+// FULL header set so X-Firebase-Token (private HF Spaces) gets refreshed
+// alongside Authorization.
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const original = error.config;
-    if (error.response?.status === 401 && !original._retried) {
+    if (error.response?.status === 401 && original && !original._retried) {
       original._retried = true;
       try {
-        const { getAuthInstance } = await import('./firebase.js');
-        const auth = getAuthInstance();
-        const user = auth.currentUser;
-        if (user) {
-          const token = await user.getIdToken(true);
-          localStorage.setItem('firebase_token', token);
-          original.headers['Authorization'] = `Bearer ${token}`;
-          return api(original);
-        }
+        await ensureFreshFirebaseToken({ force: true });
+        Object.assign(original.headers, getAuthHeaders());
+        return api(original);
       } catch (e) {
         console.warn('[Auth] Token refresh on 401 failed:', e);
       }
@@ -73,57 +108,64 @@ api.interceptors.response.use(
   }
 );
 
+// Build a streaming POST that proactively refreshes the Firebase token
+// when stale, and retries once on a 401. FormData can't be safely re-sent
+// after refresh without rebuilding it, so the body is constructed via a
+// factory (`buildBody`) that we can call again.
+const _postStreamWithAuth = async (url, buildBody, options = {}) => {
+  await ensureFreshFirebaseToken({ force: false });
+
+  const doFetch = async () => {
+    const { body, contentType } = buildBody();
+    const headers = { ...getAuthHeaders() };
+    if (contentType) headers['Content-Type'] = contentType;
+    return fetch(url, { method: 'POST', headers, body, signal: options.signal });
+  };
+
+  let response = await doFetch();
+  if (response.status === 401) {
+    await ensureFreshFirebaseToken({ force: true });
+    response = await doFetch();
+  }
+  return response;
+};
+
 // Chat API
 export const chatAPI = {
   // Stream chat message
   streamMessage: async (message, sessionId = null, model = 'auto', files = [], options = {}) => {
-    let body;
-    let headers = {
-      ...getAuthHeaders(),
+    const buildBody = () => {
+      if (files && files.length > 0) {
+        const fd = new FormData();
+        fd.append('message', message);
+        if (sessionId) fd.append('session_id', sessionId);
+        fd.append('model', model);
+        if (options.maxThinking) fd.append('max_thinking', 'true');
+        files.forEach(file => fd.append('files', file));
+        // Browser sets multipart boundary automatically; don't set Content-Type.
+        return { body: fd, contentType: undefined };
+      }
+      return {
+        body: JSON.stringify({
+          message,
+          session_id: sessionId,
+          model,
+          max_thinking: !!options.maxThinking,
+        }),
+        contentType: 'application/json',
+      };
     };
-
-    if (files && files.length > 0) {
-      // Use FormData if files are present
-      body = new FormData();
-      body.append('message', message);
-      if (sessionId) body.append('session_id', sessionId);
-      body.append('model', model);
-      if (options.maxThinking) body.append('max_thinking', 'true');
-      files.forEach(file => body.append('files', file));
-      // Fetch will automatically set the correct boundary for FormData
-    } else {
-      // Use JSON if no files
-      headers['Content-Type'] = 'application/json';
-      body = JSON.stringify({
-        message,
-        session_id: sessionId,
-        model,
-        max_thinking: !!options.maxThinking,
-      });
-    }
-
-    const response = await fetch(`${API_BASE_URL}/api/jarvis/stream`, {
-      method: 'POST',
-      headers,
-      body,
-      signal: options.signal,
-    });
-    return response;
+    return _postStreamWithAuth(`${API_BASE_URL}/api/jarvis/stream`, buildBody, options);
   },
 
   // Stream deep research; this hits the backend research pipeline
   // so SerpAPI/source gathering is actually used.
   streamResearch: async (question, sessionId, options = {}) => {
-    const response = await fetch(`${API_BASE_URL}/api/research/stream`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...getAuthHeaders(),
-      },
+    const buildBody = () => ({
       body: JSON.stringify({ question, session_id: sessionId }),
-      signal: options.signal,
+      contentType: 'application/json',
     });
-    return response;
+    return _postStreamWithAuth(`${API_BASE_URL}/api/research/stream`, buildBody, options);
   },
 
   // Get chat history

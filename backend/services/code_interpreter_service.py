@@ -415,7 +415,30 @@ def run_python(code: str, timeout: int = DEFAULT_TIMEOUT,
     mpl_cache_dir = os.path.join(gemini_dir, 'matplotlib_cache')
     os.makedirs(mpl_cache_dir, exist_ok=True)
 
-    env = os.environ.copy()
+    # SECURITY: Build the child env from a tiny allowlist instead of copying
+    # the parent process environment. The parent holds every API key the
+    # server runs with (NVIDIA, Firebase, Razorpay, Groq, SerpAPI, …) — a
+    # one-line `import os; print(os.environ)` from a user-supplied snippet
+    # would otherwise exfiltrate ALL of them through the tool result.
+    env = {}
+    if os.name == 'nt':
+        # Windows: a handful of vars are required for the Python interpreter
+        # itself to find the system DLLs. None of them carry app secrets.
+        for k in ('SystemRoot', 'SYSTEMROOT', 'SystemDrive', 'WINDIR',
+                  'TEMP', 'TMP', 'USERPROFILE', 'COMPUTERNAME',
+                  'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS',
+                  'PATH', 'PATHEXT', 'COMSPEC'):
+            v = os.environ.get(k)
+            if v:
+                env[k] = v
+    else:
+        # POSIX: pass through the minimal set needed for Python + dynamic
+        # loader to function. Notably, NO HOME — that points at the host
+        # user's directory and we want the sandbox confined to workdir.
+        for k in ('PATH', 'LANG', 'LC_ALL', 'TZ'):
+            v = os.environ.get(k)
+            if v:
+                env[k] = v
     env['TMP'] = workdir
     env['TEMP'] = workdir
     env['TMPDIR'] = workdir
@@ -424,6 +447,7 @@ def run_python(code: str, timeout: int = DEFAULT_TIMEOUT,
     env['KT_MAX_FIGS'] = str(MAX_FIGURES)
     env['PYTHONIOENCODING'] = 'utf-8'
     env['MPLBACKEND'] = 'Agg'
+    # No PYTHONPATH at all — `-I` already ignores it, this is belt-and-braces.
     env.pop('PYTHONPATH', None)
 
     start = time.time()

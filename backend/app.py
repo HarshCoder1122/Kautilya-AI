@@ -53,7 +53,24 @@ try:
 except ImportError:
     logger.warning("[App] flask-compress not found, skipping Gzip compression")
 
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+# Pin API CORS to the production + local-dev origins. Wildcard previously
+# let any site send credentialed XHR to /api/* — combined with the bearer
+# scheme, that meant a hostile page could drive a logged-in user's account
+# if their token leaked into JS context (PWA reset, extension, etc.).
+# Embed widget origins stay open below via the dedicated /embed/* block.
+_default_origins = [
+    "https://ai.revealiq.in",
+    "https://revealiq.in",
+    "https://www.revealiq.in",
+    "http://localhost:3000",
+    "http://localhost:5000",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5000",
+]
+_extra = (os.environ.get("ALLOWED_ORIGINS") or "").strip()
+if _extra:
+    _default_origins.extend([o.strip() for o in _extra.split(",") if o.strip()])
+CORS(app, resources={r"/api/*": {"origins": _default_origins}}, supports_credentials=False)
 
 # Register blueprints
 app.register_blueprint(static_bp)
@@ -196,17 +213,29 @@ def get_firebase_config():
 
 @app.route('/__/<path:firebase_path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'])
 def firebase_proxy(firebase_path):
+    """Proxy Firebase Hosting reserved paths (`/__/auth/handler`, etc.) so the
+    custom domain can complete the Google OAuth redirect flow.
+
+    SECURITY: strip auth/cookie headers before forwarding. The Firebase
+    Hosting endpoints under `/__/` do NOT require the caller's Firebase ID
+    token, but forwarding Authorization would leak the user's bearer token
+    to a destination we don't fully control. We also drop Cookie + HF Space
+    headers for the same reason.
+    """
     query_string = request.query_string.decode('utf-8')
     suffix = f"?{query_string}" if query_string else ""
     firebase_url = f"https://jarvis-a6e18.firebaseapp.com/__/{firebase_path}{suffix}"
+    _STRIP = {
+        'host', 'authorization', 'cookie', 'x-firebase-token',
+        'x-kautilya-auth', 'x-hf-token',
+    }
     try:
-        headers = {k: v for k, v in request.headers if k.lower() != 'host'}
+        headers = {k: v for k, v in request.headers if k.lower() not in _STRIP}
         resp = requests.request(
             method=request.method,
             url=firebase_url,
             headers=headers,
             data=request.get_data(),
-            cookies=request.cookies,
             allow_redirects=False,
             timeout=15
         )

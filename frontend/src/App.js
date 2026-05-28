@@ -18,10 +18,34 @@ const LoadingScreen = () => (
   </div>
 );
 
+// Browsers throttle setInterval in background tabs (often suspending it for
+// minutes at a time). Firebase ID tokens expire at 60min, so we refresh at
+// 50min via timer AND on every visibilitychange when the token is older than
+// 50min — this is the case where the user reopens the tab after an hour and
+// their first message would otherwise 401.
+const TOKEN_REFRESH_BEFORE_EXPIRY_MS = 50 * 60 * 1000;
+const TOKEN_STALE_THRESHOLD_MS = 50 * 60 * 1000;
+
+const _readCachedUser = () => {
+  try {
+    const raw = localStorage.getItem('user');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !parsed.uid) return null;
+    // Only treat as logged-in if a token is still in storage. If the token
+    // was wiped by an explicit logout, don't show a stale identity.
+    if (!localStorage.getItem('firebase_token')) return null;
+    return parsed;
+  } catch { return null; }
+};
+
 function App() {
   const [theme, setTheme] = useState('dark');
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  // Hydrate from cache so returning users don't see the spinner at all.
+  // The async Firebase listener will reconcile / sign out as needed.
+  const cachedUser = _readCachedUser();
+  const [user, setUser] = useState(cachedUser);
+  const [loading, setLoading] = useState(!cachedUser);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -35,6 +59,7 @@ function App() {
       return;
     }
     let refreshInterval = null;
+    let currentAuthUser = null;
 
     // Resolve Google Redirect Sign-In results if coming back from redirect flow
     getRedirectResult(auth)
@@ -47,21 +72,48 @@ function App() {
         console.warn("[Auth] Redirect sign-in error:", e);
       });
 
-    const refreshToken = async (authUser) => {
+    const refreshToken = async (authUser, force = false) => {
+      if (!authUser) return;
       try {
-        const token = await authUser.getIdToken(true);
+        const token = await authUser.getIdToken(force);
         localStorage.setItem('firebase_token', token);
+        localStorage.setItem('firebase_token_issued_at', String(Date.now()));
       } catch (e) {
         console.warn('[Auth] Token refresh failed:', e);
       }
     };
 
+    const refreshIfStale = async () => {
+      if (!currentAuthUser) return;
+      const issuedAt = parseInt(localStorage.getItem('firebase_token_issued_at') || '0', 10);
+      const age = Date.now() - issuedAt;
+      if (!issuedAt || age >= TOKEN_STALE_THRESHOLD_MS) {
+        await refreshToken(currentAuthUser, true);
+      }
+    };
+
+    // Refresh proactively whenever the user comes back to the tab. setInterval
+    // alone is unreliable in background — this catches the "reopened after an
+    // hour" case before the user's first action fails with 401.
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        refreshIfStale();
+      }
+    };
+    const onFocus = () => refreshIfStale();
+    const onOnline = () => refreshIfStale();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('online', onOnline);
+
     const unsubscribe = onAuthStateChanged(auth, async (authUser) => {
       if (refreshInterval) clearInterval(refreshInterval);
+      currentAuthUser = authUser;
       if (authUser) {
         try {
           const token = await authUser.getIdToken();
           localStorage.setItem('firebase_token', token);
+          localStorage.setItem('firebase_token_issued_at', String(Date.now()));
           localStorage.setItem('user', JSON.stringify({
             uid: authUser.uid,
             email: authUser.email,
@@ -73,10 +125,10 @@ function App() {
           console.warn('[Auth] Initial token retrieval failed, using fallback:', e);
           setUser(authUser);
         }
-        // Refresh token every 55 minutes (expires at 60m)
-        refreshInterval = setInterval(() => refreshToken(authUser), 55 * 60 * 1000);
+        refreshInterval = setInterval(() => refreshToken(authUser, true), TOKEN_REFRESH_BEFORE_EXPIRY_MS);
       } else {
         localStorage.removeItem('firebase_token');
+        localStorage.removeItem('firebase_token_issued_at');
         localStorage.removeItem('user');
         setUser(null);
       }
@@ -86,6 +138,9 @@ function App() {
     return () => {
       unsubscribe();
       if (refreshInterval) clearInterval(refreshInterval);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('online', onOnline);
     };
   }, []);
 

@@ -48,8 +48,14 @@ def block_sensitive_query(user_text, uid=None):
     """
     Check if user is attempting prompt injection or system prompt extraction.
     Returns a refusal message string if blocked, or None if safe.
+
+    Previously: bailed out for ANY logged-in user (`if uid: return None`),
+    which made signed-in accounts (free + pro) immune to the entire
+    jailbreak guard. Now: the check runs for every caller. Admins (UID
+    "admin", set on the master API-key path) remain exempt because they
+    legitimately need to inspect the prompt during ops.
     """
-    if uid:
+    if uid == "admin":
         return None
     if not user_text:
         return None
