@@ -52,136 +52,88 @@ if (typeof window !== 'undefined') {
   };
 }
 
-export const initFirebase = async () => {
+const sanitizeConfig = (raw) => {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  try {
+    if (trimmed.startsWith('{')) return JSON.parse(trimmed);
+    const firstBrace = raw.indexOf('{');
+    const lastBrace = raw.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      const content = raw.substring(firstBrace, lastBrace + 1);
+      const clean = content
+        .replace(/(\/\/.*)/g, "")
+        .replace(/(\/\*[\s\S]*?\*\/)/g, "")
+        .replace(/([{,])\s*(\w+):/g, '$1"$2":')
+        .replace(/'/g, '"')
+        .replace(/,\s*([}\]])/g, '$1');
+      return JSON.parse(clean);
+    }
+  } catch (e) {
+    console.warn("Firebase: sanitize failed", e);
+  }
+  return null;
+};
+
+const _fallbackConfig = {
+  apiKey: "REDACTED_FIREBASE_WEB_KEY",
+  authDomain: "ai.revealiq.in",
+  projectId: "jarvis-a6e18",
+  storageBucket: "jarvis-a6e18.firebasestorage.app",
+  messagingSenderId: "872168972424",
+  appId: "1:872168972424:web:2b0b9b82922860a52c3f3d",
+  measurementId: "G-H2FB26YQ9R",
+};
+
+const _resolveConfigSync = () => {
+  try {
+    const cached = sessionStorage.getItem('firebase_config');
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (parsed && parsed.apiKey) return parsed;
+    }
+  } catch {}
+  const envBlob = process.env.REACT_APP_FIREBASE_CONFIG;
+  if (envBlob) {
+    const sane = sanitizeConfig(envBlob);
+    if (sane && sane.apiKey) return sane;
+  }
+  if (process.env.REACT_APP_FIREBASE_API_KEY) {
+    return {
+      apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
+      authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN || _fallbackConfig.authDomain,
+      projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID || _fallbackConfig.projectId,
+      storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET || _fallbackConfig.storageBucket,
+      messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID || _fallbackConfig.messagingSenderId,
+      appId: process.env.REACT_APP_FIREBASE_APP_ID || _fallbackConfig.appId,
+    };
+  }
+  return _fallbackConfig;
+};
+
+const _applyAuthDomainOverride = (config) => {
+  const _hn = (typeof window !== 'undefined' ? window.location.hostname : '') || '';
+  if (/(^|\.)revealiq\.in$/i.test(_hn)) {
+    return { ...config, authDomain: "ai.revealiq.in" };
+  }
+  return config;
+};
+
+// Synchronous init — no network roundtrip. Frees the UI to paint immediately.
+// Backend `/api/config/firebase` is no longer in the critical path; we cache
+// the resolved config in sessionStorage on subsequent visits.
+export const initFirebase = () => {
+  if (authInstance) return authInstance;
   if (getApps().length > 0) {
     authInstance = getAuth(getApp());
     googleProvider = new GoogleAuthProvider();
     return authInstance;
   }
-
-  const sanitizeConfig = (raw) => {
-    if (!raw) return null;
-    const trimmed = raw.trim();
-    try {
-      // If it's already a clean JSON string
-      if (trimmed.startsWith('{')) return JSON.parse(trimmed);
-      
-      // If it contains "const firebaseConfig =" or similar JS junk
-      // We look for everything between the first '{' and the last '}'
-      const firstBrace = raw.indexOf('{');
-      const lastBrace = raw.lastIndexOf('}');
-      
-      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-        let content = raw.substring(firstBrace, lastBrace + 1);
-        
-        // Clean up common JS object syntax to make it valid JSON
-        let clean = content
-          .replace(/(\/\/.*)/g, "") // Remove comments
-          .replace(/(\/\*[\s\S]*?\*\/)/g, "") // Remove multi-line comments
-          .replace(/([{,])\s*(\w+):/g, '$1"$2":') // Quote keys
-          .replace(/'/g, '"') // Replace single quotes with double quotes
-          .replace(/,\s*([}\]])/g, '$1'); // Remove trailing commas
-          
-        return JSON.parse(clean);
-      }
-    } catch (e) {
-      console.warn("Firebase: Deep sanitize failed, attempting lenient parse...", e);
-      // Last ditch effort: try to evaluate the string if it looks like a JS object
-      try {
-        const evalConfig = new Function(`return ${raw.substring(raw.indexOf('{'))}`)();
-        if (evalConfig && evalConfig.apiKey) return evalConfig;
-      } catch (innerE) {
-        console.error("Firebase: All sanitize methods failed", innerE);
-      }
-    }
-    return null;
-  };
-
   try {
-    let config;
-    const cached = sessionStorage.getItem('firebase_config');
-    if (cached) {
-      config = JSON.parse(cached);
-    } else {
-      console.log("Firebase: Attempting to load config...");
-      
-      // 1. Try Environment Variable first
-      const envConfig = process.env.REACT_APP_FIREBASE_CONFIG;
-      if (envConfig) {
-        config = sanitizeConfig(envConfig);
-        if (config) console.log("Firebase: Loaded from REACT_APP_FIREBASE_CONFIG (Sanitized)");
-      }
-
-      // 2. Try individual env variables as fallback
-      if (!config || !config.apiKey) {
-        if (process.env.REACT_APP_FIREBASE_API_KEY) {
-           config = {
-             apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
-             authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
-             projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID,
-             storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
-             messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
-             appId: process.env.REACT_APP_FIREBASE_APP_ID
-           };
-           console.log("Firebase: Loaded from individual REACT_APP_FIREBASE_* env vars");
-        }
-      }
-
-      // 3. Try API fetch
-      if (!config || !config.apiKey) {
-        try {
-          const apiBase = process.env.REACT_APP_API_URL || "";
-          const hfToken = process.env.REACT_APP_HF_API_TOKEN;
-          const headers = hfToken ? { "Authorization": `Bearer ${hfToken}` } : {};
-          console.log("Firebase: Fetching from API...");
-          const response = await fetch(`${apiBase}/api/config/firebase`, { headers });
-          config = await response.json();
-          if (config && !config.error) {
-             console.log("Firebase: Loaded from Backend API");
-          }
-        } catch (e) {
-          console.error("Firebase: API fetch failed", e);
-        }
-      }
-      
-      if (config && !config.error && config.apiKey) {
-        sessionStorage.setItem('firebase_config', JSON.stringify(config));
-      }
+    const config = _applyAuthDomainOverride(_resolveConfigSync());
+    if (config && config.apiKey) {
+      try { sessionStorage.setItem('firebase_config', JSON.stringify(config)); } catch {}
     }
-
-    const fallbackConfig = {
-      apiKey: "REDACTED_FIREBASE_WEB_KEY",
-      // Custom auth domain so the Google OAuth screen says ai.revealiq.in
-      // instead of jarvis-a6e18.firebaseapp.com. Requires the domain to be
-      // verified under Firebase Console → Hosting AND added to Auth →
-      // Settings → Authorized domains. Falls back to firebaseapp.com if the
-      // env override is not provided.
-      authDomain: "ai.revealiq.in",
-      projectId: "jarvis-a6e18",
-      storageBucket: "jarvis-a6e18.firebasestorage.app",
-      messagingSenderId: "872168972424",
-      appId: "1:872168972424:web:2b0b9b82922860a52c3f3d",
-      measurementId: "G-H2FB26YQ9R"
-    };
-
-    if (!config || !config.apiKey) {
-      console.log("Firebase: Using Hardcoded Fallback Config");
-      config = fallbackConfig;
-    }
-
-    // Force the custom auth domain if we are hosted on the custom domain (ai.revealiq.in)
-    // or if the configuration authDomain uses the default firebaseapp/web.app domains.
-    const _hn = (typeof window !== 'undefined' ? window.location.hostname : '') || '';
-    const _onOwnDomain = /(^|\.)revealiq\.in$/i.test(_hn);
-    if (config && config.authDomain) {
-      if (_onOwnDomain) {
-        config = { ...config, authDomain: "ai.revealiq.in" };
-      } else if (/(\.firebaseapp\.com|\.web\.app)$/i.test(config.authDomain)) {
-        // Keeps original default auth domain on non-revealiq.in domains (like localhost)
-      }
-    }
-
-
     const app = initializeApp(config);
     authInstance = getAuth(app);
     googleProvider = new GoogleAuthProvider();
@@ -200,7 +152,7 @@ export const getAuthInstance = () => {
 };
 
 export const loginWithGoogle = async () => {
-  const auth = await initFirebase();
+  const auth = initFirebase();
   try {
     const isAndroidNative = typeof window !== 'undefined' && window.AndroidInterface;
     if (isAndroidNative) {
@@ -240,7 +192,7 @@ export const loginWithGoogle = async () => {
 };
 
 export const logout = async () => {
-  const auth = await initFirebase();
+  const auth = initFirebase();
   await signOut(auth);
   localStorage.removeItem('firebase_token');
   localStorage.removeItem('user');

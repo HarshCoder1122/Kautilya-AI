@@ -561,10 +561,17 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
 
         accumulated_response = ""
         in_thinking_tag = False
+        length_truncated = False
 
         try:
             for item in response_gen:
                 if isinstance(item, dict):
+                    # Mid-stream truncation sentinel from llm_service when the
+                    # provider sent finish_reason="length". Handle after the
+                    # stream drains so we still yield every chunk we got.
+                    if item.get("_finish_reason") == "length":
+                        length_truncated = True
+                        continue
                     # Pass-through events that the frontend handles directly:
                     # thinking deltas (Gemini-style streaming reasoning),
                     # thinking_done (collapse signal), tool_calls, usage.
@@ -632,7 +639,12 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         # before the response is persisted/displayed. If anything was stripped,
         # tell the user the call was discarded so they don't think it ran.
         sanitized_response = _strip_truncated_tool_tags(accumulated_response)
-        truncation_detected = (sanitized_response != accumulated_response)
+        tag_truncation_detected = (sanitized_response != accumulated_response)
+        # Treat BOTH "tag was sliced mid-JSON" AND the provider's explicit
+        # finish_reason=="length" as truncation. The latter catches the
+        # common case of a natural answer being cut off mid-sentence with no
+        # tool tag involved — previously invisible to the loop.
+        truncation_detected = tag_truncation_detected or length_truncated
         if truncation_detected:
             # ADAPTIVE BUDGET BUMP: the model hit the cap. Bump the cached
             # size label up one tier so the next turn / retry has more room
@@ -645,17 +657,20 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 idx = tier.index(cur_label) if cur_label in tier else 1
                 new_label = tier[min(idx + 1, len(tier) - 1)]
                 _BUDGET_CACHE[ck] = (new_label, time.time() + _BUDGET_CACHE_TTL_SEC)
-                print(f"[Agent] Budget bumped {cur_label}→{new_label} after truncation")
+                print(f"[Agent] Budget bumped {cur_label}→{new_label} "
+                      f"(reason: {'tag' if tag_truncation_detected else 'length'})")
             except Exception as _e:
                 print(f"[Agent] budget bump failed: {_e}")
             yield json.dumps({
                 "event": "status",
-                "message": "⚠ Response hit the token cap and was truncated — retrying with a larger budget…",
+                "message": "⚠ Response hit the token cap — continuing with a larger budget…",
             })
-            # The live stream already shipped the raw tag; the frontend's
-            # stripToolTags now handles unterminated tags. Keep the sanitized
-            # text for what gets persisted and fed to the next turn.
-            accumulated_response = sanitized_response
+            if tag_truncation_detected:
+                # The live stream already shipped the raw tag; the frontend's
+                # stripToolTags now handles unterminated tags. Keep the
+                # sanitized text for what gets persisted and fed to the next
+                # turn.
+                accumulated_response = sanitized_response
         planned_actions = _plan_actions(accumulated_response, uid, start_id=action_counter + 1)
 
         if planned_actions:
@@ -734,15 +749,25 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         # (2) Orphan preamble — model promised action without emitting a tag.
         if truncation_detected and turn < MAX_TURNS - 1:
             current_messages.append({"role": "assistant", "content": accumulated_response})
-            current_messages.append({
-                "role": "user",
-                "content": (
-                    "[SYSTEM] Your previous response was cut off because it exceeded the token cap. "
-                    "The budget has been increased. Please re-do the answer in full — if it was a "
-                    "tool call, emit the complete [INTEGRATION: …] tag. If it was a long document, "
-                    "send it in smaller chunks via multiple append_google_doc calls instead of one mega call."
-                ),
-            })
+            if tag_truncation_detected:
+                nudge = (
+                    "[SYSTEM] Your previous response was cut off mid tool tag. "
+                    "Re-emit the complete [INTEGRATION: …] tag with valid JSON, OR — if it "
+                    "was a long document — send it in smaller chunks via multiple "
+                    "append_google_doc calls instead of one mega call."
+                )
+            else:
+                # Pure prose truncation: continue from where the model left off
+                # so the user sees a seamless answer rather than a redo.
+                nudge = (
+                    "[SYSTEM] Your previous response was cut off mid-sentence because "
+                    "it exceeded the token cap. The budget has been increased. "
+                    "Continue the answer from EXACTLY where it left off — do NOT "
+                    "restart, do NOT summarise, do NOT add 'Continuing:' or "
+                    "anything similar. Just keep writing the next sentence as if "
+                    "you'd never stopped."
+                )
+            current_messages.append({"role": "user", "content": nudge})
             continue
 
         if _looks_like_orphan_preamble(accumulated_response) and turn < MAX_TURNS - 1:
@@ -1128,13 +1153,73 @@ def _runner_search(query):
     return run
 
 
+def _safe_math_eval(expr: str):
+    """Parse `expr` as a math-only expression and evaluate it.
+
+    Replaces the previous `eval(expr, restricted_globals)` which was still
+    vulnerable to introspection escapes like
+    `().__class__.__bases__[0].__subclasses__()[N]("ls")` because Python's
+    method-resolution table is reachable from any object literal.
+
+    This walker only permits: numbers, strings (for `str(...)`), names
+    (matched against a math-only allow-list), function calls, arithmetic
+    binary ops, unary minus/plus, and tuples/lists for `min/max`.
+    """
+    import ast, math
+    allowed_names = {k: getattr(math, k) for k in dir(math) if not k.startswith('_')}
+    allowed_names.update({
+        'abs': abs, 'round': round, 'min': min, 'max': max,
+        'sum': sum, 'len': len, 'pow': pow, 'int': int, 'float': float,
+    })
+    allowed_bin = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod,
+                   ast.Pow, ast.FloorDiv, ast.BitAnd, ast.BitOr, ast.BitXor,
+                   ast.LShift, ast.RShift)
+    allowed_unary = (ast.UAdd, ast.USub)
+
+    def _ev(node):
+        if isinstance(node, ast.Expression):
+            return _ev(node.body)
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, (int, float, complex, bool)):
+                return node.value
+            raise ValueError("only numeric constants allowed")
+        if isinstance(node, ast.BinOp) and isinstance(node.op, allowed_bin):
+            return _BINOPS[type(node.op)](_ev(node.left), _ev(node.right))
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, allowed_unary):
+            v = _ev(node.operand)
+            return +v if isinstance(node.op, ast.UAdd) else -v
+        if isinstance(node, ast.Name):
+            if node.id in allowed_names:
+                return allowed_names[node.id]
+            raise ValueError(f"name '{node.id}' not allowed")
+        if isinstance(node, ast.Call):
+            fn = _ev(node.func)
+            if fn not in allowed_names.values():
+                raise ValueError("only whitelisted callables allowed")
+            args = [_ev(a) for a in node.args]
+            if node.keywords:
+                raise ValueError("keyword args not allowed")
+            return fn(*args)
+        if isinstance(node, (ast.Tuple, ast.List)):
+            return [_ev(e) for e in node.elts]
+        raise ValueError(f"AST node '{type(node).__name__}' not allowed")
+
+    import operator
+    _BINOPS = {
+        ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+        ast.Div: operator.truediv, ast.Mod: operator.mod, ast.Pow: operator.pow,
+        ast.FloorDiv: operator.floordiv,
+        ast.BitAnd: operator.and_, ast.BitOr: operator.or_, ast.BitXor: operator.xor,
+        ast.LShift: operator.lshift, ast.RShift: operator.rshift,
+    }
+    tree = ast.parse(expr, mode='eval')
+    return _ev(tree)
+
+
 def _runner_calc(expr):
     def run():
         try:
-            import math
-            safe_globals = {"__builtins__": {}}
-            safe_globals.update({k: getattr(math, k) for k in dir(math) if not k.startswith('_')})
-            result = eval(expr, safe_globals)  # noqa: S307
+            result = _safe_math_eval(expr)
             rs = str(round(float(result), 8)) if isinstance(result, float) else str(result)
             return {"ok": True, "preview": f"= {rs}",
                     "observation": f"CALCULATION: {expr} = {rs}",
@@ -1387,7 +1472,12 @@ def _runner_integration(uid, tool_name, tool_args, is_mcp):
 _BUDGET_CACHE: Dict[str, tuple] = {}    # msg_hash -> (size_label, expires_at)
 _BUDGET_CACHE_TTL_SEC = 3600
 
-_SIZE_TO_TOKENS = {'S': 1024, 'M': 4096, 'L': 16384, 'XL': 32768}
+# Output-token buckets. Bumped vs prior sizing because reasoning-capable
+# models (NVIDIA Mistral, Qwen, GLM) deduct internal "thinking" tokens
+# from the same max_tokens budget, so a literal 1024 was leaving < 700 for
+# the visible answer. New floor of 2048 still keeps short-answer TTFT
+# snappy while making mid-response cutoffs much rarer.
+_SIZE_TO_TOKENS = {'S': 2048, 'M': 6144, 'L': 20480, 'XL': 40960}
 
 
 def _budget_cache_key(msg: str, mode: str) -> str:
@@ -1443,12 +1533,16 @@ def _classify_answer_size(user_msg: str, mode: str, timeout_sec: float = 0.2) ->
             return None
         sys_prompt = (
             "Predict the size of the assistant's answer to the user request below. "
-            "Output EXACTLY one of: S, M, L, XL. No explanation. Rules:\n"
-            "- S: <120 words. Factual answer, conversational, simple lookup, yes/no.\n"
-            "- M: 120-600 words. Paragraph explanation, short summary, brief list.\n"
-            "- L: 600-2500 words. Multi-section structured answer, long explanation, medium document body.\n"
-            "- XL: >2500 words or a full document/article/code-file/research-report body.\n"
-            "When in doubt between two sizes, pick the LARGER (truncation is worse than over-allocation)."
+            "Output EXACTLY one of: S, M, L, XL. No explanation.\n"
+            "Sizes (be GENEROUS — truncation is far worse than over-allocation):\n"
+            "- S: <80 words. One-liner factual answer, ack, yes/no, conversational chitchat ONLY.\n"
+            "- M: 80-400 words. Short explanation, brief list, single paragraph + small follow-up.\n"
+            "- L: 400-1500 words. Multi-section structured answer, walk-through, long explanation, "
+            "  step-by-step guide, medium document body, ANY answer that contains code.\n"
+            "- XL: >1500 words or a full document/article/research-report/full-code-file body, or any "
+            "  request that mentions 'detailed', 'comprehensive', 'full', 'long', 'in depth', "
+            "  'walk me through', 'explain everything', 'whole', 'entire'.\n"
+            "Default to L when unsure between M and L. Default to XL when unsure between L and XL."
         )
         msgs = [
             {"role": "system", "content": sys_prompt},
@@ -1552,7 +1646,12 @@ def _estimate_reasoning_budget(max_tokens, max_thinking=False):
     short answers." Now: tight, proportional to the actual answer budget so
     a 1k-answer request gets a 256-token reasoning budget, not 8k.
 
-    max_thinking ON keeps the deep budget for hard problems on demand.
+    max_thinking ON keeps a deep budget for hard problems, but capped at
+    HALF the answer budget so the model can never burn so many thinking
+    tokens that the visible answer gets clipped before it finishes. With
+    max_tokens=4096 that previously allocated 8192 thinking tokens — every
+    one of which was deducted from the same overall budget at the provider,
+    leaving the user with a truncated mid-sentence answer.
     """
     if max_tokens is None:
         # Provider-default answer budget. Stay modest to keep TTFT snappy.
@@ -1561,11 +1660,11 @@ def _estimate_reasoning_budget(max_tokens, max_thinking=False):
     if not max_thinking:
         # Aim for ~1/8 of the answer budget, clamped to a small range so
         # short asks stay fast and longer asks still get some headroom.
-        # 512 tokens of reasoning is plenty for any non-deliberative answer.
         derived = max(128, max_tokens // 8)
         return min(2048, derived)
-    # Deep thinking on: up to 2x the answer budget, capped at 32k.
-    return min(32768, max_tokens * 2)
+    # Deep thinking on: cap at HALF the answer budget so the visible
+    # response always has room. Also clamp to 16k absolute max.
+    return min(16384, max(1024, max_tokens // 2))
 
 
 # ──────────────────────────────────────────────
