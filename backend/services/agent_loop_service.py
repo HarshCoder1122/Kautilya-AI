@@ -22,13 +22,15 @@ MODEL_ALIASES = {
     "qwen": "coder",
     "qwen-3": "coder",
     "qwen-3-coder-480b-a35b-instruct": "coder",
+    "kautilya-fast": "fast",
+    "fast": "fast",
 }
 
 
 def normalize_model_choice(model, default="auto"):
     """Normalize UI/API aliases into the internal routing ids."""
     raw = str(model or default).strip().lower()
-    if raw in ("auto", "daily", "pro", "coder", "research"):
+    if raw in ("auto", "daily", "pro", "coder", "research", "fast"):
         return raw
     return MODEL_ALIASES.get(raw, "auto")
 
@@ -568,6 +570,19 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                     print(f"[FALLBACK] {label} failed/unavailable. Switching to Daily.")
                     response_gen = _call_daily(current_messages, max_tokens=max_tokens,
                                                tools=tools, tool_choice=tool_choice)
+
+        elif model_choice == 'fast':
+            # Kautilya Fast: direct Groq, no NVIDIA overhead, no thinking,
+            # no placeholder wrapper. Sub-500ms TTFT for voice agents and
+            # any latency-sensitive workflow.
+            response_gen = call_groq(current_messages, stream=True,
+                                     model='llama-3.3-70b-versatile',
+                                     temperature=0.5,
+                                     max_tokens=min(max_tokens, 4096),
+                                     tools=tools, tool_choice=tool_choice)
+            if not response_gen:
+                response_gen = _call_daily(current_messages, max_tokens=min(max_tokens, 4096),
+                                           tools=tools, tool_choice=tool_choice)
 
         elif has_image:
             # Vision: prefer Gemini 2.5 Flash (most reliable for OCR / chart reading),

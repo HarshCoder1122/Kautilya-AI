@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning, Columns, CaretDown, X, Microphone, MicrophoneSlash, Phone, StopCircle, File, Image, Camera, HardDrive, Cpu, Brain } from "@phosphor-icons/react";
+import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning, Columns, CaretDown, X, Microphone, MicrophoneSlash, Phone, StopCircle, File, Image, Camera, HardDrive, Cpu, Brain, Diamond } from "@phosphor-icons/react";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ThinkingTokens } from "@/components/chat/ThinkingTokens";
 import { LiveKitVoice } from "@/components/chat/LiveKitVoice";
@@ -32,9 +32,10 @@ const API_BASE_URL = /(^|\.)revealiq\.in$/i.test(_hn)
   : (process.env.REACT_APP_API_URL || (_hn === 'localhost' ? 'http://localhost:5000' : window.location.origin));
 
 const modes = [
-  { id: 'chat', label: 'Chat', icon: Lightning, desc: 'General AI assistant' },
-  { id: 'research', label: 'Deep Research', icon: MagnifyingGlass, desc: 'Web search & citations' },
-  { id: 'code', label: 'Code Interpreter', icon: Code, desc: 'Execute & analyze code' },
+  { id: 'chat',     label: 'Chat',         icon: Lightning,       desc: 'General AI assistant' },
+  { id: 'pro',      label: 'Pro',          icon: Diamond,         desc: 'Deep reasoning · Extended thinking' },
+  { id: 'research', label: 'Deep Research',icon: MagnifyingGlass, desc: 'Web search & citations' },
+  { id: 'code',     label: 'Code',         icon: Code,            desc: 'Frontier code generation' },
 ];
 
 function parseAttrs(s) {
@@ -439,7 +440,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     }
 
     try {
-      const model = activeMode === 'code' ? 'coder' : 'auto';
+      const model = activeMode === 'code' ? 'coder' : activeMode === 'pro' ? 'pro' : 'auto';
       abortControllerRef.current = new AbortController();
 
       const response = activeMode === 'research'
