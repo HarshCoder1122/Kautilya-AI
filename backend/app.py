@@ -103,6 +103,61 @@ try:
 except Exception as _mcp_e:
     logger.warning(f"[App] MCP initialisation skipped: {_mcp_e}")
 
+# ── Miss-You Email Scheduler ─────────────────────────────────────────────
+# Runs once every 24 h. Scans Firestore for users who:
+#   • Have a last_seen_at older than 2 days (inactive)
+#   • Have NOT already received a miss-you email in the last 7 days
+#     (miss_you_sent_at field) — prevents spamming inactive users daily
+#   • Have an email address stored
+# Fires send_miss_you_email() in a background thread for each match.
+import threading as _sched_threading
+import time as _sched_time
+
+def _miss_you_scheduler():
+    from datetime import datetime, timezone, timedelta
+    _sched_time.sleep(60)  # let app finish booting first
+    while True:
+        try:
+            from extensions import db
+            from services.email_service import send_miss_you_email
+            from firebase_admin import firestore as _fs
+            if db:
+                now = datetime.now(timezone.utc)
+                cutoff_inactive = now - timedelta(days=2)
+                cutoff_no_spam  = now - timedelta(days=7)
+                docs = (
+                    db.collection('users')
+                    .where('last_seen_at', '<', cutoff_inactive)
+                    .where('welcomed_at', '!=', None)
+                    .limit(200)
+                    .stream()
+                )
+                sent = 0
+                for doc in docs:
+                    data = doc.to_dict() or {}
+                    email = data.get('email', '')
+                    name  = data.get('name', '')
+                    if not email:
+                        continue
+                    # Skip if miss-you was sent recently
+                    last_miss = data.get('miss_you_sent_at')
+                    if last_miss:
+                        lm_dt = last_miss if hasattr(last_miss, 'tzinfo') else last_miss.replace(tzinfo=timezone.utc)
+                        if lm_dt > cutoff_no_spam:
+                            continue
+                    send_miss_you_email(email, name)
+                    db.collection('users').document(doc.id).set(
+                        {'miss_you_sent_at': _fs.SERVER_TIMESTAMP}, merge=True)
+                    sent += 1
+                if sent:
+                    logger.info(f"[MissYou] Sent re-engagement emails to {sent} user(s)")
+        except Exception as _e:
+            logger.warning(f"[MissYou] Scheduler error: {_e}")
+        _sched_time.sleep(24 * 3600)  # run every 24 hours
+
+_sched_threading.Thread(target=_miss_you_scheduler, daemon=True).start()
+logger.info("[App] Miss-you email scheduler started")
+
 # CORS for special endpoints
 CORS(app, resources={r"/embed/*": {"origins": "*"}, r"/embed.js": {"origins": "*"}})
 

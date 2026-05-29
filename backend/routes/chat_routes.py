@@ -695,6 +695,18 @@ def jarvis_stream():
                     except Exception as e:
                         print(f"[Usage] llm_tokens record failed: {e}")
 
+                # Update last_seen_at so the miss-you scheduler knows
+                # the user was active today — fire-and-forget, non-blocking.
+                if uid and db:
+                    def _touch_last_seen(u=uid):
+                        try:
+                            from firebase_admin import firestore as _fs
+                            db.collection('users').document(u).set(
+                                {'last_seen_at': _fs.SERVER_TIMESTAMP}, merge=True)
+                        except Exception:
+                            pass
+                    threading.Thread(target=_touch_last_seen, daemon=True).start()
+
                 # Background memory extraction
                 if uid and message and full_response:
                     def _bg_memory(fr=full_response):
