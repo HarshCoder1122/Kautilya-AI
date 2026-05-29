@@ -412,20 +412,33 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             yield {"thinking_done": True}
 
     def _call_daily(msgs, **kw):
-        """Daily tier: NVIDIA Mistral Medium 3.5 with no reasoning effort.
+        """Daily tier: NVIDIA Mistral Medium 3.5.
+
+        Honors the user's Max Thinking toggle:
+          • ON  → reasoning_effort='high', thinking deltas streamed back to
+            the UI as a collapsible "Thinking…" panel.
+          • OFF → reasoning_effort='none' (fastest TTFT — Mistral skips
+            reasoning entirely).
+        Mistral only accepts 'none' or 'high' (no medium), so the toggle
+        maps cleanly to the binary the upstream understands.
+
         Groq Llama is still the last-resort fallback if NVIDIA is unreachable.
         Output is wrapped with a placeholder-thinking stream so the UI shows
-        the thinking bubble during Mistral's time-to-first-token wait."""
+        the thinking bubble during Mistral's time-to-first-token wait.
+        """
         from config import NVIDIA_API_KEYS
+        # Closure-captured toggle from the outer agent_loop call. The kwargs
+        # form is the override path for explicit callers.
+        mt = bool(kw.get('max_thinking', max_thinking))
+        effort = 'high' if mt else 'none'
         if NVIDIA_API_KEYS:
             r = call_nvidia(msgs, stream=True, model=DAILY_MODEL,
                             temperature=kw.get('temperature', 0.6),
                             top_p=kw.get('top_p', 1.0),
                             max_tokens=kw.get('max_tokens', 16384),
                             tools=kw.get('tools'), tool_choice=kw.get('tool_choice'),
-                            expose_thinking=False,
-                            # Mistral only accepts 'none' or 'high'; 'none' = fastest.
-                            reasoning_effort='none')
+                            expose_thinking=mt,
+                            reasoning_effort=effort)
             if r:
                 return _wrap_with_placeholder_thinking(r)
         groq_gen = call_groq(msgs, stream=True, model='llama-3.3-70b-versatile',
