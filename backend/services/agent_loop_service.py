@@ -434,25 +434,59 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                              tools=kw.get('tools'), tool_choice=kw.get('tool_choice'))
         return _wrap_with_placeholder_thinking(groq_gen) if groq_gen else None
 
-    # Turn budget:
-    #   turn 1 — initial answer (may emit tool tags, all run in parallel)
-    #   turn 2 — synthesis after tools (may emit follow-up tool tags)
-    #   turn 3-7 — chained tool calls (e.g. create_google_doc → multiple
-    #              append_google_doc chunks → final synthesis). Multi-step
-    #              workflows (research → write doc → email link) routinely
-    #              need 4-6 rounds; 3 was strangling them mid-task.
+    # Turn budget — Claude-like multi-turn loop.
+    #
+    # Claude doesn't try to predict total work from the first message; it
+    # runs many short turns, each with its own fresh budget, and trusts the
+    # outer loop. We mirror that:
+    #   - Coder mode gets 25 turns (real coding tasks routinely chain
+    #     read_file → grep → read_file → edit → run_tests → fix → re-run,
+    #     and our previous 8-turn cap was strangling them halfway through).
+    #   - Daily/Pro keep 12 turns (was 8; bumped because tool-heavy
+    #     workflows like "search → write doc → send email" hit the cap on
+    #     genuinely sequential chains too).
     # Parallel tool execution still collapses N concurrent tools into one
     # turn each, so the wall-clock cost of a higher cap is small in the
-    # common case, and the cap only bites on genuinely sequential chains.
-    MAX_TURNS = 8
+    # common case, and the cap only bites on sequential chains.
+    MAX_TURNS = 25 if model_choice == 'coder' else 12
+    # Track whether the previous turn was a synthesis turn (i.e. it
+    # consumed a tool-result OBSERVATION). Synthesis turns need MORE
+    # headroom than the initial turn because the model has to read N
+    # observations AND write the next plan / answer in the same response.
+    was_synthesis = False
+    # Coder-mode budget that RATCHETS UP on every length-truncation. Each
+    # turn the loop checks this and bumps if needed — gives the Claude-like
+    # feel where multi-file edits keep going instead of clipping. NVIDIA's
+    # Qwen3-Coder caps native output around 32k tokens; we ratchet up to
+    # that ceiling.
+    coder_budget = 24576
+    CODER_MAX_BUDGET = 32768
     for turn in range(MAX_TURNS):
-        print(f"[Agent] Turn {turn+1}/{MAX_TURNS}")
+        print(f"[Agent] Turn {turn+1}/{MAX_TURNS} (mode={model_choice}, synthesis={was_synthesis})")
 
-        # Adaptive: classifier-predicted budget (cached/parallel-prewarmed),
-        # heuristic fallback. On turn 2+ the classifier is already in the
-        # cache from turn 1, so this is free.
-        max_tokens = _adaptive_max_tokens(last_user_msg, model_choice)
-        print(f"[Agent] Adaptive tokens: {max_tokens} (msg length: {len(last_user_msg)}, mode: {model_choice})")
+        # Per-turn budget. For coder mode we DON'T use the chat-size
+        # classifier — it's tuned for prose answers and consistently
+        # under-allocates for code (a "L" label predicts 600-1500 words but
+        # the model has to emit a full file + 3 file-search tool tags +
+        # commentary in a single turn). Use a high fixed budget so the
+        # model can actually finish a turn.
+        if model_choice == 'coder':
+            # Coder uses the ratcheting budget (bumped on truncation).
+            # Synthesis turns push to the ceiling because they fold N
+            # file-content observations into the next plan + answer.
+            max_tokens = CODER_MAX_BUDGET if was_synthesis else coder_budget
+        elif model_choice == 'pro':
+            max_tokens = _adaptive_max_tokens(last_user_msg, model_choice)
+            # Pro synthesis turns: bump one tier so reasoning + answer fit.
+            if was_synthesis:
+                max_tokens = max(max_tokens, 16384)
+        else:
+            # Daily / general — keep the adaptive classifier; conversational
+            # answers genuinely vary by request size.
+            max_tokens = _adaptive_max_tokens(last_user_msg, model_choice)
+            if was_synthesis:
+                max_tokens = max(max_tokens, 8192)
+        print(f"[Agent] Per-turn tokens: {max_tokens} (msg_len: {len(last_user_msg)}, mode: {model_choice}, synth: {was_synthesis})")
 
         # Auto-detect image in last message
         has_image = False
@@ -470,6 +504,12 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         if model_choice == 'coder':
             from config import NVIDIA_API_KEYS
             label, model_id = _MODEL_LABELS['coder']
+            # Qwen3-Coder is a NON-reasoning model. Passing max_thinking /
+            # reasoning_budget to it either (a) makes NVIDIA inject
+            # `chat_template_kwargs.thinking` which Qwen3-Coder doesn't
+            # honour but still deducts from max_tokens, or (b) makes NVIDIA
+            # 400 the request entirely. Either way: zero benefit, eats
+            # output budget. So we hard-disable thinking for coder.
             if not NVIDIA_API_KEYS:
                 yield json.dumps({"event": "status", "message": f"⚡ {label} requires NVIDIA API key — using fast model…"})
                 response_gen = _call_daily(current_messages, max_tokens=max_tokens,
@@ -478,13 +518,15 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 yield json.dumps({"event": "status", "message": f"🧠 Connecting to {label}…"})
                 response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
                                            model=model_id, tools=tools, tool_choice=tool_choice,
-                                           temperature=1.0, top_p=0.95, max_thinking=effective_max_thinking,
-                                           reasoning_budget=reasoning_budget)
+                                           temperature=1.0, top_p=0.95,
+                                           max_thinking=False, reasoning_budget=0,
+                                           expose_thinking=False)
                 if not response_gen:
                     yield json.dumps({"event": "status", "message": f"⚡ Retrying {label}…"})
                     response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
                                                model=model_id, temperature=1.0, top_p=0.95,
-                                               max_thinking=effective_max_thinking, reasoning_budget=reasoning_budget)
+                                               max_thinking=False, reasoning_budget=0,
+                                               expose_thinking=False)
                 if not response_gen:
                     yield json.dumps({"event": "status", "message": f"⚡ {label} unavailable — using fast model…"})
                     response_gen = _call_daily(current_messages, max_tokens=max_tokens,
@@ -661,6 +703,14 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                       f"(reason: {'tag' if tag_truncation_detected else 'length'})")
             except Exception as _e:
                 print(f"[Agent] budget bump failed: {_e}")
+            # Coder mode skips the size-tier cache entirely (its budget is
+            # hardcoded above), so the S→M→L→XL bump never reaches it. Bump
+            # the loop-local coder_budget directly so the very next turn
+            # actually sees a bigger cap.
+            if model_choice == 'coder' and coder_budget < CODER_MAX_BUDGET:
+                old_b = coder_budget
+                coder_budget = min(CODER_MAX_BUDGET, int(coder_budget * 1.5))
+                print(f"[Agent] Coder budget ratcheted {old_b}→{coder_budget}")
             yield json.dumps({
                 "event": "status",
                 "message": "⚠ Response hit the token cap — continuing with a larger budget…",
