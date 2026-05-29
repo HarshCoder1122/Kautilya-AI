@@ -1,0 +1,476 @@
+/* Kautilya AI - Global Styles */
+.k-heading {
+  font-family: 'Cabinet Grotesk', sans-serif;
+  letter-spacing: -0.02em;
+}
+
+.k-body {
+  font-family: 'IBM Plex Sans', sans-serif;
+}
+
+.k-mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Split pane layout */
+.chat-layout {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.chat-sidebar {
+  width: 280px;
+  min-width: 280px;
+  border-right: 1px solid var(--k-border);
+  background: var(--k-surface);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.chat-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.canvas-pane {
+  width: 45%;
+  min-width: 380px;
+  max-width: 680px;
+  border-left: 1px solid var(--k-border);
+  background: var(--k-surface);
+  height: 100vh;
+  overflow: hidden;
+  /* Contain all child content so nothing escapes the pane width */
+  contain: layout;
+}
+
+/* Tablet: float the canvas over the chat as a fixed overlay so the
+   chat column never gets crushed below 300px */
+@media (max-width: 1024px) and (min-width: 769px) {
+  .canvas-pane {
+    position: fixed;
+    right: 0;
+    top: 0;
+    width: 75vw !important;
+    min-width: unset !important;
+    max-width: 520px;
+    z-index: 40;
+    box-shadow: -8px 0 32px rgba(0,0,0,0.18);
+  }
+}
+
+/* Message styles */
+.message-user {
+  max-width: 720px;
+}
+
+.message-ai {
+  max-width: 720px;
+  min-width: 0; /* allow children to shrink instead of forcing parent wider */
+  width: 100%;
+}
+
+/* Anything inside the AI bubble must respect the bubble width so long
+   code lines / wide tables scroll internally rather than expanding the bubble. */
+.message-ai > *,
+.message-content,
+.message-content > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.message-ai pre {
+  background: var(--k-surface-elevated);
+  border: 1px solid var(--k-border);
+  border-radius: 12px;
+  padding: 16px;
+  overflow-x: auto;
+  margin: 1.5rem 0;
+  max-width: 100%;
+  width: 100%;
+  white-space: pre;
+}
+
+.message-ai pre code {
+  display: block;
+  min-width: 0;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+.message-ai code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+}
+
+/* Premium code block — gradient header rail + soft glow.
+   Applied to the wrapper div around SyntaxHighlighter (group/code). */
+.message-ai .group\/code {
+  background: linear-gradient(180deg, rgba(15,17,21,0.85), rgba(10,12,16,0.95));
+  box-shadow:
+    0 0 0 1px var(--k-border),
+    0 8px 24px -12px rgba(0,0,0,0.6),
+    inset 0 1px 0 rgba(255,255,255,0.04);
+  position: relative;
+}
+.message-ai .group\/code::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    rgba(99,102,241,0.5) 20%,
+    rgba(168,85,247,0.5) 50%,
+    rgba(236,72,153,0.5) 80%,
+    transparent 100%);
+}
+.message-ai .group\/code pre,
+.message-ai .group\/code pre code,
+.message-ai .group\/code > div > pre {
+  background: transparent !important;
+  border: 0 !important;
+  margin: 0 !important;
+}
+
+.message-ai p {
+  margin-bottom: 1rem;
+  line-height: 1.6;
+  color: var(--k-text-secondary);
+}
+
+.message-ai p:last-child {
+  margin-bottom: 0;
+}
+
+.message-ai strong {
+  color: var(--k-text);
+  font-weight: 600;
+}
+
+.message-ai ul, .message-ai ol {
+  margin: 1rem 0;
+  padding-left: 1.5rem;
+}
+
+.message-ai li {
+  margin-bottom: 0.5rem;
+  color: var(--k-text-secondary);
+  line-height: 1.6;
+}
+
+.message-ai h1, .message-ai h2, .message-ai h3 {
+  font-family: 'Cabinet Grotesk', sans-serif;
+  color: var(--k-text);
+  font-weight: 700;
+  margin-top: 2rem;
+  margin-bottom: 1rem;
+  line-height: 1.2;
+}
+
+.message-ai h1 { font-size: 1.5rem; }
+.message-ai h2 { font-size: 1.25rem; }
+.message-ai h3 { font-size: 1.1rem; }
+
+/* Premium Table Styling */
+.message-ai table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.message-ai thead {
+  background: var(--k-surface-elevated);
+}
+
+.message-ai th {
+  padding: 12px 16px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  text-align: left;
+  border-bottom: 1px solid var(--k-border);
+  color: var(--k-text);
+}
+
+.message-ai td {
+  padding: 12px 16px;
+  font-size: 0.875rem;
+  border-bottom: 1px solid var(--k-border);
+  color: var(--k-text-secondary);
+  vertical-align: top;
+  line-height: 1.5;
+}
+
+.message-ai tr:last-child td {
+  border-bottom: none;
+}
+
+.message-ai tr:nth-child(even) {
+  background: var(--k-surface-elevated)/30;
+}
+
+.message-ai tr:hover {
+  background: var(--k-surface-elevated);
+}
+
+.message-ai blockquote {
+  border-left: 4px solid var(--k-brand);
+  padding: 0.5rem 0 0.5rem 1.5rem;
+  font-style: italic;
+  margin: 1.5rem 0;
+  background: var(--k-brand)/5;
+  border-radius: 0 8px 8px 0;
+}
+
+.message-ai hr {
+  margin: 2rem 0;
+  border: 0;
+  border-top: 1px solid var(--k-border);
+}
+
+/* Canvas code editor theme */
+.canvas-code-block {
+  background: #1E1E1E;
+  color: #D4D4D4;
+  border-radius: 6px;
+  padding: 20px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-x: auto;
+}
+
+/* Research citation */
+.citation-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--k-brand);
+  color: white;
+  font-size: 10px;
+  font-weight: 600;
+  vertical-align: super;
+  margin: 0 2px;
+  cursor: pointer;
+}
+
+/* Dashboard layout */
+.dashboard-layout {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.dashboard-sidebar {
+  width: 260px;
+  min-width: 260px;
+  border-right: 1px solid var(--k-border);
+  background: var(--k-surface);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.dashboard-content {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--k-bg);
+}
+
+/* Mobile sidebar overlay */
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 40;
+  backdrop-filter: blur(2px);
+}
+
+.sidebar-overlay.active {
+  display: block;
+}
+
+@media (max-width: 768px) {
+  /* ── Hard viewport boundary (kills horizontal scroll caused by long
+       code blocks, tables, tool cards expanding the page) ───────────── */
+  html, body, #root, .chat-layout, .chat-main, .dashboard-layout {
+    max-width: 100vw;
+    overflow-x: hidden;
+  }
+
+  /* Flex children need min-width:0 to allow shrinking below their content */
+  .chat-main, .chat-main > *, .message-ai, .message-ai > * {
+    min-width: 0;
+  }
+
+  /* ── Chat layout ── */
+  .chat-sidebar {
+    position: fixed;
+    left: -100%;
+    top: 0;
+    z-index: 50;
+    transition: left 0.25s ease;
+    box-shadow: 4px 0 24px rgba(0,0,0,0.15);
+  }
+
+  .chat-sidebar.open {
+    left: 0;
+  }
+
+  /* Always show the chat-main on mobile (sidebar is overlay) */
+  .chat-layout.sidebar-collapsed .chat-sidebar,
+  .chat-layout .chat-sidebar {
+    display: flex;
+  }
+
+  .chat-main {
+    width: 100%;
+  }
+
+  .canvas-pane {
+    position: fixed;
+    right: 0;
+    top: 0;
+    width: 100vw !important;
+    min-width: unset !important;
+    z-index: 30;
+  }
+
+  /* Hard cap: NOTHING inside a message or the canvas pane
+     may make the page wider than the viewport. */
+  .message-user,
+  .message-ai,
+  .message-content,
+  .message-ai > * {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  /* Code block container (the styled card with syntax highlighting):
+     overflow:hidden clips the inner SyntaxHighlighter pre so the card
+     itself never escapes viewport. The scrollable region is the inner
+     overflow-x:auto div so users can still pan the code. */
+  .message-ai [class*="group/code"],
+  .message-ai .group\/code {
+    max-width: 100% !important;
+    overflow: hidden !important;
+  }
+
+  /* SyntaxHighlighter pre — must NOT break the page width.
+     We keep white-space:pre (not pre-wrap) so indentation is preserved;
+     the parent overflow-x:auto div handles scrolling. */
+  .message-ai pre,
+  .message-user pre {
+    max-width: 100% !important;
+    overflow-x: auto;
+    /* Do NOT add white-space:pre-wrap here — it breaks indentation */
+  }
+
+  /* Plain text and list items: wrap aggressively */
+  .message-ai p,
+  .message-ai li,
+  .message-ai h1,
+  .message-ai h2,
+  .message-ai h3,
+  .message-ai h4 {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  /* Inline code wraps */
+  .message-ai p code,
+  .message-ai li code {
+    word-break: break-word;
+    white-space: pre-wrap;
+  }
+
+  /* Markdown tables: the wrapper div already has overflow-x:auto.
+     Force the table to be at most as wide as the viewport so the
+     container can scroll it. */
+  .message-ai table {
+    max-width: 100%;
+    width: max-content;
+  }
+
+  /* Canvas pane inner document: same containment */
+  .canvas-pane .k-heading,
+  .canvas-pane p,
+  .canvas-pane li {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .canvas-pane table {
+    max-width: 100%;
+  }
+
+  .canvas-pane pre {
+    max-width: 100% !important;
+    overflow-x: auto;
+  }
+
+  /* Images (uploaded thumbs + python sandbox charts) */
+  .message-ai img,
+  .message-user img {
+    max-width: 100%;
+    height: auto;
+  }
+
+  /* Tool result cards — clamp width and let internal content scroll */
+  .message-ai .rounded-2xl,
+  .message-ai .rounded-xl {
+    max-width: 100%;
+  }
+
+  /* ── Dashboard layout ── */
+  .dashboard-sidebar {
+    position: fixed;
+    left: -100%;
+    top: 0;
+    z-index: 50;
+    width: 260px !important;
+    min-width: 260px !important;
+    height: 100vh;
+    transition: left 0.25s ease;
+    box-shadow: 4px 0 24px rgba(0,0,0,0.15);
+  }
+
+  .dashboard-sidebar.open {
+    left: 0;
+  }
+
+  .dashboard-content {
+    width: 100%;
+    overflow-x: hidden;
+  }
+}
+
+/* Sidebar collapsed state */
+.chat-layout.sidebar-collapsed .chat-sidebar {
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
+  border: none;
+}
+
+/* Animations */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.25s ease forwards;
+}
+

@@ -1,0 +1,287 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@400,500,700,800&display=swap');
+
+@layer base {
+  :root {
+    --background: 210 11% 97%;
+    --foreground: 0 0% 4%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 4%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 4%;
+    --primary: 220 100% 50%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 213 27% 95%;
+    --secondary-foreground: 0 0% 9%;
+    --muted: 210 20% 95%;
+    --muted-foreground: 240 4% 46%;
+    --accent: 213 27% 95%;
+    --accent-foreground: 0 0% 9%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 0% / 0.10;
+    --input: 0 0% 0% / 0.10;
+    --ring: 220 100% 50%;
+    --chart-1: 220 70% 50%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+    --radius: 0.375rem;
+    --k-brand: #0052FF;
+    --k-brand-hover: #2563EB;
+    --k-yellow: #F59E0B;
+    --k-green: #10B981;
+    --k-surface: #FFFFFF;
+    --k-surface-elevated: #F1F5F9;
+    --k-bg: #F8F9FA;
+    --k-text: #0A0A0A;
+    --k-text-secondary: #52525B;
+    --k-border: rgba(0, 0, 0, 0.10);
+  }
+
+  .dark {
+    --background: 0 0% 4%;
+    --foreground: 0 0% 98%;
+    --card: 0 0% 7%;
+    --card-foreground: 0 0% 98%;
+    --popover: 0 0% 7%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 220 100% 50%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 11%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 11%;
+    --muted-foreground: 240 5% 65%;
+    --accent: 0 0% 11%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 63% 31%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 100% / 0.10;
+    --input: 0 0% 100% / 0.10;
+    --ring: 220 100% 50%;
+    --chart-1: 220 70% 50%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+    --k-brand: #0052FF;
+    --k-brand-hover: #2563EB;
+    --k-yellow: #F59E0B;
+    --k-green: #10B981;
+    --k-surface: #121212;
+    --k-surface-elevated: #1A1A1A;
+    --k-bg: #0A0A0A;
+    --k-text: #FFFFFF;
+    --k-text-secondary: #A1A1AA;
+    --k-border: rgba(255, 255, 255, 0.10);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'IBM Plex Sans', sans-serif;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Cabinet Grotesk', sans-serif;
+  }
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+@layer base {
+  [data-debug-wrapper="true"] {
+    display: contents !important;
+  }
+  [data-debug-wrapper="true"] > * {
+    margin-left: inherit;
+    margin-right: inherit;
+    margin-top: inherit;
+    margin-bottom: inherit;
+    padding-left: inherit;
+    padding-right: inherit;
+    padding-top: inherit;
+    padding-bottom: inherit;
+    column-gap: inherit;
+    row-gap: inherit;
+    gap: inherit;
+    border-left-width: inherit;
+    border-right-width: inherit;
+    border-top-width: inherit;
+    border-bottom-width: inherit;
+    border-left-style: inherit;
+    border-right-style: inherit;
+    border-top-style: inherit;
+    border-bottom-style: inherit;
+    border-left-color: inherit;
+    border-right-color: inherit;
+    border-top-color: inherit;
+    border-bottom-color: inherit;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--k-border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--k-text-secondary);
+}
+
+/* Thinking animation */
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+.thinking-pulse {
+  animation: thinking-pulse 1.5s ease-in-out infinite;
+}
+
+/* Stagger animation */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-up {
+  animation: fade-up 0.4s ease-out forwards;
+}
+
+/* Typing cursor */
+@keyframes blink-cursor {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.typing-cursor::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background: var(--k-brand);
+  margin-left: 2px;
+  animation: blink-cursor 0.8s ease-in-out infinite;
+  vertical-align: text-bottom;
+}
+
+/* Stream animation */
+@keyframes stream-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.stream-word {
+  animation: stream-in 0.15s ease-out forwards;
+}
+
+/* Mobile Overlays */
+@media (max-width: 768px) {
+  .chat-sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform 0.3s ease-in-out;
+  }
+  
+  .chat-sidebar.open {
+    transform: translateX(0);
+  }
+
+  .sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(4px);
+    z-index: 40;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+  }
+
+  .sidebar-overlay.active {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .chat-main {
+    width: 100% !important;
+  }
+
+  .canvas-pane {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+  }
+}
+
+/* Glassmorphism effects */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.dark .glass-panel {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Force dark theme on native select/option/optgroup dropdowns.
+   These elements ignore most CSS by default and render with the
+   OS-level grey/white style — jarring on a dark UI. */
+select {
+  color-scheme: dark;
+}
+select,
+select option,
+select optgroup {
+  background-color: var(--k-surface-elevated);
+  color: var(--k-text);
+}
+select optgroup {
+  font-weight: 700;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--k-text-secondary);
+  padding: 8px 0 4px;
+}
+select option {
+  padding: 6px 12px;
+  font-weight: 400;
+}
+select option:checked {
+  background-color: var(--k-brand);
+  color: #fff;
+}
+/* Light mode overrides (only when .dark is NOT present) */
+:root:not(.dark) select {
+  color-scheme: light;
+}
+:root:not(.dark) select,
+:root:not(.dark) select option,
+:root:not(.dark) select optgroup {
+  background-color: #fff;
+  color: var(--k-text);
+}
+:root:not(.dark) select option:checked {
+  background-color: var(--k-brand);
+  color: #fff;
+}
