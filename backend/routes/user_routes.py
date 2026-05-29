@@ -25,22 +25,47 @@ def welcome_check():
     if not token_data:
         return jsonify({"error": "Unauthorized"}), 401
     uid = token_data.get('uid')
-    email = token_data.get('email')
+    email = token_data.get('email', '')
     name = token_data.get('name') or ''
-    if not uid or not email or not db:
+    if not uid or not db:
         return jsonify({"welcomed": False, "skipped": True})
     try:
         ref = db.collection('users').document(uid)
         snap = ref.get()
-        already = bool(snap.exists and (snap.to_dict() or {}).get('welcomed_at'))
+        existing = snap.to_dict() or {} if snap.exists else {}
+        already = bool(existing.get('welcomed_at'))
         if already:
+            # Still update last_seen so miss-you scheduler has fresh data
+            ref.set({'last_seen_at': firestore.SERVER_TIMESTAMP}, merge=True)
             return jsonify({"welcomed": False, "already": True})
+
+        # Fallback: if token didn't carry email, try the Firestore record
+        if not email:
+            email = existing.get('email', '')
+        # Last resort: try Firebase Admin Auth record
+        if not email:
+            try:
+                from firebase_admin import auth as _fa
+                user_record = _fa.get_user(uid)
+                email = user_record.email or ''
+                if not name:
+                    name = user_record.display_name or ''
+            except Exception:
+                pass
+
         ref.set({
             'uid': uid, 'email': email, 'name': name,
             'welcomed_at': firestore.SERVER_TIMESTAMP,
             'first_seen_at': firestore.SERVER_TIMESTAMP,
+            'last_seen_at': firestore.SERVER_TIMESTAMP,
         }, merge=True)
-        send_welcome_email(email, name)
+
+        if email:
+            send_welcome_email(email, name)
+            print(f"[welcome-check] sent welcome to {email}")
+        else:
+            print(f"[welcome-check] uid={uid} — no email found, skipping send")
+
         return jsonify({"welcomed": True})
     except Exception as e:
         print(f"[welcome-check] failed: {e}")

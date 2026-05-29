@@ -44,9 +44,19 @@ def verify_firebase_token():
         decoded = firebase_auth.verify_id_token(token)
         print(f"[AUTH] ✅ Firebase token verified for UID: {decoded.get('uid')}")
         fd = decoded.get('firebase', {})
+        # Google sign-in sometimes puts email only inside
+        # firebase.identities['google.com'][0] — fall through all sources
+        # so welcome-check and email sends never silently skip.
+        email = decoded.get('email')
+        if not email:
+            identities = fd.get('identities', {})
+            for provider_emails in identities.values():
+                if isinstance(provider_emails, list) and provider_emails:
+                    email = provider_emails[0]
+                    break
         return {
             "uid": decoded.get('uid'),
-            "email": decoded.get('email'),
+            "email": email,
             "name": decoded.get('name') or decoded.get('display_name'),
             "picture": decoded.get('picture'),
             "provider": fd.get('sign_in_provider', 'unknown'),

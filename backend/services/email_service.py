@@ -192,6 +192,31 @@ def _send_async(to_email: str, subject: str, html_body: str):
     t.start()
 
 
+def _miss_you_html(name: str) -> str:
+    first = (name or "there").split(" ")[0]
+    inner = f"""
+    <div class="header">
+      <span class="brand">Kautilya AI</span>
+      <h1>We miss you, {first} 👋</h1>
+      <p class="sub">It's been a couple of days — your AI workspace is waiting for you.</p>
+    </div>
+    <div class="body">
+      <p>You left some interesting conversations unfinished. Come back and let Kautilya help you with whatever's on your plate today:</p>
+      <ul class="features">
+        <li>Ask <strong>Kautilya Pro</strong> to reason through a hard problem</li>
+        <li>Build or tweak a <strong>voice agent</strong> for your team</li>
+        <li>Run <strong>deep research</strong> on a market or competitor</li>
+        <li>Generate a report, deck, or doc in seconds</li>
+      </ul>
+      <a href="{APP_URL}" class="cta">Jump back in →</a>
+      <p style="font-size:13px;color:#8b949e;margin-top:24px;">
+        You're on the <span class="accent">Free tier</span> — 30 chats/day, no credit card needed.
+        Upgrade to Pro for unlimited access.
+      </p>
+    </div>"""
+    return _shell("Kautilya misses you 👋", f"Hey {first}, come back — your AI workspace is waiting.", inner)
+
+
 # ---------- Public API ----------
 def send_welcome_email(email: str, name: str = ""):
     if not email: return
@@ -206,3 +231,8 @@ def send_pro_upgraded_email(email: str, name: str = ""):
 def send_pro_demoted_email(email: str, name: str = ""):
     if not email: return
     _send_async(email, "Your Kautilya Pro plan has ended", _pro_demoted_html(name))
+
+
+def send_miss_you_email(email: str, name: str = ""):
+    if not email: return
+    _send_async(email, "We miss you at Kautilya AI 👋", _miss_you_html(name))
