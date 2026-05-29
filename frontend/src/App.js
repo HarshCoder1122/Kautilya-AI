@@ -5,6 +5,7 @@ import { getAuthInstance } from "./lib/firebase.js";
 import { onAuthStateChanged, getRedirectResult } from "firebase/auth";
 
 import InstallPWA from "./components/shared/InstallPWA";
+import { getAuthHeaders } from "./lib/api";
 
 // Lazy load route components
 const ChatPage = lazy(() => import("./pages/ChatPage"));
@@ -23,10 +24,9 @@ function ConsentModal({ user, onDone }) {
     setSubmitting(true);
     setError(null);
     try {
-      const token = localStorage.getItem('firebase_token');
       const resp = await fetch('/api/user/consent', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ age_confirmed: true, marketing_opt_in: marketing }),
       });
       if (!resp.ok) throw new Error('Failed to save consent');

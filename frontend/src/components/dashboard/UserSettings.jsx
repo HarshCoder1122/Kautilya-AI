@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { User, Key, Bell, Shield, Palette, CaretRight, CheckCircle, Warning, GoogleLogo, Crown, Database, Trash, Eye, EnvelopeSimple } from "@phosphor-icons/react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { billingAPI, userAPI } from "../../lib/api";
+import { billingAPI, userAPI, getAuthHeaders } from "../../lib/api";
 import ApiKeySettings from "./ApiKeySettings";
 
 export default function UserSettings({ user }) {
@@ -83,8 +83,7 @@ export default function UserSettings({ user }) {
     if (myData || myDataLoading) return;
     setMyDataLoading(true);
     try {
-      const token = localStorage.getItem('firebase_token');
-      const resp = await fetch('/api/user/my-data', { headers: { Authorization: `Bearer ${token}` } });
+      const resp = await fetch('/api/user/my-data', { headers: { ...getAuthHeaders() } });
       const data = await resp.json();
       setMyData(data);
     } catch { setMyData(null); } finally { setMyDataLoading(false); }
@@ -93,8 +92,7 @@ export default function UserSettings({ user }) {
   const handleUnsubscribe = async () => {
     setUnsubStatus('saving');
     try {
-      const token = localStorage.getItem('firebase_token');
-      await fetch('/api/user/unsubscribe', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+      await fetch('/api/user/unsubscribe', { method: 'POST', headers: { ...getAuthHeaders() } });
       setUnsubStatus('done');
       setMyData(prev => prev ? { ...prev, consent: { ...prev.consent, marketing_opt_in: false } } : prev);
     } catch { setUnsubStatus('error'); }
@@ -103,10 +101,9 @@ export default function UserSettings({ user }) {
   const handleDeleteRequest = async () => {
     setDeletionState('submitting');
     try {
-      const token = localStorage.getItem('firebase_token');
       await fetch('/api/user/data-deletion', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ reason: deletionReason }),
       });
       setDeletionState('done');
