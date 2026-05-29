@@ -8,6 +8,13 @@ const API_BASE_URL = /(^|\.)revealiq\.in$/i.test(_hn)
   ? window.location.origin
   : (process.env.REACT_APP_API_URL || (_hn === 'localhost' ? 'http://localhost:5000' : window.location.origin));
 
+// Pre-warm: kick off the livekit-client dynamic import as soon as this
+// module loads (i.e. when the chat page renders), not when the user taps
+// the Live button. The import() resolves in ~200-400ms on a cold cache —
+// doing it eagerly hides that latency behind normal page activity.
+// The promise is module-scoped so it's shared across mounts.
+const _livekitImportPromise = import('livekit-client').catch(() => null);
+
 const STATES = {
   IDLE: 'idle',
   CONNECTING: 'connecting',
@@ -102,13 +109,20 @@ export function LiveKitVoice({ onClose, agentId }) {
 
     async function connect() {
       try {
-        // 1. Fetch token from backend
-        const resp = await fetch(`${API_BASE_URL}/api/livekit/token`, {
-          method: 'POST',
-          headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agentId: agentId || '', participantName: 'Kautilya User' }),
-        });
+        // 1 + 2 in parallel: token fetch and livekit-client import have no
+        // dependency on each other. On a warm cache the import resolves in
+        // <5ms; on a cold cache it runs concurrently with the network round-
+        // trip so users see no extra wait.
+        const [resp, LiveKitModule] = await Promise.all([
+          fetch(`${API_BASE_URL}/api/livekit/token`, {
+            method: 'POST',
+            headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agentId: agentId || '', participantName: 'Kautilya User' }),
+          }),
+          _livekitImportPromise,
+        ]);
 
+        if (!LiveKitModule) throw new Error('LiveKit client not installed. Run: yarn add livekit-client');
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
           throw new Error(err.error || `Token request failed (${resp.status})`);
@@ -116,14 +130,6 @@ export function LiveKitVoice({ onClose, agentId }) {
 
         const { token, wsUrl } = await resp.json();
         if (!token || !wsUrl) throw new Error('Invalid token response from server');
-
-        // 2. Dynamically import livekit-client (lazy so bundle is unaffected if not used)
-        let LiveKitModule;
-        try {
-          LiveKitModule = await import('livekit-client');
-        } catch (_) {
-          throw new Error('LiveKit client not installed. Run: yarn add livekit-client');
-        }
 
         const { Room, RoomEvent, Track, createLocalAudioTrack, ConnectionQuality } = LiveKitModule;
 

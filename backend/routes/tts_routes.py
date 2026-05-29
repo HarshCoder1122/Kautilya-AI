@@ -47,11 +47,8 @@ def reveal_iq_stream():
             return jsonify({"error": "text is required"}), 400
         raw_model = data.get('model', 'swara-en')
         model = 'kokoro-hi' if 'hi' in raw_model.lower() else 'kokoro-en'
-        voice = data.get('voice', 'af_nicole')
+        voice = data.get('voice', 'af_bella')
         speed = data.get('speed', 1.0)
-
-        # Record usage
-        record_usage(uid, 'tts_chars', len(text), model)
 
         hf_token = os.environ.get('REVEALIQ_HF_TOKEN') or os.environ.get('HF_TOKEN')
         url = f'{REVEALIQ_BASE}/v1/audio/stream'
@@ -60,7 +57,7 @@ def reveal_iq_stream():
         if hf_token:
             headers['Authorization'] = f'Bearer {hf_token}'
 
-        print(f"[TTS Stream] POST {url} | model={model} voice={voice} has_token={bool(hf_token)} token_prefix={str(hf_token)[:8] if hf_token else 'NONE'}...", flush=True)
+        print(f"[TTS Stream] POST {url} | model={model} voice={voice}", flush=True)
 
         payload = {
             'model': model,
@@ -78,9 +75,15 @@ def reveal_iq_stream():
             print(f"[TTS Stream] RevealIQ FAILED {resp.status_code}: {resp.text[:300]}", flush=True)
             return jsonify({"error": f"Streaming failed ({resp.status_code}): {resp.text[:200]}"}), 502
 
+        # Record usage AFTER confirming the upstream accepted the request —
+        # moved out of the critical path so Firestore write doesn't add
+        # latency before the first audio byte ships to the client.
+        import threading as _th
+        _th.Thread(target=record_usage, args=(uid, 'tts_chars', len(text), model), daemon=True).start()
+
         from flask import Response
         def generate():
-            for chunk in resp.iter_content(chunk_size=2048):  # smaller = lower latency
+            for chunk in resp.iter_content(chunk_size=1024):  # 1KB chunks = lower TTFB
                 if chunk:
                     yield chunk
 
@@ -118,7 +121,7 @@ def reveal_iq_synthesize():
         raw_model = data.get('model', 'swara-en')
         model = 'kokoro-hi' if 'hi' in raw_model.lower() else 'kokoro-en'
             
-        voice = data.get('voice', 'af_heart')
+        voice = data.get('voice', 'af_bella')
         speed = data.get('speed', 1.0)
         
         if not text:

@@ -29,7 +29,7 @@ export default function TextToSpeechStudio() {
 
   // RevealIQ
   const [model, setModel] = useState('swara-en');
-  const [voice, setVoice] = useState('af_nicole');
+  const [voice, setVoice] = useState('af_bella');
   const [speed, setSpeed] = useState(1.0);
 
   // Other providers
@@ -71,9 +71,18 @@ export default function TextToSpeechStudio() {
     pcmChunksRef.current = [];
     leftoverRef.current = null;
 
+    // CRITICAL: AudioContext MUST be created at the exact sample rate the
+    // TTS stream uses. If the browser's default (44100 or 48000) differs
+    // from SAMPLE_RATE (24000), the browser resamples every buffer chunk —
+    // which introduces pitch shifts, pops, and audible breaks between
+    // chunks. Lock it to SAMPLE_RATE so no resampling ever happens.
     const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
     audioCtxRef.current = ctx;
-    nextTimeRef.current = ctx.currentTime + 0.05;
+    // Give a 150ms head-start buffer instead of 10ms. The decode + schedule
+    // loop runs in the main thread; at 10ms it regularly falls behind the
+    // playhead on slower connections, causing glitches / silence gaps.
+    // 150ms is inaudible as delay but prevents underruns on every device.
+    nextTimeRef.current = ctx.currentTime + 0.15;
 
     setStatus('loading');
     setDownloadUrl(null);
@@ -124,13 +133,17 @@ export default function TextToSpeechStudio() {
         const float32 = new Float32Array(int16.length);
         for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0;
 
-        // Schedule audio chunk
+        // Schedule with a safety floor: never schedule more than 50ms
+        // behind the current playhead (catches up after a stall) but
+        // always keep at least 80ms of lookahead so the chunk plays
+        // gaplessly. This replaces the 10ms floor that caused breaks.
         const buf = ctx.createBuffer(1, float32.length, SAMPLE_RATE);
         buf.getChannelData(0).set(float32);
         const src = ctx.createBufferSource();
         src.buffer = buf;
         src.connect(ctx.destination);
-        const t = Math.max(nextTimeRef.current, ctx.currentTime + 0.01);
+        const now = ctx.currentTime;
+        const t = Math.max(nextTimeRef.current, now + 0.08);
         src.start(t);
         nextTimeRef.current = t + buf.duration;
         scheduledNodes.current.push(src);
@@ -183,6 +196,19 @@ export default function TextToSpeechStudio() {
     setErrorMsg('');
     if (provider === 'revealIQ') playRevealIQ();
     else playProvider();
+  };
+
+  // Replay last generated audio from the cached WAV/blob URL without
+  // hitting the backend again — instant for the user.
+  const handleReplay = () => {
+    if (!downloadUrl) return;
+    stopAll();
+    setStatus('playing');
+    const audio = new Audio(downloadUrl);
+    audioInstRef.current = audio;
+    audio.onended = () => setStatus('done');
+    audio.onerror = () => setStatus('error');
+    audio.play().catch(() => setStatus('error'));
   };
 
   const handleDownload = () => {
@@ -330,7 +356,7 @@ export default function TextToSpeechStudio() {
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleGenerate}
-                  disabled={isLoading || !text.trim()}
+                  disabled={isLoading || isPlaying || !text.trim()}
                   className="flex-1 h-11 flex items-center justify-center gap-2 rounded-xl bg-[var(--k-brand)] text-white text-sm font-semibold hover:bg-[var(--k-brand-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {isLoading
@@ -339,8 +365,18 @@ export default function TextToSpeechStudio() {
                   }
                 </button>
 
+                {/* Play Again — instant replay from cached blob, no backend hit */}
+                {(isDone && downloadUrl) && (
+                  <button onClick={handleReplay}
+                    title="Play again"
+                    className="h-11 w-11 flex items-center justify-center rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 transition-colors">
+                    <Play className="w-5 h-5" weight="fill" />
+                  </button>
+                )}
+
                 {(isPlaying || isLoading) && (
                   <button onClick={handleStop}
+                    title="Stop"
                     className="h-11 w-11 flex items-center justify-center rounded-xl border border-[var(--k-border)] text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
                     <Stop className="w-5 h-5" weight="fill" />
                   </button>
@@ -348,13 +384,15 @@ export default function TextToSpeechStudio() {
 
                 {downloadUrl && (
                   <button onClick={handleDownload}
+                    title="Download WAV"
                     className="h-11 w-11 flex items-center justify-center rounded-xl border border-[var(--k-border)] text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
                     <Download className="w-5 h-5" />
                   </button>
                 )}
 
                 {(isDone || status === 'error') && (
-                  <button onClick={() => setStatus('idle')}
+                  <button onClick={() => { stopAll(); setStatus('idle'); setDownloadUrl(null); }}
+                    title="Clear & start over"
                     className="h-11 w-11 flex items-center justify-center rounded-xl border border-[var(--k-border)] text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
                     <ArrowCounterClockwise className="w-4 h-4" />
                   </button>

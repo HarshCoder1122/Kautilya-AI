@@ -528,7 +528,7 @@ export const analyticsAPI = {
 export const ttsAPI = {
   // RevealIQ TTS - calls backend endpoint (backend uses ENV keys)
   revealIQ: {
-    synthesize: async (text, model = 'kokoro-en', voice = 'af_heart', speed = 1.0) => {
+    synthesize: async (text, model = 'kokoro-en', voice = 'af_bella', speed = 1.0) => {
       const response = await api.post('/api/tts/revealiq/synthesize', {
         text,
         model,
@@ -540,7 +540,7 @@ export const ttsAPI = {
       return response.data;
     },
 
-    stream: async (text, model = 'kokoro-en', voice = 'af_heart', speed = 1.0) => {
+    stream: async (text, model = 'kokoro-en', voice = 'af_bella', speed = 1.0) => {
       const baseUrl = API_BASE_URL.replace(/\/+$/, '');
       const response = await fetch(`${baseUrl}/api/tts/revealiq/stream`, {
         method: 'POST',
