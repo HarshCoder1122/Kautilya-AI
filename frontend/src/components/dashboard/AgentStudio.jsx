@@ -691,9 +691,10 @@ function AgentDetail({ agent, onClose, onUpdate }) {
                   }}
                   className="w-full px-3 py-2.5 text-sm bg-[var(--k-surface-elevated)] border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none"
                 >
-                  <option value="kautilya-daily">Kautilya Daily (Llama 3.3)</option>
-                  <option value="kautilya-pro">Kautilya Pro (Nemotron-3)</option>
-                  <option value="coder">DeepSeek-V4 (Logic Heavy)</option>
+                  <option value="kautilya-fast">Kautilya Fast (Ultra-low latency)</option>
+                  <option value="kautilya-daily">Kautilya Daily (Fast · General)</option>
+                  <option value="kautilya-pro">Kautilya Pro (Deep Reasoning)</option>
+                  <option value="coder">Kautilya Coder (Code Heavy)</option>
                   <option value="gemini-live">Gemini Live (Multimodal)</option>
                 </select>
               </div>
@@ -1138,9 +1139,10 @@ function CreateAgentForm({ onClose, onSuccess }) {
             }}
             className="w-full px-4 py-3 text-sm bg-accent/20 border border-[var(--k-border)] rounded-xl text-foreground"
           >
-            <option value="kautilya-daily">Daily (Llama 3.3)</option>
-            <option value="kautilya-pro">Pro (Nemotron-3)</option>
-            <option value="coder">Coder (DeepSeek)</option>
+            <option value="kautilya-fast">Fast (Ultra-low latency)</option>
+            <option value="kautilya-daily">Daily (Fast · General)</option>
+            <option value="kautilya-pro">Pro (Deep Reasoning)</option>
+            <option value="coder">Coder (Code Heavy)</option>
             <option value="gemini-live">Gemini Live (Multimodal)</option>
           </select>
         </div>

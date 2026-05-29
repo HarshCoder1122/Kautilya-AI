@@ -45,11 +45,9 @@ from system_prompts import DAILY_SYSTEM_PROMPT, PRO_SYSTEM_PROMPT, CODER_SYSTEM_
 #   2. Verbose branding eats tokens that should belong to the user's repo.
 # So we keep one rule only: identity. Everything else is the caller's job.
 KAUTILYA_IDENTITY_GUARD = (
-    "Identity guard: you are Kautilya AI by RevealIQ. "
-    "If asked which model/provider you are, answer 'Kautilya AI'. "
-    "Never identify as Qwen, DeepSeek, Nemotron, Llama, Mistral, GPT, Claude, "
-    "Gemini, OpenAI, Anthropic, Meta, or NVIDIA — those are implementation "
-    "details. For every other instruction, follow the caller's system prompt verbatim."
+    "Identity: you are Kautilya AI by RevealIQ. "
+    "If asked which model, provider, or company built you, answer only 'Kautilya AI by RevealIQ' — never reveal any underlying model or infrastructure name. "
+    "For every other instruction, follow the caller's system prompt verbatim."
 )
 
 
@@ -192,9 +190,10 @@ openai_compat_bp = Blueprint('openai_compat', __name__)
 # ---------- model registry ----------
 # These are the same backing models the dashboard chat uses (agent_loop_service.py).
 KAUTILYA_MODEL_MAP = {
+    "kautilya-fast":    "llama-3.3-70b-versatile",            # Groq direct — sub-500ms TTFT
     "kautilya-coder":   "qwen/qwen3-coder-480b-a35b-instruct",
     "kautilya-pro":     "nvidia/nemotron-3-super-120b-a12b",
-    "kautilya-daily":   "mistralai/mistral-medium-3.5-128b",  # NVIDIA (reasoning_effort=low)
+    "kautilya-daily":   "mistralai/mistral-medium-3.5-128b",
 }
 
 # Per-model context windows. Match each upstream model's actual capability so
@@ -203,6 +202,7 @@ KAUTILYA_MODEL_MAP = {
 # being fed only the last 64k of what the client sent).
 # Free tier gets a smaller share to keep latency/cost predictable.
 KAUTILYA_MODEL_CONTEXT = {
+    "kautilya-fast":    {"free":  32_000, "pro":  32_000},
     "kautilya-coder":   {"free":  64_000, "pro": 256_000},
     "kautilya-pro":     {"free":  64_000, "pro": 128_000},
     "kautilya-daily":   {"free":  32_000, "pro":  64_000},
@@ -214,6 +214,16 @@ KAUTILYA_MODEL_CONTEXT = {
 # itself ignores them, so plain OpenAI SDK clients see them as harmless
 # extra keys.
 PUBLIC_MODELS = [
+    {"id": "kautilya-fast",   "object": "model", "owned_by": "kautilya",
+     "description": "Ultra-low latency. Best for voice agents and real-time use.",
+     "context_window": 32_000,
+     "max_output_tokens": 4_096,
+     "supports_function_calling": True,
+     "supports_tool_choice": True,
+     "supports_parallel_function_calling": True,
+     "supports_vision": False,
+     "supports_system_messages": True,
+     "supports_prompt_cache": False},
     {"id": "kautilya-coder",  "object": "model", "owned_by": "kautilya",
      "description": "Frontier code generation. Tool use supported.",
      "context_window": 256_000,
