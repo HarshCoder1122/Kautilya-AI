@@ -365,7 +365,7 @@ def jarvis_stream():
         _t("setup-firestore-reads", _t_setup)
 
         if model == 'coder':
-            sys_prompt = build_cli_system_prompt(CODER_SYSTEM_PROMPT)
+            sys_prompt = build_personalized_prompt(CODER_SYSTEM_PROMPT, user_name, user_memories, user_email, settings, uid=uid)
         elif model == 'pro':
             sys_prompt = build_personalized_prompt(PRO_SYSTEM_PROMPT, user_name, user_memories, user_email, settings, uid=uid)
         elif model == 'research':
