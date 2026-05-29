@@ -757,7 +757,12 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
         setTimeout(() => onStreamComplete(), 800);
       }
     } catch (error) {
-      updateAssistant({ streaming: false });
+      // updateAssistant is defined inside the try block so not in scope here.
+      // Directly clear streaming flag on any in-flight assistant message.
+      setMessages(prev => prev.map(msg =>
+        msg.streaming ? { ...msg, streaming: false } : msg
+      ));
+
       if (error.name === 'AbortError') {
         console.log('Stream aborted by user');
         setIsThinking(false);
