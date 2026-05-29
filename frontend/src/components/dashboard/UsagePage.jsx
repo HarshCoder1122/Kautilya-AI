@@ -135,11 +135,11 @@ export default function UsagePage() {
   return (
     <div className="h-full" data-testid="usage-page">
       {/* Header */}
-      <div className="px-8 py-6 border-b border-[var(--k-border)]">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-medium k-heading tracking-tight text-foreground">Usage Dashboard</h1>
-            <p className="text-sm text-muted-foreground mt-1">Track your API usage and token consumption per day</p>
+      <div className="px-4 py-4 sm:px-8 sm:py-6 border-b border-[var(--k-border)]">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-xl sm:text-2xl font-medium k-heading tracking-tight text-foreground">Usage Dashboard</h1>
+            <p className="text-xs sm:text-sm text-muted-foreground mt-1">Track your API usage and token consumption per day</p>
           </div>
           <button 
             onClick={loadUsageData}
@@ -159,7 +159,7 @@ export default function UsagePage() {
             Loading usage statistics...
           </div>
         ) : (
-          <div className="px-8 py-6 space-y-6">
+          <div className="px-4 py-4 sm:px-8 sm:py-6 space-y-6">
             {/* Simulated Data Banner */}
             {usageData?.is_simulated && (
               <div className="flex items-start gap-3 p-4 rounded-xl border border-amber-500/20 bg-amber-500/10 text-amber-200 text-xs">
@@ -269,7 +269,7 @@ export default function UsagePage() {
             </div>
 
             {/* Quick Stats Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 p-5 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)]">
+            <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-4 p-5 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)]">
               <div className="space-y-1">
                 <div className="text-xs text-muted-foreground uppercase font-semibold tracking-wider">Today's Call Requests</div>
                 <div className="text-xl font-medium text-foreground">{fmt(usageData?.daily_calls)}</div>
@@ -312,25 +312,37 @@ export default function UsagePage() {
                 </div>
               </div>
 
-              <div className="overflow-x-auto rounded-lg border border-[var(--k-border)] bg-[var(--k-surface-elevated)]/30">
-                <table className="w-full text-left border-collapse">
+              <div className="overflow-x-auto rounded-lg border border-[var(--k-border)] bg-[var(--k-surface-elevated)]/30 -mx-0">
+                <table className="min-w-full text-left border-collapse">
                   <thead>
                     <tr className="border-b border-[var(--k-border)] bg-[var(--k-surface-elevated)]/50 text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
-                      <th className="px-5 py-3">Date</th>
-                      <th className="px-5 py-3 text-right">LLM Tokens</th>
-                      <th className="px-5 py-3 text-right">Voice Calls</th>
-                      <th className="px-5 py-3 text-right">TTS Characters</th>
-                      <th className="px-5 py-3 text-right">Developer API Calls</th>
+                      <th className="px-3 sm:px-5 py-3 whitespace-nowrap">Date</th>
+                      <th className="px-3 sm:px-5 py-3 text-right whitespace-nowrap">
+                        <span className="hidden sm:inline">LLM Tokens</span>
+                        <span className="sm:hidden">Tokens</span>
+                      </th>
+                      <th className="px-3 sm:px-5 py-3 text-right whitespace-nowrap">
+                        <span className="hidden sm:inline">Voice Calls</span>
+                        <span className="sm:hidden">Voice</span>
+                      </th>
+                      <th className="px-3 sm:px-5 py-3 text-right whitespace-nowrap">
+                        <span className="hidden sm:inline">TTS Characters</span>
+                        <span className="sm:hidden">TTS</span>
+                      </th>
+                      <th className="px-3 sm:px-5 py-3 text-right whitespace-nowrap">
+                        <span className="hidden sm:inline">API Calls</span>
+                        <span className="sm:hidden">API</span>
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[var(--k-border)]/50 text-xs">
                     {filteredDailyUsage.map((row) => (
                       <tr key={row.date} className="hover:bg-muted/5 transition-colors">
-                        <td className="px-5 py-3 font-medium text-foreground">{formatDate(row.date)}</td>
-                        <td className="px-5 py-3 text-right font-mono text-muted-foreground">{fmt(row.tokens)}</td>
-                        <td className="px-5 py-3 text-right font-mono text-muted-foreground">{fmt(row.count)}</td>
-                        <td className="px-5 py-3 text-right font-mono text-muted-foreground">{fmt(row.tts_chars)}</td>
-                        <td className="px-5 py-3 text-right font-mono text-muted-foreground">{fmt(row.api_calls)}</td>
+                        <td className="px-3 sm:px-5 py-3 font-medium text-foreground whitespace-nowrap">{formatDate(row.date)}</td>
+                        <td className="px-3 sm:px-5 py-3 text-right font-mono text-muted-foreground">{fmt(row.tokens)}</td>
+                        <td className="px-3 sm:px-5 py-3 text-right font-mono text-muted-foreground">{fmt(row.count)}</td>
+                        <td className="px-3 sm:px-5 py-3 text-right font-mono text-muted-foreground">{fmt(row.tts_chars)}</td>
+                        <td className="px-3 sm:px-5 py-3 text-right font-mono text-muted-foreground">{fmt(row.api_calls)}</td>
                       </tr>
                     ))}
                     {filteredDailyUsage.length === 0 && (

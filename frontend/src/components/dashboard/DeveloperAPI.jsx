@@ -370,12 +370,11 @@ function CodeBlock({ code, language }) {
 
 export default function DeveloperAPI() {
   const [keys, setKeys] = useState([]);
-  const [activeKey, setActiveKey] = useState(null);
-  const [keyVisible, setKeyVisible] = useState(false);
+  const [activeKey, setActiveKey] = useState(null); // session-only: set once on creation, used to fill code snippets
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
-  const [showFullKeys, setShowFullKeys] = useState({});
+  const [showFullKeys, setShowFullKeys] = useState({}); // key_id → raw key, session-only
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
@@ -387,7 +386,8 @@ export default function DeveloperAPI() {
       setLoading(true);
       const data = await keysAPI.list();
       setKeys(data.keys || []);
-      setActiveKey(data.active_key || null);
+      // active_key is no longer returned by the server (security: keys are
+      // shown once at creation only). activeKey stays set from handleGenerate.
     } catch (e) {
       console.error(e);
       showToast("Failed to load keys");
@@ -402,8 +402,8 @@ export default function DeveloperAPI() {
       setGenerating(true);
       const result = await keysAPI.create({ name });
       setNewKeyName("");
-      showToast(`Key "${result.name}" created!`);
-      // Temporarily store the full key in state so it can be copied
+      showToast(`Key "${result.name}" created — copy it now, it won't be shown again!`);
+      // Store full key in local state only for this session (never persisted).
       setShowFullKeys(prev => ({ ...prev, [result.key_id]: result.key }));
       setActiveKey(result.key);
       await loadKeys();
@@ -431,12 +431,6 @@ export default function DeveloperAPI() {
     setTimeout(() => setToast(null), 4000);
   };
 
-  const maskedKey = activeKey
-    ? activeKey.slice(0, 10) + "•".repeat(Math.max(0, activeKey.length - 14)) + activeKey.slice(-4)
-    : null;
-
-  const displayedKey = keyVisible ? activeKey : maskedKey;
-
   const examplesWithKey = Object.fromEntries(
     Object.entries(EXAMPLES).map(([k, v]) => [
       k,
@@ -462,11 +456,11 @@ export default function DeveloperAPI() {
       )}
 
       <ScrollArea className="flex-1">
-        <div className="max-w-4xl mx-auto px-8 py-8 space-y-8">
+        <div className="max-w-4xl mx-auto px-4 py-6 sm:px-8 sm:py-8 space-y-8">
 
           {/* Page Header */}
           <div>
-            <div className="flex items-center gap-3 mb-3">
+            <div className="flex items-start gap-3 mb-3">
               <div className="w-10 h-10 rounded-xl bg-[var(--k-brand)] flex items-center justify-center">
                 <Terminal className="w-5 h-5 text-white" weight="bold" />
               </div>
@@ -487,26 +481,16 @@ export default function DeveloperAPI() {
 
           {/* API Key Management */}
           <div className="p-6 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] space-y-6">
-            <div className="flex items-center justify-between border-b border-[var(--k-border)] pb-4">
-              <div className="flex items-center gap-2">
-                <Key className="w-5 h-5 text-[var(--k-brand)]" />
-                <span className="text-base font-semibold text-foreground">API Key Management</span>
-              </div>
-              {activeKey && (
-                <button
-                  onClick={() => setKeyVisible(v => !v)}
-                  className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  {keyVisible ? <EyeSlash className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                  {keyVisible ? "Hide Active Key" : "Reveal Active Key"}
-                </button>
-              )}
+            <div className="flex items-center gap-2 border-b border-[var(--k-border)] pb-4">
+              <Key className="w-5 h-5 text-[var(--k-brand)]" />
+              <span className="text-base font-semibold text-foreground">API Key Management</span>
+              <span className="ml-auto text-[10px] text-muted-foreground">Keys are shown once at creation only</span>
             </div>
 
             {/* Create Key Form */}
             <div className="space-y-2">
               <label className="text-xs font-medium text-muted-foreground">Create a New API Key</label>
-              <div className="flex gap-2">
+              <div className="flex flex-col sm:flex-row gap-2">
                 <input
                   type="text"
                   placeholder="Key name (e.g., Cursor, Python Script, Server)"
@@ -517,7 +501,7 @@ export default function DeveloperAPI() {
                 <button
                   onClick={handleGenerate}
                   disabled={generating || !newKeyName.trim()}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--k-brand)] text-white text-xs font-semibold hover:opacity-90 transition-opacity disabled:opacity-40"
+                  className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--k-brand)] text-white text-xs font-semibold hover:opacity-90 transition-opacity disabled:opacity-40 sm:w-auto w-full"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   {generating ? "Creating..." : "Create Key"}
@@ -540,70 +524,53 @@ export default function DeveloperAPI() {
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {keys.map((k) => {
-                    const isSnippetKey = activeKey && k.preview && activeKey.endsWith(k.preview.replace('...', ''));
                     const hasFullKey = showFullKeys[k.key_id];
-                    
+
                     return (
                       <div key={k.key_hash} className="p-3.5 rounded-lg border border-[var(--k-border)] bg-[var(--k-surface-elevated)] flex flex-col gap-2 hover:border-[var(--k-brand)]/20 transition-colors">
                         <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2 overflow-hidden">
-                            <span className="text-xs font-semibold text-foreground truncate">{k.name}</span>
-                            {isSnippetKey && (
-                              <span className="px-1.5 py-0.5 rounded-full bg-[var(--k-brand)]/10 text-[var(--k-brand)] text-[8px] font-bold border border-[var(--k-brand)]/20 whitespace-nowrap">
-                                Snippet Active
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-1 flex-shrink-0">
-                            {isSnippetKey && (
-                              <button
-                                onClick={() => setKeyVisible(v => !v)}
-                                className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-                                title={keyVisible ? "Hide key" : "Reveal key"}
-                              >
-                                {keyVisible ? <EyeSlash className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                              </button>
-                            )}
-                            <button
-                              onClick={() => handleRevokeKey(k.key_hash)}
-                              className="p-1 rounded text-muted-foreground hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
-                              title="Revoke key"
-                            >
-                              <Trash className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
+                          <span className="text-xs font-semibold text-foreground truncate">{k.name}</span>
+                          <button
+                            onClick={() => handleRevokeKey(k.key_hash)}
+                            className="p-1 rounded text-muted-foreground hover:text-rose-400 hover:bg-rose-500/10 transition-colors flex-shrink-0"
+                            title="Revoke key"
+                          >
+                            <Trash className="w-3.5 h-3.5" />
+                          </button>
                         </div>
-                        
+
                         <div className="flex items-center gap-2">
                           <div className="flex-1 px-3 py-1.5 bg-[#0d1117] border border-[var(--k-border)] rounded-md font-mono text-xs text-foreground overflow-x-auto whitespace-nowrap">
-                            {hasFullKey ? hasFullKey : (isSnippetKey && keyVisible) ? activeKey : k.preview}
+                            {hasFullKey ? hasFullKey : k.preview}
                           </div>
                           <button
                             onClick={() => {
-                              const toCopy = hasFullKey || (isSnippetKey ? activeKey : null);
-                              if (toCopy) {
-                                navigator.clipboard.writeText(toCopy).catch(() => {});
+                              if (hasFullKey) {
+                                navigator.clipboard.writeText(hasFullKey).catch(() => {});
                                 showToast("API key copied!");
                               } else {
-                                showToast("Key can only be copied on generation");
+                                showToast("Key is only shown once at creation. Revoke and create a new one to get a fresh key.");
                               }
                             }}
-                            disabled={!hasFullKey && !isSnippetKey}
-                            className="px-2 py-1.5 rounded-md bg-[var(--k-brand)]/10 text-[var(--k-brand)] hover:bg-[var(--k-brand)]/20 disabled:opacity-30 disabled:pointer-events-none transition-colors text-[10px] font-medium flex items-center gap-1 flex-shrink-0"
-                            title="Copy Key"
+                            className={`px-2 py-1.5 rounded-md transition-colors text-[10px] font-medium flex items-center gap-1 flex-shrink-0 ${
+                              hasFullKey
+                                ? 'bg-[var(--k-brand)]/10 text-[var(--k-brand)] hover:bg-[var(--k-brand)]/20'
+                                : 'bg-accent/40 text-muted-foreground cursor-default'
+                            }`}
+                            title={hasFullKey ? "Copy Key" : "Key no longer retrievable — create a new one"}
                           >
                             <Copy className="w-3 h-3" />
-                            Copy
+                            {hasFullKey ? "Copy" : "Hidden"}
                           </button>
                         </div>
-                        
+
                         {hasFullKey && (
-                          <div className="text-[9px] text-green-400 font-medium flex items-center gap-1 mt-0.5">
-                            <Warning className="w-3 h-3 text-green-400 flex-shrink-0" />
-                            Copy key now! You will not see it again.
+                          <div className="text-[9px] text-amber-400 font-medium flex items-center gap-1 mt-0.5">
+                            <Warning className="w-3 h-3 flex-shrink-0" />
+                            Copy now — this key cannot be retrieved after you leave this page.
                           </div>
                         )}
-                        
+
                         <div className="text-[9px] text-muted-foreground flex justify-between mt-1">
                           <span>Created: {k.created_at ? new Date(k.created_at).toLocaleDateString() : "unknown"}</span>
                           {k.last_used && <span>Last used: {new Date(k.last_used).toLocaleDateString()}</span>}
@@ -678,19 +645,19 @@ export default function DeveloperAPI() {
             </div>
 
             <Tabs defaultValue="python">
-              <TabsList className="bg-[var(--k-surface)] border border-[var(--k-border)] h-9 p-1 gap-1 flex-wrap">
+              <TabsList className="bg-[var(--k-surface)] border border-[var(--k-border)] h-auto p-1 gap-1 flex-wrap">
                 {[
                   { id: "python", label: "Python" },
                   { id: "javascript", label: "Node.js" },
                   { id: "curl", label: "cURL" },
-                  { id: "cline", label: "Cline (VS Code)" },
+                  { id: "cline", label: "Cline" },
                   { id: "continue", label: "Continue" },
                   { id: "litellm", label: "LiteLLM" },
                 ].map(t => (
                   <TabsTrigger
                     key={t.id}
                     value={t.id}
-                    className="text-[10px] font-bold uppercase tracking-wider px-2.5 data-[state=active]:bg-[var(--k-brand)] data-[state=active]:text-white rounded"
+                    className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-1.5 data-[state=active]:bg-[var(--k-brand)] data-[state=active]:text-white rounded"
                   >
                     {t.label}
                   </TabsTrigger>
@@ -732,7 +699,7 @@ export default function DeveloperAPI() {
           {/* Quick Reference */}
           <div className="p-5 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] space-y-3">
             <span className="text-sm font-semibold text-foreground">Quick Reference</span>
-            <div className="grid grid-cols-2 gap-3 text-xs">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
               {[
                 { label: "Endpoint", value: `${V1_BASE}/chat/completions` },
                 { label: "Models list", value: `${V1_BASE}/models` },
@@ -883,15 +850,15 @@ export default function DeveloperAPI() {
 
             {/* TTS Code Tabs */}
             <Tabs defaultValue="python_tts">
-              <TabsList className="bg-[var(--k-surface)] border border-[var(--k-border)] h-9 p-1 gap-1 flex-wrap">
+              <TabsList className="bg-[var(--k-surface)] border border-[var(--k-border)] h-auto p-1 gap-1 flex-wrap">
                 {[
-                  { id: "python_tts", label: "Python (WAV)" },
-                  { id: "js_tts", label: "Node.js (WAV)" },
-                  { id: "curl_tts", label: "cURL (WAV)" },
-                  { id: "python_stream_tts", label: "Python Stream (PCM)" },
-                  { id: "js_stream_tts", label: "JS Stream (PCM)" },
+                  { id: "python_tts", label: "Python WAV" },
+                  { id: "js_tts", label: "Node WAV" },
+                  { id: "curl_tts", label: "cURL WAV" },
+                  { id: "python_stream_tts", label: "Python PCM" },
+                  { id: "js_stream_tts", label: "JS PCM" },
                 ].map(t => (
-                  <TabsTrigger key={t.id} value={t.id} className="text-[10px] font-bold uppercase tracking-wider px-2.5 data-[state=active]:bg-[var(--k-brand)] data-[state=active]:text-white rounded">
+                  <TabsTrigger key={t.id} value={t.id} className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-1.5 data-[state=active]:bg-[var(--k-brand)] data-[state=active]:text-white rounded">
                     {t.label}
                   </TabsTrigger>
                 ))}

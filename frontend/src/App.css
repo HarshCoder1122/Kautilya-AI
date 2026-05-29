@@ -40,11 +40,29 @@
 
 .canvas-pane {
   width: 45%;
-  min-width: 400px;
+  min-width: 380px;
+  max-width: 680px;
   border-left: 1px solid var(--k-border);
   background: var(--k-surface);
   height: 100vh;
   overflow: hidden;
+  /* Contain all child content so nothing escapes the pane width */
+  contain: layout;
+}
+
+/* Tablet: float the canvas over the chat as a fixed overlay so the
+   chat column never gets crushed below 300px */
+@media (max-width: 1024px) and (min-width: 769px) {
+  .canvas-pane {
+    position: fixed;
+    right: 0;
+    top: 0;
+    width: 75vw !important;
+    min-width: unset !important;
+    max-width: 520px;
+    z-index: 40;
+    box-shadow: -8px 0 32px rgba(0,0,0,0.18);
+  }
 }
 
 /* Message styles */
@@ -329,45 +347,77 @@
     z-index: 30;
   }
 
-  /* Prevent messages from overflowing viewport */
+  /* Hard cap: NOTHING inside a message or the canvas pane
+     may make the page wider than the viewport. */
   .message-user,
-  .message-ai {
-    max-width: 100%;
-  }
-
-  /* Long-line content (code blocks, command output) on mobile → wrap
-     rather than expand the bubble past the viewport. Unbroken tokens
-     (Google Doc IDs, leaked JSON strings, URLs) need overflow-wrap:anywhere
-     so a single 40-char token can't force the whole bubble wider. */
-  .message-ai pre,
-  .message-ai pre code,
-  .message-user pre {
-    max-width: 100%;
-    overflow-x: auto;
-    white-space: pre-wrap;
-    word-break: break-word;
-    overflow-wrap: anywhere;
-  }
-
-  /* Belt-and-suspenders: any descendant of a message bubble must respect
-     the viewport — long unbroken text in paragraphs/list items wraps too. */
   .message-ai,
-  .message-ai * {
-    overflow-wrap: anywhere;
+  .message-content,
+  .message-ai > * {
+    max-width: 100%;
+    min-width: 0;
   }
 
-  /* Inline code wraps instead of forcing horizontal scroll */
+  /* Code block container (the styled card with syntax highlighting):
+     overflow:hidden clips the inner SyntaxHighlighter pre so the card
+     itself never escapes viewport. The scrollable region is the inner
+     overflow-x:auto div so users can still pan the code. */
+  .message-ai [class*="group/code"],
+  .message-ai .group\/code {
+    max-width: 100% !important;
+    overflow: hidden !important;
+  }
+
+  /* SyntaxHighlighter pre — must NOT break the page width.
+     We keep white-space:pre (not pre-wrap) so indentation is preserved;
+     the parent overflow-x:auto div handles scrolling. */
+  .message-ai pre,
+  .message-user pre {
+    max-width: 100% !important;
+    overflow-x: auto;
+    /* Do NOT add white-space:pre-wrap here — it breaks indentation */
+  }
+
+  /* Plain text and list items: wrap aggressively */
+  .message-ai p,
+  .message-ai li,
+  .message-ai h1,
+  .message-ai h2,
+  .message-ai h3,
+  .message-ai h4 {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  /* Inline code wraps */
   .message-ai p code,
   .message-ai li code {
     word-break: break-word;
     white-space: pre-wrap;
   }
 
-  /* Markdown tables: scroll horizontally rather than blow out the page */
+  /* Markdown tables: the wrapper div already has overflow-x:auto.
+     Force the table to be at most as wide as the viewport so the
+     container can scroll it. */
   .message-ai table {
-    display: block;
-    overflow-x: auto;
     max-width: 100%;
+    width: max-content;
+  }
+
+  /* Canvas pane inner document: same containment */
+  .canvas-pane .k-heading,
+  .canvas-pane p,
+  .canvas-pane li {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .canvas-pane table {
+    max-width: 100%;
+  }
+
+  .canvas-pane pre {
+    max-width: 100% !important;
+    overflow-x: auto;
   }
 
   /* Images (uploaded thumbs + python sandbox charts) */

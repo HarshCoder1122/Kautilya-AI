@@ -121,31 +121,47 @@ def _miss_you_scheduler():
             from extensions import db
             from services.email_service import send_miss_you_email
             from firebase_admin import firestore as _fs
+            from google.cloud.firestore_v1.base_query import FieldFilter
             if db:
                 now = datetime.now(timezone.utc)
                 cutoff_inactive = now - timedelta(days=2)
                 cutoff_no_spam  = now - timedelta(days=7)
+                # Use FieldFilter (new API) to avoid deprecation warnings.
+                # Single-field query only — no compound index needed.
+                # welcomed_at check is done in Python to avoid a composite
+                # index requirement.
                 docs = (
                     db.collection('users')
-                    .where('last_seen_at', '<', cutoff_inactive)
-                    .where('welcomed_at', '!=', None)
+                    .where(filter=FieldFilter('last_seen_at', '<', cutoff_inactive))
                     .limit(200)
                     .stream()
                 )
                 sent = 0
                 for doc in docs:
                     data = doc.to_dict() or {}
+                    # Only email users who completed their welcome flow
+                    if not data.get('welcomed_at'):
+                        continue
                     email = data.get('email', '')
                     name  = data.get('name', '')
                     if not email:
                         continue
-                    # Skip if miss-you was sent recently
+                    # Only email users who have opted in to marketing (DPDP Act 2023 / TRAI)
+                    # marketing_opt_in defaults to True for legacy users who signed up
+                    # before the consent modal was added (benefit-of-doubt); new users
+                    # set this explicitly in the age gate.
+                    if data.get('marketing_opt_in') is False:
+                        continue
+                    # Skip if miss-you was sent recently (7-day cooldown)
                     last_miss = data.get('miss_you_sent_at')
                     if last_miss:
-                        lm_dt = last_miss if hasattr(last_miss, 'tzinfo') else last_miss.replace(tzinfo=timezone.utc)
-                        if lm_dt > cutoff_no_spam:
-                            continue
-                    send_miss_you_email(email, name)
+                        try:
+                            lm_dt = last_miss.replace(tzinfo=timezone.utc) if not last_miss.tzinfo else last_miss
+                            if lm_dt > cutoff_no_spam:
+                                continue
+                        except Exception:
+                            pass
+                    send_miss_you_email(email, name, uid=doc.id)
                     db.collection('users').document(doc.id).set(
                         {'miss_you_sent_at': _fs.SERVER_TIMESTAMP}, merge=True)
                     sent += 1
@@ -275,17 +291,26 @@ def get_firebase_config():
         "appId": env_config["appId"] or ""
     })
 
-@app.route('/__/<path:firebase_path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'])
+_ALLOWED_FIREBASE_PATHS = {
+    'auth/handler',
+    'auth/iframe',
+    'auth/experiments.json',
+    'auth/action',
+}
+
+@app.route('/__/<path:firebase_path>', methods=['GET', 'POST', 'OPTIONS'])
 def firebase_proxy(firebase_path):
     """Proxy Firebase Hosting reserved paths (`/__/auth/handler`, etc.) so the
     custom domain can complete the Google OAuth redirect flow.
 
-    SECURITY: strip auth/cookie headers before forwarding. The Firebase
-    Hosting endpoints under `/__/` do NOT require the caller's Firebase ID
-    token, but forwarding Authorization would leak the user's bearer token
-    to a destination we don't fully control. We also drop Cookie + HF Space
-    headers for the same reason.
+    SECURITY: only an explicit allowlist of known-required paths is forwarded.
+    All other paths return 404 so internal Firebase Hosting endpoints cannot
+    be probed via this proxy. Auth/cookie headers are stripped before forwarding.
     """
+    # Allowlist: only OAuth flow paths are permitted
+    if firebase_path not in _ALLOWED_FIREBASE_PATHS:
+        return Response("Not Found", status=404)
+
     query_string = request.query_string.decode('utf-8')
     suffix = f"?{query_string}" if query_string else ""
     firebase_url = f"https://jarvis-a6e18.firebaseapp.com/__/{firebase_path}{suffix}"

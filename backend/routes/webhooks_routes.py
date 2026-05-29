@@ -6,6 +6,8 @@ Only <Dial><Sip> is supported for SIP bridging.
 import os
 import json
 import uuid
+import hmac
+import hashlib
 import asyncio
 import threading
 from flask import Blueprint, request, Response
@@ -139,8 +141,25 @@ def create_room_fire_and_forget(room_name, agent_id):
             print(f"[Bridge] ❌ Error: {e}")
     threading.Thread(target=_task, daemon=True).start()
 
+def _verify_webhook_secret(provided: str) -> bool:
+    """Constant-time compare against WEBHOOK_SECRET env var.
+    If the env var is not set, the check is skipped for backward compatibility.
+    Set WEBHOOK_SECRET in HuggingFace Space secrets to enforce validation.
+    """
+    expected = os.environ.get("WEBHOOK_SECRET", "").strip()
+    if not expected:
+        return True
+    if not provided:
+        return False
+    return hmac.compare_digest(expected.encode(), provided.encode())
+
+
 @webhooks_bp.route('/webhooks/vobiz/answer/<agent_id>', methods=['POST', 'GET'])
 def vobiz_answer(agent_id):
+    secret = request.values.get('secret') or request.headers.get('X-Webhook-Secret', '')
+    if not _verify_webhook_secret(secret):
+        print(f"[Vobiz] Rejected: invalid webhook secret for agent {agent_id}")
+        return Response("Forbidden", status=403)
     print(f"[Vobiz] Incoming: {dict(request.values)}")
 
     event = request.values.get('Event')
@@ -246,6 +265,10 @@ def vobiz_answer(agent_id):
 
 @webhooks_bp.route('/webhooks/exotel/answer/<agent_id>', methods=['POST', 'GET'])
 def exotel_answer(agent_id):
+    secret = request.values.get('secret') or request.headers.get('X-Webhook-Secret', '')
+    if not _verify_webhook_secret(secret):
+        print(f"[Exotel] Rejected: invalid webhook secret for agent {agent_id}")
+        return Response("Forbidden", status=403)
     caller_id = request.values.get('From', '')
     from_number = caller_id.strip().lstrip('+') or 'caller'
     sip_uri = f"sip:{from_number}@{SIP_DOMAIN}"

@@ -32,16 +32,13 @@ def api_key_create():
     
     raw_key = generate_api_key()
     key_hash = hash_api_key(raw_key)
-    
+
     db.collection('api_keys').document(key_hash).set({
         'uid': uid, 'name': key_name, 'key_preview': '...' + raw_key[-6:],
         'created_at': firestore.SERVER_TIMESTAMP, 'last_used': None, 'is_active': True
     })
-    
-    try:
-        db.collection('users').document(uid).set({'active_api_key': raw_key}, merge=True)
-    except: pass
-    
+    # SECURITY: raw key is returned ONCE here and never persisted to Firestore.
+    # Users must copy it immediately — there is no way to retrieve it later.
     return jsonify({"key": raw_key, "key_id": key_hash[:16], "name": key_name, "message": "API key created!"})
 
 
@@ -81,26 +78,19 @@ def api_key_list():
             "payg_price_per_call": float(DEVELOPER_API_PAYG_PRICE),
         }
         
-        active_key = None
+        # SECURITY: raw API keys are never stored in Firestore after creation.
+        # The list endpoint returns only metadata (preview, timestamps).
+        # Clean up any legacy plaintext keys that may have been stored previously.
         try:
             user_doc = db.collection('users').document(uid).get()
-            if user_doc.exists:
-                raw_active_key = user_doc.to_dict().get('active_api_key')
-                if raw_active_key:
-                    # Validate if this key is still active in api_keys
-                    active_key_hash = hash_api_key(raw_active_key)
-                    key_doc = db.collection('api_keys').document(active_key_hash).get()
-                    if key_doc.exists and key_doc.to_dict().get('is_active', False):
-                        active_key = raw_active_key
-                    else:
-                        # Clear inactive key from users document
-                        db.collection('users').document(uid).update({'active_api_key': firestore.DELETE_FIELD})
+            if user_doc.exists and user_doc.to_dict().get('active_api_key'):
+                db.collection('users').document(uid).update({'active_api_key': firestore.DELETE_FIELD})
         except Exception as e:
-            print(f"[keys/list] Active key validation error: {e}")
-        
+            print(f"[keys/list] Legacy key cleanup error: {e}")
+
         return jsonify({
             "keys": keys, "usage": usage, "limits": limits, "tier": tier,
-            "active_key": active_key, "developer_api": developer_api,
+            "developer_api": developer_api,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500

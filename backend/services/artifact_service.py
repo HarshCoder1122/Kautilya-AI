@@ -128,6 +128,11 @@ def generate_excel(content: str, filename: str = "kautilya_artifact.xlsx",
 # PDF Generator (with markdown support)
 # ============================================================
 
+def _safe(text: str) -> str:
+    """Encode text to latin-1 safely for fpdf."""
+    return str(text).encode('latin-1', 'replace').decode('latin-1')
+
+
 def generate_pdf(content: str, filename: str = "kautilya_artifact.pdf",
                  title: str = "Kautilya Export") -> Tuple[io.BytesIO, str]:
     """Generate PDF from markdown content with basic formatting."""
@@ -142,55 +147,122 @@ def generate_pdf(content: str, filename: str = "kautilya_artifact.pdf",
 
     # Title
     pdf.set_font("Helvetica", 'B', 16)
-    safe_title = title.encode('latin-1', 'replace').decode('latin-1')
-    pdf.cell(0, 10, safe_title, ln=True)
+    pdf.cell(0, 10, _safe(title), new_x="LMARGIN", new_y="NEXT")
     pdf.ln(2)
 
     # Body — parse simple markdown
     pdf.set_font("Helvetica", size=11)
     lines = content.split('\n')
     in_code = False
-    
-    for line in lines:
-        safe_line = line.encode('latin-1', 'replace').decode('latin-1')
-        
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        safe_line = _safe(line)
+
         # Code fence
         if line.strip().startswith('```'):
             in_code = not in_code
-            pdf.set_font("Courier", size=9) if in_code else pdf.set_font("Helvetica", size=11)
+            if in_code:
+                pdf.set_font("Courier", size=9)
+            else:
+                pdf.set_font("Helvetica", size=11)
+            i += 1
             continue
-        
+
         if in_code:
             pdf.set_fill_color(245, 245, 250)
             pdf.multi_cell(0, 5, safe_line, fill=True)
+            i += 1
+            continue
+
+        # Markdown table: collect all consecutive table rows
+        if '|' in line and line.strip().startswith('|'):
+            table_lines = []
+            while i < len(lines) and '|' in lines[i] and lines[i].strip().startswith('|'):
+                table_lines.append(lines[i])
+                i += 1
+            # Parse header + separator + rows
+            if len(table_lines) >= 2:
+                parse_row = lambda r: [c.strip() for c in r.strip().strip('|').split('|')]
+                header = parse_row(table_lines[0])
+                # skip separator line (---)
+                data_start = 1
+                if len(table_lines) > 1 and re.match(r'^\|?[\s\-:|]+\|', table_lines[1]):
+                    data_start = 2
+                rows = [parse_row(r) for r in table_lines[data_start:]]
+
+                col_count = len(header)
+                if col_count > 0:
+                    page_w = pdf.w - pdf.l_margin - pdf.r_margin
+                    col_w = page_w / col_count
+
+                    # Header row
+                    pdf.set_font("Helvetica", 'B', 9)
+                    pdf.set_fill_color(79, 70, 229)
+                    pdf.set_text_color(255, 255, 255)
+                    for h in header:
+                        pdf.cell(col_w, 7, _safe(h)[:30], border=1, fill=True)
+                    pdf.ln()
+
+                    # Data rows
+                    pdf.set_font("Helvetica", size=9)
+                    pdf.set_text_color(0, 0, 0)
+                    for ridx, row in enumerate(rows):
+                        if ridx % 2 == 0:
+                            pdf.set_fill_color(245, 245, 250)
+                        else:
+                            pdf.set_fill_color(255, 255, 255)
+                        for ci, cell in enumerate(row[:col_count]):
+                            pdf.cell(col_w, 6, _safe(cell)[:40], border=1, fill=True)
+                        # pad missing columns
+                        for _ in range(col_count - len(row)):
+                            pdf.cell(col_w, 6, '', border=1, fill=True)
+                        pdf.ln()
+
+                    pdf.set_font("Helvetica", size=11)
+                    pdf.ln(3)
             continue
 
         # Headings
         if line.startswith('# '):
             pdf.set_font("Helvetica", 'B', 14)
-            pdf.cell(0, 8, safe_line[2:], ln=True)
+            pdf.cell(0, 8, safe_line[2:], new_x="LMARGIN", new_y="NEXT")
             pdf.set_font("Helvetica", size=11)
             pdf.ln(1)
         elif line.startswith('## '):
             pdf.set_font("Helvetica", 'B', 12)
-            pdf.cell(0, 7, safe_line[3:], ln=True)
+            pdf.cell(0, 7, safe_line[3:], new_x="LMARGIN", new_y="NEXT")
             pdf.set_font("Helvetica", size=11)
         elif line.startswith('### '):
             pdf.set_font("Helvetica", 'B', 11)
-            pdf.cell(0, 6, safe_line[4:], ln=True)
+            pdf.cell(0, 6, safe_line[4:], new_x="LMARGIN", new_y="NEXT")
             pdf.set_font("Helvetica", size=11)
         elif line.startswith('- ') or line.startswith('* '):
             pdf.cell(5)
-            pdf.multi_cell(0, 6, "- " + safe_line[2:])
-        elif line.strip():
+            pdf.multi_cell(0, 6, _safe('• ' + line[2:]))
+        elif re.match(r'^\d+\.\s', line):
             pdf.multi_cell(0, 6, safe_line)
+        elif line.strip():
+            # Strip inline markdown bold/italic markers
+            clean = re.sub(r'\*{1,3}(.+?)\*{1,3}', r'\1', line)
+            pdf.multi_cell(0, 6, _safe(clean))
         else:
             pdf.ln(3)
 
+        i += 1
+
     buf = io.BytesIO()
-    pdf_bytes = pdf.output(dest='S')
-    if isinstance(pdf_bytes, str):
-        pdf_bytes = pdf_bytes.encode('latin-1')
+    try:
+        # fpdf2 >= 2.x: output() returns bytes
+        pdf_bytes = pdf.output()
+        if isinstance(pdf_bytes, str):
+            pdf_bytes = pdf_bytes.encode('latin-1')
+    except TypeError:
+        # older fpdf fallback
+        pdf_bytes = pdf.output(dest='S')
+        if isinstance(pdf_bytes, str):
+            pdf_bytes = pdf_bytes.encode('latin-1')
     buf.write(pdf_bytes)
     buf.seek(0)
     return buf, filename
@@ -218,11 +290,13 @@ def generate_docx(content: str, filename: str = "kautilya_artifact.docx",
     lines = content.split('\n')
     in_code = False
     code_buffer = []
+    i = 0
 
-    for line in lines:
+    while i < len(lines):
+        line = lines[i]
+
         if line.strip().startswith('```'):
             if in_code:
-                # End code block
                 code_text = '\n'.join(code_buffer)
                 p = doc.add_paragraph()
                 run = p.add_run(code_text)
@@ -232,10 +306,41 @@ def generate_docx(content: str, filename: str = "kautilya_artifact.docx",
                 in_code = False
             else:
                 in_code = True
+            i += 1
             continue
 
         if in_code:
             code_buffer.append(line)
+            i += 1
+            continue
+
+        # Markdown table
+        if '|' in line and line.strip().startswith('|'):
+            table_lines = []
+            while i < len(lines) and '|' in lines[i] and lines[i].strip().startswith('|'):
+                table_lines.append(lines[i])
+                i += 1
+            if len(table_lines) >= 2:
+                parse_row = lambda r: [c.strip() for c in r.strip().strip('|').split('|')]
+                header = parse_row(table_lines[0])
+                data_start = 1
+                if len(table_lines) > 1 and re.match(r'^\|?[\s\-:|]+\|', table_lines[1]):
+                    data_start = 2
+                rows = [parse_row(r) for r in table_lines[data_start:]]
+                col_count = len(header)
+                if col_count > 0:
+                    tbl = doc.add_table(rows=1 + len(rows), cols=col_count)
+                    tbl.style = 'Table Grid'
+                    hdr_cells = tbl.rows[0].cells
+                    for ci, h in enumerate(header):
+                        hdr_cells[ci].text = h
+                        run = hdr_cells[ci].paragraphs[0].runs[0] if hdr_cells[ci].paragraphs[0].runs else hdr_cells[ci].paragraphs[0].add_run(h)
+                        run.bold = True
+                    for ri, row in enumerate(rows):
+                        row_cells = tbl.rows[ri + 1].cells
+                        for ci in range(col_count):
+                            row_cells[ci].text = row[ci] if ci < len(row) else ''
+                    doc.add_paragraph()
             continue
 
         if line.startswith('# '):
@@ -250,7 +355,6 @@ def generate_docx(content: str, filename: str = "kautilya_artifact.docx",
             doc.add_paragraph(re.sub(r'^\d+\.\s', '', line), style='List Number')
         elif line.strip():
             p = doc.add_paragraph()
-            # Handle bold
             parts = re.split(r'(\*\*.+?\*\*)', line)
             for part in parts:
                 if part.startswith('**') and part.endswith('**'):
@@ -260,6 +364,8 @@ def generate_docx(content: str, filename: str = "kautilya_artifact.docx",
                     p.add_run(part)
         else:
             doc.add_paragraph()
+
+        i += 1
 
     buf = io.BytesIO()
     doc.save(buf)
