@@ -162,20 +162,36 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         print(f"[Agent] date injection failed: {_e}")
 
     # Inject available integration tools into the system prompt — but only
-    # when the user's message looks like an integration request. Always-on
-    # injection bloated prompts and slowed NVIDIA TTFT by 100-300ms on
-    # short messages. The keyword gate is cheap and accurate enough.
+    # when the user's message looks like an ACTION request, not a capability
+    # question. Always-on injection bloated prompts and slowed TTFT by
+    # 100-300ms on short messages.
+    #
+    # Problem: "what can you do with WhatsApp?" matches keyword 'whatsapp'
+    # → tool list injected → model sees the tools and calls one instead of
+    # describing capabilities. The meta-question gate below blocks injection
+    # for any message that is clearly asking ABOUT the assistant rather than
+    # asking it TO DO something.
+    _meta_question_kw = (
+        'what can you', 'kya kar sakte', 'kya kya kar', 'capabilities',
+        'capability', 'features', 'feature', 'what do you do', 'what are you',
+        'tell me about yourself', 'apne baare mein', 'kya kya hai',
+        'what tools', 'which tools', 'what integrations', 'which integrations',
+        'kaun se tools', 'kaun se features', 'kya support', 'kya kuch',
+        'describe yourself', 'introduce yourself', 'your abilities',
+        'what are your', 'how do you work', 'help me understand',
+    )
     _intent_kw = ('send', 'whatsapp', 'slack', 'calendar', 'schedule', 'meeting',
                   'crm', 'hubspot', 'zoho', 'contact', 'contacts', 'lead', 'zapier', 'event',
                   'email', 'remind', 'follow up', 'follow-up', 'drive', 'file',
                   'files', 'document', 'documents', 'doc', 'docs', 'sheet', 'sheets',
                   'spreadsheet', 'spreadsheets',
-                  # YouTube + Google Contacts + Docs additions
                   'youtube', 'video', 'videos', 'watch', 'channel', 'channels',
                   'subscription', 'subscriptions', 'phone', 'phones',
                   'people', 'address book', 'addressbook')
     _msg_low = (last_user_msg or "").lower() if last_user_msg else ""
-    if uid and any(k in _msg_low for k in _intent_kw):
+    # Skip tool injection entirely when the message is a meta/capability question
+    _is_meta = any(k in _msg_low for k in _meta_question_kw)
+    if uid and not _is_meta and any(k in _msg_low for k in _intent_kw):
         try:
             from services.integration_tools import available_tools
             _t_avail = time.time()
@@ -208,6 +224,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 lines.append(
                     "WHEN TO USE INTEGRATIONS — minimal, intent-driven:\n"
                     "  • Call an integration ONLY when the user explicitly requests that exact action in THIS message (or directly references a previous request).\n"
+                    "  • NEVER call a tool just because the user asked about your capabilities. 'What can you do with WhatsApp?' or 'kya kya kar sakte ho?' are questions — answer them in plain text. Do NOT emit any [INTEGRATION:] tag.\n"
                     "  • 'Remember it', 'note this', 'got it' are conversational — they DO NOT mean call any tool. Just acknowledge in text.\n"
                     "  • After a tool succeeds, the next turn should be PLAIN TEXT to the user. Do not auto-chain another integration (e.g. don't save a fetched profile to a doc unless asked).\n"
                     "PAYLOAD SIZE LIMIT: keep the JSON for any single [INTEGRATION:] call under ~1500 characters total. "
