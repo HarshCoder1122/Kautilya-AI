@@ -481,7 +481,10 @@ def chat_completions():
         # Mistral only accepts 'none' or 'high'.
         upstream_effort = 'high' if max_thinking else 'none'
         thinking_on = False  # max_thinking on Mistral is handled via reasoning_effort
-        expose_thinking_flag = False
+        # When the caller asked for high reasoning we DO want to expose the
+        # reasoning_content deltas back to them so the UI can render a
+        # thinking panel — otherwise the 'high' effort is invisible.
+        expose_thinking_flag = bool(max_thinking)
     else:
         # For nemotron / glm we use max_thinking to decide; pass effort hint
         # through only when explicitly low/medium so the model can dial it down.

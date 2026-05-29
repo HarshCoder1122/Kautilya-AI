@@ -448,15 +448,21 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
         if tool_choice:
             payload["tool_choice"] = tool_choice
         # Extended thinking — payload shape depends on model family.
-        # GLM (z-ai/glm-*) uses {enable_thinking, clear_thinking}; thinking is
-        # always-on when expose_thinking is true since GLM has no budget knob.
-        # Qwen3/Nemotron use {thinking: {type, budget_tokens}} and only enable
-        # when a budget is explicitly requested.
-        if expose_thinking:
-            if model.startswith("z-ai/glm"):
-                payload["chat_template_kwargs"] = {"enable_thinking": True, "clear_thinking": False}
-            elif reasoning_budget and reasoning_budget > 0:
-                payload["chat_template_kwargs"] = {"thinking": {"type": "enabled", "budget_tokens": reasoning_budget}}
+        # GLM (z-ai/glm-*) uses {enable_thinking, clear_thinking}; thinking
+        # can be explicitly turned OFF by passing enable_thinking=False so
+        # the user's "Max Thinking" toggle is honored in both directions.
+        # Qwen3-thinking variants and Nemotron use {thinking: {type,
+        # budget_tokens}} and only enable when a budget is explicitly
+        # requested.
+        if model.startswith("z-ai/glm"):
+            # max_thinking ON  → enable_thinking True, stream reasoning back
+            # max_thinking OFF → enable_thinking False, skip reasoning entirely
+            payload["chat_template_kwargs"] = {
+                "enable_thinking": bool(max_thinking),
+                "clear_thinking": False,
+            }
+        elif expose_thinking and reasoning_budget and reasoning_budget > 0:
+            payload["chat_template_kwargs"] = {"thinking": {"type": "enabled", "budget_tokens": reasoning_budget}}
         # Mistral-style top-level reasoning toggle (low|medium|high)
         if reasoning_effort:
             payload["reasoning_effort"] = reasoning_effort
