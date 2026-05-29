@@ -110,6 +110,15 @@ CORS(app, resources={r"/embed/*": {"origins": "*"}, r"/embed.js": {"origins": "*
 @app.after_request
 def set_security_headers(response):
     response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    # Suppress browser console violations for sensor APIs we never use.
+    # Without this header Chrome logs "[Violation] Permissions policy violation:
+    # accelerometer / devicemotion / deviceorientation is not allowed" which
+    # originates from Razorpay's fraud-detection iframe trying to read sensors.
+    response.headers['Permissions-Policy'] = (
+        'accelerometer=(), camera=(), geolocation=(), gyroscope=(), '
+        'magnetometer=(), microphone=(self), payment=(self "https://checkout.razorpay.com"), '
+        'usb=()'
+    )
     csp = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' 'unsafe-eval' "
