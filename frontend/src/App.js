@@ -61,17 +61,6 @@ function App() {
     let refreshInterval = null;
     let currentAuthUser = null;
 
-    // Resolve Google Redirect Sign-In results if coming back from redirect flow
-    getRedirectResult(auth)
-      .then((result) => {
-        if (result?.user) {
-          console.log("[Auth] Redirect sign-in success:", result.user);
-        }
-      })
-      .catch((e) => {
-        console.warn("[Auth] Redirect sign-in error:", e);
-      });
-
     const refreshToken = async (authUser, force = false) => {
       if (!authUser) return;
       try {
@@ -106,37 +95,86 @@ function App() {
     window.addEventListener('focus', onFocus);
     window.addEventListener('online', onOnline);
 
-    const unsubscribe = onAuthStateChanged(auth, async (authUser) => {
-      if (refreshInterval) clearInterval(refreshInterval);
-      currentAuthUser = authUser;
-      if (authUser) {
-        try {
-          const token = await authUser.getIdToken();
-          localStorage.setItem('firebase_token', token);
-          localStorage.setItem('firebase_token_issued_at', String(Date.now()));
-          localStorage.setItem('user', JSON.stringify({
-            uid: authUser.uid,
-            email: authUser.email,
-            displayName: authUser.displayName,
-            photoURL: authUser.photoURL
-          }));
-          setUser(authUser);
-        } catch (e) {
-          console.warn('[Auth] Initial token retrieval failed, using fallback:', e);
-          setUser(authUser);
+    // BLANK-SCREEN FIX: On a Google redirect sign-in (mobile browsers,
+    // Android WebView, some desktop flows), Firebase processes the OAuth
+    // code AFTER the page loads. onAuthStateChanged fires BEFORE the
+    // redirect result is consumed — it sees "null" first, sets loading=false,
+    // and the user gets the login screen. They must manually refresh.
+    //
+    // Fix: resolve getRedirectResult FIRST, then register onAuthStateChanged.
+    // If it was a redirect flow, the user is already set by the time the
+    // listener fires, so it sees "logged in" on the very first emission.
+    // If it was not a redirect (normal page load), getRedirectResult returns
+    // null immediately and we fall straight through.
+    let redirectHandled = false;
+    const redirectPromise = getRedirectResult(auth)
+      .then(async (result) => {
+        if (result?.user) {
+          console.log("[Auth] Redirect sign-in resolved:", result.user.email);
+          redirectHandled = true;
+          try {
+            const token = await result.user.getIdToken();
+            localStorage.setItem('firebase_token', token);
+            localStorage.setItem('firebase_token_issued_at', String(Date.now()));
+            localStorage.setItem('user', JSON.stringify({
+              uid: result.user.uid,
+              email: result.user.email,
+              displayName: result.user.displayName,
+              photoURL: result.user.photoURL,
+            }));
+          } catch (e) {
+            console.warn('[Auth] Redirect token retrieval failed:', e);
+          }
+          // Fire welcome check for new users
+          try {
+            const { userAPI } = await import('./lib/api');
+            userAPI.welcomeCheck().catch(() => {});
+          } catch {}
         }
-        refreshInterval = setInterval(() => refreshToken(authUser, true), TOKEN_REFRESH_BEFORE_EXPIRY_MS);
-      } else {
-        localStorage.removeItem('firebase_token');
-        localStorage.removeItem('firebase_token_issued_at');
-        localStorage.removeItem('user');
-        setUser(null);
-      }
-      setLoading(false);
+      })
+      .catch((e) => console.warn("[Auth] Redirect sign-in error:", e));
+
+    // Register the listener only after the redirect promise settles so the
+    // first emission sees the post-redirect state.
+    redirectPromise.finally(() => {
+      const unsubscribe = onAuthStateChanged(auth, async (authUser) => {
+        if (refreshInterval) clearInterval(refreshInterval);
+        currentAuthUser = authUser;
+        if (authUser) {
+          try {
+            const token = await authUser.getIdToken();
+            localStorage.setItem('firebase_token', token);
+            localStorage.setItem('firebase_token_issued_at', String(Date.now()));
+            localStorage.setItem('user', JSON.stringify({
+              uid: authUser.uid,
+              email: authUser.email,
+              displayName: authUser.displayName,
+              photoURL: authUser.photoURL
+            }));
+            setUser(authUser);
+          } catch (e) {
+            console.warn('[Auth] Initial token retrieval failed, using fallback:', e);
+            setUser(authUser);
+          }
+          refreshInterval = setInterval(() => refreshToken(authUser, true), TOKEN_REFRESH_BEFORE_EXPIRY_MS);
+        } else {
+          localStorage.removeItem('firebase_token');
+          localStorage.removeItem('firebase_token_issued_at');
+          localStorage.removeItem('user');
+          setUser(null);
+        }
+        setLoading(false);
+      });
+
+      // Store unsubscribe in the closure so the cleanup can reach it
+      cleanupRef.current = unsubscribe;
     });
 
+    // Dummy — real cleanup stored via redirectPromise.finally above
+    const cleanupRef = { current: () => {} };
+
     return () => {
-      unsubscribe();
+      cleanupRef.current?.();
       if (refreshInterval) clearInterval(refreshInterval);
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('focus', onFocus);

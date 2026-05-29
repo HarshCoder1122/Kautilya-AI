@@ -16,7 +16,8 @@
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-        <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+        <!-- Razorpay loaded lazily on demand — eager script caused
+             "preloaded but not used" warnings and blocked first paint. -->
         <title>Kautilya AI</title>
     </head>
     <body>
