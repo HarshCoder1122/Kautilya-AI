@@ -593,6 +593,185 @@ def user_profile_put():
 #     return jsonify(response)
 
 
+@user_bp.route('/user/consent', methods=['POST'])
+def record_consent():
+    """Record user's age confirmation and marketing consent (DPDP Act 2023).
+    Called once at first login from the age gate modal.
+    Body: { age_confirmed: bool, marketing_opt_in: bool }
+    """
+    from extensions import db
+    from firebase_admin import firestore
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid: return jsonify({"error": "Unauthorized"}), 401
+    if not db: return jsonify({"error": "Database not available"}), 503
+    data = request.get_json(silent=True) or {}
+    age_confirmed = bool(data.get('age_confirmed', False))
+    marketing_opt_in = bool(data.get('marketing_opt_in', False))
+    if not age_confirmed:
+        return jsonify({"error": "Age confirmation required"}), 400
+    try:
+        db.collection('users').document(uid).set({
+            'age_confirmed': True,
+            'age_confirmed_at': firestore.SERVER_TIMESTAMP,
+            'marketing_opt_in': marketing_opt_in,
+            'marketing_consent_at': firestore.SERVER_TIMESTAMP,
+            'consent_version': '2026-05-29',
+        }, merge=True)
+        return jsonify({"status": "ok", "marketing_opt_in": marketing_opt_in})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@user_bp.route('/user/unsubscribe', methods=['POST', 'GET'])
+def email_unsubscribe():
+    """Unsubscribe user from marketing emails.
+    Accepts token from email links (GET ?token=<uid_hash>) or auth header (POST).
+    This endpoint must work WITHOUT auth header for email link clicks.
+    """
+    import hashlib, hmac as _hmac
+    from extensions import db
+    from firebase_admin import firestore
+
+    uid = None
+    # GET path: unsubscribe via email link token (no auth required)
+    token_param = request.args.get('token', '') or (request.get_json(silent=True) or {}).get('token', '')
+    if token_param and db:
+        # token = SHA-256(uid) truncated to 32 chars — enumerate-resistant
+        try:
+            docs = db.collection('users').stream()
+            for doc in docs:
+                d = doc.to_dict() or {}
+                candidate_hash = hashlib.sha256(doc.id.encode()).hexdigest()[:32]
+                if _hmac.compare_digest(candidate_hash, token_param[:32]):
+                    uid = doc.id
+                    break
+        except Exception as e:
+            print(f"[unsubscribe] token lookup error: {e}")
+
+    # POST path: authenticated (from settings page)
+    if not uid:
+        token_data = verify_firebase_token()
+        uid = token_data.get('uid') if token_data else None
+
+    if not uid:
+        return ("<html><body style='font-family:sans-serif;text-align:center;padding:60px;'>"
+                "<h2>Link expired or invalid.</h2>"
+                "<p>Please log in and go to <b>Settings → My Data</b> to manage email preferences.</p>"
+                "</body></html>"), 400, {'Content-Type': 'text/html'}
+    try:
+        db.collection('users').document(uid).set(
+            {'marketing_opt_in': False, 'unsubscribed_at': firestore.SERVER_TIMESTAMP},
+            merge=True
+        )
+        if request.method == 'GET':
+            return ("<html><body style='font-family:sans-serif;text-align:center;padding:60px;"
+                    "background:#0d1117;color:#e6edf3;'>"
+                    "<h2 style='color:#FF6D3F;'>You have been unsubscribed.</h2>"
+                    "<p>You will no longer receive marketing emails from Kautilya AI.</p>"
+                    "<p style='color:#8b949e;font-size:13px;'>You will still receive important transactional emails "
+                    "(billing receipts, security alerts).</p>"
+                    "<a href='https://ai.revealiq.in' style='display:inline-block;margin-top:24px;"
+                    "padding:10px 20px;background:#FF6D3F;color:#fff;border-radius:8px;"
+                    "text-decoration:none;font-weight:600;'>Return to Kautilya AI</a>"
+                    "</body></html>"), 200, {'Content-Type': 'text/html'}
+        return jsonify({"status": "ok", "message": "Unsubscribed from marketing emails"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@user_bp.route('/user/data-deletion', methods=['POST'])
+def request_data_deletion():
+    """Request complete account and data deletion (DPDP Act 2023 Right to Erasure).
+    Marks account for deletion; actual purge runs within 7 business days.
+    Keeps billing records for 7 years (GST law) and security logs for 5 years (CERT-In).
+    """
+    from extensions import db
+    from firebase_admin import firestore
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid: return jsonify({"error": "Unauthorized"}), 401
+    if not db: return jsonify({"error": "Database not available"}), 503
+    data = request.get_json(silent=True) or {}
+    reason = str(data.get('reason', ''))[:500]
+    try:
+        db.collection('users').document(uid).set({
+            'deletion_requested': True,
+            'deletion_requested_at': firestore.SERVER_TIMESTAMP,
+            'deletion_reason': reason,
+            'deletion_status': 'pending',
+        }, merge=True)
+        # Log the request for compliance audit trail
+        db.collection('data_deletion_requests').add({
+            'uid': uid,
+            'requested_at': firestore.SERVER_TIMESTAMP,
+            'reason': reason,
+            'status': 'pending',
+        })
+        # Immediately soft-delete chat history to honour the intent quickly
+        try:
+            sessions_ref = db.collection('users').document(uid).collection('sessions').limit(100).stream()
+            for s in sessions_ref:
+                msgs_ref = s.reference.collection('messages').limit(500).stream()
+                batch = db.batch()
+                for m in msgs_ref:
+                    batch.delete(m.reference)
+                batch.commit()
+        except Exception as e:
+            print(f"[data-deletion] chat soft-delete error: {e}")
+        return jsonify({
+            "status": "ok",
+            "message": "Your data deletion request has been recorded. We will complete the deletion within 7 business days and email you a confirmation.",
+            "reference": uid[:8],
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@user_bp.route('/user/my-data', methods=['GET'])
+def get_my_data():
+    """Return a summary of all personal data held for the user (DPDP Act Right to Access)."""
+    from extensions import db
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid: return jsonify({"error": "Unauthorized"}), 401
+    if not db: return jsonify({"error": "Database not available"}), 503
+    try:
+        user_doc = db.collection('users').document(uid).get()
+        user_data = user_doc.to_dict() or {} if user_doc.exists else {}
+        settings_doc = db.collection('users').document(uid).collection('settings').document('profile').get()
+        settings = settings_doc.to_dict() or {} if settings_doc.exists else {}
+        api_keys_count = sum(1 for _ in db.collection('api_keys').where(
+            filter=__import__('firebase_admin').firestore.FieldFilter('uid', '==', uid)
+        ).where(
+            filter=__import__('firebase_admin').firestore.FieldFilter('is_active', '==', True)
+        ).stream())
+        session_count = sum(1 for _ in db.collection('users').document(uid).collection('sessions').limit(500).stream())
+        return jsonify({
+            "profile": {
+                "name": user_data.get('name', ''),
+                "email": user_data.get('email', ''),
+                "joined_at": user_data.get('welcomed_at').isoformat() if user_data.get('welcomed_at') else None,
+                "last_seen": user_data.get('last_seen_at').isoformat() if user_data.get('last_seen_at') else None,
+            },
+            "consent": {
+                "age_confirmed": user_data.get('age_confirmed', False),
+                "marketing_opt_in": user_data.get('marketing_opt_in', False),
+                "consent_version": user_data.get('consent_version'),
+            },
+            "data_held": {
+                "chat_sessions": session_count,
+                "api_keys_active": api_keys_count,
+                "preferences_stored": bool(settings),
+                "voice_data_retained": False,
+            },
+            "deletion_requested": user_data.get('deletion_requested', False),
+            "deletion_status": user_data.get('deletion_status'),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @user_bp.route('/analytics/trends', methods=['GET'])
 def get_analytics_trends():
     """Return trend analysis for the BI dashboard."""

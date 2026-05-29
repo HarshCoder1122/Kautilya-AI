@@ -12,12 +12,17 @@ POST /api/artifact/create
 """
 from flask import Blueprint, request, jsonify, send_file
 from services.artifact_service import create_artifact
+from services.auth_service import verify_firebase_token
 
 artifact_bp = Blueprint('artifact', __name__)
 
 
 @artifact_bp.route('/artifact/create', methods=['POST'])
 def api_create_artifact():
+    token_data = verify_firebase_token()
+    if not token_data or not token_data.get('uid'):
+        return jsonify({"error": "Unauthorized"}), 401
+
     try:
         data = request.get_json(silent=True) or {}
         kind = data.get('kind', 'pdf')
@@ -27,6 +32,8 @@ def api_create_artifact():
 
         if not content:
             return jsonify({"error": "Missing 'content'"}), 400
+        if len(content) > 500_000:
+            return jsonify({"error": "Content too large"}), 413
 
         buf, fn, mime = create_artifact(kind, content, title=title, filename=filename)
         return send_file(buf, as_attachment=True, download_name=fn, mimetype=mime)

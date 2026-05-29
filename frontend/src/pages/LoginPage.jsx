@@ -182,11 +182,20 @@ export default function LoginPage() {
 
           {/* Footer */}
           <p className="mt-8 text-center text-white/25 text-xs leading-relaxed">
-            By signing in, you agree to our{" "}
-            <Link to="/terms" className="text-indigo-400/70 hover:text-indigo-400 transition-colors underline underline-offset-2">Terms</Link>
-            {" "}and{" "}
+            By signing in you confirm you are <strong className="text-white/40">18+</strong> and agree to our{" "}
+            <Link to="/terms" className="text-indigo-400/70 hover:text-indigo-400 transition-colors underline underline-offset-2">Terms</Link>,{" "}
             <Link to="/privacy" className="text-indigo-400/70 hover:text-indigo-400 transition-colors underline underline-offset-2">Privacy Policy</Link>
+            {" "}and{" "}
+            <Link to="/refund" className="text-indigo-400/70 hover:text-indigo-400 transition-colors underline underline-offset-2">Refund Policy</Link>.
           </p>
+          {/* Legal footer */}
+          <div className="mt-10 pt-6 border-t border-white/[0.04] text-center space-y-1">
+            <p className="text-[10px] text-white/20">Operated by <strong className="text-white/30">Harsh Vardhan</strong> (RevealIQ, India)</p>
+            <p className="text-[10px] text-white/15">
+              Grievance: <a href="mailto:support@revealiq.in" className="hover:text-white/30 transition-colors">support@revealiq.in</a>
+              {" "}· <a href="mailto:hello@revealiq.in" className="hover:text-white/30 transition-colors">hello@revealiq.in</a>
+            </p>
+          </div>
         </div>
       </div>
     </div>

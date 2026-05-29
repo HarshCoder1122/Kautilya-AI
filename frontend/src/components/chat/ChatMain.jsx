@@ -239,6 +239,10 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       hasArtifact: !!artifact,
       artifactType: artifact?.type,
       artifactTitle: artifact?.title,
+      // Restore thinking/reasoning from Firestore so the collapsed
+      // "Process Analysis" block re-appears when reloading old chats.
+      thinking: m.thinking || undefined,
+      thinkingDone: !!m.thinking,
     };
   };
 
@@ -1197,6 +1201,15 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
               ))}
             </div>
           </div>
+        </div>
+        {/* AI disclaimer — not professional advice (IT Rules 2021, DPDP Act) */}
+        <div className="text-center text-[9px] text-muted-foreground/20 pb-1 px-4 leading-relaxed">
+          Kautilya AI generates responses using large language models.{" "}
+          <strong className="text-muted-foreground/30">Not professional advice.</strong>{" "}
+          Verify before acting.{" "}
+          <a href="/privacy" className="underline hover:text-muted-foreground/40 transition-colors">Privacy</a>
+          {" "}·{" "}
+          <a href="/terms" className="underline hover:text-muted-foreground/40 transition-colors">Terms</a>
         </div>
       </div>
       <Dialog open={showMcpDialog} onOpenChange={setShowMcpDialog}>

@@ -874,9 +874,18 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
         </ReactMarkdown>
       </div>
 
+      {/* AI-generated disclosure label (Google Play + IT Rules 2021 compliance) */}
+      {!isLiveStreaming && displayContent && (
+        <div className="mt-2 flex items-center gap-1.5">
+          <span className="text-[9px] font-semibold text-muted-foreground/30 tracking-wider uppercase">AI-generated</span>
+          <span className="text-[9px] text-muted-foreground/20">&middot;</span>
+          <span className="text-[9px] text-muted-foreground/25">Verify important information independently</span>
+        </div>
+      )}
+
       {/* Action Buttons */}
       {!isLiveStreaming && (
-        <div className="flex items-center gap-1 mt-4 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+        <div className="flex items-center gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
           <button
             onClick={handlePlayTTS}
             disabled={isSynthesizing}

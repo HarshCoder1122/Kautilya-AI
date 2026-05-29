@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import JSZip from 'jszip';
 import { X, Code, ChartBar, FileText, Copy, Download, ArrowsOutSimple, Check, FolderOpen, Eye, File, ArrowSquareOut, Archive, CaretUp, CaretDown, MagnifyingGlass, Table } from "@phosphor-icons/react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -416,13 +417,13 @@ const DOC_COMPONENTS = {
     }
     return <a href={safe || '#'} target="_blank" rel="noopener noreferrer" className="text-[var(--k-brand)] underline underline-offset-2 hover:opacity-80 break-all">{children}</a>;
   },
-  table: ({ children }) => <div className="overflow-x-auto my-6"><table className="min-w-full border border-[var(--k-border)] rounded-md text-sm">{children}</table></div>,
+  table: ({ children }) => <div className="overflow-x-auto my-4 sm:my-6 max-w-full -mx-0"><table className="min-w-full border border-[var(--k-border)] rounded-md text-sm">{children}</table></div>,
   thead: ({ children }) => <thead className="bg-[var(--k-surface)]">{children}</thead>,
   th: ({ children }) => <th className="px-4 py-2 text-left font-semibold border-b border-[var(--k-border)]">{children}</th>,
   td: ({ children }) => <td className="px-4 py-2 border-b border-[var(--k-border)]">{children}</td>,
   code: ({ inline, children }) => inline
-    ? <code className="bg-accent/50 px-1.5 py-0.5 rounded text-[0.85em] font-mono">{children}</code>
-    : <pre className="bg-[var(--k-surface)] border border-[var(--k-border)] rounded-md p-4 overflow-x-auto my-4 text-sm font-mono"><code>{children}</code></pre>,
+    ? <code className="bg-accent/50 px-1.5 py-0.5 rounded text-[0.85em] font-mono break-all">{children}</code>
+    : <pre className="bg-[var(--k-surface)] border border-[var(--k-border)] rounded-md p-3 sm:p-4 overflow-x-auto my-4 text-sm font-mono max-w-full"><code className="whitespace-pre">{children}</code></pre>,
   hr: () => <hr className="my-8 border-[var(--k-border)]" />,
   strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
 };
@@ -849,7 +850,7 @@ function MultiFileWorkspace({ files, title }) {
           {viewMode === 'preview' && previewSrc ? (
             <iframe
               srcDoc={previewSrc}
-              sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+              sandbox="allow-scripts allow-forms allow-popups allow-modals"
               className="w-full h-full border-none bg-white"
               title="Live Preview"
             />
@@ -896,7 +897,7 @@ function MultiFileWorkspace({ files, title }) {
           </div>
           <iframe
             srcDoc={previewSrc}
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+            sandbox="allow-scripts allow-forms allow-popups allow-modals"
             className="flex-1 w-full border-none bg-white"
             title="Fullscreen Preview"
           />
@@ -1124,9 +1125,9 @@ export function CanvasPane({ content, onClose, activeMode }) {
         <TabsContent value="document" className="flex-1 overflow-hidden m-0">
           <ScrollArea className="h-full bg-[#fcfcfc] dark:bg-[#0f1115]">
             <div className="min-h-full p-6 md:p-12 max-w-4xl mx-auto">
-              <div className="bg-white dark:bg-[#16181d] shadow-[0_0_50px_rgba(0,0,0,0.04)] dark:shadow-none border border-[var(--k-border)] rounded-lg p-8 md:p-14 min-h-[800px]">
+              <div className="bg-white dark:bg-[#16181d] shadow-[0_0_50px_rgba(0,0,0,0.04)] dark:shadow-none border border-[var(--k-border)] rounded-lg p-4 sm:p-8 md:p-14 min-h-[800px] overflow-hidden w-full">
                 {/* Document Title Bar */}
-                <div className="mb-10 flex flex-col md:flex-row md:items-end md:justify-between gap-4 border-b border-[var(--k-border)] pb-6">
+                <div className="mb-6 sm:mb-10 flex flex-col gap-4 border-b border-[var(--k-border)] pb-4 sm:pb-6">
                   <div>
                     <div className="w-12 h-1 bg-[var(--k-brand)] mb-4" />
                     <div className="text-[10px] uppercase tracking-[0.25em] text-muted-foreground font-bold mb-1">Kautilya Document</div>
@@ -1166,7 +1167,7 @@ export function CanvasPane({ content, onClose, activeMode }) {
                   return (
                     <>
                       <div className="font-sans">
-                        <ReactMarkdown components={DOC_COMPONENTS}>{body}</ReactMarkdown>
+                        <ReactMarkdown components={DOC_COMPONENTS} remarkPlugins={[remarkGfm]}>{body}</ReactMarkdown>
                       </div>
                       {sources?.length > 0 && (
                         <div className="mt-12 pt-6 border-t border-[var(--k-border)]">

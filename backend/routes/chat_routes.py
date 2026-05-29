@@ -215,7 +215,7 @@ def save_to_firestore(uid, session_id, role, content, message_id=None, streaming
         if extras and isinstance(extras, dict):
             # Firestore disallows None values; strip them, and JSON-encode
             # nested structures so we don't hit nested-array limits.
-            for k in ('tool_results', 'react_steps', 'citations', 'artifact', 'agent_type'):
+            for k in ('tool_results', 'react_steps', 'citations', 'artifact', 'agent_type', 'thinking'):
                 v = extras.get(k)
                 if v in (None, [], {}, ''):
                     continue
@@ -533,6 +533,7 @@ def jarvis_stream():
             'artifact': None,
             'agent_type': None,
         }
+        thinking_holder = [""]  # accumulated thinking/reasoning text
         # Reserve a streaming-message doc id up-front, but DON'T block on it.
         # Used to be a sync ~200-500ms Firestore round-trip before we could
         # start streaming. Now: submit to executor, resolve lazily when the
@@ -594,6 +595,12 @@ def jarvis_stream():
                     if "chunk" in parsed:
                         full_response_holder[0] += parsed["chunk"]
                         return
+                    # Accumulate reasoning/thinking content so it can be saved
+                    if "thinking" in parsed:
+                        thinking_holder[0] += parsed["thinking"]
+                        return
+                    if "thinking_done" in parsed:
+                        return  # nothing to accumulate, signal only
                     ev = parsed.get("event") or parsed.get("type")
                     if ev == "tool_result":
                         side_data['tool_results'].append({
@@ -660,6 +667,7 @@ def jarvis_stream():
                                 'citations': side_data['citations'],
                                 'artifact': side_data['artifact'],
                                 'agent_type': side_data['agent_type'],
+                                'thinking': thinking_holder[0] or None,
                             },
                         )
                         print(f"[Stream] Saved response ({len(full_response)} chars) for session {session_id}")
@@ -872,6 +880,8 @@ def get_chat_history(session_id):
                     msg[k] = _unjson(data.get(k))
             if data.get('agent_type'):
                 msg['agent_type'] = data.get('agent_type')
+            if data.get('thinking'):
+                msg['thinking'] = data.get('thinking')
             messages.append(msg)
         return jsonify({
             "messages": messages,
