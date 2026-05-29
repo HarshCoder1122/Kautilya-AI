@@ -445,7 +445,13 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       const response = activeMode === 'research'
         ? await chatAPI.streamResearch(currentInput, currentSessionId, { signal: abortControllerRef.current.signal })
         : await chatAPI.streamMessage(currentInput, currentSessionId, model, currentFiles, {
-          maxThinking: maxThinking || activeMode === 'code',
+          // Only respect the user's explicit "Max Thinking" toggle. Code
+          // mode used to force this true, but Qwen3-Coder is NOT a
+          // reasoning model — forcing max_thinking made the backend
+          // allocate a 12k-token reasoning budget that Qwen3-Coder didn't
+          // use and that NVIDIA deducted from output. Net effect: 12k
+          // fewer tokens for actual code → mid-file cutoffs.
+          maxThinking: maxThinking,
           signal: abortControllerRef.current.signal,
         });
 
