@@ -312,7 +312,7 @@ def jarvis_stream():
     )
     fast_reply = None
     if fast_eligible:
-        fast_reply = try_canned_reply(message) or fast_cache_get(message, model)
+        fast_reply = try_canned_reply(message) or fast_cache_get(message, model, uid=uid)
     if fast_reply:
         # Persist both sides of the exchange so chat history stays correct.
         try:
@@ -340,6 +340,30 @@ def jarvis_stream():
         # Firestore-restored session — rebuild in-memory conv with history
         restored_messages = conv['messages_to_restore']
         conv = None  # trigger full build below
+    elif conv:
+        # Refresh system prompt every 30 min so newly-saved memories and
+        # profile changes (name, preferences) are picked up mid-session.
+        age = time.time() - conv.get('created_at', 0)
+        if age > 1800 and uid:
+            try:
+                fresh_memories = get_user_memory(uid) or []
+                fresh_settings = {}
+                if db:
+                    sdoc = db.collection('users').document(uid).collection('settings').document('profile').get()
+                    fresh_settings = sdoc.to_dict() if sdoc.exists else {}
+                if model == 'coder':
+                    new_sys = build_personalized_prompt(CODER_SYSTEM_PROMPT, user_name, fresh_memories, user_email, fresh_settings, uid=uid)
+                elif model == 'pro':
+                    new_sys = build_personalized_prompt(PRO_SYSTEM_PROMPT, user_name, fresh_memories, user_email, fresh_settings, uid=uid)
+                elif model == 'research':
+                    new_sys = build_personalized_prompt(RESEARCH_SYSTEM_PROMPT, user_name, fresh_memories, user_email, fresh_settings, uid=uid)
+                else:
+                    new_sys = build_personalized_prompt(SYSTEM_PROMPT, user_name, fresh_memories, user_email, fresh_settings, uid=uid)
+                if conv['messages'] and conv['messages'][0].get('role') == 'system':
+                    conv['messages'][0]['content'] = new_sys
+                conv['created_at'] = time.time()  # reset timer
+            except Exception as e:
+                print(f"[Conv] System prompt refresh failed: {e}")
 
     if not conv:
         _cleanup_expired_conversations()
@@ -676,7 +700,7 @@ def jarvis_stream():
                         # the lengths qualify, we just hand it the pair.
                         try:
                             if message and isinstance(message, str) and model in ('auto', 'daily'):
-                                fast_cache_put(message, model, full_response)
+                                fast_cache_put(message, model, full_response, uid=uid)
                         except Exception:
                             pass
                         # AI-generated 3-4 word title for the sidebar (background job)
