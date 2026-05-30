@@ -57,7 +57,13 @@ export const ensureFreshFirebaseToken = async ({ force = false } = {}) => {
     _tokenRefreshInFlight = (async () => {
       try {
         const { getAuthInstance } = await import('./firebase.js');
-        const auth = getAuthInstance();
+        // Firebase Auth may not be initialized yet on cold page load.
+        // Retry up to 5 times (1 second total) before giving up.
+        let auth = getAuthInstance();
+        for (let i = 0; !auth && i < 5; i++) {
+          await new Promise(r => setTimeout(r, 200));
+          auth = getAuthInstance();
+        }
         const u = auth && auth.currentUser;
         if (!u) return localStorage.getItem('firebase_token');
         const token = await u.getIdToken(true);

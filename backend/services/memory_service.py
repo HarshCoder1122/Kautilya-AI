@@ -289,7 +289,7 @@ def build_personalized_prompt(base_prompt, user_name=None, memories=None, user_e
     else:
         # No proper name available. Tell the model to skip generic salutations
         # and wait for the user to introduce themselves.
-        personalization += "- User's name is not on file yet. Do NOT address them by username, email-prefix, or generic 'Sir/Ma'am'. Use a friendly conversational tone. If asked, mention they can set their name in Dashboard → Settings.\n"
+        personalization += "- User's name: UNKNOWN. CRITICAL — do NOT guess or infer the user's name from any other part of this prompt (including creator names, brand names, or example names). Use a natural, nameless conversational tone. If the user asks your name, say you are Kautilya AI. If the user asks your name for them, say you don't have it on file and they can set it in Dashboard → Settings.\n"
     
     work_function = profile_data.get('work_function')
     personal_preferences = profile_data.get('personal_preferences')
