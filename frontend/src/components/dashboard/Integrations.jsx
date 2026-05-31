@@ -37,14 +37,29 @@ const FALLBACK_FIELDS = {
   zapier:   [{ key: "webhook_url", label: "Zap Webhook URL", type: "url" }],
 };
 
-// Real brand logo via Clearbit, with a coloured-monogram fallback when a logo
-// isn't found — so EVERY integration shows something recognisable.
+// Real brand logo with a multi-source fallback chain, then a coloured
+// monogram — so EVERY integration shows something recognisable. Clearbit's
+// free logo API was deprecated and never covered Indian SaaS (msg91, interakt,
+// vyapar…), so we fall through to DuckDuckGo and Google favicon services which
+// have near-universal domain coverage. Each <img> error advances to the next
+// source; when all are exhausted we render the monogram.
+function logoSources(domain) {
+  if (!domain) return [];
+  return [
+    `https://logo.clearbit.com/${domain}`,
+    `https://icons.duckduckgo.com/ip3/${domain}.ico`,
+    `https://www.google.com/s2/favicons?sz=64&domain=${domain}`,
+  ];
+}
+
 function BrandLogo({ domain, label }) {
-  const [failed, setFailed] = useState(false);
+  const sources = logoSources(domain);
+  const [idx, setIdx] = useState(0);
   const letter = (label || "?").trim().charAt(0).toUpperCase();
   // Deterministic colour from the label so monograms are stable & varied.
   const hue = ([...(label || "")].reduce((a, c) => a + c.charCodeAt(0), 0) * 7) % 360;
-  if (!domain || failed) {
+
+  if (idx >= sources.length) {
     return (
       <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 font-bold text-sm"
         style={{ background: `hsl(${hue} 70% 92%)`, color: `hsl(${hue} 65% 35%)` }}>
@@ -55,11 +70,12 @@ function BrandLogo({ domain, label }) {
   return (
     <div className="w-10 h-10 rounded-lg bg-white flex items-center justify-center flex-shrink-0 border border-[var(--k-border)] overflow-hidden">
       <img
-        src={`https://logo.clearbit.com/${domain}`}
+        key={sources[idx]}
+        src={sources[idx]}
         alt={label}
         loading="lazy"
         className="w-7 h-7 object-contain"
-        onError={() => setFailed(true)}
+        onError={() => setIdx(i => i + 1)}
       />
     </div>
   );
