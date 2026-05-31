@@ -26,7 +26,6 @@ import json
 import re
 from typing import Dict, Iterator
 
-from services.llm_service import call_groq
 from services.agent_loop_service import agent_loop
 from system_prompts import (
     PRO_SYSTEM_PROMPT, CODER_SYSTEM_PROMPT_PRO, RESEARCH_SYSTEM_PROMPT,
@@ -70,35 +69,40 @@ AGENT_REGISTRY: Dict[str, Dict] = {
 
 
 def classify_intent(question: str) -> str:
-    """Return an agent id. Small fast LLM classifier with regex fallback."""
-    # Cheap regex fast-path. Daily-first: only code-shaped queries leave Daily.
-    # Sales/support personalities still kick in for prompt flavor, but stay on Daily.
-    q = question.lower()
-    if re.search(r'\b(write code|fix|debug|refactor|stack ?trace|typescript|python|javascript|golang|rust|sql|react|vue|django|flask|fastapi|endpoint|function|build (a |an )?(app|api|component|page|script))\b', q):
+    """Return an agent id. REGEX-ONLY — zero network latency.
+
+    This used to fall back to a synchronous Groq classifier (stream=False, no
+    timeout cap) for every query that missed the regex — i.e. almost every
+    normal conversational message routed to 'general' AFTER paying a full LLM
+    round-trip (~300-800ms, worse on a slow day) BEFORE the real model even
+    started. That single blocking call was the biggest avoidable chunk of
+    time-to-first-token in auto mode.
+
+    Now routing is a pure regex decision: instant. The pattern is broadened so
+    obvious code intent still reaches Coder; anything ambiguous defaults to
+    'general' (Daily/Mistral), which is both the faster model AND handles most
+    code-adjacent questions fine. Users who want guaranteed Coder can pick the
+    Code mode explicitly.
+    """
+    q = (question or "").lower()
+    # Coder: code verbs, languages, frameworks, "build me a …", error/stacktrace.
+    if re.search(
+        r'\b(write|generate|create|build|make|fix|debug|refactor|optimi[sz]e|implement|'
+        r'rewrite|convert|migrate|review)\b[^.?!]*\b(code|app|api|script|function|class|'
+        r'component|page|website|program|bug|error|endpoint|query|regex|algorithm|'
+        r'snippet|module|backend|frontend|database|schema)\b'
+        r'|\b(typescript|javascript|python|golang|rust|kotlin|swift|java|c\+\+|c#|php|ruby|'
+        r'react|vue|svelte|angular|next\.?js|node\.?js|django|flask|fastapi|spring|laravel|'
+        r'sql|html|css|tailwind|docker|kubernetes|terraform)\b'
+        r'|\b(stack ?trace|traceback|compile|syntax error|null ?pointer|segfault|'
+        r'undefined is not|cannot read propert)\b',
+        q,
+    ):
         return "coder"
     if re.search(r'\b(pitch|cold ?email|objection|lead|prospect|sdr|pipeline|crm|follow[- ]?up|discount|negotiate)\b', q):
         return "sales"
     if re.search(r'\b(not working|broken|won\'?t|error message|crash|refund|complain|frustrated|angry)\b', q):
         return "support"
-
-    # LLM classifier fallback — narrowed to coder vs general so Daily stays default.
-    try:
-        msgs = [
-            {"role": "system", "content":
-             "Classify the user request into exactly ONE of: coder, general. "
-             "Pick 'coder' ONLY for code generation, debugging, or software architecture. "
-             "Everything else (questions, writing, analysis, chat) is 'general'. "
-             "Output only the label."},
-            {"role": "user", "content": question[:600]},
-        ]
-        out = call_groq(msgs, model="llama-3.3-70b-versatile",
-                        temperature=0, max_tokens=5, stream=False)
-        if isinstance(out, str):
-            label = re.sub(r'[^a-z]', '', out.strip().lower().split()[0] if out.strip() else "")
-            if label == "coder":
-                return "coder"
-    except Exception as e:
-        print(f"[Orchestrator] classify err: {e}")
     return "general"
 
 

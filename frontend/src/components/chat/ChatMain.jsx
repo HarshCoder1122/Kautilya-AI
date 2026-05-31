@@ -4,6 +4,7 @@ import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ThinkingTokens } from "@/components/chat/ThinkingTokens";
 import { LiveKitVoice } from "@/components/chat/LiveKitVoice";
 import { chatAPI, getAuthHeaders, integrationsAPI } from "../../lib/api";
+import { extractArtifact } from "../../lib/artifacts";
 // ReActSteps is rendered inside ChatMessage — no need to import here
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -37,16 +38,6 @@ const modes = [
   { id: 'research', label: 'Deep Research',icon: MagnifyingGlass, desc: 'Web search & citations' },
   { id: 'code',     label: 'Code',         icon: Code,            desc: 'Frontier code generation' },
 ];
-
-function parseAttrs(s) {
-  const out = {};
-  const re = /([a-zA-Z_:][\w:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
-  let m;
-  while ((m = re.exec(s)) !== null) {
-    out[m[1].toLowerCase()] = m[2] ?? m[3] ?? m[4] ?? '';
-  }
-  return out;
-}
 
 // Cache key for the per-session message mirror. We keep one slot per session
 // in sessionStorage so unmounting (route change, tab close) doesn't blank the
@@ -228,17 +219,45 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     const reactStepsRaw = safeParse(m.react_steps);
     const citations = safeParse(m.citations);
     const artifact = safeParse(m.artifact);
+
+    // Reconstruct the artifact from the saved message text so the canvas
+    // re-opens with its real content after a reload. Without this the
+    // "Open in Canvas" button restored an EMPTY canvas and coder/multi-file
+    // projects lost their artifact button entirely (artifactCode was only
+    // ever set during live streaming). One parser (extractArtifact) is shared
+    // with the streaming path so the two can never drift.
+    const rawContent = typeof m.content === 'string' ? m.content : '';
+    let art = extractArtifact(rawContent);
+    // Research-style documents stream raw markdown with NO inline <artifact>
+    // tag — the body IS the whole message. Fall back to the persisted
+    // {type,title} side-data and treat the full text as the artifact code.
+    if (!art.hasArtifact && artifact) {
+      art = {
+        hasArtifact: true,
+        artifactType: artifact.type || 'document',
+        artifactTitle: artifact.title || 'Document',
+        artifactCode: rawContent,
+        cleanContent: rawContent,
+      };
+    }
+
     return {
       ...m,
       id: m.id || `msg-${Math.random()}`,
+      // Use the cleaned body (artifact/file payload stripped) so the chat
+      // bubble doesn't show raw <artifact>/<file> tags or a wall of code.
+      content: (typeof m.content === 'string' && art.hasArtifact) ? art.cleanContent : m.content,
       timestamp: m.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       toolResults: Array.isArray(toolResults) ? toolResults : undefined,
       reactSteps: Array.isArray(reactStepsRaw) ? reactStepsRaw : undefined,
       citations: Array.isArray(citations) ? citations : undefined,
       agentType: m.agent_type || m.agentType,
-      hasArtifact: !!artifact,
-      artifactType: artifact?.type,
-      artifactTitle: artifact?.title,
+      hasArtifact: art.hasArtifact,
+      artifactType: art.artifactType,
+      artifactTitle: art.artifactTitle,
+      artifactCode: art.artifactCode,
+      artifactFilename: art.artifactFilename,
+      artifactSubtype: art.artifactSubtype,
       // Restore thinking/reasoning from Firestore so the collapsed
       // "Process Analysis" block re-appears when reloading old chats.
       thinking: m.thinking || undefined,
@@ -515,21 +534,13 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       };
 
       const updateContent = () => {
-        const visible = fullContent;
-        // Multi-file workspace: detect either <file>...</file> blocks OR the
-        // common "**filename.ext**\n```lang\n...\n```" pattern that
-        // Claude/Emergent-style coder responses emit. We require 2+ filename
-        // headers OR any explicit <file> tag so single code snippets still
-        // render as a normal artifact rather than a multi-file project.
-        const hasFileTags = /<file[\s>]/i.test(fullContent);
-        const filenameHeaderRe = /(^|\n)[ \t]*(?:\*\*|`|#{1,6}\s+|(?:[Ff]ile|[Ff]ilename|[Pp]ath)\s*[:=]\s*)?[\w./@-]+\.(?:jsx|tsx|js|ts|html|css|py|json|md|vue|svelte|go|rs|java|cpp|c|h|sh|yml|yaml|toml|env)(?:\*\*|`)?[ \t]*\n[ \t]*```/g;
-        const headerHits = (fullContent.match(filenameHeaderRe) || []).length;
-        if (hasFileTags || headerHits >= 2) {
-          // Visible body uses the typewriter-smoothed slice; the canvas/
-          // artifact gets fullContent so file tree is always current.
-          const cleanContent = visible.replace(/<file[\s\S]*?<\/file>/gi, '').replace(/<file[\s\S]*/gi, '').trim();
+        // Single shared parser (also used on history reload) — detects
+        // multi-file coder projects and <artifact> documents/code/sheets.
+        const art = extractArtifact(fullContent);
+
+        if (art.hasArtifact && art.artifactType === 'multifile') {
           updateAssistant({
-            content: cleanContent || 'Here are the project files:',
+            content: art.cleanContent,
             thinkingDone: true,
             isSynthesizing: false,
             hasArtifact: true,
@@ -538,60 +549,36 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
             artifactCode: fullContent,
           });
           if (onOpenCanvas) {
-            if (!canvasOpened) canvasOpened = true;
-            onOpenCanvas({ type: 'multifile', code: fullContent, title: 'Project Files', messageId: aiMsg.id });
+            canvasOpened = true;
+            // auto:true → push live content but DON'T force-reopen the canvas
+            // if the user has already closed it for this message.
+            onOpenCanvas({ type: 'multifile', code: fullContent, title: 'Project Files', messageId: aiMsg.id }, { auto: true });
           }
           return;
         }
 
-        const tagMatch = fullContent.match(/<artifact(\s+[^>]+)?>/i);
-        let artifactData = null;
-        if (tagMatch) {
-          const openTag = tagMatch[0];
-          const attrs = parseAttrs(tagMatch[1] || '');
-          const startIndex = tagMatch.index + openTag.length;
-          const closeIndex = fullContent.indexOf('</artifact>', startIndex);
-          const code = closeIndex >= 0
-            ? fullContent.slice(startIndex, closeIndex)
-            : fullContent.slice(startIndex);
-
-          artifactData = {
-            type: attrs.type || 'document',
-            title: attrs.title || 'Analysis',
-            filename: attrs.filename || '',
-            subtype: attrs.subtype || '',
-            code: code.trim(),
-            isClosed: closeIndex >= 0
-          };
-        }
-
-        const cleanContent = visible
-          .replace(/<artifact[\s\S]*?<\/artifact>/gi, '')
-          .replace(/<artifact[\s\S]*/gi, '')
-          .trim();
-
         updateAssistant({
-          content: cleanContent || (artifactData ? 'Here is the generated artifact:' : ''),
+          content: art.cleanContent || (art.hasArtifact ? 'Here is the generated artifact:' : ''),
           thinkingDone: true,
           isSynthesizing: false,
-          artifactType: artifactData?.type,
-          artifactTitle: artifactData?.title,
-          artifactFilename: artifactData?.filename,
-          artifactSubtype: artifactData?.subtype,
-          artifactCode: artifactData?.code,
-          hasArtifact: !!artifactData,
+          artifactType: art.artifactType,
+          artifactTitle: art.artifactTitle,
+          artifactFilename: art.artifactFilename,
+          artifactSubtype: art.artifactSubtype,
+          artifactCode: art.artifactCode,
+          hasArtifact: art.hasArtifact,
         });
 
-        // Open or update canvas in real-time
-        if (artifactData && onOpenCanvas) {
+        // Open or update canvas in real-time (respects a user close — see above)
+        if (art.hasArtifact && onOpenCanvas) {
           onOpenCanvas({
-            type: artifactData.type,
-            code: artifactData.code,
-            title: artifactData.title,
-            filename: artifactData.filename,
-            subtype: artifactData.subtype,
+            type: art.artifactType,
+            code: art.artifactCode,
+            title: art.artifactTitle,
+            filename: art.artifactFilename,
+            subtype: art.artifactSubtype,
             messageId: aiMsg.id,
-          });
+          }, { auto: true });
           canvasOpened = true;
         }
       };
@@ -698,7 +685,8 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                     type: parsed.artifactType || 'document',
                     code: fullContent,
                     title: parsed.artifactTitle || 'Deep Research',
-                  });
+                    messageId: aiMsg.id,
+                  }, { auto: true });
                 }
                 continue;
               }

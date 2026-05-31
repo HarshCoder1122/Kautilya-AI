@@ -50,6 +50,21 @@
   contain: layout;
 }
 
+/* ── Radix ScrollArea width-containment fix ───────────────────────────────
+   Radix wraps a ScrollArea's children in an inline `display:table` div that
+   shrink-wraps to the WIDEST child. A wide markdown table or a `white-space:
+   pre` code block therefore stretches that wrapper, which in turn pushes the
+   whole chat column / canvas past the viewport — the classic "everything
+   slides off-screen on mobile" bug, and the reason the canvas appeared to
+   expand the page. Forcing normal block flow makes the wrapper fill (not
+   exceed) its parent, so children with `max-width:100% + overflow-x:auto`
+   scroll INTERNALLY instead of widening the page. */
+[data-radix-scroll-area-viewport] > div {
+  display: block !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+}
+
 /* Tablet: float the canvas over the chat as a fixed overlay so the
    chat column never gets crushed below 300px */
 @media (max-width: 1024px) and (min-width: 769px) {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { ChatMain } from "@/components/chat/ChatMain";
 import { CanvasPane } from "@/components/chat/CanvasPane";
@@ -13,6 +13,33 @@ export default function ChatPage({ theme, toggleTheme, user }) {
   const [activeMode, setActiveMode] = useState('chat');
   const [conversations, setConversations] = useState([]);
   const [convoLoading, setConvoLoading] = useState(true);
+  // Track artifacts the user explicitly closed so the live stream doesn't keep
+  // re-opening the canvas on every chunk. Keyed by messageId.
+  const closedArtifactsRef = useRef(new Set());
+
+  // opts.auto = true  → streaming update: refresh canvas content, but do NOT
+  //                     re-open if the user already closed it for this message.
+  // opts.auto = false → explicit user action (artifact button): always open and
+  //                     clear any prior "closed" mark.
+  const handleOpenCanvas = useCallback((content, opts = {}) => {
+    setCanvasContent(content);
+    const mid = content?.messageId;
+    if (opts.auto) {
+      if (mid && closedArtifactsRef.current.has(mid)) return; // stay closed
+      setCanvasOpen(true);
+    } else {
+      if (mid) closedArtifactsRef.current.delete(mid);
+      setCanvasOpen(true);
+    }
+  }, []);
+
+  const handleCloseCanvas = useCallback(() => {
+    setCanvasOpen(false);
+    setCanvasContent(prev => {
+      if (prev?.messageId) closedArtifactsRef.current.add(prev.messageId);
+      return prev;
+    });
+  }, []);
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -62,8 +89,8 @@ export default function ChatPage({ theme, toggleTheme, user }) {
         onExpandSidebar={() => setSidebarCollapsed(false)}
         onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
         canvasOpen={canvasOpen}
-        onToggleCanvas={() => setCanvasOpen(!canvasOpen)}
-        onOpenCanvas={(content) => { setCanvasContent(content); setCanvasOpen(true); }}
+        onToggleCanvas={() => { if (canvasOpen) handleCloseCanvas(); else setCanvasOpen(true); }}
+        onOpenCanvas={handleOpenCanvas}
         activeMode={activeMode}
         onSetMode={setActiveMode}
         theme={theme}
@@ -76,7 +103,7 @@ export default function ChatPage({ theme, toggleTheme, user }) {
       {canvasOpen && (
         <CanvasPane
           content={canvasContent}
-          onClose={() => setCanvasOpen(false)}
+          onClose={handleCloseCanvas}
           activeMode={activeMode}
         />
       )}

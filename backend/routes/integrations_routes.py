@@ -130,6 +130,316 @@ PROVIDERS = {
         "token_url": "https://github.com/login/oauth/access_token",
         "scopes": "repo,read:user",
     },
+
+    # ===================================================================
+    # Microsoft 365 (one Azure app → MICROSOFT_CLIENT_ID/SECRET covers all)
+    # ===================================================================
+    "outlook": {
+        "label": "Outlook & Calendar", "category": "email",
+        "authorize_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        "token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        "scopes": "offline_access https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Calendars.ReadWrite",
+    },
+    "onedrive": {
+        "label": "OneDrive", "category": "storage",
+        "authorize_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        "token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        "scopes": "offline_access https://graph.microsoft.com/Files.ReadWrite.All",
+    },
+    "microsoft_teams": {
+        "label": "Microsoft Teams", "category": "messaging",
+        "authorize_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        "token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        "scopes": "offline_access https://graph.microsoft.com/Chat.ReadWrite https://graph.microsoft.com/ChannelMessage.Send",
+    },
+
+    # ===================================================================
+    # Productivity / Docs / PM (all one-tap OAuth)
+    # ===================================================================
+    "notion": {
+        "label": "Notion", "category": "productivity",
+        "authorize_url": "https://api.notion.com/v1/oauth/authorize",
+        "token_url": "https://api.notion.com/v1/oauth/token", "scopes": "",
+    },
+    "airtable": {
+        "label": "Airtable", "category": "productivity",
+        "authorize_url": "https://airtable.com/oauth2/v1/authorize",
+        "token_url": "https://airtable.com/oauth2/v1/token",
+        "scopes": "data.records:read data.records:write schema.bases:read",
+    },
+    "asana": {
+        "label": "Asana", "category": "productivity",
+        "authorize_url": "https://app.asana.com/-/oauth_authorize",
+        "token_url": "https://app.asana.com/-/oauth_token", "scopes": "default",
+    },
+    "linear": {
+        "label": "Linear", "category": "developer",
+        "authorize_url": "https://linear.app/oauth/authorize",
+        "token_url": "https://api.linear.app/oauth/token", "scopes": "read write",
+    },
+    "jira": {
+        "label": "Jira & Confluence", "category": "developer",
+        "authorize_url": "https://auth.atlassian.com/authorize",
+        "token_url": "https://auth.atlassian.com/oauth/token",
+        "scopes": "read:jira-work write:jira-work offline_access",
+    },
+    "gitlab": {
+        "label": "GitLab", "category": "developer",
+        "authorize_url": "https://gitlab.com/oauth/authorize",
+        "token_url": "https://gitlab.com/oauth/token", "scopes": "api read_user",
+    },
+
+    # ===================================================================
+    # Cloud storage (one-tap OAuth)
+    # ===================================================================
+    "dropbox": {
+        "label": "Dropbox", "category": "storage",
+        "authorize_url": "https://www.dropbox.com/oauth2/authorize",
+        "token_url": "https://api.dropboxapi.com/oauth2/token",
+        "scopes": "files.content.read files.content.write",
+    },
+    "box": {
+        "label": "Box", "category": "storage",
+        "authorize_url": "https://account.box.com/api/oauth2/authorize",
+        "token_url": "https://api.box.com/oauth2/token", "scopes": "",
+    },
+
+    # ===================================================================
+    # Payments & Accounting (one-tap OAuth)
+    # ===================================================================
+    "razorpay": {
+        "label": "Razorpay", "category": "payments",
+        "authorize_url": "https://auth.razorpay.com/authorize",
+        "token_url": "https://auth.razorpay.com/token", "scopes": "read_write",
+    },
+    "stripe": {
+        "label": "Stripe", "category": "payments",
+        "authorize_url": "https://connect.stripe.com/oauth/authorize",
+        "token_url": "https://connect.stripe.com/oauth/token", "scopes": "read_write",
+    },
+    "quickbooks": {
+        "label": "QuickBooks", "category": "accounting",
+        "authorize_url": "https://appcenter.intuit.com/connect/oauth2",
+        "token_url": "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
+        "scopes": "com.intuit.quickbooks.accounting",
+    },
+    "xero": {
+        "label": "Xero", "category": "accounting",
+        "authorize_url": "https://login.xero.com/identity/connect/authorize",
+        "token_url": "https://identity.xero.com/connect/token",
+        "scopes": "offline_access accounting.transactions accounting.contacts",
+    },
+    "zoho_books": {
+        "label": "Zoho Books", "category": "accounting",
+        "authorize_url": "https://accounts.zoho.in/oauth/v2/auth",
+        "token_url": "https://accounts.zoho.in/oauth/v2/token",
+        "scopes": "ZohoBooks.fullaccess.all",
+    },
+    "zoho_inventory": {
+        "label": "Zoho Inventory", "category": "ecommerce",
+        "authorize_url": "https://accounts.zoho.in/oauth/v2/auth",
+        "token_url": "https://accounts.zoho.in/oauth/v2/token",
+        "scopes": "ZohoInventory.FullAccess.all",
+    },
+
+    # ===================================================================
+    # CRM / Sales (one-tap OAuth)
+    # ===================================================================
+    "pipedrive": {
+        "label": "Pipedrive", "category": "crm",
+        "authorize_url": "https://oauth.pipedrive.com/oauth/authorize",
+        "token_url": "https://oauth.pipedrive.com/oauth/token", "scopes": "",
+    },
+    "intercom": {
+        "label": "Intercom", "category": "support",
+        "authorize_url": "https://app.intercom.com/oauth",
+        "token_url": "https://api.intercom.io/auth/eagle/token", "scopes": "",
+    },
+
+    # ===================================================================
+    # Scheduling / Meetings (one-tap OAuth)
+    # ===================================================================
+    "zoom": {
+        "label": "Zoom", "category": "calendar",
+        "authorize_url": "https://zoom.us/oauth/authorize",
+        "token_url": "https://zoom.us/oauth/token", "scopes": "meeting:write",
+    },
+    "calendly": {
+        "label": "Calendly", "category": "calendar",
+        "authorize_url": "https://auth.calendly.com/oauth/authorize",
+        "token_url": "https://auth.calendly.com/oauth/token", "scopes": "default",
+    },
+
+    # ===================================================================
+    # Marketing / Social (one-tap OAuth)
+    # ===================================================================
+    "mailchimp": {
+        "label": "Mailchimp", "category": "marketing",
+        "authorize_url": "https://login.mailchimp.com/oauth2/authorize",
+        "token_url": "https://login.mailchimp.com/oauth2/token", "scopes": "",
+    },
+    "facebook": {
+        "label": "Facebook Pages", "category": "marketing",
+        "authorize_url": "https://www.facebook.com/v19.0/dialog/oauth",
+        "token_url": "https://graph.facebook.com/v19.0/oauth/access_token",
+        "scopes": "pages_manage_posts,pages_read_engagement,pages_show_list",
+    },
+    "instagram": {
+        "label": "Instagram", "category": "marketing",
+        "authorize_url": "https://www.facebook.com/v19.0/dialog/oauth",
+        "token_url": "https://graph.facebook.com/v19.0/oauth/access_token",
+        "scopes": "instagram_basic,instagram_content_publish,pages_show_list",
+    },
+    "linkedin": {
+        "label": "LinkedIn", "category": "social",
+        "authorize_url": "https://www.linkedin.com/oauth/v2/authorization",
+        "token_url": "https://www.linkedin.com/oauth/v2/accessToken",
+        "scopes": "r_liteprofile w_member_social",
+    },
+    "twitter": {
+        "label": "X (Twitter)", "category": "social",
+        "authorize_url": "https://twitter.com/i/oauth2/authorize",
+        "token_url": "https://api.twitter.com/2/oauth2/token",
+        "scopes": "tweet.read tweet.write users.read offline.access",
+    },
+    "discord": {
+        "label": "Discord", "category": "messaging",
+        "authorize_url": "https://discord.com/oauth2/authorize",
+        "token_url": "https://discord.com/api/oauth2/token", "scopes": "identify guilds",
+    },
+    "google_analytics": {
+        "label": "Google Analytics", "category": "analytics",
+        "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_url": "https://oauth2.googleapis.com/token",
+        "scopes": "https://www.googleapis.com/auth/analytics.readonly",
+    },
+    "google_ads": {
+        "label": "Google Ads", "category": "marketing",
+        "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_url": "https://oauth2.googleapis.com/token",
+        "scopes": "https://www.googleapis.com/auth/adwords",
+    },
+
+    # ===================================================================
+    # API-key / token based (paste-once, still low effort)
+    # ===================================================================
+    "twilio": {
+        "label": "Twilio (SMS/Voice)", "category": "messaging", "api_manual": True,
+        "fields": [{"key": "account_sid", "label": "Account SID", "type": "text"},
+                   {"key": "auth_token", "label": "Auth Token", "type": "password"},
+                   {"key": "from_number", "label": "From Number", "type": "text"}],
+    },
+    "sendgrid": {
+        "label": "SendGrid", "category": "email", "api_manual": True,
+        "fields": [{"key": "api_key", "label": "API Key", "type": "password"}],
+    },
+    "mailgun": {
+        "label": "Mailgun", "category": "email", "api_manual": True,
+        "fields": [{"key": "api_key", "label": "API Key", "type": "password"},
+                   {"key": "domain", "label": "Sending Domain", "type": "text"}],
+    },
+    "telegram": {
+        "label": "Telegram Bot", "category": "messaging", "api_manual": True,
+        "fields": [{"key": "bot_token", "label": "Bot Token", "type": "password"}],
+    },
+    "shopify": {
+        "label": "Shopify", "category": "ecommerce", "api_manual": True,
+        "fields": [{"key": "shop_domain", "label": "Shop Domain (xyz.myshopify.com)", "type": "text"},
+                   {"key": "admin_api_token", "label": "Admin API Access Token", "type": "password"}],
+    },
+
+    # ===================================================================
+    # 🇮🇳 India business stack — the real moat
+    # ===================================================================
+    "tally": {
+        "label": "Tally Prime", "category": "india", "api_manual": True,
+        "fields": [{"key": "host", "label": "Tally Host (e.g. localhost)", "type": "text"},
+                   {"key": "port", "label": "Port (default 9000)", "type": "text"}],
+    },
+    "vyapar": {
+        "label": "Vyapar", "category": "india", "api_manual": True,
+        "fields": [{"key": "api_key", "label": "API Key", "type": "password"}],
+    },
+    "shiprocket": {
+        "label": "Shiprocket", "category": "logistics", "api_manual": True,
+        "fields": [{"key": "email", "label": "Account Email", "type": "text"},
+                   {"key": "password", "label": "Password", "type": "password"}],
+    },
+    "delhivery": {
+        "label": "Delhivery", "category": "logistics", "api_manual": True,
+        "fields": [{"key": "api_token", "label": "API Token", "type": "password"}],
+    },
+    "cleartax_gst": {
+        "label": "ClearTax GST", "category": "india", "api_manual": True,
+        "fields": [{"key": "api_key", "label": "API Key", "type": "password"},
+                   {"key": "gstin", "label": "GSTIN", "type": "text"}],
+    },
+    "gupshup": {
+        "label": "Gupshup WhatsApp", "category": "india", "api_manual": True,
+        "fields": [{"key": "api_key", "label": "API Key", "type": "password"},
+                   {"key": "source_number", "label": "Source Number", "type": "text"}],
+    },
+    "interakt": {
+        "label": "Interakt", "category": "india", "api_manual": True,
+        "fields": [{"key": "api_key", "label": "API Key", "type": "password"}],
+    },
+    "msg91": {
+        "label": "MSG91", "category": "india", "api_manual": True,
+        "fields": [{"key": "auth_key", "label": "Auth Key", "type": "password"}],
+    },
+    "razorpayx": {
+        "label": "RazorpayX Payroll", "category": "hr", "api_manual": True,
+        "fields": [{"key": "key_id", "label": "Key ID", "type": "text"},
+                   {"key": "key_secret", "label": "Key Secret", "type": "password"}],
+    },
+    "keka": {
+        "label": "Keka HR", "category": "hr", "api_manual": True,
+        "fields": [{"key": "api_key", "label": "API Key", "type": "password"},
+                   {"key": "company", "label": "Company Subdomain", "type": "text"}],
+    },
+}
+
+# Brand domains for Clearbit logos (id → domain). Centralised so we don't bloat
+# each catalog entry; the page renders https://logo.clearbit.com/<domain>.
+_DOMAINS = {
+    "hubspot": "hubspot.com", "salesforce": "salesforce.com", "zoho": "zoho.com",
+    "google_calendar": "calendar.google.com", "gmail": "gmail.com",
+    "google_drive": "drive.google.com", "google_sheets": "google.com",
+    "google_tasks": "google.com", "google_docs": "docs.google.com",
+    "google_contacts": "google.com", "youtube": "youtube.com",
+    "whatsapp": "whatsapp.com", "slack": "slack.com", "zapier": "zapier.com",
+    "github": "github.com", "outlook": "outlook.com", "onedrive": "onedrive.live.com",
+    "microsoft_teams": "teams.microsoft.com", "notion": "notion.so",
+    "airtable": "airtable.com", "asana": "asana.com", "linear": "linear.app",
+    "jira": "atlassian.com", "gitlab": "gitlab.com", "dropbox": "dropbox.com",
+    "box": "box.com", "razorpay": "razorpay.com", "stripe": "stripe.com",
+    "quickbooks": "quickbooks.intuit.com", "xero": "xero.com",
+    "zoho_books": "zoho.com", "zoho_inventory": "zoho.com", "pipedrive": "pipedrive.com",
+    "intercom": "intercom.com", "zoom": "zoom.us", "calendly": "calendly.com",
+    "mailchimp": "mailchimp.com", "facebook": "facebook.com", "instagram": "instagram.com",
+    "linkedin": "linkedin.com", "twitter": "x.com", "discord": "discord.com",
+    "google_analytics": "google.com", "google_ads": "ads.google.com",
+    "twilio": "twilio.com", "sendgrid": "sendgrid.com", "mailgun": "mailgun.com",
+    "telegram": "telegram.org", "shopify": "shopify.com", "tally": "tallysolutions.com",
+    "vyapar": "vyaparapp.in", "shiprocket": "shiprocket.in", "delhivery": "delhivery.com",
+    "cleartax_gst": "cleartax.in", "gupshup": "gupshup.io", "interakt": "interakt.shop",
+    "msg91": "msg91.com", "razorpayx": "razorpay.com", "keka": "keka.com",
+}
+
+# India-first integrations get a highlighted badge in the UI (the moat).
+_INDIA = {
+    "tally", "vyapar", "shiprocket", "delhivery", "cleartax_gst", "gupshup",
+    "interakt", "msg91", "razorpay", "razorpayx", "keka", "zoho", "zoho_books",
+    "zoho_inventory",
+}
+
+# Shared-OAuth families: one registered app powers several providers. When a
+# provider lacks its own <ID>_CLIENT_ID env var we fall back to the family one.
+_OAUTH_FAMILY_ENV = {
+    "outlook": "MICROSOFT", "onedrive": "MICROSOFT", "microsoft_teams": "MICROSOFT",
+    "zoho_books": "ZOHO", "zoho_inventory": "ZOHO",
+    "google_analytics": "GOOGLE", "google_ads": "GOOGLE",
+    "instagram": "FACEBOOK",
 }
 
 
@@ -181,15 +491,26 @@ def list_integrations():
     out = []
     for pid, meta in PROVIDERS.items():
         cfg = _get_cfg(uid, pid) or {}
+        fields = meta.get("fields", [])
+        # Connected when OAuth token present, or any configured manual field /
+        # legacy api_key/webhook is set.
+        connected = bool(cfg.get('access_token') or cfg.get('api_key') or cfg.get('webhook_url'))
+        if not connected:
+            connected = any(cfg.get(f["key"]) for f in fields)
         out.append({
             "id": pid,
             "label": meta["label"],
             "category": meta["category"],
-            "connected": bool(cfg.get('access_token') or cfg.get('api_key') or cfg.get('webhook_url')),
+            "connected": connected,
             "auth_type": "oauth" if meta.get("authorize_url") else "api_key",
             "scopes": meta.get("scopes"),
+            "fields": fields,
+            "domain": _DOMAINS.get(pid),
+            "india": pid in _INDIA,
             "updated_at": cfg.get('updated_at'),
         })
+    # India-first first, then connected, then alphabetical — surfaces the moat.
+    out.sort(key=lambda x: (not x["india"], not x["connected"], x["label"].lower()))
     return jsonify({"integrations": out})
 
 
@@ -238,34 +559,33 @@ def connect(provider):
     cfg = _get_cfg(uid, provider) or {}
     client_id = cfg.get('client_id') or request.args.get('client_id')
     
-    # Fallback to system environment variables for central OAuth registration
+    # Fallback to system environment variables for central OAuth registration.
+    # Order: per-provider <ID>_CLIENT_ID → shared-family <FAMILY>_CLIENT_ID.
+    # This is what makes integrations ONE-TAP: the operator registers the app
+    # once in env, end-users just click "Connect".
+    _google_family = ('gmail', 'google_calendar', 'google_drive', 'google_sheets',
+                      'google_tasks', 'google_docs', 'google_contacts', 'youtube')
+
+    def _env(name):
+        return os.environ.get(name)
+
     if not client_id:
-        client_id = os.environ.get(f"{provider.upper()}_CLIENT_ID")
-    if not client_id and provider in ('gmail', 'google_calendar', 'google_drive', 'google_sheets', 'google_tasks', 'google_docs', 'google_contacts', 'youtube'):
-        client_id = (
-            os.environ.get("GOOGLE_CLIENT_ID")
-            or os.environ.get("GOOGLE_CALENDAR_CLIENT_ID")
-            or os.environ.get("GMAIL_CLIENT_ID")
-            or os.environ.get("GOOGLE_DRIVE_CLIENT_ID")
-            or os.environ.get("GOOGLE_SHEETS_CLIENT_ID")
-            or os.environ.get("GOOGLE_TASKS_CLIENT_ID")
-        )
+        client_id = _env(f"{provider.upper()}_CLIENT_ID")
+    if not client_id and provider in _google_family:
+        client_id = _env("GOOGLE_CLIENT_ID")
+    if not client_id and provider in _OAUTH_FAMILY_ENV:
+        client_id = _env(f"{_OAUTH_FAMILY_ENV[provider]}_CLIENT_ID")
 
     if not client_id:
         return jsonify({"error": "client_id missing — save it in Settings first."}), 400
 
     client_secret = cfg.get('client_secret') or request.args.get('client_secret')
     if not client_secret:
-        client_secret = os.environ.get(f"{provider.upper()}_CLIENT_SECRET")
-    if not client_secret and provider in ('gmail', 'google_calendar', 'google_drive', 'google_sheets', 'google_tasks', 'google_docs', 'google_contacts', 'youtube'):
-        client_secret = (
-            os.environ.get("GOOGLE_CLIENT_SECRET")
-            or os.environ.get("GOOGLE_CALENDAR_CLIENT_SECRET")
-            or os.environ.get("GMAIL_CLIENT_SECRET")
-            or os.environ.get("GOOGLE_DRIVE_CLIENT_SECRET")
-            or os.environ.get("GOOGLE_SHEETS_CLIENT_SECRET")
-            or os.environ.get("GOOGLE_TASKS_CLIENT_SECRET")
-        )
+        client_secret = _env(f"{provider.upper()}_CLIENT_SECRET")
+    if not client_secret and provider in _google_family:
+        client_secret = _env("GOOGLE_CLIENT_SECRET")
+    if not client_secret and provider in _OAUTH_FAMILY_ENV:
+        client_secret = _env(f"{_OAUTH_FAMILY_ENV[provider]}_CLIENT_SECRET")
 
     # Force https — Flask behind HF Spaces / Render proxy sees http internally
     central_domain = os.environ.get("CENTRAL_DOMAIN") or os.environ.get("OAUTH_REDIRECT_DOMAIN")
@@ -430,22 +750,23 @@ def save_manual(provider):
     if not uid:
         return jsonify({"error": "Authentication required"}), 401
     data = request.get_json(silent=True) or {}
-    allowed = {
+    meta = PROVIDERS.get(provider)
+    if meta is None:
+        return jsonify({"error": "unknown provider"}), 400
+    # Legacy explicit whitelists (kept for the original manual providers).
+    legacy = {
         "whatsapp":  {"access_token", "phone_number_id", "business_account_id", "verify_token"},
         "slack":     {"webhook_url", "bot_token", "default_channel"},
         "zapier":    {"webhook_url"},
-        "hubspot":   {"client_id", "client_secret"},
-        "salesforce":{"client_id", "client_secret"},
-        "zoho":      {"client_id", "client_secret"},
-        "google_calendar": {},
-        "gmail":           {},
-        "google_drive":    {},
-        "google_sheets":   {},
-        "google_tasks":    {},
-        "github":          {},
-    }.get(provider)
-    if allowed is None:
-        return jsonify({"error": "unknown provider"}), 400
+    }
+    allowed = set(legacy.get(provider, set()))
+    # Data-driven: every field declared in the catalog is savable.
+    for f in meta.get("fields", []):
+        allowed.add(f["key"])
+    # Any OAuth provider may optionally store its OWN app client_id/secret
+    # (so power users aren't forced onto the operator's central app).
+    if meta.get("authorize_url"):
+        allowed.update({"client_id", "client_secret"})
     patch = {k: v for k, v in data.items() if k in allowed}
     _save_cfg(uid, provider, patch)
     if provider == "github" and patch.get("access_token"):

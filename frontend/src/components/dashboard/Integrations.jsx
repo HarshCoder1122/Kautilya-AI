@@ -1,44 +1,69 @@
 import { useState, useEffect } from "react";
 import {
-  Link, WhatsappLogo, SlackLogo, GoogleLogo, GithubLogo,
-  Lightning, CheckCircle, XCircle, ArrowSquareOut,
-  PlugsConnected, Spinner, EnvelopeSimple,
-  Cpu, Plus, Trash
+  CheckCircle, XCircle, ArrowSquareOut,
+  Spinner, Cpu, Plus, Trash, MagnifyingGlass
 } from "@phosphor-icons/react";
 import api, { integrationsAPI } from "../../lib/api";
 
-const PROVIDER_ICONS = {
-  hubspot:         { icon: Lightning,     color: "text-orange-400",  bg: "bg-orange-400/10" },
-  salesforce:      { icon: Lightning,     color: "text-blue-400",    bg: "bg-blue-400/10"   },
-  zoho:            { icon: Lightning,     color: "text-green-400",   bg: "bg-green-400/10"  },
-  google_calendar: { icon: GoogleLogo,    color: "text-red-400",     bg: "bg-red-400/10"    },
-  whatsapp:        { icon: WhatsappLogo,  color: "text-emerald-400", bg: "bg-emerald-400/10"},
-  slack:           { icon: SlackLogo,     color: "text-purple-400",  bg: "bg-purple-400/10" },
-  zapier:          { icon: Lightning,     color: "text-amber-400",   bg: "bg-amber-400/10"  },
-  gmail:           { icon: EnvelopeSimple, color: "text-rose-400",    bg: "bg-rose-400/10"   },
-  github:          { icon: GithubLogo,    color: "text-zinc-300",    bg: "bg-zinc-300/10"   },
-  google_drive:    { icon: GoogleLogo,    color: "text-yellow-400",  bg: "bg-yellow-400/10" },
-  google_sheets:   { icon: GoogleLogo,    color: "text-emerald-400", bg: "bg-emerald-400/10"},
-  google_tasks:    { icon: GoogleLogo,    color: "text-blue-400",    bg: "bg-blue-400/10"   },
-};
-
-const CATEGORY_LABELS = { 
-  crm: "CRM", 
-  messaging: "Messaging", 
-  calendar: "Calendar", 
-  automation: "Automation", 
+const CATEGORY_LABELS = {
+  india: "🇮🇳 India Business Stack",
+  crm: "CRM & Sales",
+  messaging: "Messaging",
+  email: "Email",
+  calendar: "Calendar & Meetings",
+  automation: "Automation",
   developer: "Developer Tools",
-  productivity: "Productivity",
-  storage: "Cloud Storage"
+  productivity: "Productivity & Docs",
+  storage: "Cloud Storage",
+  payments: "Payments",
+  accounting: "Accounting",
+  ecommerce: "E-commerce",
+  marketing: "Marketing",
+  logistics: "Logistics & Shipping",
+  hr: "HR & Payroll",
+  support: "Support Desk",
+  analytics: "Analytics",
+  social: "Social",
+  other: "Other",
 };
 
-const MANUAL_FIELDS = {
-  whatsapp:        [{ key: "access_token", label: "Access Token", type: "password" },
-                    { key: "phone_number_id", label: "Phone Number ID", type: "text" },
-                    { key: "business_account_id", label: "Business Account ID", type: "text" }],
-  slack:           [{ key: "webhook_url", label: "Incoming Webhook URL", type: "url" }],
-  zapier:          [{ key: "webhook_url", label: "Zap Webhook URL", type: "url" }],
+// Manual credential fields now come from the backend catalog (item.fields).
+// Kept here only as a fallback for the original manual providers.
+const FALLBACK_FIELDS = {
+  whatsapp: [{ key: "access_token", label: "Access Token", type: "password" },
+             { key: "phone_number_id", label: "Phone Number ID", type: "text" },
+             { key: "business_account_id", label: "Business Account ID", type: "text" }],
+  slack:    [{ key: "webhook_url", label: "Incoming Webhook URL", type: "url" }],
+  zapier:   [{ key: "webhook_url", label: "Zap Webhook URL", type: "url" }],
 };
+
+// Real brand logo via Clearbit, with a coloured-monogram fallback when a logo
+// isn't found — so EVERY integration shows something recognisable.
+function BrandLogo({ domain, label }) {
+  const [failed, setFailed] = useState(false);
+  const letter = (label || "?").trim().charAt(0).toUpperCase();
+  // Deterministic colour from the label so monograms are stable & varied.
+  const hue = ([...(label || "")].reduce((a, c) => a + c.charCodeAt(0), 0) * 7) % 360;
+  if (!domain || failed) {
+    return (
+      <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 font-bold text-sm"
+        style={{ background: `hsl(${hue} 70% 92%)`, color: `hsl(${hue} 65% 35%)` }}>
+        {letter}
+      </div>
+    );
+  }
+  return (
+    <div className="w-10 h-10 rounded-lg bg-white flex items-center justify-center flex-shrink-0 border border-[var(--k-border)] overflow-hidden">
+      <img
+        src={`https://logo.clearbit.com/${domain}`}
+        alt={label}
+        loading="lazy"
+        className="w-7 h-7 object-contain"
+        onError={() => setFailed(true)}
+      />
+    </div>
+  );
+}
 
 export default function Integrations() {
   const [integrations, setIntegrations] = useState([]);
@@ -48,6 +73,7 @@ export default function Integrations() {
   const [saving, setSaving] = useState(null);
   const [disconnecting, setDisconnecting] = useState(null);
   const [toast, setToast] = useState(null);
+  const [search, setSearch] = useState("");
 
   const [customServers, setCustomServers] = useState([]);
   const [customStatus, setCustomStatus] = useState({});
@@ -187,18 +213,44 @@ export default function Integrations() {
     }
   };
 
-  const grouped = integrations.reduce((acc, item) => {
+  const q = search.trim().toLowerCase();
+  const filtered = q
+    ? integrations.filter(i =>
+        (i.label || "").toLowerCase().includes(q) ||
+        (i.category || "").toLowerCase().includes(q))
+    : integrations;
+
+  // Preserve the backend's india-first ordering of categories.
+  const grouped = filtered.reduce((acc, item) => {
     const cat = item.category || "other";
     (acc[cat] = acc[cat] || []).push(item);
     return acc;
   }, {});
 
+  const connectedCount = integrations.filter(i => i.connected).length;
+
   return (
     <div className="h-full flex flex-col bg-background">
       {/* Header */}
       <div className="px-8 py-6 border-b border-[var(--k-border)]">
-        <h1 className="text-2xl font-medium k-heading tracking-tight text-foreground">Integrations</h1>
-        <p className="text-sm text-muted-foreground mt-1">Connect Kautilya AI to your CRM, messaging, and automation tools</p>
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h1 className="text-2xl font-medium k-heading tracking-tight text-foreground">Integrations</h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              One-tap connect Kautilya to {integrations.length}+ apps — CRM, payments, GST, logistics, messaging & more.
+              {connectedCount > 0 && <span className="text-emerald-400 font-medium"> · {connectedCount} connected</span>}
+            </p>
+          </div>
+          <div className="relative w-full sm:w-72">
+            <MagnifyingGlass className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search integrations…"
+              className="w-full pl-9 pr-3 py-2 text-sm rounded-lg bg-[var(--k-surface)] border border-[var(--k-border)] text-foreground outline-none focus:border-[var(--k-brand)] transition-colors"
+            />
+          </div>
+        </div>
       </div>
 
       {/* Toast */}
@@ -221,50 +273,55 @@ export default function Integrations() {
                 <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-3">
                   {CATEGORY_LABELS[cat] || cat}
                 </h3>
-                <div className="space-y-2">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
                   {items.map((item) => {
-                    const meta = PROVIDER_ICONS[item.id] || { icon: PlugsConnected, color: "text-muted-foreground", bg: "bg-accent" };
-                    const Icon = meta.icon;
                     const isOpen = expanded === item.id;
-                    const fields = MANUAL_FIELDS[item.id] || [];
+                    const fields = (item.fields && item.fields.length ? item.fields : FALLBACK_FIELDS[item.id]) || [];
                     const isOAuth = item.auth_type === "oauth";
 
                     return (
-                      <div key={item.id} className="rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] overflow-hidden">
+                      <div key={item.id} className="rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] overflow-hidden lg:col-span-1" style={isOpen ? { gridColumn: "1 / -1" } : undefined}>
                         {/* Row */}
                         <div className="flex items-center gap-4 p-4">
-                          <div className={`w-10 h-10 rounded-lg ${meta.bg} flex items-center justify-center flex-shrink-0`}>
-                            <Icon className={`w-5 h-5 ${meta.color}`} weight="duotone" />
-                          </div>
+                          <BrandLogo domain={item.domain} label={item.label} />
                           <div className="flex-1 min-w-0">
-                            <div className="text-sm font-medium text-foreground">{item.label}</div>
-                            <div className="text-xs text-muted-foreground capitalize">{item.category}</div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium text-foreground truncate">{item.label}</span>
+                              {item.india && (
+                                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-orange-400/10 text-orange-400 border border-orange-400/20 flex-shrink-0">🇮🇳 India</span>
+                              )}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              {item.connected
+                                ? <span className="text-emerald-400 inline-flex items-center gap-1"><CheckCircle className="w-3 h-3" weight="fill" /> Connected</span>
+                                : <span className="inline-flex items-center gap-1"><XCircle className="w-3 h-3" /> {isOAuth ? "One-tap connect" : "Setup required"}</span>}
+                            </div>
                           </div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-shrink-0">
                             {item.connected ? (
-                              <>
-                                <span className="flex items-center gap-1 text-xs text-emerald-400 font-medium">
-                                  <CheckCircle className="w-3.5 h-3.5" weight="fill" /> Connected
-                                </span>
-                                <button
-                                  onClick={() => handleDisconnect(item.id)}
-                                  disabled={disconnecting === item.id}
-                                  className="px-3 py-1.5 text-xs rounded-lg border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors disabled:opacity-50"
-                                >
-                                  {disconnecting === item.id ? "…" : "Disconnect"}
-                                </button>
-                              </>
+                              <button
+                                onClick={() => handleDisconnect(item.id)}
+                                disabled={disconnecting === item.id}
+                                className="px-3 py-1.5 text-xs rounded-lg border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors disabled:opacity-50"
+                              >
+                                {disconnecting === item.id ? "…" : "Disconnect"}
+                              </button>
+                            ) : isOAuth ? (
+                              // One-tap: connect straight away, no form.
+                              <button
+                                onClick={() => handleOAuth(item.id)}
+                                className="flex items-center gap-1.5 px-4 py-1.5 text-xs rounded-lg bg-[var(--k-brand)] text-white font-medium hover:bg-[var(--k-brand-hover)] transition-colors"
+                              >
+                                <ArrowSquareOut className="w-3.5 h-3.5" /> Connect
+                              </button>
                             ) : (
-                              <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                                <XCircle className="w-3.5 h-3.5" /> Not connected
-                              </span>
+                              <button
+                                onClick={() => setExpanded(isOpen ? null : item.id)}
+                                className="px-3 py-1.5 text-xs rounded-lg bg-[var(--k-brand)]/10 text-[var(--k-brand)] hover:bg-[var(--k-brand)]/20 transition-colors"
+                              >
+                                {isOpen ? "Close" : "Connect"}
+                              </button>
                             )}
-                            <button
-                              onClick={() => setExpanded(isOpen ? null : item.id)}
-                              className="px-3 py-1.5 text-xs rounded-lg bg-[var(--k-brand)]/10 text-[var(--k-brand)] hover:bg-[var(--k-brand)]/20 transition-colors"
-                            >
-                              {isOpen ? "Close" : "Configure"}
-                            </button>
                           </div>
                         </div>
 
