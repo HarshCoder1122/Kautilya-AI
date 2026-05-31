@@ -61,14 +61,23 @@ HI_VOICES = ("hf_alpha", "hf_beta", "hm_omega", "hm_psi")
 # *32767 conversion sounds quiet. We peak-normalise each segment to TARGET_PEAK
 # for consistent, full loudness (gain capped so near-silent breath frames don't
 # get blown up). Override with TTS_TARGET_PEAK / TTS_MAX_GAIN.
-TARGET_PEAK = float(os.environ.get("TTS_TARGET_PEAK", "0.97"))
+TARGET_PEAK = float(os.environ.get("TTS_TARGET_PEAK", "0.98"))
 MAX_GAIN = float(os.environ.get("TTS_MAX_GAIN", "6.0"))
 FADE_MS = float(os.environ.get("TTS_FADE_MS", "2.5"))  # edge fade kills click/pop at segment joins
+# Soft-clip drive: tanh saturation that raises RMS (perceived LOUDNESS) while
+# keeping peaks bounded — much louder than peak-normalisation alone, no harsh
+# clipping. 1.0 = off; higher = louder. Override with TTS_LOUDNESS_DRIVE.
+LOUDNESS_DRIVE = float(os.environ.get("TTS_LOUDNESS_DRIVE", "2.0"))
 
 def _maybe_quantize(pipeline, label=""):
-    """INT8 dynamic quantization of the Kokoro acoustic model — a reliable CPU
-    speedup (Linear/LSTM run in int8) with NO external files. Any failure falls
-    back to the original fp32 model. Disable with TTS_QUANTIZE=0."""
+    """INT8 dynamic quantization of the Kokoro acoustic model — a CPU speedup
+    with NO external files. Any failure falls back to fp32. Disable TTS_QUANTIZE=0.
+
+    IMPORTANT: only nn.Linear is quantized. Kokoro calls LSTM.flatten_parameters()
+    during forward, which a dynamically-quantized LSTM doesn't implement
+    ('LSTM has no attribute flatten_parameters'), so quantizing LSTM/GRU breaks
+    inference. Leaving the LSTMs in fp32 keeps synthesis working while the
+    Linear-heavy text/attention path still benefits."""
     if device != "cpu" or os.environ.get("TTS_QUANTIZE", "1") == "0":
         return
     try:
@@ -77,8 +86,8 @@ def _maybe_quantize(pipeline, label=""):
             return
         import torch.nn as nn
         pipeline.model = torch.quantization.quantize_dynamic(
-            model, {nn.Linear, nn.LSTM, nn.GRU}, dtype=torch.qint8)
-        print(f"DEBUG: INT8 dynamic quantization applied [{label}]")
+            model, {nn.Linear}, dtype=torch.qint8)
+        print(f"DEBUG: INT8 dynamic quantization applied [{label}] (Linear only)")
     except Exception as e:
         print(f"WARN: quantization skipped [{label}]: {e}")
 
@@ -97,6 +106,9 @@ def _post_process(audio, sample_rate=24000):
         gain = min(TARGET_PEAK / peak, MAX_GAIN)
         if gain != 1.0:
             a = a * gain
+    # Soft-clip saturation → louder perceived volume, peaks stay bounded.
+    if LOUDNESS_DRIVE > 1.0:
+        a = np.tanh(a * LOUDNESS_DRIVE) * (TARGET_PEAK / np.tanh(LOUDNESS_DRIVE))
     np.clip(a, -1.0, 1.0, out=a)
     n = int(sample_rate * FADE_MS / 1000.0)
     if n > 0 and a.size > 2 * n:
@@ -261,6 +273,39 @@ def get_pipeline(model_name: str):
             raise HTTPException(status_code=503, detail="English pipeline not ready")
         return kokoro_en
 
+# ── Auto language detection ───────────────────────────────────────────────
+# The caller (chat UI) always asks for the English voice, but the LLM may reply
+# in Hindi (Devanagari) — which the English pipeline can't pronounce. We detect
+# the script of each text segment and route it to the right pipeline + voice
+# automatically, so the frontend never has to know the language. Hinglish
+# (Hindi written in Roman letters) stays on English since it's Latin script.
+_EN_VOICE_PREFIXES = ("af_", "am_", "bf_", "bm_")
+_HI_VOICE_PREFIXES = ("hf_", "hm_")
+
+def _detect_lang(text: str) -> str:
+    """'hi' if the segment contains Devanagari, else 'en'."""
+    if not text:
+        return "en"
+    for ch in text:
+        if "ऀ" <= ch <= "ॿ":
+            return "hi"
+    return "en"
+
+def _resolve_pipeline(lang: str, requested_voice: str):
+    """Return (pipeline, voice) for a detected language. Lazily loads Hindi and
+    falls back to English if Hindi isn't ready, so playback never hard-fails."""
+    if lang == "hi":
+        if not kokoro_hi:
+            _load_hindi()
+        if kokoro_hi:
+            v = requested_voice if (requested_voice or "").startswith(_HI_VOICE_PREFIXES) else "hf_alpha"
+            return kokoro_hi, v
+        # Hindi not ready → fall through to English rather than erroring out.
+    if not kokoro_en:
+        raise HTTPException(status_code=503, detail="English pipeline not ready")
+    v = requested_voice if (requested_voice or "").startswith(_EN_VOICE_PREFIXES) else "af_heart"
+    return kokoro_en, v
+
 # ── Repeated-phrase audio cache ───────────────────────────────────────────
 # Greetings, UI sounds and common replies repeat constantly. Caching the final
 # PCM for short inputs makes those instant (zero synthesis). Keyed by
@@ -290,11 +335,17 @@ def _cache_put(key, data):
             _AUDIO_CACHE.popitem(last=False)
 
 
-def trim_silence(audio, sample_rate=24000, threshold=0.005, keep_start_ms=30, keep_end_ms=70):
+# Tight join cushions — when a sentence is split into segments, big trailing/
+# leading silences made an audible PAUSE at every join. Keeping only ~8ms each
+# side butts the segments together so split sentences flow continuously. The
+# 2.5ms edge-fade in _post_process keeps the tight joins click-free.
+_TRIM_START_MS = int(os.environ.get("TTS_TRIM_START_MS", "8"))
+_TRIM_END_MS = int(os.environ.get("TTS_TRIM_END_MS", "8"))
+
+def trim_silence(audio, sample_rate=24000, threshold=0.005, keep_start_ms=_TRIM_START_MS, keep_end_ms=_TRIM_END_MS):
     """
-    Trim leading and trailing silence from float32 audio.
-    Keeps a small cushion of silence (keep_start_ms at start, keep_end_ms at end)
-    so it doesn't sound completely cut off, preventing long breaks after punctuation.
+    Trim leading and trailing silence from float32 audio, keeping only a tiny
+    cushion each side so segments of a split sentence join with no audible gap.
     """
     is_tensor = False
     if torch.is_tensor(audio):
@@ -326,10 +377,10 @@ def trim_silence(audio, sample_rate=24000, threshold=0.005, keep_start_ms=30, ke
     return trimmed_audio
 
 def generate_full_audio_sync(request: SpeechRequest):
-    pipeline = get_pipeline(request.model)
-    # Smart Default Voice
-    voice = request.voice if request.voice else ("hf_alpha" if "hi" in request.model.lower() else "af_heart")
-    
+    # Auto-detect the language from the actual text (not the requested model).
+    lang = _detect_lang(request.input)
+    pipeline, voice = _resolve_pipeline(lang, request.voice)
+
     generator = pipeline(request.input, voice=voice, speed=request.speed)
     audio_chunks = []
     for _, _, audio in generator:
@@ -496,7 +547,6 @@ def generate_voice_thread(loop, queue, text, model_name, voice, speed):
                 loop.call_soon_threadsafe(queue.put_nowait, None)
                 return
 
-        pipeline = get_pipeline(model_name)
         # Pre-split text for faster streaming using progressive splitting
         sentences = split_text(text)
         full_pcm = bytearray() if ckey is not None else None
@@ -509,7 +559,15 @@ def generate_voice_thread(loop, queue, text, model_name, voice, speed):
                 if not sentence.strip():
                     continue
 
-                generator = pipeline(sentence, voice=voice, speed=speed)
+                # AUTO LANGUAGE: pick the pipeline+voice from the segment's own
+                # script, so a Hindi reply renders on the Hindi voice even though
+                # the request asked for English (and vice-versa).
+                lang = _detect_lang(sentence)
+                try:
+                    pipeline, seg_voice = _resolve_pipeline(lang, voice)
+                except Exception:
+                    continue
+                generator = pipeline(sentence, voice=seg_voice, speed=speed)
                 for _, _, audio in generator:
                     if audio is None:
                         continue

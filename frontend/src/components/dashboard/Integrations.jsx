@@ -196,12 +196,21 @@ export default function Integrations() {
   };
 
   const handleOAuth = async (provider) => {
+    // Open the popup SYNCHRONOUSLY inside the click handler. Opening it AFTER
+    // `await` loses the user-gesture context, so the browser's popup blocker
+    // silently kills it — that's the "I click Connect and nothing happens" bug.
+    const popup = window.open("about:blank", "_blank", "width=600,height=700");
     try {
       const redirectUri = `${window.location.origin}/api/integrations/${provider}/callback`;
       const res = await integrationsAPI.connectOAuth(provider, redirectUri);
       const url = res.redirect_url;
-      if (!url) { showToast("Save client_id first", "error"); return; }
-      const popup = window.open(url, "_blank", "width=600,height=700");
+      if (!url) {
+        popup?.close();
+        showToast("This integration isn't set up yet — OAuth keys missing.", "error");
+        return;
+      }
+      if (popup) popup.location.href = url;
+      else window.open(url, "_blank", "width=600,height=700"); // blocked anyway → retry
       const handler = (e) => {
         if (e.data?.kt_integration_connected) {
           window.removeEventListener("message", handler);
@@ -211,8 +220,17 @@ export default function Integrations() {
         }
       };
       window.addEventListener("message", handler);
+      // Stop listening once the user closes the popup without finishing.
+      const poll = setInterval(() => {
+        if (!popup || popup.closed) {
+          clearInterval(poll);
+          window.removeEventListener("message", handler);
+        }
+      }, 1000);
     } catch (e) {
-      showToast(e.response?.data?.error || "OAuth failed", "error");
+      popup?.close();
+      const msg = e.response?.data?.error || "Couldn't start OAuth — check this integration's setup.";
+      showToast(msg, "error");
     }
   };
 

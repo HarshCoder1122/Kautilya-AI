@@ -516,8 +516,38 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
 
       const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
       audioRef.current = ctx;
-      let nextTime = ctx.currentTime + 0.05;
+      try { await ctx.resume(); } catch {}
+
+      // ── Jitter buffer ──────────────────────────────────────────────────
+      // The server synthesises sentence-by-sentence, so PCM arrives in bursts
+      // with gaps between sentences. The old 50ms lead under-ran on those
+      // gaps → the audible "break" on desktop. We prime ~300ms before starting,
+      // then schedule every arriving frame into the FUTURE (nextTime keeps
+      // accumulating), so a synthesis gap is covered by already-scheduled audio
+      // instead of becoming silence. A resync guard handles rare true underruns.
+      const PRIME_SAMPLES = Math.floor(0.30 * SAMPLE_RATE);
+      let nextTime = 0;
+      let started = false;
+      let pending = [];
+      let pendingSamples = 0;
       let leftover = null;
+
+      const scheduleFrame = (float32) => {
+        const buf = ctx.createBuffer(1, float32.length, SAMPLE_RATE);
+        buf.getChannelData(0).set(float32);
+        const src = ctx.createBufferSource();
+        src.buffer = buf; src.connect(ctx.destination);
+        if (nextTime < ctx.currentTime + 0.02) nextTime = ctx.currentTime + 0.12; // resync
+        src.start(nextTime);
+        nextTime += buf.duration;
+      };
+      const startPlayback = () => {
+        started = true;
+        nextTime = ctx.currentTime + 0.08;
+        for (const f of pending) scheduleFrame(f);
+        pending = []; pendingSamples = 0;
+      };
+
       const reader = response.body.getReader();
       setIsSynthesizing(false);
       setIsPlaying(true);
@@ -538,16 +568,20 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
           const int16 = new Int16Array(combined.buffer, combined.byteOffset, len / 2);
           const float32 = new Float32Array(int16.length);
           for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0;
-          const buf = ctx.createBuffer(1, float32.length, SAMPLE_RATE);
-          buf.getChannelData(0).set(float32);
-          const src = ctx.createBufferSource();
-          src.buffer = buf; src.connect(ctx.destination);
-          const t = Math.max(nextTime, ctx.currentTime + 0.01);
-          src.start(t); nextTime = t + buf.duration;
+
+          if (started) {
+            scheduleFrame(float32);
+          } else {
+            pending.push(float32); pendingSamples += float32.length;
+            if (pendingSamples >= PRIME_SAMPLES) startPlayback();
+          }
         }
+        // Clip shorter than the prime window — flush what we have.
+        if (!started && pending.length) startPlayback();
       } finally {
         reader.cancel().catch(() => {});
-        setTimeout(() => { try { ctx.close(); } catch {} audioRef.current = null; setIsPlaying(false); }, (nextTime - ctx.currentTime + 0.5) * 1000);
+        const tail = Math.max(0.3, (nextTime - ctx.currentTime) + 0.3);
+        setTimeout(() => { try { ctx.close(); } catch {} audioRef.current = null; setIsPlaying(false); }, tail * 1000);
       }
     } catch (error) {
       console.warn('Streaming TTS failed, falling back to browser speech:', error);
