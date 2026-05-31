@@ -90,6 +90,10 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   const audioChunksRef = useRef([]);
   // Track sessions we just created so we don't reload empty history
   const pendingSessionRef = useRef(null);
+  // The session currently on screen — used to discard stale async results
+  // (a poll/history-load that resolves AFTER the user switched chats must not
+  // overwrite the new chat's messages).
+  const activeSessionRef = useRef(sessionId);
   // Track whether we left mid-stream (user navigated away during generation)
   const leftMidStreamRef = useRef(false);
   const staleTimerRef = useRef(null);
@@ -114,16 +118,22 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     el.scrollIntoView({ behavior: isStreaming ? "auto" : "smooth", block: "end" });
   }, [messages, isThinking, isStreaming]);
 
-  // Reload history when user returns to the tab after leaving mid-stream
+  // Tab refocus handling. IMPORTANT: switching away to another app/tab and
+  // back must NEVER blank the screen. We only do a SILENT, NON-DESTRUCTIVE
+  // catch-up — and ONLY if the user actually left mid-generation. A normal
+  // "switch to VS Code and back" does nothing: the React state is already on
+  // screen, so there's nothing to reload.
   useEffect(() => {
     const handleVisibility = () => {
-      if (document.visibilityState === 'visible' && leftMidStreamRef.current && sessionId) {
+      if (document.visibilityState === 'visible' && leftMidStreamRef.current && sessionId && !isStreaming) {
         leftMidStreamRef.current = false;
-        // Small delay to let the backend thread finish saving
-        setTimeout(() => loadHistory(sessionId), 1200);
+        // merge:true → fill in any content finished while we were away, but
+        // never replace the on-screen messages with an empty/shorter snapshot.
+        // silent:true → no "Thinking…" flash over the existing conversation.
+        setTimeout(() => loadHistory(sessionId, { merge: true, silent: true }), 800);
       }
       if (document.visibilityState === 'hidden') {
-        // Record we left the tab
+        // Record we left the tab ONLY if a generation was in flight.
         leftMidStreamRef.current = isStreaming || isThinking;
       }
     };
@@ -157,6 +167,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
 
   // Load history when sessionId changes
   useEffect(() => {
+    activeSessionRef.current = sessionId;
     if (!sessionId) {
       setMessages([]);
       return;
@@ -265,12 +276,35 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     };
   };
 
-  const loadHistory = async (sid) => {
+  // Adopt a server snapshot only if it's at least as "rich" as what's already
+  // on screen — i.e. it has no fewer messages and no less total text. This is
+  // what guarantees a tab refocus / background poll can never blank or shrink
+  // the visible conversation.
+  const _textLen = (arr) => (arr || []).reduce(
+    (n, m) => n + (typeof m.content === 'string' ? m.content.length : 0), 0);
+  const _adoptIfRicher = (prev, incoming) => {
+    if (!incoming || incoming.length === 0) return prev;
+    if (incoming.length < prev.length) return prev;
+    if (incoming.length === prev.length && _textLen(incoming) < _textLen(prev)) return prev;
+    return incoming;
+  };
+
+  const loadHistory = async (sid, { merge = false, silent = false } = {}) => {
     try {
-      setIsThinking(true);
+      if (!silent) setIsThinking(true);
       const data = await chatAPI.getConversation(sid);
+      // Discard if the user switched chats while this was in flight.
+      if (sid !== activeSessionRef.current) return;
       if (data && data.messages && data.messages.length > 0) {
-        setMessages(data.messages.map(m => hydrateHistoryMessage(m)));
+        const incoming = data.messages.map(m => hydrateHistoryMessage(m));
+        if (merge) {
+          // Non-destructive: never wipe or shrink the on-screen conversation
+          // with a stale/empty server snapshot (the tab-refocus path).
+          setMessages(prev => _adoptIfRicher(prev, incoming));
+        } else {
+          // Session switch / explicit load — authoritative full replace.
+          setMessages(incoming);
+        }
         // If the server is still generating the last assistant message
         // (user closed/reloaded the app mid-stream), poll for live updates
         // until the streaming flag flips off. Keep "thinking" UI active so
@@ -284,7 +318,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     } catch (error) {
       console.error('Failed to load conversation history:', error);
     } finally {
-      setIsThinking(false);
+      if (!silent) setIsThinking(false);
     }
   };
 
@@ -297,10 +331,15 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     // Tight 1.2s polling — partial Firestore writes land every 1.5s
     for (let i = 0; i < 250; i++) { // 250 * 1.2s = 5 min hard cap
       await new Promise(r => setTimeout(r, 1200));
+      // Stop polling a chat the user has navigated away from.
+      if (sid !== activeSessionRef.current) break;
       try {
         const data = await chatAPI.getConversation(sid);
         if (!data || !data.messages) continue;
-        setMessages(data.messages.map(m => hydrateHistoryMessage(m)));
+        if (sid !== activeSessionRef.current) break;
+        // Non-destructive — a transiently-empty/stale read must never wipe
+        // the live message the user is watching grow.
+        setMessages(prev => _adoptIfRicher(prev, data.messages.map(m => hydrateHistoryMessage(m))));
         const lastMsg = data.messages[data.messages.length - 1];
         const lastContent = typeof lastMsg?.content === 'string' ? lastMsg.content : '';
         // Keep thinking bubble visible while server has nothing to show yet
