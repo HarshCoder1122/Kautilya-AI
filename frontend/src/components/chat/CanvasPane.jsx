@@ -987,16 +987,32 @@ export function CanvasPane({ content, onClose, activeMode }) {
 
   const handleDownload = async (kindOverride) => {
     if (!content?.code) return;
-    const kind = (typeof kindOverride === 'string' ? kindOverride : null) || 
-                 ((content?.type === 'excel' || content?.type === 'spreadsheet') ? 'excel' : 
-                  content?.type === 'csv' ? 'csv' : 
-                  activeTab === 'code' ? 'code' : 'markdown');
+    // Default download for a DOCUMENT artifact is a real PDF — not raw .md.
+    // (The doc tab also has explicit PDF/DOCX buttons.) Spreadsheets/CSV keep
+    // their native formats; the raw code view downloads as source.
+    const kind = (typeof kindOverride === 'string' ? kindOverride : null) ||
+                 ((content?.type === 'excel' || content?.type === 'spreadsheet') ? 'excel' :
+                  content?.type === 'csv' ? 'csv' :
+                  activeTab === 'code' ? 'code' : 'pdf');
 
     if (['excel', 'csv', 'pdf', 'docx'].includes(kind)) {
+      // For document exports, strip backend tags (<think>/<artifact>) and the
+      // __sources__ blob, and fold any sources into a readable bibliography so
+      // the PDF/DOCX matches the on-screen document and is self-contained.
+      let payload = content.code;
+      if (kind === 'pdf' || kind === 'docx') {
+        const { body, sources } = cleanDocumentContent(content.code);
+        payload = body || content.code;
+        if (sources?.length && !/\n#+\s*sources/i.test(payload)) {
+          payload += '\n\n## Sources\n' + sources
+            .map((s, i) => `${i + 1}. ${s.title || s.url} — ${s.url}`)
+            .join('\n');
+        }
+      }
       try {
         const blob = await artifactsAPI.create({
           kind,
-          content: content.code,
+          content: payload,
           title: content.title || 'Kautilya Export',
           filename: content.filename
         });

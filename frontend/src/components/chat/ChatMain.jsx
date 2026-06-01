@@ -379,6 +379,47 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     setSelectedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
+  // Grow the composer upward as the user types more lines (capped, then it
+  // scrolls internally). Called on every value change — typed or programmatic.
+  const INPUT_MAX_H = 240;
+  const autoResizeInput = () => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, INPUT_MAX_H)}px`;
+    el.style.overflowY = el.scrollHeight > INPUT_MAX_H ? 'auto' : 'hidden';
+  };
+
+  // Keep height in sync when inputValue changes from anywhere (suggestions,
+  // voice transcription, send-clear, etc.), not just direct typing.
+  useEffect(() => {
+    autoResizeInput();
+  }, [inputValue]);
+
+  // Paste images / files straight from the clipboard into the composer — no
+  // need to save-then-attach. Pasted blobs often have no filename, so we
+  // synthesize one so previews and upload work.
+  const handlePaste = (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const pasted = [];
+    for (const item of items) {
+      if (item.kind === 'file') {
+        let file = item.getAsFile();
+        if (!file) continue;
+        if (!file.name) {
+          const ext = (file.type && file.type.split('/')[1]) || 'png';
+          file = new File([file], `pasted-${Date.now()}.${ext}`, { type: file.type || 'application/octet-stream' });
+        }
+        pasted.push(file);
+      }
+    }
+    if (pasted.length) {
+      e.preventDefault(); // don't also paste the binary/filename as text
+      setSelectedFiles(prev => [...prev, ...pasted]);
+    }
+  };
+
   // Voice recording
   const startRecording = async () => {
     try {
@@ -1177,8 +1218,9 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
               ref={inputRef}
               data-testid="chat-input"
               value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
+              onChange={(e) => { setInputValue(e.target.value); autoResizeInput(); }}
               onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
               placeholder={
                 isRecording ? 'Recording voice...'
                   : activeMode === 'research'
@@ -1189,8 +1231,8 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
               }
               rows={1}
               disabled={isRecording}
-              className="flex-1 py-3 px-1 bg-transparent resize-none focus:outline-none text-sm text-foreground placeholder:text-muted-foreground max-h-32 disabled:opacity-60"
-              style={{ minHeight: '44px' }}
+              className="flex-1 py-3 px-1 bg-transparent resize-none focus:outline-none text-sm text-foreground placeholder:text-muted-foreground disabled:opacity-60"
+              style={{ minHeight: '44px', maxHeight: '240px' }}
             />
             {(isThinking || isStreaming) ? (
               <button

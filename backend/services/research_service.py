@@ -1,30 +1,41 @@
 """
-Kautilya AI — Deep Research Service (Perplexity-grade).
+Kautilya AI — Deep Research Service (analyst-grade, multi-round).
 
-Streaming flow:
-  1. Query expansion          → LLM rewrites question into 3-4 search queries
-  2. Parallel web search      → SerpAPI (fallback: googlesearch, wikipedia)
-  3. Source cards emitted     → frontend renders citation cards immediately
-  4. Parallel content fetch   → readable text from top-N sources
-  5. Direct streaming synth   → tokens flow to UI in real-time (no draft phase)
+Goal: compress what a human analyst would spend weeks on into ~minutes —
+plan, search broadly, READ, find the gaps, search again, then synthesise a
+long-form, citation-dense report.
 
-Event protocol (each yield is a dict):
+Pipeline (all streamed live to the UI):
+  1. Plan            → LLM drafts a report outline + 5-6 diverse search queries
+  2. Round-1 search  → parallel web search across all queries (SerpAPI/fallbacks)
+  3. Read            → fetch + extract readable text from the top sources
+  4. Gap analysis    → LLM reads excerpts, finds what's missing, drafts follow-ups
+  5. Round-2 search  → fills the gaps with fresh, targeted sources
+  6. Read            → fetch the new sources
+  7. Synthesise      → one long, structured, [N]-cited report (with auto-continue
+                       if the model hits its token ceiling mid-report)
+  8. Bibliography    → a numbered "## Sources" section is appended so downloads
+                       (PDF/DOCX) are fully self-contained
+
+Event protocol (each yield is a dict — unchanged, the frontend already
+understands all of these):
+  { "event": "status",  "message": "..." }
   { "event": "query",   "queries": [...] }
   { "event": "sources", "sources": [{title, url, snippet, site, favicon}...] }
-  { "event": "status",  "message": "..." }
-  { "thinking": "..." }              (reasoning trace)
-  { "thinking_done": true }
-  { "event": "chunk",   "chunk": "..." }   (visible answer tokens)
-  { "event": "artifact", artifactType, artifactTitle }
+  { "thinking": "..." } / { "thinking_done": true }
+  { "event": "chunk",   "chunk": "..." }
+  { "event": "artifact", "artifactType": "document", "artifactTitle": "..." }
   { "event": "done" }
 """
 from __future__ import annotations
 
 import concurrent.futures
 import json
+import os
 import re
 import time
-from typing import Iterator, Dict, Any, List
+from datetime import datetime
+from typing import Iterator, Dict, Any, List, Tuple
 from urllib.parse import urlparse
 
 import requests
@@ -32,9 +43,31 @@ import requests
 from config import SERPAPI_API_KEY
 from services.llm_service import call_groq, call_nvidia
 
-MAX_SOURCES = 8
-FETCH_TIMEOUT = 6
-MAX_DOC_CHARS = 4000
+
+def _envint(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, default))
+    except Exception:
+        return default
+
+
+# ---- Depth knobs (env-tunable so depth can be dialled up without code edits) --
+MAX_SOURCES        = _envint("RESEARCH_MAX_SOURCES", 22)     # final cap fed to synthesis
+PER_QUERY_RESULTS  = _envint("RESEARCH_PER_QUERY", 6)        # results per search query
+MAX_QUERIES_R1     = _envint("RESEARCH_QUERIES_R1", 6)       # round-1 query count
+MAX_FOLLOWUPS      = _envint("RESEARCH_FOLLOWUPS", 5)        # round-2 gap-fill queries
+PER_DOMAIN_CAP     = _envint("RESEARCH_PER_DOMAIN", 3)       # diversity: max sources / site
+FETCH_TIMEOUT      = _envint("RESEARCH_FETCH_TIMEOUT", 7)
+MAX_DOC_CHARS      = _envint("RESEARCH_DOC_CHARS", 6000)     # readable text kept per source
+SYNTH_MAX_TOKENS   = _envint("RESEARCH_SYNTH_TOKENS", 16000)
+MAX_CONTINUATIONS  = _envint("RESEARCH_CONTINUATIONS", 2)    # auto-continue on truncation
+DEADLINE_S         = _envint("RESEARCH_DEADLINE_S", 540)     # stay under gunicorn 600s
+
+# Second search pass (gap-fill round) — on by default; can be disabled via env.
+SEARCH_ROUNDS_ENABLED = os.getenv("RESEARCH_SECOND_PASS", "1") not in ("0", "false", "False")
+
+SYNTH_MODEL = os.getenv("RESEARCH_SYNTH_MODEL", "nvidia/nemotron-3-super-120b-a12b")
+PLANNER_MODEL = os.getenv("RESEARCH_PLANNER_MODEL", "llama-3.3-70b-versatile")
 
 
 def _favicon(url: str) -> str:
@@ -44,32 +77,104 @@ def _favicon(url: str) -> str:
         return ""
 
 
-def _expand_queries(question: str) -> List[str]:
-    """Generate 3-4 diversified search queries via Groq Llama (fast)."""
-    prompt = [
-        {"role": "system", "content":
-         "You are a research query planner. Given a user question, output 3-4 short, diverse search queries "
-         "that together give broad and deep coverage. Use different angles (definitions, recent news, "
-         "comparisons, statistics, expert opinions). Return a RAW JSON array of strings. No prose. No markdown."},
-        {"role": "user", "content": question.strip()[:600]},
-    ]
+def _extract_json(text: str):
+    """Pull the first JSON array/object out of an LLM response."""
+    if not isinstance(text, str):
+        return None
+    m = re.search(r'(\[[\s\S]*\]|\{[\s\S]*\})', text)
+    if not m:
+        return None
     try:
-        resp = call_groq(prompt, model="llama-3.3-70b-versatile",
-                         temperature=0.2, max_tokens=240, stream=False)
-        if isinstance(resp, str):
-            m = re.search(r'\[[\s\S]+?\]', resp)
-            if m:
-                arr = json.loads(m.group(0))
-                if isinstance(arr, list):
-                    qs = [str(x).strip() for x in arr if str(x).strip()][:4]
-                    if qs:
-                        return qs
+        return json.loads(m.group(1))
+    except Exception:
+        # Best effort: strip trailing commas
+        try:
+            cleaned = re.sub(r',\s*([\]}])', r'\1', m.group(1))
+            return json.loads(cleaned)
+        except Exception:
+            return None
+
+
+# =====================================================================
+# Planning
+# =====================================================================
+
+def _plan_research(question: str) -> Tuple[List[str], List[str]]:
+    """Return (initial_queries, outline_sections).
+
+    The planner thinks like a research lead: it decomposes the question into a
+    report outline AND a diverse set of search queries that, together, give
+    both breadth and depth.
+    """
+    year = datetime.now().year
+    sys = (
+        "You are the lead planner for a deep-research report. Decompose the user's "
+        "question into a rigorous research plan.\n"
+        f"Return RAW JSON (no markdown, no prose) shaped exactly:\n"
+        '{ "queries": ["...", "..."], "outline": ["Section title", "..."] }\n'
+        f"- queries: {MAX_QUERIES_R1} short, DIVERSE web-search queries covering different "
+        "angles — fundamentals/definitions, the latest developments (include the year "
+        f"{year} where recency matters), key players/competitors, hard data & statistics / "
+        "market size, expert analysis & contrarian views, and risks/criticisms. Add an "
+        "India-specific angle when the topic plausibly has one.\n"
+        "- outline: 5-8 section titles for a thorough analyst report on this question."
+    )
+    msgs = [{"role": "system", "content": sys},
+            {"role": "user", "content": question.strip()[:800]}]
+    try:
+        resp = call_groq(msgs, model=PLANNER_MODEL, temperature=0.3,
+                         max_tokens=600, stream=False)
+        data = _extract_json(resp) if resp else None
+        if isinstance(data, dict):
+            qs = [str(x).strip() for x in (data.get("queries") or []) if str(x).strip()]
+            outline = [str(x).strip() for x in (data.get("outline") or []) if str(x).strip()]
+            qs = qs[:MAX_QUERIES_R1]
+            if qs:
+                return qs, outline[:8]
     except Exception as e:
-        print(f"[Research] query expansion failed: {e}")
-    return [question.strip()]
+        print(f"[Research] planning failed: {e}")
+    return [question.strip()], []
 
 
-def _serpapi_search(query: str, k: int = 6) -> List[Dict[str, Any]]:
+def _find_gaps(question: str, outline: List[str], sources: List[Dict[str, Any]],
+               bodies: List[str]) -> List[str]:
+    """After round 1, decide what's still under-covered and draft follow-up
+    queries that target those gaps (this is the 'second pass' a human does)."""
+    excerpts = []
+    for s, b in zip(sources, bodies):
+        snip = (b or s.get("snippet", ""))[:600]
+        excerpts.append(f"- {s['title']} ({s['site']}): {snip}")
+    excerpts_blob = "\n".join(excerpts[:18])
+    outline_blob = "; ".join(outline) if outline else "(none)"
+    sys = (
+        "You are a meticulous research auditor. Given the question, the intended report "
+        "outline, and excerpts already gathered, identify what is STILL missing, weak, or "
+        "uncorroborated (e.g. missing numbers, only one viewpoint, no recent data, no "
+        f"counter-evidence). Output RAW JSON: a list of up to {MAX_FOLLOWUPS} NEW, specific "
+        "search queries that would close those gaps. No duplicates of obvious earlier "
+        "searches. No prose, JSON array only."
+    )
+    user = (f"QUESTION: {question}\n\nINTENDED OUTLINE: {outline_blob}\n\n"
+            f"ALREADY GATHERED:\n{excerpts_blob}")
+    try:
+        resp = call_groq([{"role": "system", "content": sys},
+                          {"role": "user", "content": user[:6000]}],
+                         model=PLANNER_MODEL, temperature=0.4,
+                         max_tokens=400, stream=False)
+        data = _extract_json(resp) if resp else None
+        if isinstance(data, list):
+            qs = [str(x).strip() for x in data if str(x).strip()]
+            return qs[:MAX_FOLLOWUPS]
+    except Exception as e:
+        print(f"[Research] gap analysis failed: {e}")
+    return []
+
+
+# =====================================================================
+# Search
+# =====================================================================
+
+def _serpapi_search(query: str, k: int = PER_QUERY_RESULTS) -> List[Dict[str, Any]]:
     if not SERPAPI_API_KEY:
         return []
     try:
@@ -102,7 +207,7 @@ def _serpapi_search(query: str, k: int = 6) -> List[Dict[str, Any]]:
         return []
 
 
-def _googlesearch_fallback(query: str, k: int = 6) -> List[Dict[str, Any]]:
+def _googlesearch_fallback(query: str, k: int = PER_QUERY_RESULTS) -> List[Dict[str, Any]]:
     try:
         from googlesearch import search as gs
         results = []
@@ -144,32 +249,48 @@ def _wikipedia_fallback(query: str) -> List[Dict[str, Any]]:
         return []
 
 
-def _gather_sources(queries: List[str]) -> List[Dict[str, Any]]:
-    seen = set()
-    merged: List[Dict[str, Any]] = []
-
-    def dedupe_add(items):
-        for it in items:
-            u = it["url"]
-            if u in seen:
-                continue
-            seen.add(u)
-            merged.append(it)
-
+def _search_round(queries: List[str]) -> List[Dict[str, Any]]:
+    """Run all queries in parallel and flatten results (not yet deduped)."""
+    if not queries:
+        return []
+    searcher = _serpapi_search if SERPAPI_API_KEY else _googlesearch_fallback
+    out: List[Dict[str, Any]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(2, len(queries))) as ex:
-        if SERPAPI_API_KEY:
-            results = list(ex.map(_serpapi_search, queries))
-        else:
-            results = list(ex.map(_googlesearch_fallback, queries))
-        for r in results:
-            dedupe_add(r)
-
-    if not merged:
+        for res in ex.map(searcher, queries):
+            out.extend(res or [])
+    if not out:  # last-ditch
         for q in queries:
-            dedupe_add(_wikipedia_fallback(q))
+            out.extend(_wikipedia_fallback(q))
+    return out
 
-    return merged[:MAX_SOURCES]
 
+def _merge_sources(existing: List[Dict[str, Any]], new: List[Dict[str, Any]],
+                   cap: int) -> List[Dict[str, Any]]:
+    """Dedupe by URL, enforce a per-domain cap for diversity, keep order so
+    citation numbering stays stable across rounds."""
+    seen_urls = {s["url"] for s in existing}
+    domain_counts: Dict[str, int] = {}
+    for s in existing:
+        domain_counts[s["site"]] = domain_counts.get(s["site"], 0) + 1
+    merged = list(existing)
+    for it in new:
+        u = it.get("url")
+        if not u or u in seen_urls:
+            continue
+        dom = it.get("site") or urlparse(u).netloc
+        if domain_counts.get(dom, 0) >= PER_DOMAIN_CAP:
+            continue
+        seen_urls.add(u)
+        domain_counts[dom] = domain_counts.get(dom, 0) + 1
+        merged.append(it)
+        if len(merged) >= cap:
+            break
+    return merged
+
+
+# =====================================================================
+# Reading
+# =====================================================================
 
 def _fetch_readable(url: str) -> str:
     try:
@@ -204,122 +325,224 @@ def _fetch_readable(url: str) -> str:
         return ""
 
 
-def deep_research_stream(question: str) -> Iterator[Dict[str, Any]]:
-    """Stream a Perplexity-style deep research answer.
-
-    Single-phase streaming synthesis: we expand queries → gather sources →
-    fetch pages in parallel → stream the final report directly to the UI.
-    No hidden "draft" phase that buffers tokens server-side; every visible
-    chunk reaches the user as soon as the LLM emits it.
-    """
-    t0 = time.time()
-    yield {"event": "status", "message": "🧭 Planning search queries…"}
-    queries = _expand_queries(question)
-    yield {"event": "query", "queries": queries}
-
-    yield {"event": "status", "message": "🔎 Searching the web in parallel…"}
-    sources = _gather_sources(queries)
+def _read_sources(sources: List[Dict[str, Any]]) -> List[str]:
     if not sources:
-        yield {"event": "chunk", "chunk": "I couldn't find relevant sources for this question. Try rephrasing or adding more specifics."}
+        return []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(10, len(sources))) as ex:
+        return list(ex.map(_fetch_readable, [s["url"] for s in sources]))
+
+
+# =====================================================================
+# Synthesis prompt
+# =====================================================================
+
+def _build_system_prompt(outline: List[str]) -> str:
+    outline_hint = ""
+    if outline:
+        outline_hint = (
+            "\nUse this outline as a backbone (adapt/rename/merge as the evidence "
+            "demands, drop sections with no support):\n- " + "\n- ".join(outline) + "\n"
+        )
+    return (
+        "You are KAUTILYA DEEP RESEARCH — a senior analyst producing a definitive, "
+        "publication-grade report. You have been given a numbered SET OF SOURCES. Write the "
+        "kind of report a human would take weeks to assemble: comprehensive, structured, "
+        "evidence-dense, and decision-ready.\n\n"
+        "NON-NEGOTIABLE RULES:\n"
+        "- Ground EVERY non-trivial claim in the sources with inline citations like [3] or "
+        "[3][7]. Use ONLY source numbers that exist. Never invent citations or facts.\n"
+        "- Prefer concrete specifics — numbers, dates, names, $/₹ figures, percentages — over "
+        "vague generalities. Pull the actual data out of the sources.\n"
+        "- When sources disagree, surface the disagreement explicitly and weigh it.\n"
+        "- Be honest about gaps: if the evidence is thin on something important, say so.\n"
+        "- No filler, no 'Sure, here is', no apologising. Start directly with the title line.\n\n"
+        "REQUIRED REPORT STRUCTURE (rich markdown — use ##/### headings, **bold**, bullet "
+        "lists, and markdown TABLES wherever comparison or data warrants):\n"
+        "# <Sharp, specific report title>\n\n"
+        "## Executive Summary\n"
+        "4-6 tight sentences giving the bottom line a busy decision-maker needs.\n\n"
+        "## Key Findings\n"
+        "6-10 bullets, each a substantive finding carrying [N] citations.\n\n"
+        f"{outline_hint}"
+        "## Deep Analysis\n"
+        "Several well-developed subsections (use ### headings) that unpack the topic in depth — "
+        "mechanisms, drivers, comparisons, market/competitive landscape, regional nuance. "
+        "Include at least one markdown table summarising key data or a comparison.\n\n"
+        "## Data & Evidence\n"
+        "The hard numbers, organised — a table is ideal — each row/point cited [N].\n\n"
+        "## Risks, Caveats & Open Questions\n"
+        "What could go wrong, what the evidence can't yet settle, and where reasonable people "
+        "disagree.\n\n"
+        "## Outlook\n"
+        "Where this is heading over the next 1-3 years, with the reasoning behind each call.\n\n"
+        "## Recommendations\n"
+        "Concrete, prioritised, actionable next steps for the reader.\n\n"
+        "Write thoroughly — depth and specificity are the whole point. Do NOT append your own "
+        "'Sources' list; that is added automatically."
+    )
+
+
+def _build_context(sources: List[Dict[str, Any]], bodies: List[str]) -> str:
+    lines = []
+    for i, (s, body) in enumerate(zip(sources, bodies), 1):
+        body = (body or s.get("snippet", "")).strip()
+        lines.append(
+            f"SOURCE [{i}] — {s['title']} ({s['site']})\nURL: {s['url']}\n"
+            f"CONTENT: {body[:MAX_DOC_CHARS]}"
+        )
+    return "\n\n".join(lines)
+
+
+def _bibliography_md(sources: List[Dict[str, Any]]) -> str:
+    out = ["", "", "## Sources", ""]
+    for i, s in enumerate(sources, 1):
+        title = s.get("title") or s.get("url")
+        out.append(f"{i}. {title} — {s['url']}")
+    return "\n".join(out)
+
+
+# =====================================================================
+# Orchestration
+# =====================================================================
+
+def deep_research_stream(question: str) -> Iterator[Dict[str, Any]]:
+    """Stream an analyst-grade, multi-round deep-research report."""
+    t0 = time.time()
+    def time_left() -> float:
+        return DEADLINE_S - (time.time() - t0)
+
+    # ---- 1. Plan -----------------------------------------------------------
+    yield {"event": "status", "message": "🧭 Planning the research — outline & angles…"}
+    queries, outline = _plan_research(question)
+    yield {"event": "query", "queries": queries}
+    if outline:
+        yield {"thinking": "Planned report sections: " + " · ".join(outline)}
+
+    # ---- 2. Round-1 search -------------------------------------------------
+    yield {"event": "status", "message": f"🔎 Searching the web — {len(queries)} angles in parallel…"}
+    raw1 = _search_round(queries)
+    sources = _merge_sources([], raw1, cap=MAX_SOURCES)
+
+    if not sources:
+        yield {"event": "chunk", "chunk":
+               "I couldn't find relevant sources for this question. Try rephrasing or adding more specifics."}
         yield {"event": "done"}
         return
 
     yield {"event": "sources", "sources": sources}
 
-    yield {"event": "status", "message": f"📑 Reading {len(sources)} sources…"}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(sources))) as ex:
-        bodies = list(ex.map(_fetch_readable, [s["url"] for s in sources]))
+    # ---- 3. Read round-1 ---------------------------------------------------
+    yield {"event": "status", "message": f"📑 Reading {len(sources)} sources in depth…"}
+    bodies = _read_sources(sources)
 
-    ctx_lines = []
-    for i, (s, body) in enumerate(zip(sources, bodies), 1):
-        body = body or s.get("snippet", "")
-        ctx_lines.append(
-            f"SOURCE [{i}] — {s['title']} ({s['site']})\nURL: {s['url']}\nCONTENT: {body[:MAX_DOC_CHARS]}"
-        )
-    context = "\n\n".join(ctx_lines)
+    # ---- 4 & 5. Gap analysis + round-2 search ------------------------------
+    if time_left() > 120 and SEARCH_ROUNDS_ENABLED:
+        yield {"event": "status", "message": "🧩 Auditing coverage & chasing the gaps…"}
+        followups = _find_gaps(question, outline, sources, bodies)
+        if followups:
+            yield {"event": "query", "queries": followups}
+            yield {"event": "status", "message": f"🔎 Second pass — {len(followups)} targeted searches…"}
+            raw2 = _search_round(followups)
+            before = len(sources)
+            sources = _merge_sources(sources, raw2, cap=MAX_SOURCES)
+            new_sources = sources[before:]
+            if new_sources:
+                # Emit the full cumulative list so citation numbering is final
+                # and complete, then read only the newly added sources.
+                yield {"event": "sources", "sources": sources}
+                yield {"event": "status", "message": f"📑 Reading {len(new_sources)} more sources…"}
+                bodies = bodies + _read_sources(new_sources)
 
-    yield {"event": "status", "message": "🧠 Synthesizing answer…"}
+    # ---- 6. Build context --------------------------------------------------
+    # Guard against any length mismatch between sources and bodies.
+    if len(bodies) < len(sources):
+        bodies = bodies + [""] * (len(sources) - len(bodies))
+    context = _build_context(sources, bodies)
 
-    system = (
-        "You are KAUTILYA Deep Research — a Perplexity-grade research analyst. "
-        "Produce a thorough, high-signal answer using ONLY the SOURCES provided. "
-        "Cite every non-trivial claim inline as [1], [2], etc. matching the source numbers.\n\n"
-        "REQUIRED STRUCTURE (markdown):\n"
-        "## TL;DR\n"
-        "Two-sentence direct answer to the user's question.\n\n"
-        "## Key Findings\n"
-        "- 4-7 bullet points, each with [N] citations.\n\n"
-        "## Detailed Analysis\n"
-        "2-4 short paragraphs unpacking the nuances, trade-offs, and context. "
-        "Compare/contrast sources when they disagree.\n\n"
-        "## Numbers & Facts\n"
-        "Tight bulleted list of concrete data points (stats, dates, prices, names) with [N].\n\n"
-        "## Caveats & Open Questions\n"
-        "Honest limitations of the available evidence.\n\n"
-        "RULES:\n"
-        "- Never invent citations. Only use [N] numbers that exist in SOURCES.\n"
-        "- Prefer specific data over vague generalities.\n"
-        "- If sources conflict, say so explicitly.\n"
-        "- No filler. No 'Sure, here is...' preamble. Start directly with `## TL;DR`."
-    )
-    user_prompt = f"USER QUESTION: {question}\n\nSOURCES:\n{context}"
-    messages = [{"role": "system", "content": system}, {"role": "user", "content": user_prompt}]
+    # ---- 7. Synthesis (with auto-continue on truncation) -------------------
+    yield {"event": "status", "message": f"🧠 Synthesising the report from {len(sources)} sources…"}
 
-    full_report = []
+    system = _build_system_prompt(outline)
+    user_prompt = (f"USER QUESTION: {question}\n\n"
+                   f"Write the full report now, citing the numbered sources below.\n\n"
+                   f"SOURCES:\n{context}")
+    messages = [{"role": "system", "content": system},
+                {"role": "user", "content": user_prompt}]
+
+    full_report: List[str] = []
     streamed_anything = False
 
-    def _emit_from(gen):
+    def _run(call_messages, max_tokens):
+        """Generator: yields events from one NVIDIA synthesis call and RETURNS
+        whether the model was truncated (hit its token ceiling). Consumed with
+        `yield from`, which both streams the events and captures the return."""
         nonlocal streamed_anything
-        for item in gen:
-            if isinstance(item, dict):
-                if "thinking" in item:
-                    yield {"thinking": item["thinking"]}
-                    continue
-                if "thinking_done" in item:
-                    yield {"thinking_done": True}
-                    continue
-                chunk = item.get("chunk", "")
-            else:
-                chunk = item
-            if chunk:
-                chunk = chunk.replace("�", "")
-                full_report.append(chunk)
-                streamed_anything = True
-                yield {"event": "chunk", "chunk": chunk}
-
-    # Primary synthesis: NVIDIA Nemotron — heavy reasoning, much higher
-    # output quality and depth than Groq Llama for research-grade tasks.
-    # Thinking trace is streamed live so the user sees the reasoning unfold
-    # while the final answer is being composed. Groq is the fallback if the
-    # NVIDIA edge is unavailable.
-    gen = None
-    try:
-        gen = call_nvidia(
-            messages,
-            model="nvidia/nemotron-3-super-120b-a12b",
-            temperature=0.5,
-            stream=True,
-            expose_thinking=True,
-            max_tokens=8000,
-        )
-    except Exception as e:
-        print(f"[Research] NVIDIA synth failed: {e}")
-
-    if gen:
+        truncated = False
         try:
-            for ev in _emit_from(gen):
-                yield ev
+            gen = call_nvidia(call_messages, model=SYNTH_MODEL, temperature=0.45,
+                              stream=True, expose_thinking=True, max_tokens=max_tokens)
+        except Exception as e:
+            print(f"[Research] NVIDIA synth failed: {e}")
+            gen = None
+        if not gen:
+            return truncated
+        try:
+            for item in gen:
+                if isinstance(item, dict):
+                    if item.get("_finish_reason") == "length":
+                        truncated = True
+                        continue
+                    if "thinking" in item:
+                        yield {"thinking": item["thinking"]}
+                        continue
+                    if "thinking_done" in item:
+                        yield {"thinking_done": True}
+                        continue
+                    chunk = item.get("chunk", "")
+                else:
+                    chunk = item
+                if chunk:
+                    chunk = chunk.replace("�", "")
+                    full_report.append(chunk)
+                    streamed_anything = True
+                    yield {"event": "chunk", "chunk": chunk}
         except Exception as e:
             print(f"[Research] NVIDIA stream error: {e}")
+        return truncated
 
-    # Fallback to Groq Llama if NVIDIA produced nothing
+    # Primary synthesis + up to MAX_CONTINUATIONS continuations if the model
+    # hits its token ceiling mid-report (so long reports aren't cut off).
+    continuation = 0
+    cur_messages = messages
+    while True:
+        truncated = yield from _run(cur_messages, SYNTH_MAX_TOKENS if continuation == 0 else 8000)
+        if (truncated and streamed_anything
+                and continuation < MAX_CONTINUATIONS
+                and time_left() > 60):
+            continuation += 1
+            partial = "".join(full_report)
+            cur_messages = messages + [
+                {"role": "assistant", "content": partial[-6000:]},
+                {"role": "user", "content":
+                 "Continue the report from exactly where you stopped. Do not repeat any "
+                 "content already written, do not restart sections, and keep the same "
+                 "citation style. If the report is complete, end cleanly."},
+            ]
+            continue
+        break
+
+    # ---- Fallback to Groq if NVIDIA produced nothing -----------------------
     if not streamed_anything:
         try:
-            gq_gen = call_groq(messages, stream=True, model="llama-3.3-70b-versatile",
+            gq_gen = call_groq(messages, stream=True, model=PLANNER_MODEL,
                                temperature=0.4, max_tokens=4096)
             if gq_gen:
-                for ev in _emit_from(gq_gen):
-                    yield ev
+                for item in gq_gen:
+                    chunk = item.get("chunk", "") if isinstance(item, dict) else item
+                    if chunk:
+                        full_report.append(chunk)
+                        streamed_anything = True
+                        yield {"event": "chunk", "chunk": chunk}
         except Exception as e:
             print(f"[Research] Groq fallback failed: {e}")
 
@@ -328,12 +551,19 @@ def deep_research_stream(question: str) -> Iterator[Dict[str, Any]]:
                "I gathered sources but the synthesis step is temporarily unavailable. "
                "Please try again in a moment."}
 
+    # ---- 8. Bibliography (so PDF/DOCX downloads are self-contained) --------
     final = "".join(full_report)
+    if streamed_anything and sources:
+        biblio = _bibliography_md(sources)
+        full_report.append(biblio)
+        yield {"event": "chunk", "chunk": biblio}
+
     if len(final) > 400:
         yield {"event": "artifact",
                "artifactType": "document",
                "artifactTitle": f"Deep Research: {question[:60]}"}
 
     elapsed = round(time.time() - t0, 1)
-    yield {"event": "status", "message": f"✓ Done in {elapsed}s · {len(sources)} sources"}
+    yield {"event": "status",
+           "message": f"✓ Done in {elapsed}s · {len(sources)} sources · {len(final):,} chars"}
     yield {"event": "done"}

@@ -19,7 +19,7 @@ beautifulsoup4
 duckduckgo-search
 wikipedia
 google-search-results
-fpdf
+fpdf2
 python-docx
 openpyxl
 curl-cffi

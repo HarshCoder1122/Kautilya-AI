@@ -128,14 +128,69 @@ def generate_excel(content: str, filename: str = "kautilya_artifact.xlsx",
 # PDF Generator (with markdown support)
 # ============================================================
 
-def _safe(text: str) -> str:
-    """Encode text to latin-1 safely for fpdf."""
-    return str(text).encode('latin-1', 'replace').decode('latin-1')
+# Common Unicode → ASCII fallbacks so a core-font PDF stays readable even
+# when no Unicode TTF is available (smart quotes, dashes, bullets, ₹, etc.).
+_TRANSLITERATE = {
+    '₹': 'Rs.', '€': 'EUR', '£': 'GBP', '¥': 'JPY',
+    '‘': "'", '’': "'", '“': '"', '”': '"',
+    '–': '-', '—': '-', '−': '-', '…': '...',
+    '•': '*', '‣': '*', '●': '*', '▪': '*', '·': '*',
+    '→': '->', '←': '<-', '⇒': '=>', '≤': '<=', '≥': '>=',
+    ' ': ' ', ' ': ' ', '​': '', '﻿': '', '×': 'x',
+    '✓': '[ok]', '✔': '[ok]', '✗': '[x]', '✘': '[x]',
+    '®': '(R)', '™': '(TM)', '©': '(c)', '°': ' deg',
+}
+
+# Candidate Unicode TTFs to embed (installed via Dockerfile: fonts-dejavu-core,
+# fonts-noto-core). First hit wins; DejaVu covers Latin/Cyrillic/Greek/₹/symbols,
+# Noto adds far broader script coverage (incl. Devanagari for Hindi reports).
+_UNICODE_FONT_CANDIDATES = [
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    ("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+     "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf"),
+    ("C:/Windows/Fonts/arial.ttf", "C:/Windows/Fonts/arialbd.ttf"),
+    ("C:/Windows/Fonts/segoeui.ttf", "C:/Windows/Fonts/segoeuib.ttf"),
+]
+
+
+def _register_unicode_font(pdf) -> Optional[str]:
+    """Embed the first available Unicode TTF and return its family name, or
+    None if we must fall back to a core (latin-1) font."""
+    import os
+    for regular, bold in _UNICODE_FONT_CANDIDATES:
+        if os.path.exists(regular):
+            try:
+                fam = "UItF"
+                pdf.add_font(fam, "", regular)
+                pdf.add_font(fam, "B", bold if os.path.exists(bold) else regular)
+                return fam
+            except Exception:
+                continue
+    return None
+
+
+def _safe(text: str, uni: bool = False) -> str:
+    """Make text PDF-safe. With a Unicode font (uni=True) we pass text through
+    untouched; with a core font we transliterate then drop anything non-latin-1
+    so we never emit '?' garbage for ₹ / smart quotes / dashes."""
+    s = str(text)
+    if uni:
+        return s
+    for k, v in _TRANSLITERATE.items():
+        if k in s:
+            s = s.replace(k, v)
+    return s.encode('latin-1', 'replace').decode('latin-1')
 
 
 def generate_pdf(content: str, filename: str = "kautilya_artifact.pdf",
                  title: str = "Kautilya Export") -> Tuple[io.BytesIO, str]:
-    """Generate PDF from markdown content with basic formatting."""
+    """Generate PDF from markdown content with basic formatting.
+
+    Uses an embedded Unicode font when one is available (so ₹, Hindi, smart
+    quotes, arrows etc. render correctly); otherwise falls back to the core
+    Helvetica font with transliteration so output stays clean and readable.
+    """
     try:
         from fpdf import FPDF
     except ImportError:
@@ -145,28 +200,36 @@ def generate_pdf(content: str, filename: str = "kautilya_artifact.pdf",
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
 
+    uni_family = _register_unicode_font(pdf)
+    BASE = uni_family or "Helvetica"
+    MONO = uni_family or "Courier"
+    uni = uni_family is not None
+
+    def sf(t):
+        return _safe(t, uni)
+
     # Title
-    pdf.set_font("Helvetica", 'B', 16)
-    pdf.cell(0, 10, _safe(title), new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font(BASE, 'B', 16)
+    pdf.multi_cell(0, 10, sf(title), new_x="LMARGIN", new_y="NEXT")
     pdf.ln(2)
 
     # Body — parse simple markdown
-    pdf.set_font("Helvetica", size=11)
+    pdf.set_font(BASE, size=11)
     lines = content.split('\n')
     in_code = False
     i = 0
 
     while i < len(lines):
         line = lines[i]
-        safe_line = _safe(line)
+        safe_line = sf(line)
 
         # Code fence
         if line.strip().startswith('```'):
             in_code = not in_code
             if in_code:
-                pdf.set_font("Courier", size=9)
+                pdf.set_font(MONO, size=9)
             else:
-                pdf.set_font("Helvetica", size=11)
+                pdf.set_font(BASE, size=11)
             i += 1
             continue
 
@@ -198,15 +261,15 @@ def generate_pdf(content: str, filename: str = "kautilya_artifact.pdf",
                     col_w = page_w / col_count
 
                     # Header row
-                    pdf.set_font("Helvetica", 'B', 9)
+                    pdf.set_font(BASE, 'B', 9)
                     pdf.set_fill_color(79, 70, 229)
                     pdf.set_text_color(255, 255, 255)
                     for h in header:
-                        pdf.cell(col_w, 7, _safe(h)[:30], border=1, fill=True)
+                        pdf.cell(col_w, 7, sf(h)[:30], border=1, fill=True)
                     pdf.ln()
 
                     # Data rows
-                    pdf.set_font("Helvetica", size=9)
+                    pdf.set_font(BASE, size=9)
                     pdf.set_text_color(0, 0, 0)
                     for ridx, row in enumerate(rows):
                         if ridx % 2 == 0:
@@ -214,39 +277,41 @@ def generate_pdf(content: str, filename: str = "kautilya_artifact.pdf",
                         else:
                             pdf.set_fill_color(255, 255, 255)
                         for ci, cell in enumerate(row[:col_count]):
-                            pdf.cell(col_w, 6, _safe(cell)[:40], border=1, fill=True)
+                            pdf.cell(col_w, 6, sf(cell)[:40], border=1, fill=True)
                         # pad missing columns
                         for _ in range(col_count - len(row)):
                             pdf.cell(col_w, 6, '', border=1, fill=True)
                         pdf.ln()
 
-                    pdf.set_font("Helvetica", size=11)
+                    pdf.set_font(BASE, size=11)
                     pdf.ln(3)
             continue
 
-        # Headings
+        # Headings — multi_cell (not cell) so long headings wrap instead of
+        # throwing "Not enough horizontal space".
         if line.startswith('# '):
-            pdf.set_font("Helvetica", 'B', 14)
-            pdf.cell(0, 8, safe_line[2:], new_x="LMARGIN", new_y="NEXT")
-            pdf.set_font("Helvetica", size=11)
+            pdf.set_font(BASE, 'B', 14)
+            pdf.multi_cell(0, 8, sf(line[2:]), new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font(BASE, size=11)
             pdf.ln(1)
         elif line.startswith('## '):
-            pdf.set_font("Helvetica", 'B', 12)
-            pdf.cell(0, 7, safe_line[3:], new_x="LMARGIN", new_y="NEXT")
-            pdf.set_font("Helvetica", size=11)
+            pdf.set_font(BASE, 'B', 12)
+            pdf.multi_cell(0, 7, sf(line[3:]), new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font(BASE, size=11)
         elif line.startswith('### '):
-            pdf.set_font("Helvetica", 'B', 11)
-            pdf.cell(0, 6, safe_line[4:], new_x="LMARGIN", new_y="NEXT")
-            pdf.set_font("Helvetica", size=11)
+            pdf.set_font(BASE, 'B', 11)
+            pdf.multi_cell(0, 6, sf(line[4:]), new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font(BASE, size=11)
         elif line.startswith('- ') or line.startswith('* '):
-            pdf.cell(5)
-            pdf.multi_cell(0, 6, _safe('• ' + line[2:]))
+            clean = re.sub(r'\*{1,3}(.+?)\*{1,3}', r'\1', line[2:])
+            pdf.multi_cell(0, 6, sf('• ' + clean))
         elif re.match(r'^\d+\.\s', line):
-            pdf.multi_cell(0, 6, safe_line)
+            clean = re.sub(r'\*{1,3}(.+?)\*{1,3}', r'\1', line)
+            pdf.multi_cell(0, 6, sf(clean))
         elif line.strip():
             # Strip inline markdown bold/italic markers
             clean = re.sub(r'\*{1,3}(.+?)\*{1,3}', r'\1', line)
-            pdf.multi_cell(0, 6, _safe(clean))
+            pdf.multi_cell(0, 6, sf(clean))
         else:
             pdf.ln(3)
 

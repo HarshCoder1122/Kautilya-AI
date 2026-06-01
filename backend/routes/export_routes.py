@@ -46,8 +46,11 @@ def export_pdf():
                 pdf.ln(5)
 
         buffer = io.BytesIO()
-        pdf_output = pdf.output(dest='S').encode('latin-1')
-        buffer.write(pdf_output)
+        # fpdf2: output() returns a bytearray; older fpdf returned a latin-1 str.
+        out = pdf.output()
+        if isinstance(out, str):
+            out = out.encode('latin-1')
+        buffer.write(bytes(out))
         buffer.seek(0)
         
         return send_file(buffer, as_attachment=True, download_name='content_export.pdf', mimetype='application/pdf')
