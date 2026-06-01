@@ -66,7 +66,9 @@ DEADLINE_S         = _envint("RESEARCH_DEADLINE_S", 540)     # stay under gunico
 # Second search pass (gap-fill round) — on by default; can be disabled via env.
 SEARCH_ROUNDS_ENABLED = os.getenv("RESEARCH_SECOND_PASS", "1") not in ("0", "false", "False")
 
-SYNTH_MODEL = os.getenv("RESEARCH_SYNTH_MODEL", "nvidia/nemotron-3-super-120b-a12b")
+# Synthesis runs on GLM (z-ai/glm-5.1) — stronger long-form report writing than
+# Nemotron for this task. Routed through call_nvidia (NVIDIA NIM endpoint).
+SYNTH_MODEL = os.getenv("RESEARCH_SYNTH_MODEL", "z-ai/glm-5.1")
 PLANNER_MODEL = os.getenv("RESEARCH_PLANNER_MODEL", "llama-3.3-70b-versatile")
 
 
