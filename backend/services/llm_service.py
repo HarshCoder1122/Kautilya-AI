@@ -2,6 +2,7 @@
 Kautilya AI — LLM Service
 Unified LLM call interface: Groq, NVIDIA NIM, OpenRouter, Gemini.
 """
+import os
 import json
 import time
 import requests
@@ -70,20 +71,88 @@ def _get_available_nvidia_key():
     return key
 
 
-def _prewarm_nvidia():
-    """Open a TLS connection to NVIDIA at module import so the first real
-    user request doesn't pay the 200-400ms handshake. Fire-and-forget on
-    a daemon thread — if it fails, real calls still work."""
-    import threading
-    def _go():
-        try:
-            _NVIDIA_SESSION.head("https://integrate.api.nvidia.com/v1/models",
-                                 timeout=(2, 3))
-        except Exception:
-            pass
-    threading.Thread(target=_go, daemon=True).start()
+# ── NVIDIA keep-warm heartbeat ───────────────────────────────────────────
+# integrate.api.nvidia.com tears down idle TLS sockets AND lets its hosted
+# models go cold once traffic stops. So the FIRST request after any quiet
+# spell pays two penalties stacked together: a TLS handshake (~300-500ms)
+# and a model cold-start (frequently the bulk of a 5-6s time-to-first-token).
+# A one-shot prewarm at boot only covers the very first request and then
+# decays the moment the demo goes idle for a minute.
+#
+# Instead we run a lightweight background heartbeat that keeps BOTH warm:
+#   • reuses the shared _NVIDIA_SESSION pool  → connection stays handshaked
+#   • sends a real 1-token completion         → model stays loaded on NVIDIA
+# so a live user request lands on an already-hot path.
+#
+# Tunables (env):
+#   NVIDIA_KEEPWARM=0             → disable entirely
+#   NVIDIA_KEEPWARM_INTERVAL=240  → seconds between heartbeats (per model)
+#   NVIDIA_KEEPWARM_MODELS=a,b    → comma-separated model ids to keep warm
+#                                   (default: the Daily model, the hot path)
+_KEEPWARM_ENABLED = os.environ.get("NVIDIA_KEEPWARM", "1").strip().lower() not in ("0", "false", "no", "off")
+try:
+    _KEEPWARM_INTERVAL = max(30.0, float(os.environ.get("NVIDIA_KEEPWARM_INTERVAL", "240") or 240))
+except ValueError:
+    _KEEPWARM_INTERVAL = 240.0
+_KEEPWARM_MODELS = [m.strip() for m in os.environ.get(
+    "NVIDIA_KEEPWARM_MODELS", "mistralai/mistral-medium-3.5-128b"
+).split(",") if m.strip()]
 
-_prewarm_nvidia()
+
+def _nvidia_keepwarm_ping(model):
+    """Send one tiny completion to keep `model` (and the TLS pool) warm.
+
+    Deliberately bypasses the response cache and goes straight to the HTTP
+    session — a cached reply would never reach NVIDIA and so would never
+    keep anything warm. Returns True on a 200."""
+    api_key = NVIDIA_API_KEYS[0] if NVIDIA_API_KEYS else NVIDIA_API_KEY
+    if not api_key:
+        return False
+    try:
+        resp = _NVIDIA_SESSION.post(
+            "https://integrate.api.nvidia.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Connection": "keep-alive",
+            },
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 1,
+                "temperature": 0,
+                "stream": False,
+            },
+            timeout=(5, 30),  # generous read budget for a genuine cold-start
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _nvidia_keepwarm_loop():
+    # Stagger across gunicorn workers so N workers don't ping in lockstep and
+    # spike NVIDIA's per-minute rate limit. Each worker has its own connection
+    # pool, so each one warming itself is correct, not redundant.
+    import random
+    time.sleep(random.uniform(0, 5))
+    while True:
+        for model in _KEEPWARM_MODELS:
+            _nvidia_keepwarm_ping(model)
+        time.sleep(_KEEPWARM_INTERVAL)
+
+
+def _start_nvidia_keepwarm():
+    """Warm NVIDIA at import, then keep it warm on a daemon thread. No-op when
+    keep-warm is disabled or no NVIDIA key is configured (e.g. local dev)."""
+    if not _KEEPWARM_ENABLED:
+        return
+    if not (NVIDIA_API_KEYS or NVIDIA_API_KEY):
+        return
+    threading.Thread(target=_nvidia_keepwarm_loop, daemon=True, name="nvidia-keepwarm").start()
+
+
+_start_nvidia_keepwarm()
 
 
 def get_gemini_key():

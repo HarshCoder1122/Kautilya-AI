@@ -143,6 +143,20 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     return () => document.removeEventListener('visibilitychange', handleVisibility);
   }, [sessionId, isStreaming, isThinking]);
 
+  // On unmount (navigating away from the chat route), abort the in-flight
+  // stream so we don't leave an orphaned fetch reader that throws a network
+  // error after the component is gone. The backend keeps generating and
+  // persists to Firestore independently, so returning to this session
+  // restores the full reply via the sessionId effect + streaming poll.
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+    };
+  }, []);
+
   // Fetch MCP status when the dialog opens
   useEffect(() => {
     if (!showMcpDialog) return;
@@ -828,11 +842,13 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       }
     } catch (error) {
       // updateAssistant is defined inside the try block so not in scope here.
-      // Directly clear streaming flag on any in-flight assistant message.
+      // Clear the streaming flag on the in-flight assistant message but KEEP
+      // its partial text on screen — we may be about to recover it.
       setMessages(prev => prev.map(msg =>
         msg.streaming ? { ...msg, streaming: false } : msg
       ));
 
+      // User pressed Stop — fully benign, nothing to recover.
       if (error.name === 'AbortError') {
         console.log('Stream aborted by user');
         setIsThinking(false);
@@ -841,6 +857,30 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
         return;
       }
 
+      // Connection dropped because the user LEFT THE SCREEN (backgrounded the
+      // tab/PWA, locked the phone, switched apps, flaky mobile network) — this
+      // is NOT a server failure. The backend runs the LLM on an independent
+      // thread and persists the full reply to Firestore regardless of whether
+      // our socket is alive, so showing a red "network error" bubble is both
+      // wrong and alarming. Instead, silently reconnect: poll the saved
+      // generation, which merges in whatever the server finished and stops
+      // once `streaming` flips false. The dropped fetch surfaces as a
+      // TypeError ("Failed to fetch") or a network-flavoured message.
+      const isConnectionDrop = (
+        error.name === 'TypeError' ||
+        /network|failed to fetch|load failed|connection|stream|aborted|terminated/i.test(error.message || '')
+      );
+      if (isConnectionDrop && currentSessionId) {
+        console.warn('[Stream] Connection interrupted — recovering from server:', error.message);
+        setIsThinking(false);
+        leftMidStreamRef.current = true; // tab-return path also re-syncs
+        // Backend is still generating; pull the persisted message to completion.
+        pollStreamingMessage(currentSessionId);
+        return;
+      }
+
+      // Genuine failure (4xx/5xx surfaced before streaming, or no session to
+      // recover from) — surface it so the user can retry.
       console.error('Failed to send message:', error);
       setIsThinking(false);
       setIsStreaming(false);

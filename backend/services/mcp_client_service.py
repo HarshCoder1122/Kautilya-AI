@@ -601,18 +601,35 @@ def available_mcp_tools(uid: Optional[str] = None) -> List[Dict[str, Any]]:
         if not key.startswith("user:"):
             out.extend(specs)
             
-    # 2. User specific tools
+    # 2. User-specific tools.
+    #
+    # init_user_mcp() can BLOCK for tens of seconds the first time it runs for
+    # a user: it does Firestore reads and then SPAWNS stdio/SSE MCP servers
+    # with 15-25s connect timeouts. This function is called from agent_loop on
+    # EVERY chat message, so calling init synchronously here put that entire
+    # cost on the request's critical path — a user's first message after a
+    # cold worker could wait ~25s before the model was even contacted.
+    #
+    # Fix: kick the init off on a daemon thread and return immediately with
+    # whatever user servers are ALREADY connected. Freshly-spawned tools just
+    # become available from the next turn — a one-turn delay is invisible next
+    # to a 25s stall. init_user_mcp() is idempotent (guarded by
+    # _initialized_users under _lock), so a redundant concurrent spawn is a
+    # cheap no-op.
     if uid:
-        try:
-            init_user_mcp(uid)
-        except Exception as e:
-            print(f"[MCP] Failed to init user {uid} custom MCP tools: {e}")
-        
+        if uid not in _initialized_users:
+            def _bg_init(u=uid):
+                try:
+                    init_user_mcp(u)
+                except Exception as e:
+                    print(f"[MCP] Background init for user {u} failed: {e}")
+            threading.Thread(target=_bg_init, daemon=True, name="mcp-user-init").start()
+
         user_prefix = f"user:{uid}:"
         for key, specs in _tools_by_server.items():
             if key.startswith(user_prefix):
                 out.extend(specs)
-                
+
     return out
 
 
