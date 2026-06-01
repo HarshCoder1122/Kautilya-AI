@@ -71,7 +71,15 @@ _default_origins = [
 _extra = (os.environ.get("ALLOWED_ORIGINS") or "").strip()
 if _extra:
     _default_origins.extend([o.strip() for o in _extra.split(",") if o.strip()])
-CORS(app, resources={r"/api/*": {"origins": _default_origins}}, supports_credentials=False)
+# NOTE: /api/embed/* is the PUBLIC embeddable-widget surface — it runs on
+# customers' own domains, so it must accept any origin (it's protected by a
+# per-agent embed token, not cookies). It MUST come before the pinned /api/*
+# rule so flask-cors matches the more-specific public rule first; otherwise the
+# widget gets CORS-blocked on every third-party site.
+CORS(app, resources={
+    r"/api/embed/*": {"origins": "*"},
+    r"/api/*": {"origins": _default_origins},
+}, supports_credentials=False)
 
 # Register blueprints
 app.register_blueprint(static_bp)
