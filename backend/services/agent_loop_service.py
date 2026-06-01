@@ -1191,6 +1191,19 @@ def _plan_actions(text, uid, start_id=1):
                            "Code, output, and any charts are already shown. Give a one-line interpretation.",
                            m.start()))
 
+    # 12. [GST_INVOICE: ```json {...} ```]  — India GST invoice; maths server-side.
+    inv_iter = list(re.finditer(r'\[GST_INVOICE:\s*```(?:json)?\s*([\s\S]*?)```\s*\]', text))
+    if not inv_iter:
+        mm = re.search(r'\[GST_INVOICE:\s*(\{[\s\S]+\})\s*\]', text)
+        if mm:
+            inv_iter = [mm]
+    for m in inv_iter:
+        payload = m.group(1).strip()
+        actions.append(_mk("invoice", "GST invoice",
+                           _runner_invoice(uid, payload),
+                           "Output the invoice's <artifact> block from the observation VERBATIM — do not change any numbers.",
+                           m.start()))
+
     # 12. [INTEGRATION: tool_name | {json}]
     # JSON-aware scan: tracks quote state so embedded `}` inside string values
     # don't terminate the match prematurely, and skips silently-truncated tags
@@ -1515,6 +1528,39 @@ def _runner_python(code):
             return {"ok": False, "preview": str(e)[:100],
                     "observation": f"PYTHON RUNNER ERROR: {e}",
                     "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_invoice(uid, payload_str):
+    """Build a GST-compliant invoice. The tax maths is done deterministically in
+    invoice_service (never by the model); the runner hands back a ready <artifact>
+    block the model echoes verbatim so it opens in the canvas with PDF/DOCX export."""
+    def run():
+        try:
+            from services.invoice_service import extract_invoice, build_invoice
+            s = (payload_str or '').strip()
+            data = None
+            if s.startswith('{'):
+                try:
+                    data = json.loads(s)
+                except Exception:
+                    data = None
+            if not data or not data.get('items'):
+                data = extract_invoice(s)
+            if not data or not data.get('items'):
+                return {"ok": False, "preview": "No invoice items",
+                        "observation": ("GST_INVOICE ERROR: couldn't determine line items. Ask the user "
+                                        "for item description, quantity, rate, GST% and the buyer/seller details."),
+                        "done_extras": {}, "extra_events": []}
+            data, gst, md = build_invoice(data)
+            obs = ("GST INVOICE COMPUTED — these figures are authoritative, do NOT recompute or alter them. "
+                   "Reply with ONLY this artifact block (verbatim) plus at most one short sentence:\n"
+                   '<artifact type="document" title="Tax Invoice">\n' + md + "\n</artifact>")
+            return {"ok": True, "preview": f"Invoice ₹{gst['payable']:.2f} ready",
+                    "observation": obs, "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"GST_INVOICE ERROR: {e}", "done_extras": {}, "extra_events": []}
     return run
 
 

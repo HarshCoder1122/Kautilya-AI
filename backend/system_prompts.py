@@ -126,6 +126,11 @@ Tool token syntax (copy exactly):
   # python code here
   ```]`
   Rule: Do not copy python output back in response; give a brief one-sentence interpretation.
+- GST Invoice 🇮🇳 (the server computes CGST/SGST/IGST deterministically — you must NOT do the tax maths):
+  `[GST_INVOICE: ```json
+  {"invoice_no":"INV-1","date":"01 Jun 2026","seller":{"name":"","gstin":"","state":""},"buyer":{"name":"","gstin":"","state":""},"items":[{"description":"","hsn":"","qty":1,"rate":0,"gst_rate":18}]}
+  ```]`
+  Use when the user asks to create/generate a GST invoice or bill. Pass only what they gave you (omit unknown fields). The tool returns the finished, priced invoice — output its <artifact> block VERBATIM, never changing a number.
 """
 
 _DAILY_OVERLAY = """
