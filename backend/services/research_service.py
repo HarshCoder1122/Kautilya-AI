@@ -290,6 +290,15 @@ def _merge_sources(existing: List[Dict[str, Any]], new: List[Dict[str, Any]],
     return merged
 
 
+def _gather_sources(queries: List[str], cap: int = MAX_SOURCES) -> List[Dict[str, Any]]:
+    """Search all queries and return a deduped, domain-diverse source list.
+
+    Back-compat shim for callers (e.g. the chat web_search tool in
+    agent_loop_service) that used the pre-multi-round API. Built on the newer
+    `_search_round` + `_merge_sources` helpers."""
+    return _merge_sources([], _search_round(queries), cap=cap)
+
+
 # =====================================================================
 # Reading
 # =====================================================================
