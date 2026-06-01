@@ -51,6 +51,9 @@ def api_research_stream():
     data = request.get_json(silent=True) or {}
     question = (data.get('question') or data.get('message') or '').strip()
     session_id = (data.get('session_id') or '').strip() or None
+    depth = (data.get('depth') or 'standard').strip().lower()
+    if depth not in ('quick', 'standard', 'exhaustive'):
+        depth = 'standard'
     if not question:
         return jsonify({"error": "question required"}), 400
 
@@ -94,7 +97,7 @@ def api_research_stream():
 
         def _run_research():
             try:
-                for event in deep_research_stream(question):
+                for event in deep_research_stream(question, depth=depth):
                     if isinstance(event, dict):
                         ev = event.get('event')
                         if ev == 'chunk' and event.get('chunk'):

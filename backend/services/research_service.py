@@ -412,11 +412,28 @@ def _bibliography_md(sources: List[Dict[str, Any]]) -> str:
 # Orchestration
 # =====================================================================
 
-def deep_research_stream(question: str) -> Iterator[Dict[str, Any]]:
-    """Stream an analyst-grade, multi-round deep-research report."""
+def deep_research_stream(question: str, depth: str = "standard") -> Iterator[Dict[str, Any]]:
+    """Stream an analyst-grade, multi-round deep-research report.
+
+    `depth` tunes breadth/effort:
+      • quick      — single search pass, fewer sources, shorter report (fast)
+      • standard   — full multi-round pipeline (default)
+      • exhaustive — widest source net + second pass + longest report
+    """
     t0 = time.time()
     def time_left() -> float:
         return DEADLINE_S - (time.time() - t0)
+
+    prof = {
+        "quick":      {"max_sources": 8,                     "second": False, "tokens": 7000},
+        "standard":   {"max_sources": MAX_SOURCES,           "second": SEARCH_ROUNDS_ENABLED, "tokens": SYNTH_MAX_TOKENS},
+        "exhaustive": {"max_sources": max(MAX_SOURCES, 30),  "second": True,  "tokens": SYNTH_MAX_TOKENS},
+    }.get((depth or "standard").lower(), None)
+    if prof is None:
+        prof = {"max_sources": MAX_SOURCES, "second": SEARCH_ROUNDS_ENABLED, "tokens": SYNTH_MAX_TOKENS}
+    max_sources = prof["max_sources"]
+    second_pass = prof["second"]
+    synth_tokens = prof["tokens"]
 
     # ---- 1. Plan -----------------------------------------------------------
     yield {"event": "status", "message": "🧭 Planning the research — outline & angles…"}
@@ -428,7 +445,7 @@ def deep_research_stream(question: str) -> Iterator[Dict[str, Any]]:
     # ---- 2. Round-1 search -------------------------------------------------
     yield {"event": "status", "message": f"🔎 Searching the web — {len(queries)} angles in parallel…"}
     raw1 = _search_round(queries)
-    sources = _merge_sources([], raw1, cap=MAX_SOURCES)
+    sources = _merge_sources([], raw1, cap=max_sources)
 
     if not sources:
         yield {"event": "chunk", "chunk":
@@ -443,7 +460,7 @@ def deep_research_stream(question: str) -> Iterator[Dict[str, Any]]:
     bodies = _read_sources(sources)
 
     # ---- 4 & 5. Gap analysis + round-2 search ------------------------------
-    if time_left() > 120 and SEARCH_ROUNDS_ENABLED:
+    if time_left() > 120 and second_pass:
         yield {"event": "status", "message": "🧩 Auditing coverage & chasing the gaps…"}
         followups = _find_gaps(question, outline, sources, bodies)
         if followups:
@@ -451,7 +468,7 @@ def deep_research_stream(question: str) -> Iterator[Dict[str, Any]]:
             yield {"event": "status", "message": f"🔎 Second pass — {len(followups)} targeted searches…"}
             raw2 = _search_round(followups)
             before = len(sources)
-            sources = _merge_sources(sources, raw2, cap=MAX_SOURCES)
+            sources = _merge_sources(sources, raw2, cap=max_sources)
             new_sources = sources[before:]
             if new_sources:
                 # Emit the full cumulative list so citation numbering is final
@@ -522,7 +539,7 @@ def deep_research_stream(question: str) -> Iterator[Dict[str, Any]]:
     continuation = 0
     cur_messages = messages
     while True:
-        truncated = yield from _run(cur_messages, SYNTH_MAX_TOKENS if continuation == 0 else 8000)
+        truncated = yield from _run(cur_messages, synth_tokens if continuation == 0 else 8000)
         if (truncated and streamed_anything
                 and continuation < MAX_CONTINUATIONS
                 and time_left() > 60):

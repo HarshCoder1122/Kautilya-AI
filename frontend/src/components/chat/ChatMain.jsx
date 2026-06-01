@@ -69,6 +69,8 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   const [messages, setMessages] = useState(() => _readStreamCache(sessionId)?.messages || []);
   const [inputValue, setInputValue] = useState("");
   const [selectedFiles, setSelectedFiles] = useState([]);
+  // Deep-research depth: quick | standard | exhaustive (drives backend breadth).
+  const [researchDepth, setResearchDepth] = useState('standard');
   const [isThinking, setIsThinking] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -547,7 +549,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       abortControllerRef.current = new AbortController();
 
       const response = activeMode === 'research'
-        ? await chatAPI.streamResearch(currentInput, currentSessionId, { signal: abortControllerRef.current.signal })
+        ? await chatAPI.streamResearch(currentInput, currentSessionId, { signal: abortControllerRef.current.signal, depth: researchDepth })
         : await chatAPI.streamMessage(currentInput, currentSessionId, model, currentFiles, {
           // Only respect the user's explicit "Max Thinking" toggle. Code
           // mode used to force this true, but Qwen3-Coder is NOT a
@@ -1273,6 +1275,38 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                   {mode.label}
                 </button>
               ))}
+            </div>
+            <div className="flex items-center gap-2">
+              {/* Reassure the user they can leave — work continues server-side. */}
+              {isStreaming && (
+                <span className="hidden sm:inline-flex items-center gap-1.5 text-[10px] text-emerald-400/90" title="This keeps running on our servers even if you close the tab. Your result is saved and reappears when you return.">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  Running — you can leave, we'll save it
+                </span>
+              )}
+              {/* Deep-research depth selector */}
+              {activeMode === 'research' && !isStreaming && (
+                <div className="flex items-center rounded-md border border-[var(--k-border)] overflow-hidden">
+                  {[
+                    { id: 'quick', label: 'Quick' },
+                    { id: 'standard', label: 'Standard' },
+                    { id: 'exhaustive', label: 'Exhaustive' },
+                  ].map(d => (
+                    <button
+                      key={d.id}
+                      onClick={() => setResearchDepth(d.id)}
+                      title={d.id === 'quick' ? 'Fast — fewer sources, single pass'
+                        : d.id === 'exhaustive' ? 'Widest source net + second pass — most thorough'
+                        : 'Balanced multi-round research'}
+                      className={`px-2 py-0.5 text-[10px] font-medium transition-colors ${researchDepth === d.id
+                        ? 'bg-[var(--k-brand)] text-white'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-accent'}`}
+                    >
+                      {d.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -168,7 +168,7 @@ export const chatAPI = {
   // so SerpAPI/source gathering is actually used.
   streamResearch: async (question, sessionId, options = {}) => {
     const buildBody = () => ({
-      body: JSON.stringify({ question, session_id: sessionId }),
+      body: JSON.stringify({ question, session_id: sessionId, depth: options.depth || 'standard' }),
       contentType: 'application/json',
     });
     return _postStreamWithAuth(`${API_BASE_URL}/api/research/stream`, buildBody, options);
