@@ -328,11 +328,20 @@ export default function Integrations() {
                             <div className="text-xs text-muted-foreground">
                               {item.connected
                                 ? <span className="text-emerald-400 inline-flex items-center gap-1"><CheckCircle className="w-3 h-3" weight="fill" /> Connected</span>
-                                : <span className="inline-flex items-center gap-1"><XCircle className="w-3 h-3" /> {isOAuth ? "One-tap connect" : "Setup required"}</span>}
+                                : item.coming_soon
+                                  ? <span className="text-amber-400 inline-flex items-center gap-1">● Beta · Available soon</span>
+                                  : <span className="inline-flex items-center gap-1"><XCircle className="w-3 h-3" /> {isOAuth ? "One-tap connect" : "Setup required"}</span>}
                             </div>
                           </div>
                           <div className="flex items-center gap-2 flex-shrink-0">
-                            {item.connected ? (
+                            {item.coming_soon ? (
+                              <span
+                                title="This integration is in beta — we're enabling it soon."
+                                className="px-3 py-1.5 text-xs rounded-lg border border-amber-400/30 text-amber-400 bg-amber-400/10 font-medium cursor-default select-none"
+                              >
+                                Available soon
+                              </span>
+                            ) : item.connected ? (
                               <button
                                 onClick={() => handleDisconnect(item.id)}
                                 disabled={disconnecting === item.id}

@@ -250,6 +250,26 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         except Exception as _e:
             print(f"[Agent] integration tool prompt injection failed: {_e}")
 
+    # Capability questions ("what can you do?", "which integrations?", "kya kar
+    # sakte ho?"): don't inject the call-syntax list (that tempts an unwanted
+    # call) — but DO tell the model which integrations the user has actually
+    # connected so it answers from fact instead of guessing/hallucinating.
+    if uid and _is_meta:
+        try:
+            from services.integration_tools import available_tools
+            specs = available_tools(uid)
+            if specs:
+                cap = ["\n\nCONNECTED INTEGRATIONS the user has enabled (mention these by name "
+                       "when asked what you can do; this is a capability question, so answer in "
+                       "PLAIN TEXT and do NOT call any tool now):"]
+                for s in specs:
+                    fn = s["function"]
+                    cap.append(f"- {fn['name']}: {(fn.get('description') or '')[:90]}")
+                if current_messages and current_messages[0].get("role") == "system":
+                    current_messages[0]["content"] = str(current_messages[0].get("content", "")) + "\n".join(cap)
+        except Exception as _e:
+            print(f"[Agent] meta capability injection failed: {_e}")
+
     # MCP tools: always advertise — gating by intent keywords misses queries like
     # "find me the latest paper on X" (no keyword match yet a web-search MCP would
     # answer it). Token cost is bounded since most deployments enable <10 servers.

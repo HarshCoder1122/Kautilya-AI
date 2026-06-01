@@ -442,6 +442,23 @@ _OAUTH_FAMILY_ENV = {
     "instagram": "FACEBOOK",
 }
 
+_GOOGLE_FAMILY = ('gmail', 'google_calendar', 'google_drive', 'google_sheets',
+                  'google_tasks', 'google_docs', 'google_contacts', 'youtube')
+
+
+def _operator_client_id(provider):
+    """Operator-level OAuth client_id from env for this provider (incl. shared
+    app families), or None if the operator hasn't configured it yet. Used to
+    flag still-unconfigured OAuth providers as 'Beta — available soon'."""
+    cid = os.environ.get(f"{provider.upper()}_CLIENT_ID")
+    if cid:
+        return cid
+    if provider in _GOOGLE_FAMILY:
+        return os.environ.get("GOOGLE_CLIENT_ID")
+    if provider in _OAUTH_FAMILY_ENV:
+        return os.environ.get(f"{_OAUTH_FAMILY_ENV[provider]}_CLIENT_ID")
+    return None
+
 
 # ---------- Firestore helpers ----------
 def _user_integration_ref(uid, provider):
@@ -497,20 +514,33 @@ def list_integrations():
         connected = bool(cfg.get('access_token') or cfg.get('api_key') or cfg.get('webhook_url'))
         if not connected:
             connected = any(cfg.get(f["key"]) for f in fields)
+        auth_type = "oauth" if meta.get("authorize_url") else "api_key"
+        # Beta / "available soon": an OAuth provider the operator hasn't given a
+        # CLIENT_ID yet (and the user hasn't connected / pasted their own app).
+        # Such a Connect would just 400, so we surface it as coming-soon instead.
+        coming_soon = (
+            auth_type == "oauth"
+            and not connected
+            and not _operator_client_id(pid)
+            and not cfg.get('client_id')
+        )
         out.append({
             "id": pid,
             "label": meta["label"],
             "category": meta["category"],
             "connected": connected,
-            "auth_type": "oauth" if meta.get("authorize_url") else "api_key",
+            "auth_type": auth_type,
+            "coming_soon": coming_soon,
+            "status": "beta" if coming_soon else ("connected" if connected else "available"),
             "scopes": meta.get("scopes"),
             "fields": fields,
             "domain": _DOMAINS.get(pid),
             "india": pid in _INDIA,
             "updated_at": cfg.get('updated_at'),
         })
-    # India-first first, then connected, then alphabetical — surfaces the moat.
-    out.sort(key=lambda x: (not x["india"], not x["connected"], x["label"].lower()))
+    # Connected first; then live (available) before beta/coming-soon; within each
+    # bucket India-first (the moat), then alphabetical.
+    out.sort(key=lambda x: (not x["connected"], x["coming_soon"], not x["india"], x["label"].lower()))
     return jsonify({"integrations": out})
 
 
