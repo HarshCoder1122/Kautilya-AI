@@ -14,6 +14,72 @@ How it works (one-tap model):
 CENTRAL_DOMAIN=ai.revealiq.in          # or OAUTH_REDIRECT_DOMAIN — used to build OAuth redirect URIs
 ```
 
+## OAuth redirect / callback URLs — paste these into each provider's console
+Every redirect URI is `https://ai.revealiq.in/api/integrations/<id>/callback`.
+For a **shared app** (Google / Microsoft / Zoho / Facebook) register *all* of that
+family's URLs in the one OAuth app (each child id has its own callback path).
+
+### Google app (one OAuth client — add ALL of these as Authorized redirect URIs)
+```
+https://ai.revealiq.in/api/integrations/gmail/callback
+https://ai.revealiq.in/api/integrations/google_calendar/callback
+https://ai.revealiq.in/api/integrations/google_drive/callback
+https://ai.revealiq.in/api/integrations/google_sheets/callback
+https://ai.revealiq.in/api/integrations/google_tasks/callback
+https://ai.revealiq.in/api/integrations/google_docs/callback
+https://ai.revealiq.in/api/integrations/google_contacts/callback
+https://ai.revealiq.in/api/integrations/youtube/callback
+https://ai.revealiq.in/api/integrations/google_analytics/callback
+https://ai.revealiq.in/api/integrations/google_ads/callback
+```
+
+### Microsoft app (one Azure AD app — add ALL)
+```
+https://ai.revealiq.in/api/integrations/outlook/callback
+https://ai.revealiq.in/api/integrations/onedrive/callback
+https://ai.revealiq.in/api/integrations/microsoft_teams/callback
+```
+
+### Zoho app (one client — add ALL)
+```
+https://ai.revealiq.in/api/integrations/zoho/callback
+https://ai.revealiq.in/api/integrations/zoho_books/callback
+https://ai.revealiq.in/api/integrations/zoho_inventory/callback
+```
+
+### Facebook app (one app — add ALL)
+```
+https://ai.revealiq.in/api/integrations/facebook/callback
+https://ai.revealiq.in/api/integrations/instagram/callback
+```
+
+### Per-provider apps (one redirect URI each)
+```
+https://ai.revealiq.in/api/integrations/hubspot/callback
+https://ai.revealiq.in/api/integrations/salesforce/callback
+https://ai.revealiq.in/api/integrations/github/callback
+https://ai.revealiq.in/api/integrations/notion/callback
+https://ai.revealiq.in/api/integrations/airtable/callback
+https://ai.revealiq.in/api/integrations/asana/callback
+https://ai.revealiq.in/api/integrations/linear/callback
+https://ai.revealiq.in/api/integrations/jira/callback
+https://ai.revealiq.in/api/integrations/gitlab/callback
+https://ai.revealiq.in/api/integrations/dropbox/callback
+https://ai.revealiq.in/api/integrations/box/callback
+https://ai.revealiq.in/api/integrations/razorpay/callback
+https://ai.revealiq.in/api/integrations/stripe/callback
+https://ai.revealiq.in/api/integrations/quickbooks/callback
+https://ai.revealiq.in/api/integrations/xero/callback
+https://ai.revealiq.in/api/integrations/pipedrive/callback
+https://ai.revealiq.in/api/integrations/intercom/callback
+https://ai.revealiq.in/api/integrations/zoom/callback
+https://ai.revealiq.in/api/integrations/calendly/callback
+https://ai.revealiq.in/api/integrations/mailchimp/callback
+https://ai.revealiq.in/api/integrations/linkedin/callback
+https://ai.revealiq.in/api/integrations/twitter/callback
+https://ai.revealiq.in/api/integrations/discord/callback
+```
+
 ## Shared-app families (one app powers several integrations)
 ```
 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET          # gmail, google_calendar, google_drive, google_sheets,

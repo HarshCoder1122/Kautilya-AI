@@ -183,38 +183,130 @@ def _safe(text: str, uni: bool = False) -> str:
     return s.encode('latin-1', 'replace').decode('latin-1')
 
 
+def _collect_headings(content: str) -> list:
+    """Ordered list of (level, text) for #/##/### headings, skipping code."""
+    heads = []
+    in_code = False
+    for line in content.split('\n'):
+        if line.strip().startswith('```'):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        if line.startswith('### '):
+            heads.append((3, line[4:].strip()))
+        elif line.startswith('## '):
+            heads.append((2, line[3:].strip()))
+        elif line.startswith('# '):
+            heads.append((1, line[2:].strip()))
+    return heads
+
+
+def _logo_path() -> Optional[str]:
+    import os
+    p = os.path.join(os.path.dirname(__file__), '..', 'static', 'logo.png')
+    return p if os.path.exists(p) else None
+
+
 def generate_pdf(content: str, filename: str = "kautilya_artifact.pdf",
                  title: str = "Kautilya Export") -> Tuple[io.BytesIO, str]:
-    """Generate PDF from markdown content with basic formatting.
+    """Generate a BRANDED PDF from markdown: cover page (logo + title + date),
+    a clickable table of contents, footer with page numbers, then the body.
 
-    Uses an embedded Unicode font when one is available (so ₹, Hindi, smart
-    quotes, arrows etc. render correctly); otherwise falls back to the core
-    Helvetica font with transliteration so output stays clean and readable.
+    Uses an embedded Unicode font when available (₹, Hindi, smart quotes…),
+    else falls back to the core Helvetica font with transliteration.
     """
     try:
         from fpdf import FPDF
     except ImportError:
         raise RuntimeError("fpdf2 not installed")
+    from datetime import datetime
 
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_auto_page_break(auto=True, margin=15)
+    class _KautilyaPDF(FPDF):
+        def footer(self):
+            # No footer on the cover page.
+            if getattr(self, 'cover_mode', False):
+                return
+            try:
+                self.set_y(-12)
+                self.set_font(self._base, '', 8)
+                self.set_text_color(150, 150, 150)
+                label = f"Kautilya AI   ·   Confidential   ·   Page {self.page_no()}"
+                self.cell(0, 8, _safe(label, self._uni), align='C')
+                self.set_text_color(0, 0, 0)
+            except Exception:
+                pass
+
+    pdf = _KautilyaPDF()
+    pdf.set_auto_page_break(auto=True, margin=18)
 
     uni_family = _register_unicode_font(pdf)
     BASE = uni_family or "Helvetica"
     MONO = uni_family or "Courier"
     uni = uni_family is not None
+    pdf._base = BASE
+    pdf._uni = uni
 
     def sf(t):
         return _safe(t, uni)
 
-    # Title
-    pdf.set_font(BASE, 'B', 16)
-    pdf.multi_cell(0, 10, sf(title), new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(2)
+    # ---------------- Cover page ----------------
+    pdf.cover_mode = True
+    pdf.add_page()
+    logo = _logo_path()
+    if logo:
+        try:
+            lw = 32
+            pdf.image(logo, x=(pdf.w - lw) / 2, y=48, w=lw)
+        except Exception:
+            pass
+    pdf.set_y(92)
+    pdf.set_font(BASE, 'B', 10)
+    pdf.set_text_color(130, 130, 130)
+    pdf.cell(0, 7, sf("KAUTILYA  AI"), align='C', new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(5)
+    pdf.set_text_color(20, 20, 24)
+    pdf.set_font(BASE, 'B', 24)
+    pdf.multi_cell(0, 12, sf(title), align='C')
+    pdf.ln(8)
+    pdf.set_draw_color(79, 70, 229)
+    pdf.set_line_width(0.8)
+    cx = pdf.w / 2
+    pdf.line(cx - 18, pdf.get_y(), cx + 18, pdf.get_y())
+    pdf.ln(8)
+    pdf.set_font(BASE, '', 12)
+    pdf.set_text_color(110, 110, 110)
+    pdf.cell(0, 7, sf(datetime.now().strftime('%d %B %Y')), align='C', new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(1)
+    pdf.cell(0, 7, sf("Prepared by Kautilya AI"), align='C', new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(0, 0, 0)
+
+    # ---------------- Table of contents (clickable) ----------------
+    headings = _collect_headings(content)
+    make_toc = len(headings) >= 3
+    links = []
+    if make_toc:
+        pdf.add_page()             # footer fires for cover → cover_mode True → skipped
+        pdf.cover_mode = False
+        pdf.set_font(BASE, 'B', 16)
+        pdf.cell(0, 10, sf("Contents"), new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(2)
+        for _ in headings:
+            links.append(pdf.add_link())
+        for (level, text), link in zip(headings, links):
+            pdf.set_x(pdf.l_margin + (level - 1) * 6)
+            pdf.set_font(BASE, 'B' if level == 1 else '', 11 if level == 1 else 10)
+            pdf.set_text_color(40, 40, 60)
+            pdf.multi_cell(0, 7, sf(text), new_x="LMARGIN", new_y="NEXT", link=link)
+        pdf.set_text_color(0, 0, 0)
+        pdf.add_page()             # start body on a fresh page
+    else:
+        pdf.add_page()             # leave cover, start body
+        pdf.cover_mode = False
 
     # Body — parse simple markdown
     pdf.set_font(BASE, size=11)
+    heading_idx = 0
     lines = content.split('\n')
     in_code = False
     i = 0
@@ -222,6 +314,10 @@ def generate_pdf(content: str, filename: str = "kautilya_artifact.pdf",
     while i < len(lines):
         line = lines[i]
         safe_line = sf(line)
+        # fpdf2's multi_cell default leaves the cursor at the RIGHT margin, so a
+        # following multi_cell(w=0) would get zero usable width and raise. Reset
+        # to the left margin at the top of every block to guarantee full width.
+        pdf.set_x(pdf.l_margin)
 
         # Code fence
         if line.strip().startswith('```'):
@@ -288,7 +384,12 @@ def generate_pdf(content: str, filename: str = "kautilya_artifact.pdf",
             continue
 
         # Headings — multi_cell (not cell) so long headings wrap instead of
-        # throwing "Not enough horizontal space".
+        # throwing "Not enough horizontal space". Anchor the TOC link here so
+        # clicking a Contents entry jumps to the section.
+        if line.startswith('# ') or line.startswith('## ') or line.startswith('### '):
+            if make_toc and heading_idx < len(links):
+                pdf.set_link(links[heading_idx])
+                heading_idx += 1
         if line.startswith('# '):
             pdf.set_font(BASE, 'B', 14)
             pdf.multi_cell(0, 8, sf(line[2:]), new_x="LMARGIN", new_y="NEXT")
@@ -339,18 +440,72 @@ def generate_pdf(content: str, filename: str = "kautilya_artifact.pdf",
 
 def generate_docx(content: str, filename: str = "kautilya_artifact.docx",
                   title: str = "Kautilya Export") -> Tuple[io.BytesIO, str]:
-    """Generate DOCX from markdown content."""
+    """Generate a BRANDED DOCX from markdown: cover page (logo + title + date),
+    a Contents page, a page-numbered footer, then the body."""
     try:
         from docx import Document
-        from docx.shared import Pt, RGBColor
+        from docx.shared import Pt, RGBColor, Inches
         from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+        from docx.oxml.ns import qn
+        from docx.oxml import OxmlElement
     except ImportError:
         raise RuntimeError("python-docx not installed")
+    from datetime import datetime
+
+    CENTER = WD_PARAGRAPH_ALIGNMENT.CENTER
+
+    def _add_page_field(paragraph):
+        """Insert a live Word PAGE number field into a paragraph."""
+        run = paragraph.add_run()
+        c1 = OxmlElement('w:fldChar'); c1.set(qn('w:fldCharType'), 'begin')
+        instr = OxmlElement('w:instrText'); instr.set(qn('xml:space'), 'preserve'); instr.text = 'PAGE'
+        c2 = OxmlElement('w:fldChar'); c2.set(qn('w:fldCharType'), 'end')
+        run._r.append(c1); run._r.append(instr); run._r.append(c2)
 
     doc = Document()
 
-    # Title
-    h = doc.add_heading(title, level=0)
+    # ---- Footer: brand + page number (every page) ----
+    try:
+        fp = doc.sections[0].footer.paragraphs[0]
+        fp.alignment = CENTER
+        fr = fp.add_run("Kautilya AI   ·   Confidential   ·   Page ")
+        fr.font.size = Pt(8); fr.font.color.rgb = RGBColor(0x96, 0x96, 0x96)
+        _add_page_field(fp)
+    except Exception:
+        pass
+
+    # ---- Cover page ----
+    logo = _logo_path()
+    if logo:
+        try:
+            pic_p = doc.add_paragraph(); pic_p.alignment = CENTER
+            pic_p.add_run().add_picture(logo, width=Inches(1.3))
+        except Exception:
+            pass
+    bp = doc.add_paragraph(); bp.alignment = CENTER
+    br = bp.add_run("KAUTILYA AI"); br.bold = True; br.font.size = Pt(11)
+    br.font.color.rgb = RGBColor(0x82, 0x82, 0x82)
+    tp = doc.add_paragraph(); tp.alignment = CENTER
+    tr = tp.add_run(title); tr.bold = True; tr.font.size = Pt(26)
+    dp = doc.add_paragraph(); dp.alignment = CENTER
+    dr = dp.add_run(datetime.now().strftime('%d %B %Y') + "   ·   Prepared by Kautilya AI")
+    dr.font.size = Pt(11); dr.font.color.rgb = RGBColor(0x6e, 0x6e, 0x6e)
+    doc.add_page_break()
+
+    # ---- Contents (when the doc has enough sections) ----
+    headings = _collect_headings(content)
+    if len(headings) >= 3:
+        doc.add_heading("Contents", level=1)
+        for level, text in headings:
+            p = doc.add_paragraph(text)
+            try:
+                p.paragraph_format.left_indent = Inches(0.25 * (level - 1))
+            except Exception:
+                pass
+            if level == 1:
+                for rr in p.runs:
+                    rr.bold = True
+        doc.add_page_break()
 
     lines = content.split('\n')
     in_code = False
