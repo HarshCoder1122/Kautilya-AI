@@ -94,8 +94,11 @@ try:
     _KEEPWARM_INTERVAL = max(30.0, float(os.environ.get("NVIDIA_KEEPWARM_INTERVAL", "240") or 240))
 except ValueError:
     _KEEPWARM_INTERVAL = 240.0
+# Warm all three tier models by default so Daily, Pro AND Coder demos all land
+# on a hot model (NVIDIA lets idle models go cold per-model, not per-account).
 _KEEPWARM_MODELS = [m.strip() for m in os.environ.get(
-    "NVIDIA_KEEPWARM_MODELS", "mistralai/mistral-medium-3.5-128b"
+    "NVIDIA_KEEPWARM_MODELS",
+    "mistralai/mistral-medium-3.5-128b,z-ai/glm-5.1,qwen/qwen3-coder-480b-a35b-instruct"
 ).split(",") if m.strip()]
 
 
