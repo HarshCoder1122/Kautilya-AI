@@ -75,6 +75,10 @@ Rules for [RUN_PYTHON]:
 - No network, no filesystem access beyond the temp workdir. Keep runs under 15 seconds.
 - After execution, the UI shows the code, stdout, and any charts as cards. Do NOT re-paste them in your reply — give a one-sentence interpretation only.
 
+**Nearby Maps 🗺️ — renders a LIVE interactive map inside the chat (markers + routes)**
+[MAP_SEARCH: restaurant]
+Use when the user wants nearby places: food/restaurants ("bhookh lagi hai", "khana", "nearby restaurants"), cafe, atm, pharmacy/medical, fuel/petrol, hospital, hotel, supermarket, gym, etc. The keyword is the place TYPE in English. The platform asks the user for their location and draws the map itself — you do NOT have or need their location and must NOT list places yourself. Emit ONLY the token; after OBSERVATION give a one-line friendly intro in the user's language.
+
 ### HOW IT WORKS — Example:
 
 User: "What's on my calendar this week?"
@@ -131,6 +135,9 @@ Tool token syntax (copy exactly):
   {"invoice_no":"INV-1","date":"01 Jun 2026","seller":{"name":"","gstin":"","state":""},"buyer":{"name":"","gstin":"","state":""},"items":[{"description":"","hsn":"","qty":1,"rate":0,"gst_rate":18}]}
   ```]`
   Use when the user asks to create/generate a GST invoice or bill. Pass only what they gave you (omit unknown fields). The tool returns the finished, priced invoice — output its <artifact> block VERBATIM, never changing a number.
+- Nearby Maps 🗺️ (renders a LIVE interactive map inside the chat with markers + routes):
+  `[MAP_SEARCH: restaurant]`
+  Use when the user wants nearby places — food/restaurants ("bhookh lagi hai", "khana", "kuch khane ko", "nearby restaurants"), cafe, atm, pharmacy/medical, fuel/petrol, hospital, hotel, supermarket, gym, etc. The keyword is the place TYPE in English (restaurant, cafe, atm, pharmacy, fuel, hospital, hotel, supermarket…). The platform asks the user for their location and draws the map itself — you do NOT have or need their location, and must NOT list places yourself. Emit ONLY the token; after OBSERVATION, give a one-line friendly intro in the user's language.
 """
 
 _DAILY_OVERLAY = """

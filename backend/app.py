@@ -42,6 +42,7 @@ from routes.invoice_routes import invoice_bp
 from routes.tts_routes import tts_bp
 from routes.analytics_routes import analytics_bp
 from routes.projects_routes import projects_bp
+from routes.maps_routes import maps_bp
 
 app = Flask(__name__, static_folder=STATIC_FOLDER)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24).hex())
@@ -104,6 +105,7 @@ app.register_blueprint(invoice_bp, url_prefix='/api')
 app.register_blueprint(tts_bp, url_prefix='/api')
 app.register_blueprint(analytics_bp, url_prefix='/api')
 app.register_blueprint(projects_bp, url_prefix='/api')
+app.register_blueprint(maps_bp, url_prefix='/api')
 
 # Boot MCP (Model Context Protocol) client — spawns enabled stdio servers
 # from mcp_config.json and registers their tools with the agent loop.

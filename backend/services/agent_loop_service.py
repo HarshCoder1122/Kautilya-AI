@@ -1157,6 +1157,19 @@ def _plan_actions(text, uid, start_id=1):
                            "Continue with your answer using the calculation above.",
                            m.start()))
 
+    # 2.5 [MAP_SEARCH: keyword]  — nearby places on an in-chat Mappls map.
+    for m in re.finditer(r'\[MAP_SEARCH:\s*(.*?)\]', text):
+        raw = m.group(1).strip()
+        if _is_placeholder_arg(raw):
+            continue
+        # Accept "keyword" or "keyword | area"; area is optional free text.
+        kw = (raw.split('|')[0].strip() or 'restaurant')
+        actions.append(_mk("map", kw, _runner_map_search(kw),
+                           "An interactive map with nearby results is now shown to the user "
+                           "(it uses their live location). Give a brief 1-line intro in the "
+                           "user's language. Do NOT list the places yourself — the map shows them.",
+                           m.start()))
+
     # 3. [CALENDAR_CREATE: title | start | end | description?]
     for m in re.finditer(r'\[CALENDAR_CREATE:\s*(.*?)\]', text, re.DOTALL):
         parts = [p.strip() for p in m.group(1).split('|')]
@@ -1416,6 +1429,23 @@ def _runner_calc(expr):
             return {"ok": False, "preview": f"Error: {e}",
                     "observation": f"CALCULATION ERROR: {e}",
                     "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_map_search(keyword):
+    """Emit a 'map' tool_result card. The nearby search + rendering happen in
+    the frontend MapCard, which asks the browser for the user's PRECISE
+    location (permission popup) and calls /api/maps/nearby — so the runner is
+    location-agnostic and just declares the map + its search keyword."""
+    def run():
+        kw = (keyword or 'restaurant').strip() or 'restaurant'
+        extra = [{"event": "tool_result", "tool": "map",
+                  "data": {"keyword": kw, "radius": 3000}}]
+        return {"ok": True, "preview": f"Map: nearby {kw}",
+                "observation": (f"MAP SHOWN: an interactive map of nearby '{kw}' is now "
+                                "displayed to the user using their current location. "
+                                "Acknowledge in one short, friendly line — do not list places."),
+                "done_extras": {}, "extra_events": extra}
     return run
 
 

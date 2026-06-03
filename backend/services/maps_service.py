@@ -1,0 +1,380 @@
+"""
+Kautilya AI — Maps Service (Mappls / MapmyIndia, with OpenStreetMap fallback)
+
+Powers the in-chat map card: nearby-place search, geocoding, and routing.
+
+Design goal: ALWAYS return usable data so the map never looks broken.
+  • Primary  : Mappls REST APIs (India-grade POIs, addresses, routing).
+               Needs MAPPLS_CLIENT_ID / MAPPLS_CLIENT_SECRET (OAuth) and, for
+               routing, MAPPLS_REST_KEY.
+  • Fallback : free OpenStreetMap services (Overpass / Nominatim / OSRM) when
+               Mappls credentials are missing or a call fails.
+
+Every public function returns a plain dict/list of normalized shapes — the
+route layer and frontend never see provider-specific formats.
+
+Normalized place:
+  {name, address, lat, lng, distance (m, optional), category (optional),
+   eloc (optional)}
+"""
+import time
+import threading
+
+import requests
+
+from config import (
+    MAPPLS_CLIENT_ID, MAPPLS_CLIENT_SECRET, MAPPLS_REST_KEY, MAPPLS_MAP_SDK_KEY,
+)
+
+# Short, sane timeouts so a slow upstream never hangs the chat. (connect, read)
+_HTTP_TIMEOUT = (4, 12)
+_UA = "KautilyaAI/1.0 (+https://ai.revealiq.in)"  # Nominatim requires a UA
+
+# ── Mappls OAuth token cache ─────────────────────────────────────────────
+_token_lock = threading.Lock()
+_token_cache = {"value": None, "expires_at": 0.0}
+
+
+def mappls_available() -> bool:
+    return bool(MAPPLS_CLIENT_ID and MAPPLS_CLIENT_SECRET)
+
+
+def map_sdk_key() -> str:
+    """Public Map-SDK key the browser loads. Domain-locked, safe to expose."""
+    return MAPPLS_MAP_SDK_KEY or ""
+
+
+def _get_mappls_token():
+    """Return a cached OAuth bearer token, refreshing ~2 min before expiry.
+    Returns None if credentials are missing or the token call fails."""
+    if not mappls_available():
+        return None
+    now = time.time()
+    if _token_cache["value"] and _token_cache["expires_at"] - 120 > now:
+        return _token_cache["value"]
+    with _token_lock:
+        # Re-check inside the lock (another thread may have refreshed).
+        if _token_cache["value"] and _token_cache["expires_at"] - 120 > time.time():
+            return _token_cache["value"]
+        try:
+            r = requests.post(
+                "https://outpost.mappls.com/api/security/oauth/token",
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": MAPPLS_CLIENT_ID,
+                    "client_secret": MAPPLS_CLIENT_SECRET,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=_HTTP_TIMEOUT,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                tok = data.get("access_token")
+                if tok:
+                    _token_cache["value"] = tok
+                    _token_cache["expires_at"] = time.time() + float(data.get("expires_in", 86400))
+                    return tok
+            print(f"[Maps] Mappls token error {r.status_code}: {r.text[:160]}")
+        except Exception as e:
+            print(f"[Maps] Mappls token exception: {e}")
+    return None
+
+
+def _to_float(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+# ── IP geolocation (fallback when the browser denies precise location) ────
+def ip_location(ip: str):
+    """Approximate {lat, lng, label} from an IP via ip-api. None on failure /
+    local IPs."""
+    if not ip or ip in ("127.0.0.1", "localhost", "::1", "unknown"):
+        return None
+    try:
+        r = requests.get(f"http://ip-api.com/json/{ip}", timeout=(3, 5))
+        if r.status_code == 200:
+            d = r.json()
+            if d.get("status") == "success":
+                lat, lng = _to_float(d.get("lat")), _to_float(d.get("lon"))
+                if lat is not None and lng is not None:
+                    label = ", ".join([p for p in (d.get("city"), d.get("regionName")) if p])
+                    return {"lat": lat, "lng": lng, "label": label or "your area"}
+    except Exception as e:
+        print(f"[Maps] ip_location failed: {e}")
+    return None
+
+
+# ── Nearby search ─────────────────────────────────────────────────────────
+def nearby(lat: float, lng: float, keyword: str, radius: int = 3000, limit: int = 12):
+    """Nearby POIs for `keyword` around (lat,lng). Mappls first, OSM fallback.
+    Returns {"places": [...], "source": "mappls"|"osm"}."""
+    keyword = (keyword or "restaurant").strip() or "restaurant"
+    radius = max(250, min(int(radius or 3000), 20000))
+
+    places = _mappls_nearby(lat, lng, keyword, radius, limit)
+    if places:
+        return {"places": places, "source": "mappls"}
+    places = _osm_nearby(lat, lng, keyword, radius, limit)
+    return {"places": places, "source": "osm"}
+
+
+def _mappls_nearby(lat, lng, keyword, radius, limit):
+    tok = _get_mappls_token()
+    if not tok:
+        return []
+    try:
+        r = requests.get(
+            "https://atlas.mappls.com/api/places/nearby/json",
+            params={
+                "keywords": keyword,
+                "refLocation": f"{lat},{lng}",
+                "radius": radius,
+                "page": 1,
+            },
+            headers={"Authorization": f"bearer {tok}"},
+            timeout=_HTTP_TIMEOUT,
+        )
+        if r.status_code != 200:
+            print(f"[Maps] Mappls nearby {r.status_code}: {r.text[:160]}")
+            return []
+        out = []
+        for s in (r.json().get("suggestedLocations") or [])[:limit]:
+            plat, plng = _to_float(s.get("latitude")), _to_float(s.get("longitude"))
+            if plat is None or plng is None:
+                continue
+            out.append({
+                "name": s.get("placeName") or "Unnamed place",
+                "address": s.get("placeAddress") or "",
+                "lat": plat,
+                "lng": plng,
+                "distance": _to_float(s.get("distance")),
+                "category": s.get("type") or "",
+                "eloc": s.get("eLoc") or "",
+            })
+        return out
+    except Exception as e:
+        print(f"[Maps] Mappls nearby exception: {e}")
+        return []
+
+
+# keyword → (osm_key, osm_value) for the common asks; anything else falls back
+# to a fuzzy name match in Overpass.
+_OSM_TAGS = {
+    "restaurant": ("amenity", "restaurant"), "food": ("amenity", "restaurant"),
+    "eat": ("amenity", "restaurant"), "dinner": ("amenity", "restaurant"),
+    "lunch": ("amenity", "restaurant"), "khana": ("amenity", "restaurant"),
+    "cafe": ("amenity", "cafe"), "coffee": ("amenity", "cafe"),
+    "bar": ("amenity", "bar"), "pub": ("amenity", "pub"),
+    "hotel": ("tourism", "hotel"), "stay": ("tourism", "hotel"),
+    "atm": ("amenity", "atm"), "bank": ("amenity", "bank"),
+    "hospital": ("amenity", "hospital"), "clinic": ("amenity", "clinic"),
+    "pharmacy": ("amenity", "pharmacy"), "medical": ("amenity", "pharmacy"),
+    "chemist": ("amenity", "pharmacy"), "medicine": ("amenity", "pharmacy"),
+    "fuel": ("amenity", "fuel"), "petrol": ("amenity", "fuel"),
+    "gas": ("amenity", "fuel"), "cng": ("amenity", "fuel"),
+    "school": ("amenity", "school"), "college": ("amenity", "college"),
+    "park": ("leisure", "park"), "gym": ("leisure", "fitness_centre"),
+    "supermarket": ("shop", "supermarket"), "grocery": ("shop", "supermarket"),
+    "kirana": ("shop", "supermarket"), "mall": ("shop", "mall"),
+    "salon": ("shop", "hairdresser"), "saloon": ("shop", "hairdresser"),
+}
+
+
+def _osm_tag_for(keyword):
+    kw = keyword.lower()
+    for token, tag in _OSM_TAGS.items():
+        if token in kw:
+            return tag
+    return None
+
+
+def _osm_nearby(lat, lng, keyword, radius, limit):
+    tag = _osm_tag_for(keyword)
+    if tag:
+        k, v = tag
+        selector = f'["{k}"="{v}"]'
+    else:
+        # Fuzzy name match for arbitrary keywords (case-insensitive).
+        safe = keyword.replace('"', "").replace("\\", "")
+        selector = f'["name"~"{safe}",i]'
+    query = (
+        f"[out:json][timeout:20];"
+        f"(node{selector}(around:{radius},{lat},{lng});"
+        f" way{selector}(around:{radius},{lat},{lng}););"
+        f"out center {limit * 3};"
+    )
+    for endpoint in ("https://overpass-api.de/api/interpreter",
+                     "https://overpass.kumi.systems/api/interpreter"):
+        try:
+            r = requests.post(endpoint, data={"data": query}, timeout=(4, 20),
+                              headers={"User-Agent": _UA})
+            if r.status_code != 200:
+                continue
+            elements = r.json().get("elements", [])
+            out = []
+            for el in elements:
+                tags = el.get("tags", {}) or {}
+                name = tags.get("name")
+                if not name:
+                    continue
+                plat = el.get("lat") or (el.get("center") or {}).get("lat")
+                plng = el.get("lon") or (el.get("center") or {}).get("lon")
+                plat, plng = _to_float(plat), _to_float(plng)
+                if plat is None or plng is None:
+                    continue
+                addr = ", ".join(filter(None, [
+                    tags.get("addr:street"), tags.get("addr:suburb"),
+                    tags.get("addr:city"),
+                ]))
+                out.append({
+                    "name": name,
+                    "address": addr,
+                    "lat": plat,
+                    "lng": plng,
+                    "distance": _haversine_m(lat, lng, plat, plng),
+                    "category": tags.get("amenity") or tags.get("shop") or tags.get("tourism") or "",
+                    "eloc": "",
+                })
+            out.sort(key=lambda p: p.get("distance") or 1e9)
+            return out[:limit]
+        except Exception as e:
+            print(f"[Maps] Overpass exception ({endpoint}): {e}")
+            continue
+    return []
+
+
+def _haversine_m(lat1, lng1, lat2, lng2):
+    import math
+    R = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lng2 - lng1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return round(2 * R * math.asin(min(1.0, math.sqrt(a))), 1)
+
+
+# ── Geocoding (free-text place → coordinates) ─────────────────────────────
+def geocode(text: str):
+    """{lat, lng, label} for a place/area name. Mappls first, Nominatim
+    fallback. None if nothing matches."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    g = _mappls_geocode(text)
+    return g or _osm_geocode(text)
+
+
+def _mappls_geocode(text):
+    tok = _get_mappls_token()
+    if not tok:
+        return None
+    try:
+        r = requests.get(
+            "https://atlas.mappls.com/api/places/geocode",
+            params={"address": text, "itemCount": 1},
+            headers={"Authorization": f"bearer {tok}"},
+            timeout=_HTTP_TIMEOUT,
+        )
+        if r.status_code != 200:
+            return None
+        results = r.json().get("copResults") or r.json().get("results")
+        if isinstance(results, dict):
+            results = [results]
+        if results:
+            top = results[0]
+            lat, lng = _to_float(top.get("latitude")), _to_float(top.get("longitude"))
+            if lat is not None and lng is not None:
+                return {"lat": lat, "lng": lng, "label": top.get("formattedAddress") or text}
+    except Exception as e:
+        print(f"[Maps] Mappls geocode exception: {e}")
+    return None
+
+
+def _osm_geocode(text):
+    try:
+        r = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": text, "format": "json", "limit": 1, "countrycodes": "in"},
+            headers={"User-Agent": _UA},
+            timeout=_HTTP_TIMEOUT,
+        )
+        if r.status_code == 200:
+            arr = r.json()
+            if arr:
+                top = arr[0]
+                lat, lng = _to_float(top.get("lat")), _to_float(top.get("lon"))
+                if lat is not None and lng is not None:
+                    return {"lat": lat, "lng": lng, "label": top.get("display_name") or text}
+    except Exception as e:
+        print(f"[Maps] Nominatim geocode exception: {e}")
+    return None
+
+
+# ── Directions (route geometry for the "show route" tap) ──────────────────
+def directions(from_lat, from_lng, to_lat, to_lng):
+    """Driving route between two points. Mappls first, OSRM fallback.
+    Returns {coordinates: [[lat,lng], ...], distance_m, duration_s} or None.
+    Coordinates are [lat,lng] (Leaflet/Mappls marker order) for the frontend."""
+    d = _mappls_directions(from_lat, from_lng, to_lat, to_lng)
+    return d or _osrm_directions(from_lat, from_lng, to_lat, to_lng)
+
+
+def _coords_lnglat_to_latlng(coords):
+    out = []
+    for c in coords or []:
+        if isinstance(c, (list, tuple)) and len(c) >= 2:
+            lng, lat = _to_float(c[0]), _to_float(c[1])
+            if lat is not None and lng is not None:
+                out.append([lat, lng])
+    return out
+
+
+def _mappls_directions(fl, fg, tl, tg):
+    if not MAPPLS_REST_KEY:
+        return None
+    try:
+        # Mappls Route Advanced (OSRM-shaped). Path order is lng,lat;lng,lat.
+        url = (f"https://apis.mappls.com/advancedmaps/v1/{MAPPLS_REST_KEY}"
+               f"/route_adv/driving/{fg},{fl};{tg},{tl}")
+        r = requests.get(url, params={"geometries": "geojson", "overview": "full"},
+                         timeout=_HTTP_TIMEOUT)
+        if r.status_code != 200:
+            return None
+        routes = r.json().get("routes") or []
+        if not routes:
+            return None
+        rt = routes[0]
+        coords = _coords_lnglat_to_latlng((rt.get("geometry") or {}).get("coordinates"))
+        if not coords:
+            return None
+        return {"coordinates": coords,
+                "distance_m": _to_float(rt.get("distance")),
+                "duration_s": _to_float(rt.get("duration"))}
+    except Exception as e:
+        print(f"[Maps] Mappls directions exception: {e}")
+        return None
+
+
+def _osrm_directions(fl, fg, tl, tg):
+    try:
+        url = f"https://router.project-osrm.org/route/v1/driving/{fg},{fl};{tg},{tl}"
+        r = requests.get(url, params={"geometries": "geojson", "overview": "full"},
+                         timeout=_HTTP_TIMEOUT)
+        if r.status_code != 200:
+            return None
+        routes = r.json().get("routes") or []
+        if not routes:
+            return None
+        rt = routes[0]
+        coords = _coords_lnglat_to_latlng((rt.get("geometry") or {}).get("coordinates"))
+        if not coords:
+            return None
+        return {"coordinates": coords,
+                "distance_m": _to_float(rt.get("distance")),
+                "duration_s": _to_float(rt.get("duration"))}
+    except Exception as e:
+        print(f"[Maps] OSRM directions exception: {e}")
+        return None

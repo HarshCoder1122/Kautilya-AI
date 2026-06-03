@@ -33,6 +33,22 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 SERPAPI_API_KEY = os.environ.get("SERPAPI_API_KEY", "")
 MAPPLS_API_KEY = os.environ.get("MAPPLS_API_KEY", "")
+# ── Mappls (MapmyIndia) — maps, nearby search, routing ──
+# Mappls splits credentials by product:
+#   • CLIENT_ID / CLIENT_SECRET → OAuth token for the REST search/geocode APIs
+#     (atlas.mappls.com). Without these, nearby/geocode fall back to OSM.
+#   • MAP_SDK_KEY → the public JS Map SDK key the browser loads (domain-locked,
+#     safe to expose). Falls back to MAPPLS_API_KEY.
+#   • REST_KEY → the URL-path key for advancedmaps routing. Falls back to
+#     MAPPLS_API_KEY.
+# Everything degrades gracefully to free OpenStreetMap services if unset, so the
+# map feature always works — Mappls just makes India results/looks much better.
+MAPPLS_CLIENT_ID = os.environ.get("MAPPLS_CLIENT_ID", "")
+MAPPLS_CLIENT_SECRET = os.environ.get("MAPPLS_CLIENT_SECRET", "")
+MAPPLS_MAP_SDK_KEY = os.environ.get("MAPPLS_MAP_SDK_KEY", "") or MAPPLS_API_KEY
+MAPPLS_REST_KEY = os.environ.get("MAPPLS_REST_KEY", "") or MAPPLS_API_KEY
+if not (MAPPLS_CLIENT_ID and MAPPLS_CLIENT_SECRET):
+    print("[CONFIG] Note: MAPPLS_CLIENT_ID/SECRET not set — maps will use OpenStreetMap fallback for nearby/geocode")
 SARVAM_API_KEY = os.environ.get("SARVAM_API_KEY", "")
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
 _NVIDIA_API_KEYS_RAW = [

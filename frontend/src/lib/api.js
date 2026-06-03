@@ -39,6 +39,22 @@ export const getAuthHeaders = () => {
   return headers;
 };
 
+// Maps (in-chat map card). Uses the shared `api` instance so the base URL +
+// auth interceptors apply. Endpoints degrade to OpenStreetMap if Mappls keys
+// aren't set, so these always return usable data.
+export const mapsAPI = {
+  getConfig: async () => (await api.get('/api/maps/config')).data,
+  nearby: async ({ keyword, radius, lat, lng } = {}) => {
+    const params = { keyword: keyword || 'restaurant', radius: radius || 3000 };
+    if (lat != null && lng != null) { params.lat = lat; params.lng = lng; }
+    return (await api.get('/api/maps/nearby', { params })).data;
+  },
+  directions: async ({ from, to } = {}) => {
+    const params = { from_lat: from[0], from_lng: from[1], to_lat: to[0], to_lng: to[1] };
+    return (await api.get('/api/maps/directions', { params })).data;
+  },
+};
+
 // Proactive Firebase token refresh — used before streaming calls because
 // raw fetch() bypasses the axios 401-retry interceptor. Refreshes if the
 // cached token was issued > 50min ago, or always when `force` is true.
