@@ -21,6 +21,7 @@ The MCP_DISABLED env var skips initialisation entirely.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import os
 import re
@@ -85,6 +86,45 @@ def _expand_env(value: Any) -> Any:
 def _sanitize_name(s: str) -> str:
     """Tool names must match ^[a-z0-9_]+$ for the [INTEGRATION:] regex."""
     return re.sub(r"[^a-z0-9_]", "_", s.lower())
+
+
+def _is_safe_mcp_url(url: str) -> tuple[bool, Optional[str]]:
+    """SSRF guard for user-supplied MCP SSE endpoints.
+
+    The server connects to this URL on the user's behalf, so an unchecked
+    value lets a user point us at internal services or the cloud metadata
+    endpoint (169.254.169.254). Allow only http(s) to PUBLIC hosts: reject
+    anything that resolves to a private / loopback / link-local / reserved
+    address. Every resolved address must be public (defends against a DNS
+    name that maps to an internal IP)."""
+    import socket
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse((url or "").strip())
+    except Exception:
+        return False, "malformed URL"
+    if parsed.scheme not in ("http", "https"):
+        return False, f"scheme '{parsed.scheme or '(none)'}' not allowed — use https"
+    host = parsed.hostname
+    if not host:
+        return False, "missing host"
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except Exception as e:
+        return False, f"DNS resolution failed: {e}"
+    if not infos:
+        return False, "host did not resolve"
+    for info in infos:
+        ip = info[4][0]
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return False, f"unparseable resolved address {ip}"
+        if (addr.is_private or addr.is_loopback or addr.is_link_local
+                or addr.is_reserved or addr.is_multicast or addr.is_unspecified):
+            return False, f"host resolves to non-public address {ip}"
+    return True, None
 
 
 def _server_enabled_in_runtime(server_key: str, cfg: Dict[str, Any]) -> tuple[bool, Optional[str]]:
@@ -383,7 +423,21 @@ async def _spawn_user_mcp(uid: str, server_key: str, cfg: Dict[str, Any]) -> Non
             "url": "",
         }
         return
-        
+
+    # SSRF guard: this URL is user-supplied and we connect to it server-side.
+    safe, reason = _is_safe_mcp_url(url)
+    if not safe:
+        _server_status[db_key] = {
+            "state": "error",
+            "error": f"Blocked unsafe MCP URL: {reason}",
+            "category": cfg.get("category", "Custom"),
+            "description": cfg.get("description", ""),
+            "tool_count": 0,
+            "url": url,
+        }
+        print(f"[MCP] BLOCKED user {uid} '{server_key}' unsafe URL ({reason})")
+        return
+
     stack = AsyncExitStack()
     try:
         # Connect via SSE client

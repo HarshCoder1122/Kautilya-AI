@@ -2,7 +2,39 @@
 Kautilya AI — Security Middleware
 Prompt injection detection and jailbreak prevention.
 """
+import ipaddress
 import re
+
+
+def get_real_client_ip(req):
+    """Spoofing-resistant client IP for rate limiting / bans.
+
+    `X-Forwarded-For` is client-controllable: an attacker can pre-set
+    `X-Forwarded-For: 1.2.3.4` and our trusted proxy appends the real
+    connecting IP to the RIGHT (`1.2.3.4, <real>`). Naively taking the
+    leftmost value (the old behaviour) therefore lets anyone forge their
+    IP to dodge guest rate limits / IP bans, or get a victim banned.
+
+    The trustworthy value is the one OUR infrastructure appended, so we walk
+    the chain from the right and return the first PUBLIC address. Proxy hops
+    are private/loopback and get skipped; spoofed values sit to the left of
+    the proxy-appended real IP and can never win. Falls back to remote_addr
+    (and finally the leftmost hop) for local dev where everything is private.
+    """
+    xff = req.headers.get('X-Forwarded-For', '') or ''
+    chain = [p.strip() for p in xff.split(',') if p.strip()]
+    if req.remote_addr:
+        chain.append(req.remote_addr)
+    for ip in reversed(chain):
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if (addr.is_private or addr.is_loopback or addr.is_link_local
+                or addr.is_reserved or addr.is_multicast):
+            continue
+        return ip
+    return req.remote_addr or (chain[0] if chain else 'unknown')
 
 _SENSITIVE_TRIGGERS = [
     "initial instructions", "system prompt", "how were you configured",

@@ -15,7 +15,7 @@ from flask import Blueprint, request, jsonify, Response
 from config import SYSTEM_PROMPT, CODER_SYSTEM_PROMPT, PRO_SYSTEM_PROMPT, RESEARCH_SYSTEM_PROMPT
 from services.auth_service import verify_firebase_token, record_usage
 from services.memory_service import (
-    get_user_chat_dir, get_user_memory, save_user_memory,
+    get_user_chat_dir, get_user_memory, save_user_memory, get_user_settings,
     extract_memories, build_personalized_prompt, build_cli_system_prompt,
     process_uploaded_file, record_user_session
 )
@@ -25,7 +25,7 @@ from services.fast_response_cache import (
     try_canned_reply, cache_get as fast_cache_get, cache_put as fast_cache_put,
 )
 from middleware.rate_limiter import check_message_rate_limit
-from middleware.security import block_sensitive_query
+from middleware.security import block_sensitive_query, get_real_client_ip
 
 chat_bp = Blueprint('chat', __name__)
 
@@ -274,9 +274,10 @@ def jarvis_stream():
     uid = token_data.get('uid') if token_data else None
     user_email = token_data.get('email') if token_data else None
     user_name = token_data.get('name') or token_data.get('display_name') if token_data else None
-    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr) or "unknown"
-    if ',' in client_ip:
-        client_ip = client_ip.split(',')[0].strip()
+    # Spoofing-resistant: take the proxy-appended real IP, not a client-forged
+    # leftmost X-Forwarded-For value (which would let anyone dodge guest limits
+    # / IP bans or get a victim banned). See get_real_client_ip.
+    client_ip = get_real_client_ip(request)
 
     # Security: banned check
     identifier = uid or client_ip
@@ -371,16 +372,8 @@ def jarvis_stream():
         # (~300-600ms total). Now they run concurrently in ~200ms max.
         _t_setup = time.time()
         if uid:
-            def _fetch_settings():
-                if not db:
-                    return {}
-                try:
-                    sdoc = db.collection('users').document(uid).collection('settings').document('profile').get()
-                    return sdoc.to_dict() if sdoc.exists else {}
-                except Exception:
-                    return {}
             f_mem = _chat_executor.submit(get_user_memory, uid)
-            f_set = _chat_executor.submit(_fetch_settings)
+            f_set = _chat_executor.submit(get_user_settings, uid)
             user_memories = f_mem.result(timeout=2.5) or []
             settings = f_set.result(timeout=2.5) or {}
         else:
@@ -465,7 +458,8 @@ def jarvis_stream():
                                 pass
                     research_queue.put(json.dumps(event))
             except Exception as e:
-                research_queue.put(json.dumps({'event': 'chunk', 'chunk': f'[error: {e}]'}))
+                print(f"[Research] stream error: {e}")
+                research_queue.put(json.dumps({'event': 'chunk', 'chunk': '\n\n[Sorry — research hit a snag. Please try again.]'}))
             finally:
                 research_queue.put(None)
                 full_research = research_content_holder[0]
@@ -668,7 +662,7 @@ def jarvis_stream():
                     _maybe_flush_partial()
             except Exception as e:
                 print(f"[LLM Thread] Error: {e}")
-                chunk_queue.put(json.dumps({'chunk': f'[Error: {e}]'}))
+                chunk_queue.put(json.dumps({'chunk': '\n\n[Sorry — something went wrong. Please try again.]'}))
             finally:
                 chunk_queue.put(None)  # sentinel: stream finished
 
@@ -823,7 +817,8 @@ def chat_legacy():
                     full_response += chunk
         return jsonify({"status": "success", "response": full_response})
     except Exception as e:
-        return jsonify({"status": "error", "response": f"Internal error: {str(e)}"}), 500
+        print(f"[chat_legacy] error: {e}")
+        return jsonify({"status": "error", "response": "Internal error. Please try again."}), 500
 
 
 @chat_bp.route('/jarvis/history', methods=['GET'])

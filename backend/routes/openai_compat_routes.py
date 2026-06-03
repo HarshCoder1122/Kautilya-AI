@@ -31,6 +31,7 @@ from config import NVIDIA_API_KEY, NVIDIA_API_KEYS
 from services.auth_service import verify_api_key, record_usage
 from services.llm_service import call_groq, call_nvidia
 from system_prompts import DAILY_SYSTEM_PROMPT, PRO_SYSTEM_PROMPT, CODER_SYSTEM_PROMPT_PRO
+from middleware.security import block_sensitive_query
 
 
 # Light-touch identity guard for the OpenAI-compatible API.
@@ -323,6 +324,38 @@ def chat_completions():
     messages = _trim_to_context_window(messages, max_tokens=max_context_tokens)
 
     stream = bool(body.get('stream', False))
+
+    # Identity / prompt-extraction guard — the same control the dashboard chat
+    # uses, now applied to the public API too (it previously had none, so API
+    # callers could freely probe "what model/backend/api are you"). Reads the
+    # last user turn; on a hit we return the canned Kautilya refusal as a
+    # normal OpenAI completion instead of letting the probe reach the model.
+    _last_user_text = ""
+    for _m in reversed(messages):
+        if _m.get("role") == "user":
+            _c = _m.get("content")
+            if isinstance(_c, str):
+                _last_user_text = _c
+            elif isinstance(_c, list):
+                _last_user_text = " ".join(
+                    p.get("text", "") for p in _c
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+            break
+    _guard = block_sensitive_query(_last_user_text, uid=uid)
+    if _guard:
+        if stream:
+            def _refuse_sse():
+                cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+                created = int(time.time())
+                yield _openai_stream_chunk(cid, created, requested_model,
+                                           {"role": "assistant", "content": _guard})
+                yield _openai_stream_chunk(cid, created, requested_model, {}, finish_reason="stop")
+                yield "data: [DONE]\n\n"
+            return Response(_refuse_sse(), mimetype='text/event-stream',
+                            headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+        return jsonify(_openai_completion_envelope(requested_model, _guard, finish_reason="stop"))
+
     # Cline + Continue often pass temperature=0 for deterministic tool-use.
     # Honour exactly what they sent (including 0) rather than treating
     # falsy as missing.
@@ -465,7 +498,7 @@ def chat_completions():
 
     # ---- NVIDIA path (qwen-coder / nemotron / mistral-daily) ----
     if not NVIDIA_API_KEYS:
-        return jsonify({"error": {"message": "NVIDIA backend not configured", "type": "upstream_error"}}), 503
+        return jsonify({"error": {"message": "Model backend temporarily unavailable", "type": "upstream_error"}}), 503
 
     # Same path the dashboard chat uses — call_nvidia handles streaming with
     # proper thinking/content separation for nemotron/qwen, and reasoning_effort

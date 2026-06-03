@@ -27,12 +27,16 @@ MODEL_ALIASES = {
 }
 
 
-def normalize_model_choice(model, default="auto"):
-    """Normalize UI/API aliases into the internal routing ids."""
+def normalize_model_choice(model, default="daily"):
+    """Normalize UI/API aliases into the internal routing ids.
+    Bypass orchestrator for 'auto' mode to directly use the daily model.
+    """
     raw = str(model or default).strip().lower()
-    if raw in ("auto", "daily", "pro", "coder", "research", "fast"):
+    if raw == "auto":
+        return "daily"
+    if raw in ("daily", "pro", "coder", "research", "fast"):
         return raw
-    return MODEL_ALIASES.get(raw, "auto")
+    return MODEL_ALIASES.get(raw, "daily")
 
 
 # Shared executor to reduce overhead
@@ -47,6 +51,73 @@ def _ttime(label, start):
             print(f"[TIMING] {label}: {elapsed_ms}ms")
     except Exception:
         pass
+
+
+class _ThinkSplitter:
+    """Split streamed text into 'content' vs 'thinking' segments, robust to
+    `<think>` / `</think>` markers that arrive SPLIT across chunk boundaries.
+
+    Reasoning models served over NVIDIA NIM often emit their chain-of-thought
+    inline as `<think>…</think>` and stream it token-by-token, so a single SSE
+    chunk may carry only `<think` with the closing `>` landing in the next
+    chunk. The old `"<think>" in chunk` check then never fired and the ENTIRE
+    reasoning leaked into the visible answer — most noticeable with longer
+    reasoning (e.g. Hindi), which is exactly the "thinking printed as a normal
+    message" bug. This buffers the boundary so the marker is recognised no
+    matter how the provider chunks it.
+
+    feed(text) yields ('content'|'thinking'|'thinking_done', payload) tuples;
+    call flush() once the stream ends to drain the buffer and close an open
+    thinking block.
+    """
+    OPEN = "<think>"
+    CLOSE = "</think>"
+
+    def __init__(self):
+        self._buf = ""
+        self._in_think = False
+
+    @staticmethod
+    def _holdback(buf, marker):
+        """Length of the longest suffix of `buf` that is a prefix of `marker`
+        — i.e. a possible partial marker we must not emit yet."""
+        for h in range(min(len(buf), len(marker) - 1), 0, -1):
+            if buf[-h:] == marker[:h]:
+                return h
+        return 0
+
+    def feed(self, text):
+        self._buf += text
+        while self._buf:
+            marker = self.CLOSE if self._in_think else self.OPEN
+            kind = "thinking" if self._in_think else "content"
+            idx = self._buf.find(marker)
+            if idx != -1:
+                if idx > 0:
+                    yield (kind, self._buf[:idx])
+                self._buf = self._buf[idx + len(marker):]
+                if self._in_think:
+                    self._in_think = False
+                    yield ("thinking_done", None)
+                else:
+                    self._in_think = True
+                continue
+            # No full marker present — emit all but a possible partial-marker tail.
+            hold = self._holdback(self._buf, marker)
+            if hold < len(self._buf):
+                emit = self._buf[:len(self._buf) - hold]
+                if emit:
+                    yield (kind, emit)
+                self._buf = self._buf[len(self._buf) - hold:]
+            break
+
+    def flush(self):
+        if self._buf:
+            yield ("thinking" if self._in_think else "content", self._buf)
+            self._buf = ""
+        if self._in_think:
+            self._in_think = False
+            yield ("thinking_done", None)
 
 
 def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=None, tool_choice=None, max_thinking=False):
@@ -121,15 +192,20 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     _skip_rag = len(last_user_msg.strip()) < 20
     future_loc = _executor.submit(fetch_loc)
     future_rag = None if _skip_rag else _executor.submit(fetch_rag)
+    # Wait for both fetches concurrently with a total budget of 150ms
+    futures = [future_loc]
+    if future_rag is not None:
+        futures.append(future_rag)
+    concurrent.futures.wait(futures, timeout=0.15)
     try:
-        location_context = future_loc.result(timeout=0.15)
+        location_context = future_loc.result(timeout=0) if future_loc.done() else ""
     except:
-        pass
+        location_context = ""
     if future_rag is not None:
         try:
-            rag_context = future_rag.result(timeout=0.25)
+            rag_context = future_rag.result(timeout=0) if future_rag.done() else ""
         except:
-            pass
+            rag_context = ""
 
     current_messages = [m.copy() for m in messages]
     if location_context or rag_context:
@@ -563,7 +639,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             # 400 the request entirely. Either way: zero benefit, eats
             # output budget. So we hard-disable thinking for coder.
             if not NVIDIA_API_KEYS:
-                yield json.dumps({"event": "status", "message": f"⚡ {label} requires NVIDIA API key — using fast model…"})
+                yield json.dumps({"event": "status", "message": f"⚡ {label} temporarily unavailable — using fast model…"})
                 response_gen = _call_daily(current_messages, max_tokens=max_tokens,
                                            tools=tools, tool_choice=tool_choice)
             else:
@@ -588,7 +664,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             from config import NVIDIA_API_KEYS
             label, model_id = _MODEL_LABELS['pro']
             if not NVIDIA_API_KEYS:
-                yield json.dumps({"event": "status", "message": f"⚡ {label} requires NVIDIA API key — using fast model…"})
+                yield json.dumps({"event": "status", "message": f"⚡ {label} temporarily unavailable — using fast model…"})
                 response_gen = _call_daily(current_messages, max_tokens=max_tokens,
                                            tools=tools, tool_choice=tool_choice)
             else:
@@ -667,8 +743,12 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         yield json.dumps({"event": "status", "message": None})
 
         accumulated_response = ""
-        in_thinking_tag = False
         length_truncated = False
+        # Split-safe <think>…</think> parser — recognises the markers even when
+        # the provider streams them split across chunks (the old per-chunk
+        # `"<think>" in chunk` check missed those and leaked reasoning into the
+        # visible answer).
+        think_splitter = _ThinkSplitter()
 
         try:
             for item in response_gen:
@@ -688,49 +768,29 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                     chunk = item.get("chunk", "")
                 else:
                     chunk = item
-                
+
                 if not chunk:
                     continue
 
-                # --- Thinking Tag Logic (Opus Grade) ---
-                if "<think>" in chunk:
-                    parts = chunk.split("<think>", 1)
-                    if parts[0]:
-                        yield json.dumps({"chunk": parts[0]})
-                        accumulated_response += parts[0]
-                    in_thinking_tag = True
-                    if parts[1]:
-                        if "</think>" in parts[1]:
-                            think_parts = parts[1].split("</think>", 1)
-                            yield json.dumps({"thinking": think_parts[0]})
-                            in_thinking_tag = False
-                            yield json.dumps({"thinking_done": True})
-                            if think_parts[1]:
-                                yield json.dumps({"chunk": think_parts[1]})
-                                accumulated_response += think_parts[1]
-                        else:
-                            yield json.dumps({"thinking": parts[1]})
-                    continue
+                # --- Split-safe inline <think> tag handling ---
+                for kind, payload in think_splitter.feed(chunk):
+                    if kind == "content":
+                        accumulated_response += payload
+                        yield json.dumps({"chunk": payload})
+                    elif kind == "thinking":
+                        yield json.dumps({"thinking": payload})
+                    else:  # thinking_done
+                        yield json.dumps({"thinking_done": True})
 
-                if "</think>" in chunk and in_thinking_tag:
-                    parts = chunk.split("</think>", 1)
-                    if parts[0]:
-                        yield json.dumps({"thinking": parts[0]})
-                    in_thinking_tag = False
+            # Drain any buffered tail and close an open thinking block.
+            for kind, payload in think_splitter.flush():
+                if kind == "content":
+                    accumulated_response += payload
+                    yield json.dumps({"chunk": payload})
+                elif kind == "thinking":
+                    yield json.dumps({"thinking": payload})
+                else:  # thinking_done
                     yield json.dumps({"thinking_done": True})
-                    if parts[1]:
-                        yield json.dumps({"chunk": parts[1]})
-                        accumulated_response += parts[1]
-                    continue
-
-                if in_thinking_tag:
-                    yield json.dumps({"thinking": chunk})
-                else:
-                    accumulated_response += chunk
-                    yield json.dumps({"chunk": chunk})
-
-            if in_thinking_tag:
-                yield json.dumps({"thinking_done": True})
             # stream complete
         except Exception as e:
             print(f"[Agent] Generator streaming error: {e}")

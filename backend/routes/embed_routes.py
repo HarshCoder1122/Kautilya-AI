@@ -214,7 +214,8 @@ def public_lead_capture(agent_id):
     try:
         db.collection('leads').document(lead_id).set(lead)
     except Exception as e:
-        return _with_cors(jsonify({"error": str(e)})), 500
+        print(f"[Embed] lead capture error: {e}")
+        return _with_cors(jsonify({"error": "Could not save lead. Please try again."})), 500
 
     # Best-effort webhook fan-out (Slack/Zapier) if configured on the agent.
     try:
