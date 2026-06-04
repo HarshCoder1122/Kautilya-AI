@@ -2,6 +2,7 @@
 Kautilya AI — Agent Loop Service
 Agentic loop: Think → Act → Observe → Answer.
 """
+import os
 import re
 import json
 import time
@@ -9,6 +10,15 @@ import concurrent.futures
 from typing import Dict, Optional, List
 
 from services.llm_service import call_groq, call_nvidia
+
+
+# Answer-size classifier (a tiny Groq call that predicts S/M/L/XL to size the
+# token budget) is OFF by default. It added an extra Groq round-trip on the hot
+# path — and because it was prewarmed in the background AND called synchronously,
+# a race made it fire TWICE on fast turns, each saving a tiny classification
+# into the LLM cache. The char-bucket heuristic (_estimate_tokens) is used
+# instead. Set ANSWER_SIZE_CLASSIFIER=1 to re-enable.
+_ANSWER_SIZE_CLASSIFIER_ENABLED = os.environ.get("ANSWER_SIZE_CLASSIFIER", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
 MODEL_ALIASES = {
@@ -144,7 +154,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     # the cache — so the synchronous _adaptive_max_tokens call below is
     # free. If the user is on Pro/coder and we hit this twice (turn 2+),
     # the cache hit makes the second call instant.
-    if last_user_msg:
+    if last_user_msg and _ANSWER_SIZE_CLASSIFIER_ENABLED:
         _executor.submit(_classify_answer_size, last_user_msg, model_choice)
 
     # Fetch context in parallel
@@ -1868,6 +1878,10 @@ def _adaptive_max_tokens(user_msg: str, mode: str) -> int:
     pre-warm by calling `_classify_answer_size` in a background thread
     during setup; the cache will then make this call instant.
     """
+    # Classifier disabled (default): skip the Groq round-trip entirely and use
+    # the char-bucket heuristic. No extra call, no cache writes.
+    if not _ANSWER_SIZE_CLASSIFIER_ENABLED:
+        return _estimate_tokens(user_msg, mode)
     label = _classify_answer_size(user_msg, mode)
     if label:
         budget = _SIZE_TO_TOKENS[label]

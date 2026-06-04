@@ -287,6 +287,13 @@ def jarvis_stream():
     identifier = uid or client_ip
     f_banned = _chat_executor.submit(limit_manager.is_banned, identifier, client_ip)
     f_pro = _chat_executor.submit(limit_manager.is_pro_user, uid) if uid else None
+    # Speculatively prefetch the user's memories + settings NOW so the ~227ms
+    # read overlaps auth/ban/pro AND the Firestore conversation restore below,
+    # instead of stacking serially after them (the dominant pre-model cost on
+    # multi-worker deployments where the session isn't in this worker's memory).
+    # Both are 60s-cached, so an unused prefetch just warms the cache.
+    f_mem = _chat_executor.submit(get_user_memory, uid) if uid else None
+    f_set = _chat_executor.submit(get_user_settings, uid) if uid else None
 
     # Prompt injection check (pure regex — free while the futures resolve)
     block_msg = block_sensitive_query(message, uid)
@@ -384,14 +391,13 @@ def jarvis_stream():
 
     if not conv:
         _cleanup_expired_conversations()
-        # PARALLEL FETCH — these two Firestore reads used to be sequential
-        # (~300-600ms total). Now they run concurrently in ~200ms max.
+        # Consume the memory/settings futures fired at request start — by now
+        # they've resolved IN PARALLEL with auth/ban/pro/conversation-restore,
+        # so this collection is typically ~0ms instead of a fresh 227ms read.
         _t_setup = time.time()
         if uid:
-            f_mem = _chat_executor.submit(get_user_memory, uid)
-            f_set = _chat_executor.submit(get_user_settings, uid)
-            user_memories = f_mem.result(timeout=2.5) or []
-            settings = f_set.result(timeout=2.5) or {}
+            user_memories = (f_mem.result(timeout=2.5) if f_mem else []) or []
+            settings = (f_set.result(timeout=2.5) if f_set else {}) or {}
         else:
             user_memories = []
             settings = {}
