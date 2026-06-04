@@ -135,11 +135,12 @@ export function RouteCard({ origin = "", destination = "", map_id }) {
         zoomControl: true, attributionControl: true, scrollWheelZoom: false,
       }).setView([o.lat, o.lng], 12);
 
-      // Use Mappls raster tiles when SDK key is available, else OSM.
+      // Mappls serves only SATELLITE raster XYZ tiles (`bhuvan_imagery`) on this
+      // plan; road-map raster layers 412 (not enabled) and silently fell to OSM.
       const sdkKey = mapConfig?.sdk_key;
       if (sdkKey) {
-        L.tileLayer(`https://apis.mappls.com/advancedmaps/v1/${sdkKey}/still_map_tile/{z}/{x}/{y}.png`, {
-          maxZoom: 19, attribution: "&copy; Mappls",
+        L.tileLayer(`https://apis.mappls.com/advancedmaps/v1/${sdkKey}/bhuvan_imagery/{z}/{x}/{y}.png`, {
+          maxNativeZoom: 18, maxZoom: 19, attribution: "&copy; Mappls",
         }).addTo(map);
       } else {
         L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {

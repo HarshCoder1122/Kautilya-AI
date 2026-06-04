@@ -69,11 +69,46 @@ def reveal_iq_stream():
         # Request streaming from Space. Connect timeout 15s, but NO read
         # timeout — long messages take 30-90s of continuous chunk delivery
         # and a scalar `timeout=60` was killing playback mid-stream.
-        resp = requests.post(url, headers=headers, json=payload, stream=True, timeout=(15, None))
+        #
+        # The Space is single-GPU and HF's edge throttles it (HTTP 429, the
+        # "We're on a journey" HTML page) under bursts of concurrent requests.
+        # No audio byte has shipped yet at this point, so retrying the POST is
+        # safe. Ride out brief blips with a short bounded backoff before giving
+        # up — total added latency ~3.5s worst case.
+        RETRY_STATUSES = {429, 502, 503, 504}
+        BACKOFFS = (0.5, 1.0, 2.0)  # attempts = len + 1 = 4
+        resp = None
+        last_status = None
+        for attempt in range(len(BACKOFFS) + 1):
+            try:
+                resp = requests.post(url, headers=headers, json=payload, stream=True, timeout=(15, None))
+            except requests.exceptions.RequestException as conn_err:
+                last_status = None
+                print(f"[TTS Stream] RevealIQ connect error (attempt {attempt + 1}): {conn_err}", flush=True)
+                if attempt < len(BACKOFFS):
+                    time.sleep(BACKOFFS[attempt])
+                    continue
+                return jsonify({"error": "Upstream unreachable"}), 502
 
-        if not resp.ok:
-            print(f"[TTS Stream] RevealIQ FAILED {resp.status_code}: {resp.text[:300]}", flush=True)
-            return jsonify({"error": f"Streaming failed ({resp.status_code}): {resp.text[:200]}"}), 502
+            if resp.ok:
+                break
+
+            last_status = resp.status_code
+            if resp.status_code in RETRY_STATUSES and attempt < len(BACKOFFS):
+                print(f"[TTS Stream] RevealIQ {resp.status_code} (attempt {attempt + 1}), "
+                      f"retrying in {BACKOFFS[attempt]}s", flush=True)
+                resp.close()
+                time.sleep(BACKOFFS[attempt])
+                continue
+            break
+
+        if resp is None or not resp.ok:
+            body = resp.text[:300] if resp is not None else ''
+            print(f"[TTS Stream] RevealIQ FAILED {last_status} after retries: {body}", flush=True)
+            # Surface 429 as 429 so the client can distinguish "busy, retry"
+            # from a genuine server fault and back off / show a soft message.
+            status = 429 if last_status == 429 else 502
+            return jsonify({"error": f"Streaming failed ({last_status})", "retryable": True}), status
 
         # Record usage AFTER confirming the upstream accepted the request —
         # moved out of the critical path so Firestore write doesn't add

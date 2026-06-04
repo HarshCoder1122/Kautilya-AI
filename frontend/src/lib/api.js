@@ -575,14 +575,24 @@ export const ttsAPI = {
 
     stream: async (text, model = 'kokoro-en', voice = 'af_bella', speed = 1.0) => {
       const baseUrl = API_BASE_URL.replace(/\/+$/, '');
-      const response = await fetch(`${baseUrl}/api/tts/revealiq/stream`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...getAuthHeaders(),
-        },
-        body: JSON.stringify({ text, model, voice, speed }),
-      });
+      // The TTS Space is single-GPU and HF throttles it (429) under concurrent
+      // bursts; the backend already does a short retry, but the throttle window
+      // can outlast it. A 429 response carries no audio body, so retry the whole
+      // request a few times with backoff before surfacing the error.
+      const BACKOFFS = [1000, 2500, 5000]; // ms
+      let response;
+      for (let attempt = 0; ; attempt++) {
+        response = await fetch(`${baseUrl}/api/tts/revealiq/stream`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...getAuthHeaders(),
+          },
+          body: JSON.stringify({ text, model, voice, speed }),
+        });
+        if (response.status !== 429 || attempt >= BACKOFFS.length) break;
+        await new Promise((r) => setTimeout(r, BACKOFFS[attempt]));
+      }
       return response;
     },
 
