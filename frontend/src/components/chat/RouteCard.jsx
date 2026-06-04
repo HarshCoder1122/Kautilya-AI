@@ -136,17 +136,11 @@ export function RouteCard({ origin = "", destination = "", map_id }) {
       }).setView([o.lat, o.lng], 12);
 
       // Mappls serves only SATELLITE raster XYZ tiles (`bhuvan_imagery`) on this
-      // Use Mappls raster tiles when SDK key is available, else OSM.
-      const sdkKey = mapConfig?.sdk_key;
-      if (sdkKey) {
-        L.tileLayer(`https://apis.mappls.com/advancedmaps/v1/${sdkKey}/map_tile/smt/{z}/{x}/{y}.png`, {
-          maxZoom: 19, attribution: "&copy; Mappls",
-        }).addTo(map);
-      } else {
-        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-          maxZoom: 19, attribution: "&copy; OpenStreetMap",
-        }).addTo(map);
-      }
+      // Mappls raster road maps return 412 (Product Not Enabled) on this plan,
+      // so we use OpenStreetMap tiles for the UI, but the search data remains Mappls.
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19, attribution: "&copy; OpenStreetMap | Routes by Mappls",
+      }).addTo(map);
       mapRef.current = map;
 
       const oIcon = L.divIcon({ className: "", html: endpointPinHtml("A", "#16a34a"), iconSize: [26, 34], iconAnchor: [13, 34], popupAnchor: [0, -30] });

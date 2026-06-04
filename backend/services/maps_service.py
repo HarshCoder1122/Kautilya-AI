@@ -182,10 +182,10 @@ def _mappls_nearby(lat, lng, keyword, radius, limit):
     print(f"[Maps] Mappls nearby: keyword='{keyword}' -> normalized='{normalized_kw}' loc={lat},{lng} r={radius}")
     try:
         r = requests.get(
-            "https://atlas.mappls.com/api/places/nearby/json",
+            "https://atlas.mappls.com/api/places/textsearch/json",
             params={
-                "keywords": normalized_kw,
-                "refLocation": f"{lat},{lng}",
+                "query": normalized_kw,
+                "location": f"{lat},{lng}",
                 "radius": radius,
                 "page": 1,
             },
@@ -193,10 +193,10 @@ def _mappls_nearby(lat, lng, keyword, radius, limit):
             timeout=_HTTP_TIMEOUT,
         )
         if r.status_code == 204:
-            print(f"[Maps] Mappls nearby 204 No Content for '{normalized_kw}' — falling back to OSM")
+            print(f"[Maps] Mappls textsearch 204 No Content for '{normalized_kw}'")
             return []
         if r.status_code != 200:
-            print(f"[Maps] Mappls nearby {r.status_code}: {r.text[:300]}")
+            print(f"[Maps] Mappls textsearch {r.status_code}: {r.text[:300]}")
             return []
         body = r.json()
         suggested = body.get("suggestedLocations") or []

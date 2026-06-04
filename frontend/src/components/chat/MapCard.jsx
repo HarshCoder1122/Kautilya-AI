@@ -199,17 +199,11 @@ export function MapCard({ keyword = "places", radius = 3000, map_id }) {
       }).setView([u.lat, u.lng], 15);
 
       // Use Mappls raster tiles when SDK key is available, otherwise fall back
-      // Use Mappls raster tiles when SDK key is available, else OSM.
-      const sdkKey = mapConfig?.sdk_key;
-      if (sdkKey) {
-        L.tileLayer(`https://apis.mappls.com/advancedmaps/v1/${sdkKey}/map_tile/smt/{z}/{x}/{y}.png`, {
-          maxZoom: 19, attribution: "&copy; Mappls",
-        }).addTo(map);
-      } else {
-        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-          maxZoom: 19, attribution: "&copy; OpenStreetMap",
-        }).addTo(map);
-      }
+      // Mappls raster road maps return 412 (Product Not Enabled) on this plan,
+      // so we use OpenStreetMap tiles for the UI, but the search data remains Mappls.
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19, attribution: "&copy; OpenStreetMap | Places by Mappls",
+      }).addTo(map);
       mapRef.current = map;
 
       const userIcon = L.divIcon({ className: "", html: userPinHtml(), iconSize: [18, 18], iconAnchor: [9, 9] });
