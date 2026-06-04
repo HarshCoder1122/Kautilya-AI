@@ -277,20 +277,20 @@ def _osm_nearby(lat, lng, keyword, radius, limit):
     tag = _osm_tag_for(keyword)
     safe_kw = keyword.replace('"', "").replace("\\", "")
     
-    # Build union query for BOTH exact tag (if matched) AND fuzzy name search
-    # This guarantees we find Indian places that might be mis-tagged but have the correct name.
     union_parts = []
     if tag:
         k, v = tag
         union_parts.append(f'node["{k}"="{v}"](around:{radius},{lat},{lng});')
         union_parts.append(f'way["{k}"="{v}"](around:{radius},{lat},{lng});')
     
-    # Always add fuzzy name match as fallback inside the union
-    union_parts.append(f'node["name"~"{safe_kw}",i](around:{radius},{lat},{lng});')
-    union_parts.append(f'way["name"~"{safe_kw}",i](around:{radius},{lat},{lng});')
+    # Fuzzy name match is very slow over 10km if unchecked.
+    # Restrict to nodes/ways that have AT LEAST a 'shop', 'building', or 'amenity' tag to use the index!
+    for key in ["shop", "building", "amenity", "leisure", "tourism"]:
+        union_parts.append(f'node["{key}"]["name"~"{safe_kw}",i](around:{radius},{lat},{lng});')
+        union_parts.append(f'way["{key}"]["name"~"{safe_kw}",i](around:{radius},{lat},{lng});')
     
     query = (
-        f"[out:json][timeout:20];"
+        f"[out:json][timeout:25];"
         f"({''.join(union_parts)});"
         f"out center {limit * 3};"
     )
