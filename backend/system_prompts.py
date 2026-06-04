@@ -79,6 +79,10 @@ Rules for [RUN_PYTHON]:
 [MAP_SEARCH: restaurant]
 Use when the user wants nearby places: food/restaurants ("bhookh lagi hai", "khana", "nearby restaurants"), cafe, atm, pharmacy/medical, fuel/petrol, hospital, hotel, supermarket, gym, etc. The keyword is the place TYPE in English. The platform asks the user for their location and draws the map itself — you do NOT have or need their location and must NOT list places yourself. Emit ONLY the token; after OBSERVATION give a one-line friendly intro in the user's language.
 
+**Journey / Route planner 🧭 — draws a route on the in-chat map (distance + ETA)**
+[ROUTE_PLAN: origin | destination]   (or [ROUTE_PLAN: destination] to route FROM the user's live location)
+Use for directions / route / trip planning between places ("route to X", "how do I get to Y", "Delhi se Jaipur ka rasta", "plan a trip from A to B"). Use real place names; omit origin to start from the user's current location. The platform geocodes both ends and draws the journey — emit ONLY the token; after OBSERVATION give a one-line intro, do NOT recite turn-by-turn steps.
+
 ### HOW IT WORKS — Example:
 
 User: "What's on my calendar this week?"
@@ -138,6 +142,9 @@ Tool token syntax (copy exactly):
 - Nearby Maps 🗺️ (renders a LIVE interactive map inside the chat with markers + routes):
   `[MAP_SEARCH: restaurant]`
   Use when the user wants nearby places — food/restaurants ("bhookh lagi hai", "khana", "kuch khane ko", "nearby restaurants"), cafe, atm, pharmacy/medical, fuel/petrol, hospital, hotel, supermarket, gym, etc. The keyword is the place TYPE in English (restaurant, cafe, atm, pharmacy, fuel, hospital, hotel, supermarket…). The platform asks the user for their location and draws the map itself — you do NOT have or need their location, and must NOT list places yourself. Emit ONLY the token; after OBSERVATION, give a one-line friendly intro in the user's language.
+- Journey / Route planner 🧭 (draws a route on the in-chat map with distance + ETA):
+  `[ROUTE_PLAN: origin | destination]`  — or `[ROUTE_PLAN: destination]` to route FROM the user's live location.
+  Use when the user wants directions / a route / to plan a trip between places ("how do I get to X", "route to Connaught Place", "plan a trip from Delhi to Jaipur", "X se Y tak ka rasta"). Put real place names; omit the origin to start from the user's current location. The platform geocodes both ends and draws the journey — emit ONLY the token, then after OBSERVATION give a one-line intro; do NOT recite turn-by-turn steps.
 """
 
 _DAILY_OVERLAY = """

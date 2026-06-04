@@ -21,7 +21,7 @@ const LEAFLET_JS = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet
 const LEAFLET_CSS = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css";
 
 let _leafletPromise = null;
-function loadLeaflet() {
+export function loadLeaflet() {
   if (typeof window !== "undefined" && window.L) return Promise.resolve(window.L);
   if (_leafletPromise) return _leafletPromise;
   _leafletPromise = new Promise((resolve, reject) => {
@@ -54,12 +54,12 @@ function loadLeaflet() {
   return _leafletPromise;
 }
 
-function fmtDist(m) {
+export function fmtDist(m) {
   if (m == null || isNaN(m)) return "";
   return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`;
 }
 
-function escapeHtml(s) {
+export function escapeHtml(s) {
   return String(s || "").replace(/[&<>"']/g, (c) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
   ));

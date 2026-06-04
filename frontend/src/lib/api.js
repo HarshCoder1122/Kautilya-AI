@@ -57,6 +57,13 @@ export const mapsAPI = {
   // the same map without re-asking for location).
   getResult: async (mapId) => (await api.get(`/api/maps/result/${encodeURIComponent(mapId)}`)).data,
   saveResult: async (payload) => (await api.post('/api/maps/save', payload)).data,
+  // Journey planner: geocode origin/destination + driving route.
+  route: async ({ origin, destination, from } = {}) => {
+    const params = { destination: destination || '' };
+    if (origin) params.origin = origin;
+    if (from && from.length === 2) { params.from_lat = from[0]; params.from_lng = from[1]; }
+    return (await api.get('/api/maps/route', { params })).data;
+  },
 };
 
 // Proactive Firebase token refresh — used before streaming calls because

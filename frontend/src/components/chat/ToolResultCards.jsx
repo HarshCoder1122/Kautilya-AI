@@ -9,6 +9,7 @@
 import { Envelope, CalendarCheck, MapPin, VideoCamera, Code, Image as ImageIcon, Terminal, MagnifyingGlass } from "@phosphor-icons/react";
 import { useState } from "react";
 import { MapCard } from "./MapCard";
+import { RouteCard } from "./RouteCard";
 
 export function ToolResultCards({ results }) {
   if (!Array.isArray(results) || results.length === 0) return null;
@@ -26,7 +27,7 @@ function ToolResultCard({ tool, data }) {
     case "calendar_list": return <CalendarListCard {...data} />;
     case "python_run":   return <PythonRunCard {...data} />;
     case "search":       return <SearchCard {...data} />;
-    case "map":          return <MapCard {...data} />;
+    case "map":          return data && data.mode === "route" ? <RouteCard {...data} /> : <MapCard {...data} />;
     default:             return null;
   }
 }

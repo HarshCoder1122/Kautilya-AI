@@ -1170,6 +1170,25 @@ def _plan_actions(text, uid, start_id=1):
                            "user's language. Do NOT list the places yourself — the map shows them.",
                            m.start()))
 
+    # 2.6 [ROUTE_PLAN: origin | destination]  — journey route on the in-chat map.
+    for m in re.finditer(r'\[ROUTE_PLAN:\s*(.*?)\]', text, re.DOTALL):
+        raw = m.group(1).strip()
+        if _is_placeholder_arg(raw):
+            continue
+        parts = [p.strip() for p in raw.split('|')]
+        if len(parts) >= 2:
+            origin, destination = parts[0], parts[1]
+        else:
+            origin, destination = '', parts[0]   # origin omitted → user's live location
+        if not destination or _is_placeholder_arg(destination):
+            continue
+        actions.append(_mk("map", f"Route → {destination}",
+                           _runner_route_plan(origin, destination),
+                           "A live route map with distance + ETA is now shown to the user. "
+                           "Give a brief 1-line intro in the user's language; do NOT recite "
+                           "turn-by-turn steps.",
+                           m.start()))
+
     # 3. [CALENDAR_CREATE: title | start | end | description?]
     for m in re.finditer(r'\[CALENDAR_CREATE:\s*(.*?)\]', text, re.DOTALL):
         parts = [p.strip() for p in m.group(1).split('|')]
@@ -1450,6 +1469,26 @@ def _runner_map_search(keyword):
                 "observation": (f"MAP SHOWN: an interactive map of nearby '{kw}' is now "
                                 "displayed to the user using their current location. "
                                 "Acknowledge in one short, friendly line — do not list places."),
+                "done_extras": {}, "extra_events": extra}
+    return run
+
+
+def _runner_route_plan(origin, destination):
+    """Emit a 'route' map card. The frontend RouteCard geocodes the endpoints
+    (origin = the user's live location when omitted) and draws the journey."""
+    def run():
+        import uuid as _uuid
+        dest = (destination or '').strip()
+        orig = (origin or '').strip()
+        map_id = _uuid.uuid4().hex[:20]
+        extra = [{"event": "tool_result", "tool": "map",
+                  "data": {"mode": "route", "origin": orig, "destination": dest,
+                           "map_id": map_id}}]
+        return {"ok": True, "preview": f"Route to {dest}",
+                "observation": (f"ROUTE MAP SHOWN: an interactive map plotting the journey "
+                                f"{('from ' + orig + ' ') if orig else ''}to '{dest}' is now "
+                                "displayed with distance and ETA. Acknowledge in one short line — "
+                                "do not recite turn-by-turn directions."),
                 "done_extras": {}, "extra_events": extra}
     return run
 

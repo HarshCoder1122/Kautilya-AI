@@ -86,13 +86,27 @@ def maps_save():
     places = body.get('places') or []
     if isinstance(places, list):
         places = places[:30]  # bound Firestore doc size
+    # Route geometry can be thousands of points — downsample to stay well under
+    # the 1MB Firestore doc limit while keeping the line smooth.
+    route = body.get('route')
+    if isinstance(route, dict) and isinstance(route.get('coordinates'), list):
+        coords = route['coordinates']
+        if len(coords) > 800:
+            step = (len(coords) // 800) + 1
+            route = {**route, 'coordinates': coords[::step]}
     doc = {
         "keyword": body.get('keyword'),
         "center": body.get('center'),
         "userLocation": body.get('userLocation'),
         "places": places,
         "source": body.get('source'),
+        # route-planner fields
+        "mode": body.get('mode'),
+        "origin": body.get('origin'),
+        "destination": body.get('destination'),
+        "route": route,
     }
+    doc = {k: v for k, v in doc.items() if v is not None}
     try:
         db.collection('map_results').document(map_id).set(doc)
         return jsonify({"ok": True})
@@ -116,6 +130,42 @@ def maps_result(map_id):
     except Exception as e:
         print(f"[Maps] result fetch failed: {e}")
     return jsonify({"found": False}), 200
+
+
+@maps_bp.route('/maps/route', methods=['GET'])
+def maps_route():
+    """Plan a journey between two places (geocode both ends + driving route).
+
+    Origin can be the user's live location (from_lat/from_lng) or a place name
+    (origin=). Destination is a place name. Returns both endpoints + the route
+    geometry/distance/ETA so the map card can draw the whole journey."""
+    dest_text = (request.args.get('destination') or '').strip()
+    origin_text = (request.args.get('origin') or '').strip()
+    fl = _f(request.args.get('from_lat'))
+    fg = _f(request.args.get('from_lng'))
+
+    # Resolve origin: live coords win; else geocode the origin text.
+    if fl is not None and fg is not None:
+        origin = {"lat": fl, "lng": fg, "label": "Your location"}
+    elif origin_text:
+        origin = maps_service.geocode(origin_text)
+        if not origin:
+            return jsonify({"error": "origin_not_found", "message": f"Couldn't find '{origin_text}'."}), 200
+    else:
+        return jsonify({"error": "no_origin", "message": "Need a start point (your location or a place name)."}), 200
+
+    if not dest_text:
+        return jsonify({"error": "no_destination", "message": "Need a destination."}), 200
+    destination = maps_service.geocode(dest_text)
+    if not destination:
+        return jsonify({"error": "destination_not_found", "message": f"Couldn't find '{dest_text}'."}), 200
+
+    route = maps_service.directions(origin["lat"], origin["lng"], destination["lat"], destination["lng"])
+    return jsonify({
+        "origin": origin,
+        "destination": destination,
+        "route": route or None,
+    })
 
 
 @maps_bp.route('/maps/directions', methods=['GET'])
