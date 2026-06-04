@@ -121,15 +121,53 @@ def nearby(lat: float, lng: float, keyword: str, radius: int = 3000, limit: int 
     return {"places": places, "source": "osm"}
 
 
+def _mappls_normalize_keyword(keyword: str) -> str:
+    kw = (keyword or "").strip().lower()
+    # Normalize common variations to standard Mappls generic keywords
+    if "restaurant" in kw or "dinner" in kw or "lunch" in kw or "eat" in kw or "khana" in kw or "food" in kw:
+        return "restaurant"
+    if "coffee" in kw or "cafe" in kw:
+        return "cafe"
+    if "pub" in kw or "bar" in kw:
+        return "bar"
+    if "hotel" in kw or "stay" in kw:
+        return "hotel"
+    if "atm" in kw:
+        return "atm"
+    if "bank" in kw:
+        # Mappls prefers "bank" or "atm"
+        return "bank"
+    if "hospital" in kw or "clinic" in kw or "doctor" in kw:
+        return "hospital"
+    if "pharmacy" in kw or "chemist" in kw or "medicine" in kw or "medical" in kw:
+        return "pharmacy"
+    if "petrol" in kw or "fuel" in kw or "gas" in kw or "cng" in kw:
+        return "fuel"
+    if "school" in kw or "college" in kw or "university" in kw:
+        return "school"
+    if "park" in kw:
+        return "park"
+    if "gym" in kw or "fitness" in kw:
+        return "gym"
+    if "supermarket" in kw or "grocery" in kw or "kirana" in kw or "shop" in kw:
+        return "supermarket"
+    if "mall" in kw or "shopping" in kw:
+        return "mall"
+    if "salon" in kw or "saloon" in kw or "parlour" in kw or "hair" in kw:
+        return "salon"
+    return keyword
+
+
 def _mappls_nearby(lat, lng, keyword, radius, limit):
     tok = _get_mappls_token()
     if not tok:
         return []
+    normalized_kw = _mappls_normalize_keyword(keyword)
     try:
         r = requests.get(
             "https://atlas.mappls.com/api/places/nearby/json",
             params={
-                "keywords": keyword,
+                "keywords": normalized_kw,
                 "refLocation": f"{lat},{lng}",
                 "radius": radius,
                 "page": 1,

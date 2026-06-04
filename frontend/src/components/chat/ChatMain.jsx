@@ -1319,11 +1319,20 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                 <button
                   key={mode.id}
                   data-testid={`quick-mode-${mode.id}`}
+                  disabled={modeLocked}
+                  title={modeLocked ? "Model is locked for this chat — start a new chat to switch" : mode.desc}
                   onClick={() => onSetMode(mode.id)}
-                  className={`flex items-center gap-1 text-[11px] transition-colors ${activeMode === mode.id
+                  className={`flex items-center gap-1 text-[11px] transition-colors ${
+                    activeMode === mode.id
                       ? 'text-[var(--k-brand)] font-medium'
                       : 'text-muted-foreground hover:text-foreground'
-                    }`}
+                  } ${
+                    modeLocked
+                      ? activeMode === mode.id
+                        ? 'opacity-85 cursor-not-allowed'
+                        : 'opacity-35 cursor-not-allowed'
+                      : ''
+                  }`}
                 >
                   <mode.icon className="w-3 h-3" weight="duotone" />
                   {mode.label}
