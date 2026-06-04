@@ -121,17 +121,12 @@ def ip_location(ip: str):
 
 # ── Nearby search ─────────────────────────────────────────────────────────
 def nearby(lat: float, lng: float, keyword: str, radius: int = 3000, limit: int = 12):
-    """Nearby POIs for `keyword` around (lat,lng). Mappls first, OSM fallback.
-    Returns {"places": [...], "source": "mappls"|"osm"}."""
+    """Nearby POIs for `keyword` around (lat,lng). Uses robust OSM Overpass search.
+    Returns {"places": [...], "source": "osm"}."""
     keyword = (keyword or "restaurant").strip() or "restaurant"
     radius = max(250, min(int(radius or 3000), 20000))
     normalized_kw = _mappls_normalize_keyword(keyword)
 
-    places = _mappls_nearby(lat, lng, keyword, radius, limit)
-    if places:
-        return {"places": places, "source": "mappls"}
-    
-    # Pass normalized keyword to OSM because OSM fails on full sentences like "malls in noida"
     places = _osm_nearby(lat, lng, normalized_kw, radius, limit)
     return {"places": places, "source": "osm"}
 
@@ -279,17 +274,23 @@ def _osm_tag_for(keyword):
 
 def _osm_nearby(lat, lng, keyword, radius, limit):
     tag = _osm_tag_for(keyword)
+    safe_kw = keyword.replace('"', "").replace("\\", "")
+    
+    # Build union query for BOTH exact tag (if matched) AND fuzzy name search
+    # This guarantees we find Indian places that might be mis-tagged but have the correct name.
+    union_parts = []
     if tag:
         k, v = tag
-        selector = f'["{k}"="{v}"]'
-    else:
-        # Fuzzy name match for arbitrary keywords (case-insensitive).
-        safe = keyword.replace('"', "").replace("\\", "")
-        selector = f'["name"~"{safe}",i]'
+        union_parts.append(f'node["{k}"="{v}"](around:{radius},{lat},{lng});')
+        union_parts.append(f'way["{k}"="{v}"](around:{radius},{lat},{lng});')
+    
+    # Always add fuzzy name match as fallback inside the union
+    union_parts.append(f'node["name"~"{safe_kw}",i](around:{radius},{lat},{lng});')
+    union_parts.append(f'way["name"~"{safe_kw}",i](around:{radius},{lat},{lng});')
+    
     query = (
         f"[out:json][timeout:20];"
-        f"(node{selector}(around:{radius},{lat},{lng});"
-        f" way{selector}(around:{radius},{lat},{lng}););"
+        f"({''.join(union_parts)});"
         f"out center {limit * 3};"
     )
     for endpoint in ("https://overpass-api.de/api/interpreter",
@@ -344,13 +345,12 @@ def _haversine_m(lat1, lng1, lat2, lng2):
 
 # ── Geocoding (free-text place → coordinates) ─────────────────────────────
 def geocode(text: str):
-    """{lat, lng, label} for a place/area name. Mappls first, Nominatim
-    fallback. None if nothing matches."""
+    """{lat, lng, label} for a place/area name. Uses Nominatim.
+    None if nothing matches."""
     text = (text or "").strip()
     if not text:
         return None
-    g = _mappls_geocode(text)
-    return g or _osm_geocode(text)
+    return _osm_geocode(text)
 
 
 def _mappls_geocode(text):
@@ -401,11 +401,10 @@ def _osm_geocode(text):
 
 # ── Directions (route geometry for the "show route" tap) ──────────────────
 def directions(from_lat, from_lng, to_lat, to_lng):
-    """Driving route between two points. Mappls first, OSRM fallback.
+    """Driving route between two points. Uses OSRM.
     Returns {coordinates: [[lat,lng], ...], distance_m, duration_s} or None.
     Coordinates are [lat,lng] (Leaflet/Mappls marker order) for the frontend."""
-    d = _mappls_directions(from_lat, from_lng, to_lat, to_lng)
-    return d or _osrm_directions(from_lat, from_lng, to_lat, to_lng)
+    return _osrm_directions(from_lat, from_lng, to_lat, to_lng)
 
 
 def _coords_lnglat_to_latlng(coords):
