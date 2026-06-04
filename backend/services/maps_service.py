@@ -275,63 +275,69 @@ def _osm_tag_for(keyword):
 
 def _osm_nearby(lat, lng, keyword, radius, limit):
     tag = _osm_tag_for(keyword)
-    safe_kw = keyword.replace('"', "").replace("\\", "")
     
-    union_parts = []
     if tag:
         k, v = tag
-        union_parts.append(f'node["{k}"="{v}"](around:{radius},{lat},{lng});')
-        union_parts.append(f'way["{k}"="{v}"](around:{radius},{lat},{lng});')
-    
-    # Fuzzy name match is very slow over 10km if unchecked.
-    # Restrict to nodes/ways that have AT LEAST a 'shop', 'building', or 'amenity' tag to use the index!
-    for key in ["shop", "building", "amenity", "leisure", "tourism"]:
-        union_parts.append(f'node["{key}"]["name"~"{safe_kw}",i](around:{radius},{lat},{lng});')
-        union_parts.append(f'way["{key}"]["name"~"{safe_kw}",i](around:{radius},{lat},{lng});')
-    
-    query = (
-        f"[out:json][timeout:25];"
-        f"({''.join(union_parts)});"
-        f"out center {limit * 3};"
-    )
-    for endpoint in ("https://overpass-api.de/api/interpreter",
-                     "https://overpass.kumi.systems/api/interpreter"):
-        try:
-            r = requests.post(endpoint, data={"data": query}, timeout=(4, 20),
-                              headers={"User-Agent": _UA})
-            if r.status_code != 200:
+        query = (
+            f"[out:json][timeout:25];"
+            f"(node[\"{k}\"=\"{v}\"](around:{radius},{lat},{lng});"
+            f" way[\"{k}\"=\"{v}\"](around:{radius},{lat},{lng}););"
+            f"out center {limit * 3};"
+        )
+        for endpoint in ("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"):
+            try:
+                r = requests.post(endpoint, data={"data": query}, timeout=(4, 25), headers={"User-Agent": _UA})
+                if r.status_code == 200:
+                    elements = r.json().get("elements", [])
+                    out = []
+                    for e in elements:
+                        plat = _to_float(e.get("lat")) or _to_float((e.get("center") or {}).get("lat"))
+                        plng = _to_float(e.get("lon")) or _to_float((e.get("center") or {}).get("lon"))
+                        if plat is None or plng is None:
+                            continue
+                        dist = _haversine(lat, lng, plat, plng) * 1000
+                        if dist > radius:
+                            continue
+                        name = e.get("tags", {}).get("name") or keyword.title()
+                        out.append({"name": name, "address": "", "lat": plat, "lng": plng, "distance": round(dist), "category": v})
+                    out.sort(key=lambda x: x["distance"])
+                    print(f"[Maps] OSM nearby returned {len(out)} places for '{keyword}' via Overpass")
+                    return out[:limit]
+            except Exception as e:
+                print(f"[Maps] Overpass exception ({endpoint}): {e}")
                 continue
-            elements = r.json().get("elements", [])
+    
+    # If no tag or Overpass failed, use Nominatim for arbitrary text search (much faster than Overpass fuzzy regex)
+    try:
+        r = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": keyword, "format": "json", "limit": limit, "lat": lat, "lon": lng},
+            headers={"User-Agent": _UA},
+            timeout=_HTTP_TIMEOUT,
+        )
+        if r.status_code == 200:
+            arr = r.json()
             out = []
-            for el in elements:
-                tags = el.get("tags", {}) or {}
-                name = tags.get("name")
-                if not name:
-                    continue
-                plat = el.get("lat") or (el.get("center") or {}).get("lat")
-                plng = el.get("lon") or (el.get("center") or {}).get("lon")
-                plat, plng = _to_float(plat), _to_float(plng)
-                if plat is None or plng is None:
-                    continue
-                addr = ", ".join(filter(None, [
-                    tags.get("addr:street"), tags.get("addr:suburb"),
-                    tags.get("addr:city"),
-                ]))
-                out.append({
-                    "name": name,
-                    "address": addr,
-                    "lat": plat,
-                    "lng": plng,
-                    "distance": _haversine_m(lat, lng, plat, plng),
-                    "category": tags.get("amenity") or tags.get("shop") or tags.get("tourism") or "",
-                    "eloc": "",
-                })
-            out.sort(key=lambda p: p.get("distance") or 1e9)
+            for top in arr:
+                plat, plng = _to_float(top.get("lat")), _to_float(top.get("lon"))
+                if plat is not None and plng is not None:
+                    dist = _haversine(lat, lng, plat, plng) * 1000
+                    out.append({
+                        "name": top.get("name") or top.get("display_name", "").split(",")[0],
+                        "address": top.get("display_name"),
+                        "lat": plat,
+                        "lng": plng,
+                        "distance": round(dist),
+                        "category": top.get("class") or ""
+                    })
+            out.sort(key=lambda x: x["distance"])
+            print(f"[Maps] OSM nearby returned {len(out)} places for '{keyword}' via Nominatim")
             return out[:limit]
-        except Exception as e:
-            print(f"[Maps] Overpass exception ({endpoint}): {e}")
-            continue
+    except Exception as e:
+        print(f"[Maps] Nominatim nearby exception: {e}")
+        
     return []
+
 
 
 def _haversine_m(lat1, lng1, lat2, lng2):
