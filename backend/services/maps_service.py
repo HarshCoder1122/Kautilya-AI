@@ -120,11 +120,12 @@ def ip_location(ip: str):
 
 
 # ── Nearby search ─────────────────────────────────────────────────────────
-def nearby(lat: float, lng: float, keyword: str, radius: int = 3000, limit: int = 12):
+def nearby(lat: float, lng: float, keyword: str, radius: int = 10000, limit: int = 20):
     """Nearby POIs for `keyword` around (lat,lng). Uses robust OSM Overpass search.
     Returns {"places": [...], "source": "osm"}."""
     keyword = (keyword or "restaurant").strip() or "restaurant"
-    radius = max(250, min(int(radius or 3000), 20000))
+    # Default to 10km radius so we don't miss places that are a bit far
+    radius = max(250, min(int(radius or 10000), 50000))
     normalized_kw = _mappls_normalize_keyword(keyword)
 
     places = _osm_nearby(lat, lng, normalized_kw, radius, limit)
