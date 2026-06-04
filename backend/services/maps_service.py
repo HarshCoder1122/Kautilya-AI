@@ -125,11 +125,14 @@ def nearby(lat: float, lng: float, keyword: str, radius: int = 3000, limit: int 
     Returns {"places": [...], "source": "mappls"|"osm"}."""
     keyword = (keyword or "restaurant").strip() or "restaurant"
     radius = max(250, min(int(radius or 3000), 20000))
+    normalized_kw = _mappls_normalize_keyword(keyword)
 
     places = _mappls_nearby(lat, lng, keyword, radius, limit)
     if places:
         return {"places": places, "source": "mappls"}
-    places = _osm_nearby(lat, lng, keyword, radius, limit)
+    
+    # Pass normalized keyword to OSM because OSM fails on full sentences like "malls in noida"
+    places = _osm_nearby(lat, lng, normalized_kw, radius, limit)
     return {"places": places, "source": "osm"}
 
 
@@ -197,15 +200,35 @@ def _mappls_nearby(lat, lng, keyword, radius, limit):
             return []
         body = r.json()
         suggested = body.get("suggestedLocations") or []
-        print(f"[Maps] Mappls nearby returned {len(suggested)} suggestedLocations for '{normalized_kw}'")
+        
         out = []
+        # Process up to `limit` items
         for i, s in enumerate(suggested[:limit]):
             plat = _to_float(s.get("latitude")) or _to_float(s.get("lat")) or _to_float(s.get("entryLatitude")) or _to_float(s.get("pLatitude"))
             plng = _to_float(s.get("longitude")) or _to_float(s.get("lng")) or _to_float(s.get("entryLongitude")) or _to_float(s.get("pLongitude"))
+            
+            # If coordinates are missing, fetch them via eLoc API
+            if plat is None or plng is None:
+                eloc = s.get("eLoc")
+                if eloc:
+                    try:
+                        er = requests.get(
+                            f"https://explore.mappls.com/apis/O2O/entity/{eloc}",
+                            headers={"Authorization": f"bearer {tok}"},
+                            timeout=2
+                        )
+                        if er.status_code == 200:
+                            edata = er.json()
+                            plat = _to_float(edata.get("latitude")) or _to_float(edata.get("lat")) or _to_float(edata.get("entryLatitude"))
+                            plng = _to_float(edata.get("longitude")) or _to_float(edata.get("lng")) or _to_float(edata.get("entryLongitude"))
+                    except Exception:
+                        pass
+
             if plat is None or plng is None:
                 if i == 0:
-                    print(f"[Maps] Mappls item missing coordinates. Keys available: {list(s.keys())}")
+                    print(f"[Maps] Mappls item missing coordinates even after eLoc. Keys: {list(s.keys())}")
                 continue
+                
             out.append({
                 "name": s.get("placeName") or "Unnamed place",
                 "address": s.get("placeAddress") or "",
@@ -215,10 +238,8 @@ def _mappls_nearby(lat, lng, keyword, radius, limit):
                 "category": s.get("type") or "",
                 "eloc": s.get("eLoc") or "",
             })
-        if out:
-            print(f"[Maps] Mappls nearby SUCCESS — {len(out)} places found")
-        else:
-            print(f"[Maps] Mappls nearby returned 0 valid places for '{normalized_kw}'")
+            
+        print(f"[Maps] Mappls nearby returned {len(out)} valid places for '{normalized_kw}'")
         return out
     except Exception as e:
         print(f"[Maps] Mappls nearby exception: {e}")
