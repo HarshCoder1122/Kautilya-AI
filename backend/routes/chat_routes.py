@@ -278,26 +278,42 @@ def jarvis_stream():
     # leftmost X-Forwarded-For value (which would let anyone dodge guest limits
     # / IP bans or get a victim banned). See get_real_client_ip.
     client_ip = get_real_client_ip(request)
+    _t("auth(verify_token)", _t_req_start)
 
-    # Security: banned check
+    # Security + tier resolution run CONCURRENTLY. On a cold worker these were
+    # ~2 sequential Firestore reads (is_banned: uid+ip) plus is_pro_user, each
+    # gating the model call. Overlap them, and run the regex injection check
+    # while they resolve, so the LLM isn't blocked on serial round-trips.
     identifier = uid or client_ip
-    if limit_manager.is_banned(identifier, client_ip):
-        return jsonify({"error": "Access denied"}), 403
+    f_banned = _chat_executor.submit(limit_manager.is_banned, identifier, client_ip)
+    f_pro = _chat_executor.submit(limit_manager.is_pro_user, uid) if uid else None
 
-    # Prompt injection check
+    # Prompt injection check (pure regex — free while the futures resolve)
     block_msg = block_sensitive_query(message, uid)
     if block_msg:
         def blocked():
             yield f"data: {json.dumps({'chunk': block_msg})}\n\n"
         return Response(blocked(), mimetype='text/event-stream')
 
+    try:
+        _is_banned = f_banned.result(timeout=5)
+    except Exception:
+        _is_banned = False
+    if _is_banned:
+        return jsonify({"error": "Access denied"}), 403
+
     # Rate limit check
-    tier = "pro" if (uid and limit_manager.is_pro_user(uid)) else ("free" if uid else "guest")
+    try:
+        is_pro = bool(f_pro.result(timeout=5)) if f_pro else False
+    except Exception:
+        is_pro = False
+    tier = "pro" if is_pro else ("free" if uid else "guest")
     allowed, err_msg = check_message_rate_limit(identifier, tier)
     if not allowed:
         def rate_err():
             yield f"data: {json.dumps({'chunk': err_msg})}\n\n"
         return Response(rate_err(), mimetype='text/event-stream')
+    _t("gate(ban+pro+ratelimit)", _t_req_start)
 
     # ───────────────────────── Fast-response cache ─────────────────────────
     # Trivial chat ("hi", "ok", "thanks", "who are you", repeated short
@@ -528,6 +544,7 @@ def jarvis_stream():
     # Trim history
     if len(conv['messages']) > MAX_HISTORY * 2:
         conv['messages'] = [conv['messages'][0]] + conv['messages'][-(MAX_HISTORY * 2):]
+    _t("conv-ready(pre-stream)", _t_req_start)
 
     def stream():
         """
