@@ -53,6 +53,10 @@ export const mapsAPI = {
     const params = { from_lat: from[0], from_lng: from[1], to_lat: to[0], to_lng: to[1] };
     return (await api.get('/api/maps/directions', { params })).data;
   },
+  // Persist / restore a map card's resolved results (so reopening a chat shows
+  // the same map without re-asking for location).
+  getResult: async (mapId) => (await api.get(`/api/maps/result/${encodeURIComponent(mapId)}`)).data,
+  saveResult: async (payload) => (await api.post('/api/maps/save', payload)).data,
 };
 
 // Proactive Firebase token refresh — used before streaming calls because

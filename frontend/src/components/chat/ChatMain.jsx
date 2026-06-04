@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning, Columns, CaretDown, X, Microphone, MicrophoneSlash, Phone, StopCircle, File, Image, Camera, HardDrive, Cpu, Brain, Diamond } from "@phosphor-icons/react";
+import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning, Columns, CaretDown, X, Microphone, MicrophoneSlash, Phone, StopCircle, File, Image, Camera, HardDrive, Cpu, Brain, Diamond, Lock } from "@phosphor-icons/react";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ThinkingTokens } from "@/components/chat/ThinkingTokens";
 import { LiveKitVoice } from "@/components/chat/LiveKitVoice";
@@ -904,6 +904,11 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   };
 
   const currentMode = modes.find(m => m.id === activeMode);
+  // Lock the model for the lifetime of a chat: once a session has any messages
+  // (or is mid-generation), the mode selector is frozen. The model only
+  // changes when the user starts a NEW chat. Prevents mid-conversation model
+  // switches that confuse context + tool behavior.
+  const modeLocked = (messages.length > 0) || isStreaming || isThinking;
 
   return (
     <div className="chat-main" data-testid="chat-main">
@@ -929,31 +934,40 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
             </button>
           )}
 
-          {/* Mode Selector */}
+          {/* Mode Selector — locked once the chat has started (new chat to switch) */}
           <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button data-testid="mode-selector-btn" className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-accent transition-colors duration-200 text-sm font-medium text-foreground">
+            <DropdownMenuTrigger asChild disabled={modeLocked}>
+              <button
+                data-testid="mode-selector-btn"
+                disabled={modeLocked}
+                title={modeLocked ? "Model is locked for this chat — start a new chat to switch" : "Switch model"}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-md transition-colors duration-200 text-sm font-medium text-foreground ${
+                  modeLocked ? "opacity-60 cursor-not-allowed" : "hover:bg-accent"
+                }`}
+              >
                 {currentMode && <currentMode.icon className="w-4 h-4 text-[var(--k-brand)]" weight="duotone" />}
                 <span>{currentMode?.label}</span>
-                <CaretDown className="w-3 h-3 text-muted-foreground" />
+                {modeLocked ? <Lock className="w-3 h-3 text-muted-foreground" /> : <CaretDown className="w-3 h-3 text-muted-foreground" />}
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-56">
-              {modes.map(mode => (
-                <DropdownMenuItem
-                  key={mode.id}
-                  data-testid={`mode-${mode.id}`}
-                  onClick={() => onSetMode(mode.id)}
-                  className="flex items-center gap-3 py-2"
-                >
-                  <mode.icon className={`w-4 h-4 ${activeMode === mode.id ? 'text-[var(--k-brand)]' : 'text-muted-foreground'}`} weight="duotone" />
-                  <div>
-                    <div className="text-sm font-medium">{mode.label}</div>
-                    <div className="text-xs text-muted-foreground">{mode.desc}</div>
-                  </div>
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
+            {!modeLocked && (
+              <DropdownMenuContent align="start" className="w-56">
+                {modes.map(mode => (
+                  <DropdownMenuItem
+                    key={mode.id}
+                    data-testid={`mode-${mode.id}`}
+                    onClick={() => onSetMode(mode.id)}
+                    className="flex items-center gap-3 py-2"
+                  >
+                    <mode.icon className={`w-4 h-4 ${activeMode === mode.id ? 'text-[var(--k-brand)]' : 'text-muted-foreground'}`} weight="duotone" />
+                    <div>
+                      <div className="text-sm font-medium">{mode.label}</div>
+                      <div className="text-xs text-muted-foreground">{mode.desc}</div>
+                    </div>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            )}
           </DropdownMenu>
         </div>
 

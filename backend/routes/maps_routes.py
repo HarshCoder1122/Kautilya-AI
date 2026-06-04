@@ -71,6 +71,53 @@ def maps_nearby():
     })
 
 
+@maps_bp.route('/maps/save', methods=['POST'])
+def maps_save():
+    """Persist a map card's resolved results (places + precise location) so the
+    chat reopens with the exact same map — no second location popup. Keyed by
+    the map_id the runner generated."""
+    from extensions import db
+    if not db:
+        return jsonify({"ok": False}), 200
+    body = request.get_json(silent=True) or {}
+    map_id = (body.get('map_id') or '').strip()
+    if not map_id:
+        return jsonify({"ok": False, "error": "map_id required"}), 400
+    places = body.get('places') or []
+    if isinstance(places, list):
+        places = places[:30]  # bound Firestore doc size
+    doc = {
+        "keyword": body.get('keyword'),
+        "center": body.get('center'),
+        "userLocation": body.get('userLocation'),
+        "places": places,
+        "source": body.get('source'),
+    }
+    try:
+        db.collection('map_results').document(map_id).set(doc)
+        return jsonify({"ok": True})
+    except Exception as e:
+        print(f"[Maps] save failed: {e}")
+        return jsonify({"ok": False}), 200
+
+
+@maps_bp.route('/maps/result/<map_id>', methods=['GET'])
+def maps_result(map_id):
+    """Return previously-saved results for a map card, or {found:false}."""
+    from extensions import db
+    if not db:
+        return jsonify({"found": False}), 200
+    try:
+        snap = db.collection('map_results').document(map_id).get()
+        if snap.exists:
+            d = snap.to_dict() or {}
+            d["found"] = True
+            return jsonify(d)
+    except Exception as e:
+        print(f"[Maps] result fetch failed: {e}")
+    return jsonify({"found": False}), 200
+
+
 @maps_bp.route('/maps/directions', methods=['GET'])
 def maps_directions():
     fl = _f(request.args.get('from_lat'))

@@ -1438,9 +1438,14 @@ def _runner_map_search(keyword):
     location (permission popup) and calls /api/maps/nearby — so the runner is
     location-agnostic and just declares the map + its search keyword."""
     def run():
+        import uuid as _uuid
         kw = (keyword or 'restaurant').strip() or 'restaurant'
+        # map_id ties the client-resolved results (places + precise location)
+        # to this card so they can be persisted in Firestore and restored
+        # verbatim when the chat is reopened — no second location popup.
+        map_id = _uuid.uuid4().hex[:20]
         extra = [{"event": "tool_result", "tool": "map",
-                  "data": {"keyword": kw, "radius": 3000}}]
+                  "data": {"keyword": kw, "radius": 3000, "map_id": map_id}}]
         return {"ok": True, "preview": f"Map: nearby {kw}",
                 "observation": (f"MAP SHOWN: an interactive map of nearby '{kw}' is now "
                                 "displayed to the user using their current location. "

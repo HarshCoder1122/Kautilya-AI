@@ -198,7 +198,11 @@ def set_security_headers(response):
     # accelerometer / devicemotion / deviceorientation is not allowed" which
     # originates from Razorpay's fraud-detection iframe trying to read sensors.
     response.headers['Permissions-Policy'] = (
-        'accelerometer=(), camera=(), geolocation=(), gyroscope=(), '
+        # geolocation=(self) so the in-chat map can request the user's precise
+        # location (permission popup). Without this the browser blocks
+        # navigator.geolocation outright and the map falls back to coarse
+        # server-side IP geolocation (i.e. the data-center's location).
+        'accelerometer=(), camera=(), geolocation=(self), gyroscope=(), '
         'magnetometer=(), microphone=(self), payment=(self "https://checkout.razorpay.com"), '
         'usb=()'
     )

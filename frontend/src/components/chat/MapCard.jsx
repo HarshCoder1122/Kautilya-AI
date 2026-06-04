@@ -90,7 +90,7 @@ function placePopupHtml(p) {
   </div>`;
 }
 
-export function MapCard({ keyword = "places", radius = 3000 }) {
+export function MapCard({ keyword = "places", radius = 3000, map_id }) {
   const mapElRef = useRef(null);
   const mapRef = useRef(null);
   const markersRef = useRef([]);
@@ -104,9 +104,22 @@ export function MapCard({ keyword = "places", radius = 3000 }) {
   const [activeIdx, setActiveIdx] = useState(-1);
   const [source, setSource] = useState("");
 
-  // Step 1 — precise location (permission popup), then fetch nearby.
+  // Step 1 — restore saved results if this chat was reopened (no popup);
+  // otherwise ask for precise location (permission popup) and fetch nearby,
+  // then persist the result so the next reopen restores it verbatim.
   useEffect(() => {
     let cancelled = false;
+
+    const persist = (data) => {
+      if (!map_id || !data || !data.userLocation || !Array.isArray(data.places) || !data.places.length) return;
+      mapsAPI.saveResult({
+        map_id, keyword,
+        center: data.center,
+        userLocation: data.userLocation,
+        places: data.places,
+        source: data.source,
+      }).catch(() => {});
+    };
 
     const fetchNearby = async (lat, lng) => {
       try {
@@ -122,6 +135,7 @@ export function MapCard({ keyword = "places", radius = 3000 }) {
         setSource(data.source || "");
         setPlaces(Array.isArray(data.places) ? data.places : []);
         setStatus("ready");
+        persist(data);
       } catch (e) {
         if (cancelled) return;
         setStatus("error");
@@ -129,17 +143,38 @@ export function MapCard({ keyword = "places", radius = 3000 }) {
       }
     };
 
-    if (typeof navigator !== "undefined" && navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => fetchNearby(pos.coords.latitude, pos.coords.longitude),
-        () => fetchNearby(null, null), // denied/failed → backend IP fallback
-        { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
-      );
+    const goLive = () => {
+      if (typeof navigator !== "undefined" && navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => fetchNearby(pos.coords.latitude, pos.coords.longitude),
+          () => fetchNearby(null, null), // denied/failed → backend IP fallback
+          { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+        );
+      } else {
+        fetchNearby(null, null);
+      }
+    };
+
+    if (map_id) {
+      mapsAPI.getResult(map_id)
+        .then((saved) => {
+          if (cancelled) return;
+          if (saved && saved.found && Array.isArray(saved.places) && saved.places.length && saved.userLocation) {
+            userRef.current = saved.userLocation;
+            setSource(saved.source || "");
+            setPlaces(saved.places);
+            setStatus("ready");
+          } else {
+            goLive();
+          }
+        })
+        .catch(() => { if (!cancelled) goLive(); });
     } else {
-      fetchNearby(null, null);
+      goLive();
     }
+
     return () => { cancelled = true; };
-  }, [keyword, radius]);
+  }, [keyword, radius, map_id]);
 
   // Step 2 — render the Leaflet map once we have a location.
   useEffect(() => {
