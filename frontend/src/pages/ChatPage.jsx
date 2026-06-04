@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { ChatMain } from "@/components/chat/ChatMain";
 import { CanvasPane } from "@/components/chat/CanvasPane";
+import { OnboardingModal } from "@/components/shared/OnboardingModal";
 import { chatAPI } from "../lib/api";
 
 export default function ChatPage({ theme, toggleTheme, user }) {
@@ -107,6 +108,7 @@ export default function ChatPage({ theme, toggleTheme, user }) {
           activeMode={activeMode}
         />
       )}
+      <OnboardingModal user={user} />
     </div>
   );
 }

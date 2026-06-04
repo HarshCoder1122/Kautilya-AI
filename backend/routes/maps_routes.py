@@ -28,10 +28,24 @@ def _f(v):
 @maps_bp.route('/maps/config', methods=['GET'])
 def maps_config():
     return jsonify({
-        "available": bool(maps_service.map_sdk_key()),
-        "sdk_key": maps_service.map_sdk_key(),
-        "provider": "mappls" if maps_service.mappls_available() else "osm",
+        "available": True,
+        "sdk_key": "",
+        "provider": "osm",
     })
+
+@maps_bp.route('/maps/test-nominatim', methods=['GET'])
+def test_nominatim():
+    import requests
+    try:
+        r = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": "GIP Mall Noida", "format": "json", "limit": 2},
+            headers={"User-Agent": "KautilyaAI/1.0 (+https://ai.revealiq.in)"},
+            timeout=5,
+        )
+        return jsonify({"status_code": r.status_code, "text": r.text})
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 
 @maps_bp.route('/maps/nearby', methods=['GET'])

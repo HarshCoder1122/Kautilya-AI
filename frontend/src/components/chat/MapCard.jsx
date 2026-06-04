@@ -262,8 +262,8 @@ export function MapCard({ keyword = "places", radius = 3000, map_id }) {
   };
 
   const title = keyword
-    ? `Nearby ${keyword.charAt(0).toUpperCase()}${keyword.slice(1)}`
-    : "Nearby places";
+    ? `Map Search: ${keyword.charAt(0).toUpperCase()}${keyword.slice(1)}`
+    : "Map Search";
 
   return (
     <div className="rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] overflow-hidden w-full max-w-full min-w-0">
@@ -300,7 +300,7 @@ export function MapCard({ keyword = "places", radius = 3000, map_id }) {
           />
           {places.length === 0 ? (
             <div className="px-4 py-4 text-sm text-muted-foreground">
-              No {keyword} found nearby. Try a wider area or a different place type.
+              No {keyword} found. Try a different search term.
             </div>
           ) : (
             <div className="max-h-64 overflow-y-auto divide-y divide-[var(--k-border)]/60">

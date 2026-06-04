@@ -285,3 +285,7 @@ select option:checked {
   background-color: var(--k-brand);
   color: #fff;
 }
+
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
+}
