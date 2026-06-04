@@ -295,7 +295,7 @@ def _osm_nearby(lat, lng, keyword, radius, limit):
                         plng = _to_float(e.get("lon")) or _to_float((e.get("center") or {}).get("lon"))
                         if plat is None or plng is None:
                             continue
-                        dist = _haversine(lat, lng, plat, plng) * 1000
+                        dist = _haversine_m(lat, lng, plat, plng)
                         if dist > radius:
                             continue
                         name = e.get("tags", {}).get("name") or keyword.title()
@@ -321,7 +321,7 @@ def _osm_nearby(lat, lng, keyword, radius, limit):
             for top in arr:
                 plat, plng = _to_float(top.get("lat")), _to_float(top.get("lon"))
                 if plat is not None and plng is not None:
-                    dist = _haversine(lat, lng, plat, plng) * 1000
+                    dist = _haversine_m(lat, lng, plat, plng)
                     out.append({
                         "name": top.get("name") or top.get("display_name", "").split(",")[0],
                         "address": top.get("display_name"),
