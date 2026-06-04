@@ -199,9 +199,12 @@ def _mappls_nearby(lat, lng, keyword, radius, limit):
         suggested = body.get("suggestedLocations") or []
         print(f"[Maps] Mappls nearby returned {len(suggested)} suggestedLocations for '{normalized_kw}'")
         out = []
-        for s in suggested[:limit]:
-            plat, plng = _to_float(s.get("latitude")), _to_float(s.get("longitude"))
+        for i, s in enumerate(suggested[:limit]):
+            plat = _to_float(s.get("latitude")) or _to_float(s.get("lat")) or _to_float(s.get("entryLatitude")) or _to_float(s.get("pLatitude"))
+            plng = _to_float(s.get("longitude")) or _to_float(s.get("lng")) or _to_float(s.get("entryLongitude")) or _to_float(s.get("pLongitude"))
             if plat is None or plng is None:
+                if i == 0:
+                    print(f"[Maps] Mappls item missing coordinates. Keys available: {list(s.keys())}")
                 continue
             out.append({
                 "name": s.get("placeName") or "Unnamed place",

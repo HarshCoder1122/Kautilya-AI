@@ -199,16 +199,11 @@ export function MapCard({ keyword = "places", radius = 3000, map_id }) {
       }).setView([u.lat, u.lng], 15);
 
       // Use Mappls raster tiles when SDK key is available, otherwise fall back
-      // to OpenStreetMap. NOTE: Mappls only serves SATELLITE raster XYZ tiles
-      // (`bhuvan_imagery`) on this plan — the road-map raster layers
-      // (still_map_tile/map_tile/etc.) return 412 (product not enabled), so
-      // they were silently failing to OSM. Satellite is verified-working.
-      // Imagery stops at native z18; let Leaflet upscale past that instead of
-      // showing grey tiles.
+      // Use Mappls raster tiles when SDK key is available, else OSM.
       const sdkKey = mapConfig?.sdk_key;
       if (sdkKey) {
-        L.tileLayer(`https://apis.mappls.com/advancedmaps/v1/${sdkKey}/bhuvan_imagery/{z}/{x}/{y}.png`, {
-          maxNativeZoom: 18, maxZoom: 19, attribution: "&copy; Mappls",
+        L.tileLayer(`https://apis.mappls.com/advancedmaps/v1/${sdkKey}/map_tile/smt/{z}/{x}/{y}.png`, {
+          maxZoom: 19, attribution: "&copy; Mappls",
         }).addTo(map);
       } else {
         L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
