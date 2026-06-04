@@ -185,6 +185,72 @@ _load_english()
 # Load Hindi lazily in background — saves ~10s off cold start
 threading.Thread(target=_load_hindi, daemon=True).start()
 
+# --- Fast ONNX engine (optional, 2-4x faster than PyTorch eager on CPU) ----
+# ONNX Runtime fuses ops and uses optimized CPU kernels, so Kokoro synthesises
+# MUCH faster than the PyTorch pipeline. We use it whenever the model files +
+# package are present; otherwise everything transparently falls back to the
+# PyTorch KPipeline above — so a missing model NEVER breaks audio. Toggle with
+# TTS_ENGINE=onnx|torch.
+onnx_engine = None
+_GH_BASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
+_ONNX_VOICES_URL = _GH_BASE + "voices-v1.0.bin"
+# Models to try, FASTEST first. int8 (~80MB) is ~2x faster than fp32 on CPU;
+# fp32 (~310MB) is the compatibility fallback. Whichever loads + warms up wins.
+_ONNX_MODELS = [
+    ("kokoro-int8.onnx", "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/onnx/model_quantized.onnx"),
+    ("kokoro-v1.0.onnx", _GH_BASE + "kokoro-v1.0.onnx"),
+]
+
+def _download(path, url):
+    """Download once if missing — lets ONNX self-heal even if the build skipped it."""
+    import urllib.request
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        return
+    print(f"[ONNX] downloading {path} (one-time) ...", flush=True)
+    urllib.request.urlretrieve(url, path)
+    print(f"[ONNX] downloaded {path} ({os.path.getsize(path)//(1024*1024)} MB)", flush=True)
+
+def _load_onnx_engine():
+    global onnx_engine
+    if os.environ.get("TTS_ENGINE", "onnx").lower() != "onnx":
+        print("[ONNX] disabled via TTS_ENGINE → PyTorch engine")
+        return
+    try:
+        from kokoro_onnx import Kokoro
+    except Exception as e:
+        print(f"[ONNX] kokoro-onnx not installed → PyTorch engine: {e}")
+        return
+    voices_path = os.environ.get("KOKORO_ONNX_VOICES", "voices-v1.0.bin")
+    try:
+        _download(voices_path, _ONNX_VOICES_URL)
+    except Exception as e:
+        print(f"[ONNX] voices download failed → PyTorch engine: {e}")
+        return
+    # Explicit override wins; otherwise try int8 → fp32.
+    candidates = ([(os.environ["KOKORO_ONNX_MODEL"], None)]
+                  if os.environ.get("KOKORO_ONNX_MODEL") else _ONNX_MODELS)
+    for fname, url in candidates:
+        try:
+            if url:
+                _download(fname, url)
+            eng = Kokoro(fname, voices_path)
+            # THOROUGH warm-up: a real sentence forces the misaki/spacy g2p +
+            # onnxruntime to fully initialize NOW (in this background thread),
+            # so the first user request isn't hit with a ~5s lazy-load penalty.
+            eng.create(
+                "This is a warm up sentence so the phonemizer and the model are fully ready.",
+                voice="af_heart", speed=1.0, lang="en-us")
+            onnx_engine = eng
+            tag = "INT8 (quantized)" if ("int8" in fname or "quant" in fname) else "fp32"
+            print(f"[ONNX] Kokoro ONNX engine READY [{fname}] {tag} — fast CPU path ACTIVE", flush=True)
+            return
+        except Exception as e:
+            print(f"[ONNX] {fname} failed, trying next: {e}", flush=True)
+    onnx_engine = None
+    print("[ONNX] all ONNX models failed → PyTorch engine")
+
+threading.Thread(target=_load_onnx_engine, daemon=True).start()
+
 # --- Keep-alive self-ping to prevent HF Space from sleeping ---
 def _keepalive():
     import requests as _req
@@ -306,6 +372,35 @@ def _resolve_pipeline(lang: str, requested_voice: str):
     v = requested_voice if (requested_voice or "").startswith(_EN_VOICE_PREFIXES) else "af_heart"
     return kokoro_en, v
 
+def _synth_segment(sentence, lang, requested_voice, speed):
+    """Synthesize ONE segment → float32 numpy audio. Prefers the fast ONNX
+    engine; falls back to the PyTorch pipeline per-segment on any failure, so a
+    single ONNX hiccup (e.g. an unsupported lang) never drops audio."""
+    # Fast path: ONNX Runtime
+    if onnx_engine is not None:
+        try:
+            if lang == "hi":
+                v = requested_voice if (requested_voice or "").startswith(_HI_VOICE_PREFIXES) else "hf_alpha"
+                lc = "hi"
+            else:
+                v = requested_voice if (requested_voice or "").startswith(_EN_VOICE_PREFIXES) else "af_heart"
+                lc = "en-us"
+            samples, _sr = onnx_engine.create(sentence, voice=v, speed=float(speed), lang=lc)
+            return np.asarray(samples, dtype=np.float32)
+        except Exception as e:
+            print(f"[ONNX] segment failed → PyTorch fallback: {e}")
+    # Fallback path: PyTorch KPipeline
+    pipeline, seg_voice = _resolve_pipeline(lang, requested_voice)
+    out = []
+    with torch.inference_mode():
+        for _, _, audio in pipeline(sentence, voice=seg_voice, speed=speed):
+            if audio is None:
+                continue
+            out.append(audio.detach().cpu().numpy() if torch.is_tensor(audio) else np.asarray(audio, dtype=np.float32))
+    if not out:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate(out).astype(np.float32)
+
 # ── Repeated-phrase audio cache ───────────────────────────────────────────
 # Greetings, UI sounds and common replies repeat constantly. Caching the final
 # PCM for short inputs makes those instant (zero synthesis). Keyed by
@@ -377,21 +472,12 @@ def trim_silence(audio, sample_rate=24000, threshold=0.005, keep_start_ms=_TRIM_
     return trimmed_audio
 
 def generate_full_audio_sync(request: SpeechRequest):
-    # Auto-detect the language from the actual text (not the requested model).
+    # Auto-detect language from the actual text; ONNX fast path via _synth_segment.
     lang = _detect_lang(request.input)
-    pipeline, voice = _resolve_pipeline(lang, request.voice)
-
-    generator = pipeline(request.input, voice=voice, speed=request.speed)
-    audio_chunks = []
-    for _, _, audio in generator:
-        if audio is not None:
-            trimmed = trim_silence(audio)
-            audio_chunks.append(_post_process(trimmed))  # loud + click-free
-
-    if not audio_chunks:
+    audio = _synth_segment(request.input, lang, request.voice, request.speed)
+    if audio is None or len(audio) == 0:
         raise ValueError("Audio generation failed")
-
-    return np.concatenate(audio_chunks), 24000
+    return _post_process(trim_silence(audio)), 24000
 
 def split_text(text: str):
     """
@@ -471,10 +557,13 @@ def split_text(text: str):
             if not s:
                 continue
             words_s = s.split()
-            if len(words_s) <= 12:
+            # Keep whole sentences intact up to a generous size — fewer, larger
+            # synthesis calls = far less per-call g2p/setup overhead (faster
+            # overall) AND smoother prosody (no mid-sentence chopping). Only
+            # genuinely long sentences get split.
+            if len(words_s) <= 35:
                 segments.append(s)
             else:
-                # Split large sentences using conjunctions or middle space
                 sub_segments = []
                 split_subsegment(s, sub_segments, conjunctions)
                 segments.extend(sub_segments)
@@ -485,7 +574,7 @@ def split_text(text: str):
 
 def split_subsegment(s: str, result_list: list, conjunctions: list):
     words = s.split()
-    if len(words) <= 12:
+    if len(words) <= 35:
         result_list.append(s)
         return
         
@@ -550,38 +639,39 @@ def generate_voice_thread(loop, queue, text, model_name, voice, speed):
         # Pre-split text for faster streaming using progressive splitting
         sentences = split_text(text)
         full_pcm = bytearray() if ckey is not None else None
+        _t0 = time.time()
+        _first = True
 
-        # NOTE: bf16 autocast was REMOVED — on small HF CPU instances it adds
-        # fp32↔bf16 conversion overhead (and the model is now INT8-quantized),
-        # so plain inference_mode is faster and avoids audio artifacts.
-        with torch.inference_mode():
-            for sentence in sentences:
-                if not sentence.strip():
-                    continue
+        for sentence in sentences:
+            if not sentence.strip():
+                continue
 
-                # AUTO LANGUAGE: pick the pipeline+voice from the segment's own
-                # script, so a Hindi reply renders on the Hindi voice even though
-                # the request asked for English (and vice-versa).
-                lang = _detect_lang(sentence)
-                try:
-                    pipeline, seg_voice = _resolve_pipeline(lang, voice)
-                except Exception:
-                    continue
-                generator = pipeline(sentence, voice=seg_voice, speed=speed)
-                for _, _, audio in generator:
-                    if audio is None:
-                        continue
-                    # Gentle trim → loudness-normalise → edge-fade. The fade
-                    # removes the clicks/pops at segment joins that sounded
-                    # like the voice "breaking", and normalisation makes it
-                    # consistently loud.
-                    audio = trim_silence(audio)
-                    a = _post_process(audio)
-                    audio_int16 = (a * 32767.0).astype(np.int16)
-                    audio_bytes = audio_int16.tobytes()
-                    if full_pcm is not None:
-                        full_pcm.extend(audio_bytes)
-                    _emit(audio_bytes)
+            # AUTO LANGUAGE: pick engine/voice from the segment's own script, so
+            # a Hindi reply renders on the Hindi voice even though the request
+            # asked for English. _synth_segment uses the fast ONNX engine when
+            # available, else the PyTorch pipeline.
+            lang = _detect_lang(sentence)
+            try:
+                audio = _synth_segment(sentence, lang, voice, speed)
+            except Exception as e:
+                print(f"[TTS] segment synth failed: {e}")
+                continue
+            if audio is None or len(audio) == 0:
+                continue
+            # Gentle trim → loudness-normalise → edge-fade. The fade removes the
+            # clicks/pops at segment joins; normalisation makes it loud.
+            audio = trim_silence(audio)
+            a = _post_process(audio)
+            audio_int16 = (a * 32767.0).astype(np.int16)
+            audio_bytes = audio_int16.tobytes()
+            if full_pcm is not None:
+                full_pcm.extend(audio_bytes)
+            if _first:
+                print(f"[TTS] TTFB {int((time.time()-_t0)*1000)}ms "
+                      f"engine={'onnx' if onnx_engine is not None else 'torch'} "
+                      f"lang={lang} chars={len(text)}", flush=True)
+                _first = False
+            _emit(audio_bytes)
 
         # Store the finished utterance for instant future replays.
         if ckey is not None and full_pcm:

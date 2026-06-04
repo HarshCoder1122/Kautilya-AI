@@ -213,19 +213,22 @@ class LimitManager:
         return record
 
     def _save_daily_usage(self, user_id, record):
-        """Save the updated daily usage to Firestore."""
+        """Save the updated daily usage to Firestore asynchronously."""
         self.usage_data[user_id] = record
         if self.db:
-            try:
-                today = record['date']
-                self.db.collection('api_usage').document(user_id).collection('daily').document(today).set({
-                    'chat_count': record.get('chat_count', 0),
-                    'image_count': record.get('image_count', 0),
-                    'api_count':   record.get('api_count', 0),
-                    'updated_at': datetime.now().isoformat()
-                }, merge=True)
-            except Exception as e:
-                print(f"[LimitManager] Firestore save daily usage failed: {e}")
+            import threading
+            def _go():
+                try:
+                    today = record['date']
+                    self.db.collection('api_usage').document(user_id).collection('daily').document(today).set({
+                        'chat_count': record.get('chat_count', 0),
+                        'image_count': record.get('image_count', 0),
+                        'api_count':   record.get('api_count', 0),
+                        'updated_at': datetime.now().isoformat()
+                    }, merge=True)
+                except Exception as e:
+                    print(f"[LimitManager] Firestore save daily usage failed: {e}")
+            threading.Thread(target=_go, daemon=True).start()
 
     # ================= DEVELOPER API LIMITS =================
     def check_developer_api_call(self, user_id, is_pro=False):

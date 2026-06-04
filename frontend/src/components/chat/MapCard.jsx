@@ -181,43 +181,60 @@ export function MapCard({ keyword = "places", radius = 3000, map_id }) {
     if (status !== "ready" || !userRef.current) return;
     let disposed = false;
 
-    loadLeaflet()
-      .then((L) => {
-        if (disposed || !mapElRef.current) return;
-        LRef.current = L;
-        const u = userRef.current;
+    const initMap = async () => {
+      // Fetch Mappls config for tile key
+      let mapConfig = null;
+      try {
+        mapConfig = await mapsAPI.getConfig();
+      } catch (_) {}
 
-        if (mapRef.current) { try { mapRef.current.remove(); } catch (_) {} mapRef.current = null; }
-        const map = L.map(mapElRef.current, {
-          zoomControl: true, attributionControl: true, scrollWheelZoom: false,
-        }).setView([u.lat, u.lng], 15);
+      const L = await loadLeaflet();
+      if (disposed || !mapElRef.current) return;
+      LRef.current = L;
+      const u = userRef.current;
+
+      if (mapRef.current) { try { mapRef.current.remove(); } catch (_) {} mapRef.current = null; }
+      const map = L.map(mapElRef.current, {
+        zoomControl: true, attributionControl: true, scrollWheelZoom: false,
+      }).setView([u.lat, u.lng], 15);
+
+      // Use Mappls raster tiles when SDK key is available (much better India data),
+      // otherwise fall back to OpenStreetMap.
+      const sdkKey = mapConfig?.sdk_key;
+      if (sdkKey) {
+        L.tileLayer(`https://apis.mappls.com/advancedmaps/v1/${sdkKey}/still_map_tile/{z}/{x}/{y}.png`, {
+          maxZoom: 19, attribution: "&copy; Mappls",
+        }).addTo(map);
+      } else {
         L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
           maxZoom: 19, attribution: "&copy; OpenStreetMap",
         }).addTo(map);
-        mapRef.current = map;
+      }
+      mapRef.current = map;
 
-        const userIcon = L.divIcon({ className: "", html: userPinHtml(), iconSize: [18, 18], iconAnchor: [9, 9] });
-        L.marker([u.lat, u.lng], { icon: userIcon, zIndexOffset: 1000 }).addTo(map).bindPopup("You are here");
+      const userIcon = L.divIcon({ className: "", html: userPinHtml(), iconSize: [18, 18], iconAnchor: [9, 9] });
+      L.marker([u.lat, u.lng], { icon: userIcon, zIndexOffset: 1000 }).addTo(map).bindPopup("You are here");
 
-        markersRef.current = [];
-        places.forEach((p, i) => {
-          const icon = L.divIcon({ className: "", html: placePinHtml(i + 1), iconSize: [26, 34], iconAnchor: [13, 34], popupAnchor: [0, -30] });
-          const mk = L.marker([p.lat, p.lng], { icon }).addTo(map).bindPopup(placePopupHtml(p));
-          mk.on("click", () => setActiveIdx(i));
-          markersRef.current.push(mk);
-        });
+      markersRef.current = [];
+      places.forEach((p, i) => {
+        const icon = L.divIcon({ className: "", html: placePinHtml(i + 1), iconSize: [26, 34], iconAnchor: [13, 34], popupAnchor: [0, -30] });
+        const mk = L.marker([p.lat, p.lng], { icon }).addTo(map).bindPopup(placePopupHtml(p));
+        mk.on("click", () => setActiveIdx(i));
+        markersRef.current.push(mk);
+      });
 
-        if (places.length) {
-          try {
-            const grp = L.featureGroup([L.marker([u.lat, u.lng]), ...markersRef.current]);
-            map.fitBounds(grp.getBounds().pad(0.2));
-          } catch (_) {}
-        }
-        // Card mounts inside an animated flex container — nudge Leaflet to
-        // recompute its size so tiles aren't clipped/grey.
-        setTimeout(() => { try { map.invalidateSize(); } catch (_) {} }, 200);
-      })
-      .catch(() => { /* map lib blocked/failed — the list below still works */ });
+      if (places.length) {
+        try {
+          const grp = L.featureGroup([L.marker([u.lat, u.lng]), ...markersRef.current]);
+          map.fitBounds(grp.getBounds().pad(0.2));
+        } catch (_) {}
+      }
+      // Card mounts inside an animated flex container — nudge Leaflet to
+      // recompute its size so tiles aren't clipped/grey.
+      setTimeout(() => { try { map.invalidateSize(); } catch (_) {} }, 200);
+    };
+
+    initMap().catch(() => { /* map lib blocked/failed — the list below still works */ });
 
     return () => {
       disposed = true;

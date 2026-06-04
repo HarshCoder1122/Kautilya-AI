@@ -105,3 +105,8 @@ Thumbs.db
 # Logs
 *.log
 jarvis.log
+
+# Dev scratch scripts & local Android project — kept on disk, never versioned.
+# (Also blocks accidental `git add -A` from re-adding the 180MB JDK zip etc.)
+/scratch/
+/android/

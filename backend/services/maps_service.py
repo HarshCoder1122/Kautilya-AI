@@ -35,6 +35,13 @@ _token_lock = threading.Lock()
 _token_cache = {"value": None, "expires_at": 0.0}
 
 
+# ── Startup diagnostic ────────────────────────────────────────────────────
+print(f"[Maps] Mappls credentials loaded: CLIENT_ID={'YES' if MAPPLS_CLIENT_ID else 'NO'} "
+      f"CLIENT_SECRET={'YES' if MAPPLS_CLIENT_SECRET else 'NO'} "
+      f"REST_KEY={'YES' if MAPPLS_REST_KEY else 'NO'} "
+      f"MAP_SDK_KEY={'YES' if MAPPLS_MAP_SDK_KEY else 'NO'}")
+
+
 def mappls_available() -> bool:
     return bool(MAPPLS_CLIENT_ID and MAPPLS_CLIENT_SECRET)
 
@@ -48,6 +55,7 @@ def _get_mappls_token():
     """Return a cached OAuth bearer token, refreshing ~2 min before expiry.
     Returns None if credentials are missing or the token call fails."""
     if not mappls_available():
+        print("[Maps] Mappls NOT available (CLIENT_ID or CLIENT_SECRET missing)")
         return None
     now = time.time()
     if _token_cache["value"] and _token_cache["expires_at"] - 120 > now:
@@ -57,6 +65,7 @@ def _get_mappls_token():
         if _token_cache["value"] and _token_cache["expires_at"] - 120 > time.time():
             return _token_cache["value"]
         try:
+            print(f"[Maps] Requesting Mappls OAuth token (client_id={MAPPLS_CLIENT_ID[:8]}...)")
             r = requests.post(
                 "https://outpost.mappls.com/api/security/oauth/token",
                 data={
@@ -73,8 +82,11 @@ def _get_mappls_token():
                 if tok:
                     _token_cache["value"] = tok
                     _token_cache["expires_at"] = time.time() + float(data.get("expires_in", 86400))
+                    print(f"[Maps] Mappls OAuth token obtained OK (expires_in={data.get('expires_in')})")
                     return tok
-            print(f"[Maps] Mappls token error {r.status_code}: {r.text[:160]}")
+                print(f"[Maps] Mappls token 200 but no access_token in response: {str(data)[:200]}")
+            else:
+                print(f"[Maps] Mappls token error {r.status_code}: {r.text[:300]}")
         except Exception as e:
             print(f"[Maps] Mappls token exception: {e}")
     return None
@@ -161,8 +173,10 @@ def _mappls_normalize_keyword(keyword: str) -> str:
 def _mappls_nearby(lat, lng, keyword, radius, limit):
     tok = _get_mappls_token()
     if not tok:
+        print(f"[Maps] Mappls nearby skipped — no token (keyword={keyword})")
         return []
     normalized_kw = _mappls_normalize_keyword(keyword)
+    print(f"[Maps] Mappls nearby: keyword='{keyword}' -> normalized='{normalized_kw}' loc={lat},{lng} r={radius}")
     try:
         r = requests.get(
             "https://atlas.mappls.com/api/places/nearby/json",
@@ -175,11 +189,17 @@ def _mappls_nearby(lat, lng, keyword, radius, limit):
             headers={"Authorization": f"bearer {tok}"},
             timeout=_HTTP_TIMEOUT,
         )
-        if r.status_code != 200:
-            print(f"[Maps] Mappls nearby {r.status_code}: {r.text[:160]}")
+        if r.status_code == 204:
+            print(f"[Maps] Mappls nearby 204 No Content for '{normalized_kw}' — falling back to OSM")
             return []
+        if r.status_code != 200:
+            print(f"[Maps] Mappls nearby {r.status_code}: {r.text[:300]}")
+            return []
+        body = r.json()
+        suggested = body.get("suggestedLocations") or []
+        print(f"[Maps] Mappls nearby returned {len(suggested)} suggestedLocations for '{normalized_kw}'")
         out = []
-        for s in (r.json().get("suggestedLocations") or [])[:limit]:
+        for s in suggested[:limit]:
             plat, plng = _to_float(s.get("latitude")), _to_float(s.get("longitude"))
             if plat is None or plng is None:
                 continue
@@ -192,6 +212,10 @@ def _mappls_nearby(lat, lng, keyword, radius, limit):
                 "category": s.get("type") or "",
                 "eloc": s.get("eLoc") or "",
             })
+        if out:
+            print(f"[Maps] Mappls nearby SUCCESS — {len(out)} places found")
+        else:
+            print(f"[Maps] Mappls nearby returned 0 valid places for '{normalized_kw}'")
         return out
     except Exception as e:
         print(f"[Maps] Mappls nearby exception: {e}")

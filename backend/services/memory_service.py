@@ -37,6 +37,35 @@ def _invalidate_user_memory_cache(uid):
     _user_memory_cache.pop(uid, None)
 
 
+_user_settings_cache = {}  # uid -> (settings_dict, expires_at)
+_USER_SETTINGS_TTL_SEC = 60.0
+
+
+def _invalidate_user_settings_cache(uid):
+    _user_settings_cache.pop(uid, None)
+
+
+def get_user_settings(uid):
+    """Load user settings (profile doc) from Firestore with in-memory TTL caching."""
+    if not uid:
+        return {}
+    now = time.time()
+    cached = _user_settings_cache.get(uid)
+    if cached and cached[1] > now:
+        return cached[0]
+    settings = {}
+    try:
+        from extensions import db, FIREBASE_AVAILABLE
+        if FIREBASE_AVAILABLE and db:
+            sdoc = db.collection('users').document(uid).collection('settings').document('profile').get()
+            if sdoc.exists:
+                settings = sdoc.to_dict() or {}
+    except Exception as e:
+        print(f"[Memory] Firestore read settings failed: {e}")
+    _user_settings_cache[uid] = (settings, now + _USER_SETTINGS_TTL_SEC)
+    return settings
+
+
 def get_user_memory(uid):
     """Load user memories — Firestore-first (user_memory collection), local file fallback.
     NOTE: Uses 'user_memory' collection, NOT 'memories' (that's the vector store)."""
@@ -237,14 +266,7 @@ def build_personalized_prompt(base_prompt, user_name=None, memories=None, user_e
     # Load full profile/settings from Firestore if settings is not fully provided
     profile_data = settings or {}
     if (not profile_data or 'preferred_name' not in profile_data) and uid:
-        try:
-            from extensions import db, FIREBASE_AVAILABLE
-            if FIREBASE_AVAILABLE and db:
-                pdoc = db.collection('users').document(uid).collection('settings').document('profile').get()
-                if pdoc.exists:
-                    profile_data = pdoc.to_dict() or {}
-        except:
-            pass
+        profile_data = get_user_settings(uid)
 
     # Resolve display name: settings preferred_name > settings display_name > Firebase Auth record > token name
     preferred_name = profile_data.get('preferred_name')

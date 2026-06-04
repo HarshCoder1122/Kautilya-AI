@@ -5,7 +5,7 @@ Handles /api/user/* endpoints (settings, integrations, account).
 from flask import Blueprint, request, jsonify
 
 from services.auth_service import verify_firebase_token
-from services.memory_service import record_user_session
+from services.memory_service import record_user_session, _invalidate_user_settings_cache
 from services.email_service import send_welcome_email
 
 user_bp = Blueprint('user', __name__)
@@ -108,6 +108,7 @@ def save_user_settings():
             'updated_at': firestore.SERVER_TIMESTAMP
         }
         db.collection('users').document(uid).collection('settings').document('profile').set(settings, merge=True)
+        _invalidate_user_settings_cache(uid)
         return jsonify({"status": "ok", "message": "Settings saved successfully"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -419,6 +420,7 @@ def user_profile():
         if 'preferences' in data:
             update['personal_preferences'] = str(data['preferences'])[:2000]
         profile_ref.set(update, merge=True)
+        _invalidate_user_settings_cache(uid)
         return jsonify({"status": "ok", "message": "Profile saved"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

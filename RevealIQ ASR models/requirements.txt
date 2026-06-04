@@ -6,6 +6,8 @@ scipy
 phonemizer-fork
 espeakng-loader
 kokoro>=0.9.4
+kokoro-onnx
+onnxruntime
 misaki[en]
 num2words
 python-multipart

@@ -118,41 +118,57 @@ export function RouteCard({ origin = "", destination = "", map_id }) {
     if (status !== "ready" || !resolved || !resolved.origin || !resolved.destination) return;
     let disposed = false;
 
-    loadLeaflet()
-      .then((L) => {
-        if (disposed || !mapElRef.current) return;
-        LRef.current = L;
-        const o = resolved.origin, d = resolved.destination;
+    const initMap = async () => {
+      // Fetch Mappls config for tile key
+      let mapConfig = null;
+      try {
+        mapConfig = await mapsAPI.getConfig();
+      } catch (_) {}
 
-        if (mapRef.current) { try { mapRef.current.remove(); } catch (_) {} mapRef.current = null; }
-        const map = L.map(mapElRef.current, {
-          zoomControl: true, attributionControl: true, scrollWheelZoom: false,
-        }).setView([o.lat, o.lng], 12);
+      const L = await loadLeaflet();
+      if (disposed || !mapElRef.current) return;
+      LRef.current = L;
+      const o = resolved.origin, d = resolved.destination;
+
+      if (mapRef.current) { try { mapRef.current.remove(); } catch (_) {} mapRef.current = null; }
+      const map = L.map(mapElRef.current, {
+        zoomControl: true, attributionControl: true, scrollWheelZoom: false,
+      }).setView([o.lat, o.lng], 12);
+
+      // Use Mappls raster tiles when SDK key is available, else OSM.
+      const sdkKey = mapConfig?.sdk_key;
+      if (sdkKey) {
+        L.tileLayer(`https://apis.mappls.com/advancedmaps/v1/${sdkKey}/still_map_tile/{z}/{x}/{y}.png`, {
+          maxZoom: 19, attribution: "&copy; Mappls",
+        }).addTo(map);
+      } else {
         L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
           maxZoom: 19, attribution: "&copy; OpenStreetMap",
         }).addTo(map);
-        mapRef.current = map;
+      }
+      mapRef.current = map;
 
-        const oIcon = L.divIcon({ className: "", html: endpointPinHtml("A", "#16a34a"), iconSize: [26, 34], iconAnchor: [13, 34], popupAnchor: [0, -30] });
-        const dIcon = L.divIcon({ className: "", html: endpointPinHtml("B", "#e11d48"), iconSize: [26, 34], iconAnchor: [13, 34], popupAnchor: [0, -30] });
-        const oM = L.marker([o.lat, o.lng], { icon: oIcon }).addTo(map).bindPopup(`<b>From</b><br>${escapeHtml(o.label || "Start")}`);
-        const dM = L.marker([d.lat, d.lng], { icon: dIcon }).addTo(map).bindPopup(`<b>To</b><br>${escapeHtml(d.label || "Destination")}`);
+      const oIcon = L.divIcon({ className: "", html: endpointPinHtml("A", "#16a34a"), iconSize: [26, 34], iconAnchor: [13, 34], popupAnchor: [0, -30] });
+      const dIcon = L.divIcon({ className: "", html: endpointPinHtml("B", "#e11d48"), iconSize: [26, 34], iconAnchor: [13, 34], popupAnchor: [0, -30] });
+      const oM = L.marker([o.lat, o.lng], { icon: oIcon }).addTo(map).bindPopup(`<b>From</b><br>${escapeHtml(o.label || "Start")}`);
+      const dM = L.marker([d.lat, d.lng], { icon: dIcon }).addTo(map).bindPopup(`<b>To</b><br>${escapeHtml(d.label || "Destination")}`);
 
-        let line;
-        const coords = resolved.route && Array.isArray(resolved.route.coordinates) ? resolved.route.coordinates : null;
-        if (coords && coords.length > 1) {
-          line = L.polyline(coords, { color: "#f59e0b", weight: 5, opacity: 0.9 }).addTo(map);
-        } else {
-          // No road geometry — show a dashed straight line so the journey is still visible.
-          line = L.polyline([[o.lat, o.lng], [d.lat, d.lng]], { color: "#94a3b8", weight: 3, opacity: 0.8, dashArray: "6 8" }).addTo(map);
-        }
-        try {
-          const grp = L.featureGroup([oM, dM, line]);
-          map.fitBounds(grp.getBounds().pad(0.2));
-        } catch (_) {}
-        setTimeout(() => { try { map.invalidateSize(); } catch (_) {} }, 200);
-      })
-      .catch(() => { /* map lib blocked — summary still renders */ });
+      let line;
+      const coords = resolved.route && Array.isArray(resolved.route.coordinates) ? resolved.route.coordinates : null;
+      if (coords && coords.length > 1) {
+        line = L.polyline(coords, { color: "#f59e0b", weight: 5, opacity: 0.9 }).addTo(map);
+      } else {
+        // No road geometry — show a dashed straight line so the journey is still visible.
+        line = L.polyline([[o.lat, o.lng], [d.lat, d.lng]], { color: "#94a3b8", weight: 3, opacity: 0.8, dashArray: "6 8" }).addTo(map);
+      }
+      try {
+        const grp = L.featureGroup([oM, dM, line]);
+        map.fitBounds(grp.getBounds().pad(0.2));
+      } catch (_) {}
+      setTimeout(() => { try { map.invalidateSize(); } catch (_) {} }, 200);
+    };
+
+    initMap().catch(() => { /* map lib blocked — summary still renders */ });
 
     return () => {
       disposed = true;
