@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Sparkles, Zap, LayoutTemplate, ChevronLeft, ArrowRight } from 'lucide-react';
+import { ChevronLeft, ArrowRight } from 'lucide-react';
 
 const SWIPE_THRESHOLD = 60; // px the user must drag to flip a card
 const BRAND = '#FF6D3F';    // Kautilya brand orange — matches logo, links, consent modal
@@ -29,7 +29,7 @@ export function OnboardingModal({ user }) {
     {
       key: 'welcome',
       eyebrow: `Hi ${firstName} 👋`,
-      icon: <Sparkles className="w-7 h-7" />,
+      image: '/images/onboarding/reasoning.png',
       title: 'Welcome to Kautilya AI',
       description:
         'Your strategic AI workspace. Swipe through a quick tour of what you can do — it takes 20 seconds.',
@@ -37,7 +37,7 @@ export function OnboardingModal({ user }) {
     {
       key: 'reasoning',
       eyebrow: 'Think with you',
-      icon: <Sparkles className="w-7 h-7" />,
+      image: '/images/onboarding/reasoning.png',
       title: 'Advanced AI Reasoning',
       description:
         'Powered by frontier models to break down complex strategic problems and assist you with high accuracy.',
@@ -45,7 +45,7 @@ export function OnboardingModal({ user }) {
     {
       key: 'canvas',
       eyebrow: 'Build & preview',
-      icon: <LayoutTemplate className="w-7 h-7" />,
+      image: '/images/onboarding/canvas.png',
       title: 'Interactive Canvas',
       description:
         'Generate, preview and edit React components, markdown docs and charts side-by-side with the chat.',
@@ -53,7 +53,7 @@ export function OnboardingModal({ user }) {
     {
       key: 'integrations',
       eyebrow: 'Live data',
-      icon: <Zap className="w-7 h-7" />,
+      image: '/images/onboarding/integrations.png',
       title: 'Live Integrations',
       description:
         'Search maps, analyse spreadsheets and pull live data straight into your conversations — no copy-paste.',
@@ -140,7 +140,7 @@ export function OnboardingModal({ user }) {
 
       {/* Modal shell */}
       <div
-        className={`relative w-full max-w-md bg-[#0f0f18] border border-[#2a2a3a] shadow-2xl rounded-3xl overflow-hidden transform transition-all duration-500 ${
+        className={`relative w-full max-w-[28rem] bg-[#0f0f18] border border-[#2a2a3a] shadow-2xl rounded-3xl overflow-hidden transform transition-all duration-500 ${
           animatingOut ? 'scale-95 translate-y-4' : 'scale-100 translate-y-0'
         }`}
       >
@@ -172,28 +172,17 @@ export function OnboardingModal({ user }) {
         >
           <div className="flex" style={trackStyle}>
             {slides.map((s) => (
-              <div key={s.key} className="min-w-full px-8 pt-12 pb-6">
+              <div key={s.key} className="min-w-full px-6 pt-8 pb-6">
                 <div className="flex flex-col items-center text-center">
-                  {/* Hero icon with brand glow */}
-                  <div className="relative mb-7">
-                    <div
-                      className="absolute inset-0 blur-2xl rounded-full scale-150"
-                      style={{ background: `${BRAND}33` }}
-                    />
-                    <div
-                      className="relative w-20 h-20 rounded-2xl flex items-center justify-center border"
-                      style={{
-                        color: BRAND,
-                        borderColor: `${BRAND}40`,
-                        background: `linear-gradient(135deg, ${BRAND}22, transparent)`,
-                      }}
-                    >
-                      {s.icon}
-                    </div>
+                  {/* Premium Image Card */}
+                  <div className="relative mb-6 w-full aspect-[16/10] rounded-2xl overflow-hidden shadow-2xl border border-[#2a2a3a]">
+                    <img src={s.image} alt={s.title} className="w-full h-full object-cover" />
+                    {/* Subtle bottom gradient to blend image into background */}
+                    <div className="absolute bottom-0 left-0 right-0 h-1/2 bg-gradient-to-t from-[#0f0f18] to-transparent pointer-events-none" />
                   </div>
 
                   <span
-                    className="text-xs font-semibold uppercase tracking-wider mb-3"
+                    className="text-xs font-semibold uppercase tracking-wider mb-2"
                     style={{ color: BRAND }}
                   >
                     {s.eyebrow}
@@ -201,7 +190,7 @@ export function OnboardingModal({ user }) {
                   <h2 className="text-2xl font-bold text-white tracking-tight mb-3 leading-snug">
                     {s.title}
                   </h2>
-                  <p className="text-gray-400 text-sm leading-relaxed max-w-xs">
+                  <p className="text-gray-400 text-sm leading-relaxed max-w-[260px]">
                     {s.description}
                   </p>
                 </div>

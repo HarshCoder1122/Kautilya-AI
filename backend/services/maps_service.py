@@ -47,39 +47,50 @@ def nearby(lat: float, lng: float, keyword: str, radius: int = 10000, limit: int
 
 
 def _osm_nearby(lat, lng, keyword, radius, limit):
-    # Use Nominatim for arbitrary text search (avoids Overpass timeout issues)
+    # Use Photon API (komoot) for POI search near a location. 
+    # It handles categorical searches (e.g. "restaurant") much better than Nominatim.
     try:
         r = requests.get(
-            "https://nominatim.openstreetmap.org/search",
-            params={"q": keyword, "format": "json", "limit": limit, "lat": lat, "lon": lng},
+            "https://photon.komoot.io/api/",
+            params={"q": keyword, "lat": lat, "lon": lng, "limit": 40}, # request more to filter by radius
             headers={"User-Agent": _UA},
             timeout=_HTTP_TIMEOUT,
         )
         if r.status_code == 200:
-            arr = r.json()
-            if not arr:
-                return [{"name": "Debug Empty", "address": f"Nominatim returned empty list. Query: {keyword}", "lat": lat, "lng": lng, "distance": 0, "category": "error"}]
+            features = r.json().get("features") or []
+            if not features:
+                return []
+            
             out = []
-            for top in arr:
-                plat, plng = _to_float(top.get("lat")), _to_float(top.get("lon"))
-                if plat is not None and plng is not None:
-                    dist = _haversine_m(lat, lng, plat, plng)
-                    out.append({
-                        "name": top.get("name") or top.get("display_name", "").split(",")[0],
-                        "address": top.get("display_name"),
-                        "lat": plat,
-                        "lng": plng,
-                        "distance": round(dist),
-                        "category": top.get("class") or ""
-                    })
+            for f in features:
+                p = f.get("properties") or {}
+                geom = f.get("geometry") or {}
+                coords = geom.get("coordinates") or []
+                if len(coords) >= 2:
+                    plng, plat = _to_float(coords[0]), _to_float(coords[1])
+                    if plat is not None and plng is not None:
+                        dist = _haversine_m(lat, lng, plat, plng)
+                        if dist <= radius:
+                            name = p.get("name") or p.get("street") or keyword
+                            parts = [p.get("street"), p.get("locality"), p.get("city")]
+                            address = ", ".join(str(x) for x in parts if x)
+                            out.append({
+                                "name": name,
+                                "address": address,
+                                "lat": plat,
+                                "lng": plng,
+                                "distance": round(dist),
+                                "category": p.get("osm_value") or p.get("osm_key") or ""
+                            })
             out.sort(key=lambda x: x["distance"])
-            print(f"[Maps] OSM nearby returned {len(out)} places for '{keyword}' via Nominatim")
+            print(f"[Maps] Photon nearby returned {len(out)} places for '{keyword}' within {radius}m")
             return out[:limit]
         else:
-            return [{"name": f"Error: {r.status_code}", "address": r.text[:100], "lat": lat, "lng": lng, "distance": 0, "category": "error"}]
+            print(f"[Maps] Photon error: {r.status_code} {r.text[:100]}")
+            return []
     except Exception as e:
-        print(f"[Maps] Nominatim nearby exception: {e}")
-        return [{"name": "Exception", "address": str(e), "lat": lat, "lng": lng, "distance": 0, "category": "error"}]
+        print(f"[Maps] Photon nearby exception: {e}")
+        return []
 
 
 def _haversine_m(lat1, lng1, lat2, lng2):

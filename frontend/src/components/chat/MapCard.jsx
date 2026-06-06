@@ -202,7 +202,7 @@ export function MapCard({ keyword = "places", radius = 3000, map_id }) {
       // Mappls raster road maps return 412 (Product Not Enabled) on this plan,
       // so we use OpenStreetMap tiles for the UI, but the search data remains Mappls.
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19, attribution: "&copy; OpenStreetMap | Places by Mappls",
+        maxZoom: 19, attribution: "&copy; OpenStreetMap",
       }).addTo(map);
       mapRef.current = map;
 
@@ -332,7 +332,7 @@ export function MapCard({ keyword = "places", radius = 3000, map_id }) {
             </span>
             <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/50">
               <NavigationArrow weight="duotone" className="w-3 h-3" />
-              {source === "mappls" ? "Mappls" : "OpenStreetMap"}
+              OpenStreetMap
             </span>
           </div>
         </>

@@ -139,7 +139,7 @@ export function RouteCard({ origin = "", destination = "", map_id }) {
       // Mappls raster road maps return 412 (Product Not Enabled) on this plan,
       // so we use OpenStreetMap tiles for the UI, but the search data remains Mappls.
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19, attribution: "&copy; OpenStreetMap | Routes by Mappls",
+        maxZoom: 19, attribution: "&copy; OpenStreetMap",
       }).addTo(map);
       mapRef.current = map;
 
