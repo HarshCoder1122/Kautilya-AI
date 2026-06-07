@@ -16,86 +16,15 @@
 import { useEffect, useRef, useState } from "react";
 import { MapPin, NavigationArrow, Spinner, MapTrifold } from "@phosphor-icons/react";
 import { mapsAPI } from "../../lib/api";
-
-const LEAFLET_JS = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js";
-const LEAFLET_CSS = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css";
-
-let _leafletPromise = null;
-export function loadLeaflet() {
-  if (typeof window !== "undefined" && window.L) return Promise.resolve(window.L);
-  if (_leafletPromise) return _leafletPromise;
-  _leafletPromise = new Promise((resolve, reject) => {
-    try {
-      if (!document.querySelector("link[data-leaflet]")) {
-        const link = document.createElement("link");
-        link.rel = "stylesheet";
-        link.href = LEAFLET_CSS;
-        link.setAttribute("data-leaflet", "1");
-        document.head.appendChild(link);
-      }
-      const existing = document.querySelector("script[data-leaflet]");
-      if (existing) {
-        existing.addEventListener("load", () => resolve(window.L));
-        existing.addEventListener("error", reject);
-        if (window.L) resolve(window.L);
-        return;
-      }
-      const s = document.createElement("script");
-      s.src = LEAFLET_JS;
-      s.async = true;
-      s.setAttribute("data-leaflet", "1");
-      s.onload = () => resolve(window.L);
-      s.onerror = () => reject(new Error("leaflet load failed"));
-      document.body.appendChild(s);
-    } catch (e) {
-      reject(e);
-    }
-  });
-  return _leafletPromise;
-}
+import { Map, MapMarker, MarkerContent, MapPopup, MapControls, MapRoute } from "@/components/ui/map";
 
 export function fmtDist(m) {
   if (m == null || isNaN(m)) return "";
   return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`;
 }
 
-export function escapeHtml(s) {
-  return String(s || "").replace(/[&<>"']/g, (c) => (
-    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
-  ));
-}
-
-function userPinHtml() {
-  return `<div style="width:18px;height:18px;border-radius:50%;background:#2563eb;border:3px solid #fff;box-shadow:0 0 0 2px rgba(37,99,235,.45);"></div>`;
-}
-
-function placePinHtml(n) {
-  return `<div style="position:relative;width:26px;height:34px;">
-    <svg width="26" height="34" viewBox="0 0 26 34" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M13 0C5.82 0 0 5.82 0 13c0 9.25 13 21 13 21s13-11.75 13-21C26 5.82 20.18 0 13 0z" fill="#e11d48"/>
-      <circle cx="13" cy="13" r="9" fill="#fff"/>
-    </svg>
-    <span style="position:absolute;top:3px;left:0;width:26px;text-align:center;font:700 12px system-ui;color:#e11d48;">${n}</span>
-  </div>`;
-}
-
-function placePopupHtml(p) {
-  const dist = fmtDist(p.distance);
-  const dir = `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}`;
-  return `<div style="min-width:160px;font:13px system-ui;line-height:1.35;">
-    <div style="font-weight:700;margin-bottom:2px;">${escapeHtml(p.name)}</div>
-    ${p.address ? `<div style="color:#666;font-size:11px;margin-bottom:4px;">${escapeHtml(p.address)}</div>` : ""}
-    ${dist ? `<div style="color:#e11d48;font-size:11px;font-weight:600;margin-bottom:4px;">${dist} away</div>` : ""}
-    <a href="${dir}" target="_blank" rel="noopener noreferrer" style="color:#2563eb;font-size:12px;font-weight:600;">Directions &#8599;</a>
-  </div>`;
-}
-
 export function MapCard({ keyword = "places", radius = 3000, map_id }) {
-  const mapElRef = useRef(null);
   const mapRef = useRef(null);
-  const markersRef = useRef([]);
-  const routeRef = useRef(null);
-  const LRef = useRef(null);
   const userRef = useRef(null); // {lat,lng,label,source}
 
   const [status, setStatus] = useState("locating"); // locating | loading | ready | error
@@ -103,10 +32,10 @@ export function MapCard({ keyword = "places", radius = 3000, map_id }) {
   const [errMsg, setErrMsg] = useState("");
   const [activeIdx, setActiveIdx] = useState(-1);
   const [source, setSource] = useState("");
+  
+  const [viewport, setViewport] = useState(null);
+  const [routeCoordinates, setRouteCoordinates] = useState(null);
 
-  // Step 1 — restore saved results if this chat was reopened (no popup);
-  // otherwise ask for precise location (permission popup) and fetch nearby,
-  // then persist the result so the next reopen restores it verbatim.
   useEffect(() => {
     let cancelled = false;
 
@@ -134,6 +63,7 @@ export function MapCard({ keyword = "places", radius = 3000, map_id }) {
         userRef.current = data.userLocation;
         setSource(data.source || "");
         setPlaces(Array.isArray(data.places) ? data.places : []);
+        setViewport({ center: [data.userLocation.lng, data.userLocation.lat], zoom: 15 });
         setStatus("ready");
         persist(data);
       } catch (e) {
@@ -163,6 +93,7 @@ export function MapCard({ keyword = "places", radius = 3000, map_id }) {
             userRef.current = saved.userLocation;
             setSource(saved.source || "");
             setPlaces(saved.places);
+            setViewport({ center: [saved.userLocation.lng, saved.userLocation.lat], zoom: 15 });
             setStatus("ready");
           } else {
             goLive();
@@ -176,87 +107,48 @@ export function MapCard({ keyword = "places", radius = 3000, map_id }) {
     return () => { cancelled = true; };
   }, [keyword, radius, map_id]);
 
-  // Step 2 — render the Leaflet map once we have a location.
   useEffect(() => {
-    if (status !== "ready" || !userRef.current) return;
-    let disposed = false;
-
-    const initMap = async () => {
-      // Fetch Mappls config for tile key
-      let mapConfig = null;
-      try {
-        mapConfig = await mapsAPI.getConfig();
-      } catch (_) {}
-
-      const L = await loadLeaflet();
-      if (disposed || !mapElRef.current) return;
-      LRef.current = L;
-      const u = userRef.current;
-
-      if (mapRef.current) { try { mapRef.current.remove(); } catch (_) {} mapRef.current = null; }
-      const map = L.map(mapElRef.current, {
-        zoomControl: true, attributionControl: true, scrollWheelZoom: false,
-      }).setView([u.lat, u.lng], 15);
-
-      // Use Mappls raster tiles when SDK key is available, otherwise fall back
-      // Mappls raster road maps return 412 (Product Not Enabled) on this plan,
-      // so we use OpenStreetMap tiles for the UI, but the search data remains Mappls.
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19, attribution: "&copy; OpenStreetMap",
-      }).addTo(map);
-      mapRef.current = map;
-
-      const userIcon = L.divIcon({ className: "", html: userPinHtml(), iconSize: [18, 18], iconAnchor: [9, 9] });
-      L.marker([u.lat, u.lng], { icon: userIcon, zIndexOffset: 1000 }).addTo(map).bindPopup("You are here");
-
-      markersRef.current = [];
-      places.forEach((p, i) => {
-        const icon = L.divIcon({ className: "", html: placePinHtml(i + 1), iconSize: [26, 34], iconAnchor: [13, 34], popupAnchor: [0, -30] });
-        const mk = L.marker([p.lat, p.lng], { icon }).addTo(map).bindPopup(placePopupHtml(p));
-        mk.on("click", () => setActiveIdx(i));
-        markersRef.current.push(mk);
-      });
-
-      if (places.length) {
-        try {
-          const grp = L.featureGroup([L.marker([u.lat, u.lng]), ...markersRef.current]);
-          map.fitBounds(grp.getBounds().pad(0.2));
-        } catch (_) {}
-      }
-      // Card mounts inside an animated flex container — nudge Leaflet to
-      // recompute its size so tiles aren't clipped/grey.
-      setTimeout(() => { try { map.invalidateSize(); } catch (_) {} }, 200);
-    };
-
-    initMap().catch(() => { /* map lib blocked/failed — the list below still works */ });
-
-    return () => {
-      disposed = true;
-      if (mapRef.current) { try { mapRef.current.remove(); } catch (_) {} mapRef.current = null; }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     if (status !== "ready" || !userRef.current || !mapRef.current) return;
+     if (places.length > 0) {
+       import("maplibre-gl").then((maplibre) => {
+         try {
+           const bounds = new maplibre.LngLatBounds();
+           bounds.extend([userRef.current.lng, userRef.current.lat]);
+           places.forEach(p => bounds.extend([p.lng, p.lat]));
+           mapRef.current.fitBounds(bounds, { padding: 40 });
+         } catch (_) {}
+       });
+     }
   }, [status, places]);
 
   const focusPlace = async (i) => {
     setActiveIdx(i);
     const p = places[i];
     const map = mapRef.current;
-    const L = LRef.current;
     const u = userRef.current;
     if (!p) return;
-    if (map && L) {
-      map.setView([p.lat, p.lng], 16);
-      const mk = markersRef.current[i];
-      if (mk) mk.openPopup();
+    
+    if (map) {
+      map.flyTo({ center: [p.lng, p.lat], zoom: 16 });
+      
       if (u) {
         try {
           const route = await mapsAPI.directions({ from: [u.lat, u.lng], to: [p.lat, p.lng] });
-          if (routeRef.current) { try { map.removeLayer(routeRef.current); } catch (_) {} routeRef.current = null; }
           if (route && Array.isArray(route.coordinates) && route.coordinates.length > 1) {
-            routeRef.current = L.polyline(route.coordinates, { color: "#f59e0b", weight: 5, opacity: 0.85 }).addTo(map);
-            map.fitBounds(routeRef.current.getBounds().pad(0.25));
+             const geojsonCoords = route.coordinates.map(c => [c[1], c[0]]);
+             setRouteCoordinates(geojsonCoords);
+             
+             import("maplibre-gl").then((maplibre) => {
+               try {
+                 const bounds = new maplibre.LngLatBounds();
+                 geojsonCoords.forEach(c => bounds.extend(c));
+                 map.fitBounds(bounds, { padding: 50 });
+               } catch (_) {}
+             });
+          } else {
+             setRouteCoordinates(null);
           }
-        } catch (_) { /* routing best-effort */ }
+        } catch (_) { setRouteCoordinates(null); }
       }
     }
   };
@@ -275,7 +167,6 @@ export function MapCard({ keyword = "places", radius = 3000, map_id }) {
         )}
       </div>
 
-      {/* Loading / error states */}
       {(status === "locating" || status === "loading") && (
         <div className="flex items-center gap-2 px-4 py-8 text-sm text-muted-foreground">
           <Spinner weight="bold" className="w-4 h-4 animate-spin text-[var(--k-brand)]" />
@@ -289,15 +180,67 @@ export function MapCard({ keyword = "places", radius = 3000, map_id }) {
         </div>
       )}
 
-      {/* Map + list */}
-      {status === "ready" && (
+      {status === "ready" && viewport && (
         <>
-          <div
-            ref={mapElRef}
-            className="w-full h-72 bg-[var(--k-surface-elevated)]"
-            style={{ minHeight: "18rem" }}
-            data-testid="map-canvas"
-          />
+          <div className="w-full h-72 bg-[var(--k-surface-elevated)] relative" style={{ minHeight: "18rem" }}>
+            <Map 
+              ref={mapRef}
+              viewport={viewport} 
+              onViewportChange={setViewport}
+            >
+               <MapControls />
+               
+               <MapMarker longitude={userRef.current.lng} latitude={userRef.current.lat} onClick={() => setActiveIdx(-2)}>
+                  <MarkerContent>
+                    <div style={{width: 18, height: 18, borderRadius: "50%", background: "#2563eb", border: "3px solid #fff", boxShadow: "0 0 0 2px rgba(37,99,235,.45)"}} />
+                  </MarkerContent>
+               </MapMarker>
+               {activeIdx === -2 && (
+                 <MapPopup 
+                    longitude={userRef.current.lng} 
+                    latitude={userRef.current.lat}
+                    closeButton={true}
+                    onClose={() => setActiveIdx(-1)}
+                 >
+                    <div className="font-semibold text-sm">You are here</div>
+                 </MapPopup>
+               )}
+               
+               {places.map((p, i) => (
+                  <MapMarker key={i} longitude={p.lng} latitude={p.lat} onClick={() => focusPlace(i)}>
+                    <MarkerContent>
+                      <div style={{position: "relative", width: 26, height: 34}}>
+                        <svg width="26" height="34" viewBox="0 0 26 34" fill="none" xmlns="http://www.w3.org/2000/svg">
+                          <path d="M13 0C5.82 0 0 5.82 0 13c0 9.25 13 21 13 21s13-11.75 13-21C26 5.82 20.18 0 13 0z" fill="#e11d48"/>
+                          <circle cx="13" cy="13" r="9" fill="#fff"/>
+                        </svg>
+                        <span style={{position: "absolute", top: 3, left: 0, width: 26, textAlign: "center", font: "700 12px system-ui", color: "#e11d48"}}>{i + 1}</span>
+                      </div>
+                    </MarkerContent>
+                  </MapMarker>
+               ))}
+               
+               {activeIdx >= 0 && places[activeIdx] && (
+                 <MapPopup 
+                    longitude={places[activeIdx].lng} 
+                    latitude={places[activeIdx].lat}
+                    closeButton={true}
+                    onClose={() => setActiveIdx(-1)}
+                 >
+                    <div style={{minWidth: 160, font: "13px system-ui", lineHeight: 1.35}}>
+                      <div style={{fontWeight: 700, marginBottom: 2}}>{places[activeIdx].name}</div>
+                      {places[activeIdx].address && <div style={{color: "#666", fontSize: 11, marginBottom: 4}}>{places[activeIdx].address}</div>}
+                      <div style={{color: "#e11d48", fontSize: 11, fontWeight: 600, marginBottom: 4}}>{fmtDist(places[activeIdx].distance)} away</div>
+                      <a href={`https://www.google.com/maps/dir/?api=1&destination=${places[activeIdx].lat},${places[activeIdx].lng}`} target="_blank" rel="noopener noreferrer" style={{color: "#2563eb", fontSize: 12, fontWeight: 600}}>Directions &#8599;</a>
+                    </div>
+                 </MapPopup>
+               )}
+               
+               {routeCoordinates && (
+                 <MapRoute coordinates={routeCoordinates} color="#f59e0b" width={5} opacity={0.85} />
+               )}
+            </Map>
+          </div>
           {places.length === 0 ? (
             <div className="px-4 py-4 text-sm text-muted-foreground">
               No {keyword} found. Try a different search term.
@@ -332,7 +275,7 @@ export function MapCard({ keyword = "places", radius = 3000, map_id }) {
             </span>
             <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/50">
               <NavigationArrow weight="duotone" className="w-3 h-3" />
-              OpenStreetMap
+              mapcn (MapLibre)
             </span>
           </div>
         </>

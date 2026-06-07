@@ -1,15 +1,8 @@
-/**
- * In-chat journey / route card.
- *
- * Triggered by [ROUTE_PLAN: origin | destination] (origin omitted → user's live
- * location). The backend geocodes both ends + computes the driving route; this
- * card draws origin/destination markers + the route polyline with distance/ETA.
- * Results persist to Firestore (map_id) so reopening the chat restores them.
- */
 import { useEffect, useRef, useState } from "react";
 import { NavigationArrow, MapPin, Spinner, FlagCheckered } from "@phosphor-icons/react";
 import { mapsAPI } from "../../lib/api";
-import { loadLeaflet, fmtDist, escapeHtml } from "./MapCard";
+import { fmtDist } from "./MapCard";
+import { Map, MapMarker, MarkerContent, MarkerPopup, MapControls, MapRoute } from "@/components/ui/map";
 
 function fmtEta(s) {
   if (s == null || isNaN(s)) return "";
@@ -20,26 +13,15 @@ function fmtEta(s) {
   return m ? `${h} h ${m} min` : `${h} h`;
 }
 
-function endpointPinHtml(letter, color) {
-  return `<div style="position:relative;width:26px;height:34px;">
-    <svg width="26" height="34" viewBox="0 0 26 34" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M13 0C5.82 0 0 5.82 0 13c0 9.25 13 21 13 21s13-11.75 13-21C26 5.82 20.18 0 13 0z" fill="${color}"/>
-      <circle cx="13" cy="13" r="9" fill="#fff"/>
-    </svg>
-    <span style="position:absolute;top:3px;left:0;width:26px;text-align:center;font:700 12px system-ui;color:${color};">${letter}</span>
-  </div>`;
-}
-
 export function RouteCard({ origin = "", destination = "", map_id }) {
-  const mapElRef = useRef(null);
   const mapRef = useRef(null);
-  const LRef = useRef(null);
 
   const [status, setStatus] = useState("locating"); // locating | loading | ready | error
   const [errMsg, setErrMsg] = useState("");
   const [resolved, setResolved] = useState(null); // {origin, destination, route}
+  
+  const [viewport, setViewport] = useState(null);
 
-  // Step 1 — restore saved route, else geocode + compute (live).
   useEffect(() => {
     let cancelled = false;
 
@@ -66,6 +48,7 @@ export function RouteCard({ origin = "", destination = "", map_id }) {
           return;
         }
         setResolved(data);
+        setViewport({ center: [data.origin.lng, data.origin.lat], zoom: 12 });
         setStatus("ready");
         persist(data);
       } catch (e) {
@@ -76,8 +59,6 @@ export function RouteCard({ origin = "", destination = "", map_id }) {
     };
 
     const goLive = () => {
-      // Named origin → backend geocodes it (no GPS needed). Empty origin →
-      // start from the user's live location (permission popup).
       if (origin) {
         callRoute(undefined);
         return;
@@ -85,7 +66,7 @@ export function RouteCard({ origin = "", destination = "", map_id }) {
       if (typeof navigator !== "undefined" && navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
           (pos) => callRoute([pos.coords.latitude, pos.coords.longitude]),
-          () => callRoute(undefined), // denied → backend IP fallback (from=none)
+          () => callRoute(undefined),
           { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
         );
       } else {
@@ -99,6 +80,7 @@ export function RouteCard({ origin = "", destination = "", map_id }) {
           if (cancelled) return;
           if (saved && saved.found && saved.origin && saved.destination) {
             setResolved({ origin: saved.origin, destination: saved.destination, route: saved.route || null });
+            setViewport({ center: [saved.origin.lng, saved.origin.lat], zoom: 12 });
             setStatus("ready");
           } else {
             goLive();
@@ -110,71 +92,41 @@ export function RouteCard({ origin = "", destination = "", map_id }) {
     }
 
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [origin, destination, map_id]);
 
-  // Step 2 — draw the map.
   useEffect(() => {
-    if (status !== "ready" || !resolved || !resolved.origin || !resolved.destination) return;
-    let disposed = false;
-
-    const initMap = async () => {
-      // Fetch Mappls config for tile key
-      let mapConfig = null;
+    if (status !== "ready" || !resolved || !resolved.origin || !resolved.destination || !mapRef.current) return;
+    import("maplibre-gl").then((maplibre) => {
       try {
-        mapConfig = await mapsAPI.getConfig();
+        const bounds = new maplibre.LngLatBounds();
+        bounds.extend([resolved.origin.lng, resolved.origin.lat]);
+        bounds.extend([resolved.destination.lng, resolved.destination.lat]);
+        
+        if (resolved.route && Array.isArray(resolved.route.coordinates) && resolved.route.coordinates.length > 0) {
+          const coords = resolved.route.coordinates.map(c => [c[1], c[0]]);
+          coords.forEach(c => bounds.extend(c));
+        }
+        
+        mapRef.current.fitBounds(bounds, { padding: 40 });
       } catch (_) {}
-
-      const L = await loadLeaflet();
-      if (disposed || !mapElRef.current) return;
-      LRef.current = L;
-      const o = resolved.origin, d = resolved.destination;
-
-      if (mapRef.current) { try { mapRef.current.remove(); } catch (_) {} mapRef.current = null; }
-      const map = L.map(mapElRef.current, {
-        zoomControl: true, attributionControl: true, scrollWheelZoom: false,
-      }).setView([o.lat, o.lng], 12);
-
-      // Mappls serves only SATELLITE raster XYZ tiles (`bhuvan_imagery`) on this
-      // Mappls raster road maps return 412 (Product Not Enabled) on this plan,
-      // so we use OpenStreetMap tiles for the UI, but the search data remains Mappls.
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19, attribution: "&copy; OpenStreetMap",
-      }).addTo(map);
-      mapRef.current = map;
-
-      const oIcon = L.divIcon({ className: "", html: endpointPinHtml("A", "#16a34a"), iconSize: [26, 34], iconAnchor: [13, 34], popupAnchor: [0, -30] });
-      const dIcon = L.divIcon({ className: "", html: endpointPinHtml("B", "#e11d48"), iconSize: [26, 34], iconAnchor: [13, 34], popupAnchor: [0, -30] });
-      const oM = L.marker([o.lat, o.lng], { icon: oIcon }).addTo(map).bindPopup(`<b>From</b><br>${escapeHtml(o.label || "Start")}`);
-      const dM = L.marker([d.lat, d.lng], { icon: dIcon }).addTo(map).bindPopup(`<b>To</b><br>${escapeHtml(d.label || "Destination")}`);
-
-      let line;
-      const coords = resolved.route && Array.isArray(resolved.route.coordinates) ? resolved.route.coordinates : null;
-      if (coords && coords.length > 1) {
-        line = L.polyline(coords, { color: "#f59e0b", weight: 5, opacity: 0.9 }).addTo(map);
-      } else {
-        // No road geometry — show a dashed straight line so the journey is still visible.
-        line = L.polyline([[o.lat, o.lng], [d.lat, d.lng]], { color: "#94a3b8", weight: 3, opacity: 0.8, dashArray: "6 8" }).addTo(map);
-      }
-      try {
-        const grp = L.featureGroup([oM, dM, line]);
-        map.fitBounds(grp.getBounds().pad(0.2));
-      } catch (_) {}
-      setTimeout(() => { try { map.invalidateSize(); } catch (_) {} }, 200);
-    };
-
-    initMap().catch(() => { /* map lib blocked — summary still renders */ });
-
-    return () => {
-      disposed = true;
-      if (mapRef.current) { try { mapRef.current.remove(); } catch (_) {} mapRef.current = null; }
-    };
+    });
   }, [status, resolved]);
 
   const route = resolved && resolved.route;
   const dist = route && fmtDist(route.distance_m);
   const eta = route && fmtEta(route.duration_s);
   const destLabel = (resolved && resolved.destination && resolved.destination.label) || destination || "destination";
+
+  let routeCoords = null;
+  if (route && Array.isArray(route.coordinates) && route.coordinates.length > 1) {
+    routeCoords = route.coordinates.map(c => [c[1], c[0]]);
+  } else if (resolved && resolved.origin && resolved.destination) {
+    // straight line fallback
+    routeCoords = [
+      [resolved.origin.lng, resolved.origin.lat],
+      [resolved.destination.lng, resolved.destination.lat]
+    ];
+  }
 
   return (
     <div className="rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] overflow-hidden w-full max-w-full min-w-0">
@@ -198,9 +150,64 @@ export function RouteCard({ origin = "", destination = "", map_id }) {
         </div>
       )}
 
-      {status === "ready" && resolved && (
+      {status === "ready" && resolved && viewport && (
         <>
-          <div ref={mapElRef} className="w-full h-72 bg-[var(--k-surface-elevated)]" style={{ minHeight: "18rem" }} data-testid="route-canvas" />
+          <div className="w-full h-72 bg-[var(--k-surface-elevated)] relative" style={{ minHeight: "18rem" }}>
+            <Map 
+              ref={mapRef}
+              viewport={viewport} 
+              onViewportChange={setViewport}
+            >
+               <MapControls />
+               
+               {/* Origin Marker */}
+               <MapMarker longitude={resolved.origin.lng} latitude={resolved.origin.lat}>
+                  <MarkerContent>
+                    <div style={{position: "relative", width: 26, height: 34}}>
+                      <svg width="26" height="34" viewBox="0 0 26 34" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M13 0C5.82 0 0 5.82 0 13c0 9.25 13 21 13 21s13-11.75 13-21C26 5.82 20.18 0 13 0z" fill="#16a34a"/>
+                        <circle cx="13" cy="13" r="9" fill="#fff"/>
+                      </svg>
+                      <span style={{position: "absolute", top: 3, left: 0, width: 26, textAlign: "center", font: "700 12px system-ui", color: "#16a34a"}}>A</span>
+                    </div>
+                  </MarkerContent>
+                  <MarkerPopup>
+                     <div>
+                       <b>From</b><br/>{resolved.origin.label || "Start"}
+                     </div>
+                  </MarkerPopup>
+               </MapMarker>
+               
+               {/* Destination Marker */}
+               <MapMarker longitude={resolved.destination.lng} latitude={resolved.destination.lat}>
+                  <MarkerContent>
+                    <div style={{position: "relative", width: 26, height: 34}}>
+                      <svg width="26" height="34" viewBox="0 0 26 34" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M13 0C5.82 0 0 5.82 0 13c0 9.25 13 21 13 21s13-11.75 13-21C26 5.82 20.18 0 13 0z" fill="#e11d48"/>
+                        <circle cx="13" cy="13" r="9" fill="#fff"/>
+                      </svg>
+                      <span style={{position: "absolute", top: 3, left: 0, width: 26, textAlign: "center", font: "700 12px system-ui", color: "#e11d48"}}>B</span>
+                    </div>
+                  </MarkerContent>
+                  <MarkerPopup>
+                     <div>
+                       <b>To</b><br/>{resolved.destination.label || "Destination"}
+                     </div>
+                  </MarkerPopup>
+               </MapMarker>
+               
+               {/* Route Line */}
+               {routeCoords && (
+                 <MapRoute 
+                    coordinates={routeCoords} 
+                    color={route ? "#f59e0b" : "#94a3b8"} 
+                    width={route ? 5 : 3} 
+                    opacity={0.9} 
+                    dashArray={route ? undefined : [6, 8]}
+                 />
+               )}
+            </Map>
+          </div>
           <div className="px-4 py-2.5 space-y-1.5">
             <div className="flex items-center gap-2 text-[13px]">
               <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-emerald-600 text-white text-[10px] font-bold shrink-0">A</span>
