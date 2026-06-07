@@ -1,6 +1,12 @@
 "use client";;
 import MapLibreGL from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+
+// Fix Webpack 5 minification bug ("o is not defined" in web worker) by using the pre-built CSP worker
+if (typeof window !== "undefined" && MapLibreGL.setWorkerUrl) {
+  MapLibreGL.setWorkerUrl("https://unpkg.com/maplibre-gl@5.16.0/dist/maplibre-gl-csp-worker.js");
+}
+
 import {
   createContext,
   forwardRef,
@@ -18,9 +24,34 @@ import { X, Minus, Plus, Locate, Maximize, Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
+const osmRasterStyle = {
+  version: 8,
+  sources: {
+    osm: {
+      type: "raster",
+      tiles: [
+        "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        "https://b.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        "https://c.tile.openstreetmap.org/{z}/{x}/{y}.png"
+      ],
+      tileSize: 256,
+      attribution: "&copy; OpenStreetMap Contributors"
+    }
+  },
+  layers: [
+    {
+      id: "osm-layer",
+      type: "raster",
+      source: "osm",
+      minzoom: 0,
+      maxzoom: 19
+    }
+  ]
+};
+
 const defaultStyles = {
-  dark: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
-  light: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+  dark: osmRasterStyle,
+  light: osmRasterStyle,
 };
 
 // Check document class for theme (works with next-themes, etc.)
