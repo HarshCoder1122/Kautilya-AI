@@ -1,11 +1,15 @@
 """
-Kautilya AI — Maps Service (OpenStreetMap)
+Kautilya AI — Maps Service (OpenStreetMap + Mappls API)
 
 Powers the in-chat map card: nearby-place search, geocoding, and routing.
-Uses free OpenStreetMap services (Nominatim / OSRM).
+Uses official Mappls APIs when credentials are provided in the environment. 
+Gracefully falls back to free OpenStreetMap services (Nominatim / OSRM).
 """
 import requests
 import math
+import os
+
+from services import mappls_client
 
 _HTTP_TIMEOUT = (4, 12)
 _UA = "KautilyaAI/1.0 (+https://ai.revealiq.in)"
@@ -38,9 +42,14 @@ def ip_location(ip: str):
 
 def nearby(lat: float, lng: float, keyword: str, radius: int = 10000, limit: int = 20):
     """Nearby POIs for `keyword` around (lat,lng).
-    Returns {"places": [...], "source": "osm"}."""
+    Returns {"places": [...], "source": "mappls" | "osm"}."""
     keyword = (keyword or "restaurant").strip() or "restaurant"
     radius = max(250, min(int(radius or 10000), 50000))
+
+    if mappls_client.is_configured():
+        places = mappls_client.nearby(lat, lng, keyword, radius, limit)
+        if places is not None:
+            return {"places": places, "source": "mappls"}
 
     places = _osm_nearby(lat, lng, keyword, radius, limit)
     return {"places": places, "source": "osm"}
@@ -103,10 +112,16 @@ def _haversine_m(lat1, lng1, lat2, lng2):
 
 
 def geocode(text: str):
-    """{lat, lng, label} for a place/area name. Uses Nominatim."""
+    """{lat, lng, label} for a place/area name. Uses Mappls or Nominatim."""
     text = (text or "").strip()
     if not text:
         return None
+        
+    if mappls_client.is_configured():
+        res = mappls_client.geocode(text)
+        if res is not None:
+            return res
+            
     try:
         r = requests.get(
             "https://nominatim.openstreetmap.org/search",
@@ -127,8 +142,14 @@ def geocode(text: str):
 
 
 def directions(from_lat, from_lng, to_lat, to_lng):
-    """Driving route between two points. Uses OSRM.
+    """Driving route between two points. Uses Mappls or OSRM.
     Returns {coordinates: [[lat,lng], ...], distance_m, duration_s} or None."""
+    
+    if mappls_client.is_configured() or os.environ.get("MAPPLS_REST_KEY"):
+        res = mappls_client.directions(from_lat, from_lng, to_lat, to_lng)
+        if res is not None:
+            return res
+
     try:
         url = f"https://router.project-osrm.org/route/v1/driving/{from_lng},{from_lat};{to_lng},{to_lat}"
         r = requests.get(url, params={"geometries": "geojson", "overview": "full"},

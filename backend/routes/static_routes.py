@@ -114,19 +114,24 @@ def system_status():
 
 @static_bp.route('/health')
 def health_check_simple():
-    """Health check endpoint for Render (text)."""
+    """Health check endpoint for Render (text). (A second JSON view was
+    registered on this same rule before — Flask only ever matched this one,
+    so the duplicate was removed; detailed status lives at /api/health/llm.)"""
     return "OK", 200
 
 
-@static_bp.route('/health', methods=['GET'])
-def health_check():
-    """Detailed health check endpoint for Render (JSON)."""
-    from config import GROQ_API_KEYS
-    return jsonify({
-        "status": "healthy",
-        "service": "KAUTILYA AI",
-        "llm_groq": len(GROQ_API_KEYS) > 0,
-    })
+@static_bp.route('/api/health/llm', methods=['GET'])
+def llm_health():
+    """Live self-healing model-mesh status: per-model circuit-breaker state,
+    consecutive failures, cooldowns, last latency and last error."""
+    from config import GROQ_API_KEYS, NVIDIA_API_KEYS
+    from services.llm_service import llm_health_snapshot
+    snap = llm_health_snapshot()
+    snap["providers"] = {
+        "nvidia_keys_configured": len(NVIDIA_API_KEYS),
+        "groq_keys_configured": len(GROQ_API_KEYS),
+    }
+    return jsonify(snap)
 
 
 @static_bp.route('/analytics/trends', methods=['GET'])

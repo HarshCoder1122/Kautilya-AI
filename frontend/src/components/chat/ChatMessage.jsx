@@ -951,6 +951,35 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
         </div>
       )}
 
+      {/* Truth Lens — cross-model verification badge */}
+      {!isLiveStreaming && message.truthLens && (
+        <div className="mt-3" data-testid="truth-lens">
+          {message.truthLens.verdict === 'verified' ? (
+            <span
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-emerald-500/25 bg-emerald-500/10 text-emerald-500 text-[10px] font-bold tracking-wide uppercase"
+              title={`A second, independent AI model cross-examined this answer and found no factual errors (confidence ${message.truthLens.confidence}%).`}
+            >
+              <Check className="w-3 h-3" weight="bold" />
+              Cross-model verified
+            </span>
+          ) : (
+            <div className="inline-flex flex-col gap-1 px-3 py-2 rounded-lg border border-amber-500/25 bg-amber-500/10">
+              <span className="inline-flex items-center gap-1.5 text-amber-500 text-[10px] font-bold tracking-wide uppercase">
+                <Brain className="w-3 h-3" weight="bold" />
+                Verify independently
+              </span>
+              {(message.truthLens.flags || []).length > 0 && (
+                <ul className="text-[11px] text-muted-foreground space-y-0.5">
+                  {message.truthLens.flags.map((f, i) => (
+                    <li key={i}>• {f}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Citations */}
       {allCitations.length > 0 && (
         <div className="mt-6 space-y-2" data-testid="citations-panel">

@@ -10,12 +10,20 @@ The frontend MapCard requests the browser's precise location (permission
 popup) and passes lat/lng here. If the user denies it, we fall back to coarse
 IP geolocation so the map still shows something useful.
 """
+import re
+
 from flask import Blueprint, request, jsonify
 
 from services import maps_service
 from middleware.security import get_real_client_ip
 
 maps_bp = Blueprint('maps', __name__)
+
+# map_id is minted server-side as uuid4().hex[:20] (see agent_loop_service
+# _runner_map_search / _runner_route_plan). Validating the shape on the
+# unauthenticated save/read endpoints stops arbitrary Firestore doc paths and
+# spray-write cost abuse from anonymous callers.
+_MAP_ID_RE = re.compile(r'^[a-f0-9]{8,40}$')
 
 
 def _f(v):
@@ -32,21 +40,6 @@ def maps_config():
         "sdk_key": "",
         "provider": "osm",
     })
-
-@maps_bp.route('/maps/test-nominatim', methods=['GET'])
-def test_nominatim():
-    import requests
-    try:
-        r = requests.get(
-            "https://nominatim.openstreetmap.org/search",
-            params={"q": "GIP Mall Noida", "format": "json", "limit": 2},
-            headers={"User-Agent": "KautilyaAI/1.0 (+https://ai.revealiq.in)"},
-            timeout=5,
-        )
-        return jsonify({"status_code": r.status_code, "text": r.text})
-    except Exception as e:
-        return jsonify({"error": str(e)})
-
 
 @maps_bp.route('/maps/nearby', methods=['GET'])
 def maps_nearby():
@@ -94,9 +87,9 @@ def maps_save():
     if not db:
         return jsonify({"ok": False}), 200
     body = request.get_json(silent=True) or {}
-    map_id = (body.get('map_id') or '').strip()
-    if not map_id:
-        return jsonify({"ok": False, "error": "map_id required"}), 400
+    map_id = (body.get('map_id') or '').strip().lower()
+    if not _MAP_ID_RE.match(map_id):
+        return jsonify({"ok": False, "error": "invalid map_id"}), 400
     places = body.get('places') or []
     if isinstance(places, list):
         places = places[:30]  # bound Firestore doc size
@@ -134,6 +127,8 @@ def maps_result(map_id):
     """Return previously-saved results for a map card, or {found:false}."""
     from extensions import db
     if not db:
+        return jsonify({"found": False}), 200
+    if not _MAP_ID_RE.match((map_id or '').strip().lower()):
         return jsonify({"found": False}), 200
     try:
         snap = db.collection('map_results').document(map_id).get()

@@ -794,7 +794,7 @@ def get_analytics_trends():
         "daily_usage": daily_usage,
         "conversion_rate": 0.12,
         "growth": "+15%",
-        "top_models": ["llama-3.3-70b", "deepseek-v4-pro"],
+        "top_models": ["llama-3.3-70b", "kautilya-coder"],
         "summary": "Your AI usage is trending upward by 15% this month."
     })
 

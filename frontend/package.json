@@ -74,7 +74,9 @@
   },
   "scripts": {
     "start": "node server.js",
+    "predev": "node scripts/sync-maplibre-worker.js",
     "dev": "craco start",
+    "prebuild": "node scripts/sync-maplibre-worker.js",
     "build": "craco build",
     "postbuild": "node copy-build.js",
     "test": "craco test"

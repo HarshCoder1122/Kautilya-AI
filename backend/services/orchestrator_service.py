@@ -7,7 +7,7 @@ different underlying models.
 
 Agents:
   - researcher  : web-search-heavy, citation discipline
-  - coder       : frontier code generation (DeepSeek V4)
+  - coder       : frontier code generation (Kimi K2.6)
   - sales       : SDR / pitch / objection handling
   - support     : empathetic technical support
   - general     : fallback — normal Kautilya voice

@@ -98,7 +98,7 @@ except ValueError:
 # on a hot model (NVIDIA lets idle models go cold per-model, not per-account).
 _KEEPWARM_MODELS = [m.strip() for m in os.environ.get(
     "NVIDIA_KEEPWARM_MODELS",
-    "mistralai/mistral-medium-3.5-128b,z-ai/glm-5.1,qwen/qwen3-coder-480b-a35b-instruct"
+    "mistralai/mistral-medium-3.5-128b,z-ai/glm-5.1,moonshotai/kimi-k2.6"
 ).split(",") if m.strip()]
 
 
@@ -299,8 +299,32 @@ def call_openrouter(messages, temperature=0.7, max_tokens=16384, stream=True, mo
 # Kautilya AI Heavy Caching Engine
 # ==========================================
 _db_lock = threading.Lock()
-_in_memory_cache = {}
+# Bounded LRU. Previously a plain dict that NEVER evicted — keyed by the full
+# payload hash and holding entire response bodies, it grew without limit for
+# every distinct prompt until the worker OOM'd. OrderedDict + a hard cap keeps
+# the hot-path accelerator fast while bounding RSS; the SQLite table remains
+# the durable cache, so an eviction just costs one disk read on the next hit.
+from collections import OrderedDict
+_IN_MEMORY_CACHE_MAX = int(os.environ.get("LLM_MEMCACHE_MAX", "500"))
+_in_memory_cache = OrderedDict()
+_mem_cache_lock = threading.Lock()
 _cache_init_done = False
+
+
+def _memcache_get(key):
+    with _mem_cache_lock:
+        if key in _in_memory_cache:
+            _in_memory_cache.move_to_end(key)  # mark most-recently-used
+            return _in_memory_cache[key]
+    return None
+
+
+def _memcache_put(key, value):
+    with _mem_cache_lock:
+        _in_memory_cache[key] = value
+        _in_memory_cache.move_to_end(key)
+        while len(_in_memory_cache) > _IN_MEMORY_CACHE_MAX:
+            _in_memory_cache.popitem(last=False)  # evict least-recently-used
 
 def _get_cache_db():
     import os
@@ -335,13 +359,14 @@ def _init_cache_db_safe():
         return False
 
 def _get_from_cache(cache_key):
-    if cache_key in _in_memory_cache:
+    cached = _memcache_get(cache_key)
+    if cached is not None:
         print("[NVIDIA Cache] In-memory cache HIT!")
-        return _in_memory_cache[cache_key]
-    
+        return cached
+
     if not _init_cache_db_safe():
         return None
-    
+
     try:
         with _db_lock:
             conn = _get_cache_db()
@@ -356,7 +381,7 @@ def _get_from_cache(cache_key):
                     parsed = json.loads(res_data)
                 else:
                     parsed = res_data
-                _in_memory_cache[cache_key] = (res_type, parsed)
+                _memcache_put(cache_key, (res_type, parsed))
                 return res_type, parsed
     except Exception as e:
         print(f"[NVIDIA Cache] Error reading cache: {e}")
@@ -364,7 +389,7 @@ def _get_from_cache(cache_key):
 
 def _save_to_cache(cache_key, response_type, response_data):
     try:
-        _in_memory_cache[cache_key] = (response_type, response_data if response_type == "string" else json.loads(response_data))
+        _memcache_put(cache_key, (response_type, response_data if response_type == "string" else json.loads(response_data)))
     except Exception:
         pass
     
@@ -429,6 +454,86 @@ def generate_cached_stream(chunks, expose_thinking=True):
         time.sleep(0.001)
 
 
+# ==========================================
+# Self-healing model mesh — per-model circuit breaker
+# ==========================================
+# Every upstream call records its outcome here. After N consecutive failures
+# a model's circuit OPENS: callers skip it instantly (no 5s connect timeout
+# burned per request) and their existing fallback chains kick in immediately.
+# When the cooldown lapses the circuit half-opens — the next request probes
+# the model and a single success snaps everything back to healthy.
+# Live state is exposed at /api/health/llm.
+_MODEL_HEALTH_LOCK = threading.Lock()
+_MODEL_HEALTH = {}
+_CB_FAILURE_THRESHOLD = max(1, int(os.environ.get("LLM_CB_FAILURE_THRESHOLD", "3")))
+_CB_COOLDOWN_SECONDS = max(5, int(os.environ.get("LLM_CB_COOLDOWN_SECONDS", "45")))
+
+
+def _health_entry(model):
+    e = _MODEL_HEALTH.get(model)
+    if e is None:
+        e = {"consecutive_failures": 0, "cooldown_until": 0.0,
+             "total_calls": 0, "total_failures": 0,
+             "last_error": None, "last_latency_ms": None,
+             "last_success_ts": None, "last_failure_ts": None}
+        _MODEL_HEALTH[model] = e
+    return e
+
+
+def model_circuit_open(model):
+    """True → model is cooling down after repeated failures: skip the call.
+    Returns False again once the cooldown lapses (half-open probe)."""
+    with _MODEL_HEALTH_LOCK:
+        return time.time() < _health_entry(model)["cooldown_until"]
+
+
+def record_model_result(model, ok, latency_ms=None, error=None):
+    with _MODEL_HEALTH_LOCK:
+        e = _health_entry(model)
+        e["total_calls"] += 1
+        now = time.time()
+        if ok:
+            e["consecutive_failures"] = 0
+            e["cooldown_until"] = 0.0
+            e["last_success_ts"] = now
+            if latency_ms is not None:
+                e["last_latency_ms"] = round(latency_ms)
+        else:
+            e["total_failures"] += 1
+            e["consecutive_failures"] += 1
+            e["last_failure_ts"] = now
+            e["last_error"] = str(error)[:200] if error else None
+            if e["consecutive_failures"] >= _CB_FAILURE_THRESHOLD:
+                e["cooldown_until"] = now + _CB_COOLDOWN_SECONDS
+                print(f"[ModelMesh] {model} circuit OPEN for {_CB_COOLDOWN_SECONDS}s "
+                      f"({e['consecutive_failures']} consecutive failures; last: {e['last_error']})")
+
+
+def llm_health_snapshot():
+    """Read-only mesh state for /api/health/llm."""
+    now = time.time()
+    out = {}
+    with _MODEL_HEALTH_LOCK:
+        for model, e in _MODEL_HEALTH.items():
+            cooling = now < e["cooldown_until"]
+            out[model] = {
+                "status": "cooling_down" if cooling else (
+                    "degraded" if e["consecutive_failures"] > 0 else "healthy"),
+                "consecutive_failures": e["consecutive_failures"],
+                "cooldown_remaining_s": max(0, round(e["cooldown_until"] - now)) if cooling else 0,
+                "total_calls": e["total_calls"],
+                "total_failures": e["total_failures"],
+                "last_latency_ms": e["last_latency_ms"],
+                "last_error": e["last_error"],
+            }
+    return {
+        "object": "llm.health",
+        "circuit_breaker": {"failure_threshold": _CB_FAILURE_THRESHOLD,
+                            "cooldown_seconds": _CB_COOLDOWN_SECONDS},
+        "models": out,
+    }
+
+
 def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                 model="nvidia/nemotron-3-super-120b-a12b", tools=None, tool_choice=None,
                 expose_thinking=True, max_thinking=False, top_p=0.9,
@@ -472,6 +577,13 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                 return _stream_str()
             else:
                 return res_data
+
+    # Self-healing mesh: model is cooling down after repeated failures —
+    # skip the doomed request so the caller's fallback chain fires instantly
+    # instead of after a connect timeout.
+    if model_circuit_open(model):
+        print(f"[ModelMesh] {model} circuit open — skipping call")
+        return None
 
     try:
         clean_messages = []
@@ -556,6 +668,7 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
             headers["Accept-Encoding"] = "identity"
         else:
             headers["Accept"] = "application/json"
+        _t0 = time.time()
         resp = _NVIDIA_SESSION.post(
             "https://integrate.api.nvidia.com/v1/chat/completions",
             headers=headers,
@@ -564,6 +677,7 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
             stream=stream,
         )
         if resp.status_code == 200:
+            record_model_result(model, True, latency_ms=(time.time() - _t0) * 1000)
             print(f"[NVIDIA] Success (model: {model})")
             if stream:
                 def generate():
@@ -572,6 +686,7 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                         collected_chunks = []
                         has_tool_calls = False
                         finish_reason = None
+                        usage_info = None
                         for line in resp.iter_lines():
                             if not line:
                                 continue
@@ -586,6 +701,12 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                                 break
                             try:
                                 data = json.loads(json_str)
+                                # NVIDIA sends real token counts on the final
+                                # chunk (often with empty choices) — capture
+                                # them so API consumers (Cline, Cursor) can
+                                # display true context-window usage.
+                                if isinstance(data.get("usage"), dict):
+                                    usage_info = data["usage"]
                                 choices = data.get("choices", [])
                                 if not choices: continue
                                 delta = choices[0].get("delta", {})
@@ -627,6 +748,11 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                         if finish_reason == "length":
                             yield {"_finish_reason": "length"}
 
+                        # Real token counts from the provider. Sentinel only —
+                        # not cached (replayed streams fall back to estimates).
+                        if usage_info:
+                            yield {"_usage": usage_info}
+
                         # Save successful non-tool, non-truncated generation
                         # to cache. Truncated streams would poison the cache
                         # with cut-off answers on the next identical request.
@@ -643,9 +769,11 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                     _save_to_cache(cache_key, "string", content)
                 return content
         else:
+            record_model_result(model, False, error=f"HTTP {resp.status_code}: {resp.text[:120]}")
             print(f"[NVIDIA] Error {resp.status_code}: {resp.text[:200]}")
             return None
     except Exception as e:
+        record_model_result(model, False, error=e)
         print(f"[NVIDIA] Exception: {e}")
         return None
 
@@ -767,6 +895,7 @@ def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False,
                 json=payload, timeout=(5, 3600), stream=stream
             )
             if resp.status_code == 200:
+                record_model_result(f"groq/{model}", True)
                 is_classifier = max_tokens <= 20 and stream is False if max_tokens else False
                 tag = "[Classifier]" if is_classifier else "[Groq]"
                 print(f"{tag} Success with {key_label} (model: {model})")
@@ -829,18 +958,22 @@ def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False,
                 _mark_groq_key_exhausted(key_idx)
                 continue
             elif resp.status_code == 400:
+                record_model_result(f"groq/{model}", False, error=f"HTTP 400: {resp.text[:120]}")
                 print(f"[Groq] {key_label} Bad Request (400): {resp.text[:200]}")
                 return None
             else:
                 print(f"[Groq] {key_label} Error {resp.status_code}: {resp.text[:200]}")
                 if resp.status_code >= 500:
                     continue
+                record_model_result(f"groq/{model}", False, error=f"HTTP {resp.status_code}: {resp.text[:120]}")
                 return None
         except requests.exceptions.Timeout:
             print(f"[Groq] {key_label} Timeout. Trying next key...")
             continue
         except Exception as e:
+            record_model_result(f"groq/{model}", False, error=e)
             print(f"[Groq] {key_label} Failed: {e}")
             return None
+    record_model_result(f"groq/{model}", False, error=f"all {tried_keys} keys exhausted")
     print(f"[Groq] All {tried_keys} key attempts exhausted")
     return None

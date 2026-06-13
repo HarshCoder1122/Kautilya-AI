@@ -142,8 +142,8 @@ def public_agent_chat(agent_id):
     max_tokens = int(agent.get('max_tokens') or 1024)
 
     # Pick backend by model id
-    if 'kautilya-coder' in model or 'deepseek' in model:
-        gen = call_nvidia(messages, stream=True, model='deepseek-ai/deepseek-v4-pro',
+    if 'kautilya-coder' in model or 'deepseek' in model or 'kimi' in model:
+        gen = call_nvidia(messages, stream=True, model='moonshotai/kimi-k2.6',
                           temperature=temperature, max_tokens=max_tokens, expose_thinking=False)
     elif 'kautilya-pro' in model or 'nemotron' in model:
         gen = call_nvidia(messages, stream=True, model='nvidia/nemotron-3-super-120b-a12b',

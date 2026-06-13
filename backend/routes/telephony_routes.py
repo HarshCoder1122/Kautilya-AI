@@ -202,7 +202,8 @@ def api_agent_call_outbound():
         elif 'localhost' not in base_url and '127.0.0.1' not in base_url:
             base_url = base_url.replace('http://', 'https://')
 
-        result = dial_outbound(uid, agent_id, agent, config, to_number, base_url, db=db)
+        result = dial_outbound(uid, agent_id, agent, config, to_number, base_url, db=db,
+                               provider=provider_type)
         if result.get('ok'):
             return jsonify({"status": "ok", "call_id": result.get('call_id'), "provider": result.get('provider')})
         return jsonify({"error": result.get('error') or "Dial failed"}), 500

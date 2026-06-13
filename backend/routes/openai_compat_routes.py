@@ -11,7 +11,7 @@ by /api/keys/create. The master KAUTILYA_API_KEY also works.
 Under the hood requests are forwarded to NVIDIA NIM with the appropriate
 Kautilya model mapping and thinking-toggle logic:
 
-    kautilya-coder  → deepseek-ai/deepseek-v4-pro
+    kautilya-coder  → moonshotai/kimi-k2.6
     kautilya-pro    → nvidia/nemotron-3-super-120b-a12b
     kautilya-daily  → (falls back to Groq llama-3.3-70b-versatile)
 
@@ -192,7 +192,7 @@ openai_compat_bp = Blueprint('openai_compat', __name__)
 # These are the same backing models the dashboard chat uses (agent_loop_service.py).
 KAUTILYA_MODEL_MAP = {
     "kautilya-fast":    "llama-3.3-70b-versatile",            # Groq direct — sub-500ms TTFT
-    "kautilya-coder":   "qwen/qwen3-coder-480b-a35b-instruct",
+    "kautilya-coder":   "moonshotai/kimi-k2.6",
     "kautilya-pro":     "nvidia/nemotron-3-super-120b-a12b",
     "kautilya-daily":   "mistralai/mistral-medium-3.5-128b",
 }
@@ -324,6 +324,12 @@ def chat_completions():
     messages = _trim_to_context_window(messages, max_tokens=max_context_tokens)
 
     stream = bool(body.get('stream', False))
+    # OpenAI stream_options: when the client asks for include_usage (Cline,
+    # Cursor, the OpenAI SDK with stream_options set) we must emit a final
+    # empty-choices chunk carrying the usage object. We ALSO attach usage to
+    # the finish chunk unconditionally — clients that didn't ask read it from
+    # there (OpenRouter-style) and spec-strict clients ignore the extra key.
+    include_usage = bool((body.get('stream_options') or {}).get('include_usage'))
 
     # Identity / prompt-extraction guard — the same control the dashboard chat
     # uses, now applied to the public API too (it previously had none, so API
@@ -426,8 +432,14 @@ def chat_completions():
             else:
                 content = ""
                 tool_calls_out = None
-            envelope = _openai_completion_envelope(requested_model, content, tool_calls=tool_calls_out)
+            usage = _usage_payload(None, messages, len(content))
+            envelope = _openai_completion_envelope(requested_model, content, tool_calls=tool_calls_out, usage=usage)
             print(f"[OpenAI Compat] Non-stream response: {len(content)} chars")
+            if uid:
+                try:
+                    record_usage(uid, 'llm_tokens', usage["total_tokens"], model=requested_model)
+                except Exception:
+                    pass
             return jsonify(envelope)
 
         def sse():
@@ -437,6 +449,7 @@ def chat_completions():
             full = ""
             had_tool_calls = False
             length_capped = False
+            upstream_usage = None
             for chunk in gen:
                 if isinstance(chunk, str):
                     piece = chunk
@@ -447,6 +460,11 @@ def chat_completions():
                 elif isinstance(chunk, dict):
                     if chunk.get("_finish_reason") == "length":
                         length_capped = True
+                        continue
+                    # call_groq surfaces Groq's real token counts as a
+                    # {"usage": ...} event — capture, don't forward raw.
+                    if chunk.get("usage") and not chunk.get("chunk"):
+                        upstream_usage = chunk["usage"]
                         continue
                     if chunk.get("tool_calls"):
                         normalized = []
@@ -485,18 +503,21 @@ def chat_completions():
                     first = False
                 yield _openai_stream_chunk(cid, created, requested_model, delta)
             finish_r = "tool_calls" if had_tool_calls else ("length" if length_capped else "stop")
-            yield _openai_stream_chunk(cid, created, requested_model, {}, finish_reason=finish_r)
+            usage = _usage_payload(upstream_usage, messages, len(full))
+            yield _openai_stream_chunk(cid, created, requested_model, {}, finish_reason=finish_r, usage=usage)
+            if include_usage:
+                yield _usage_stream_chunk(cid, created, requested_model, usage)
             yield "data: [DONE]\n\n"
             if uid and full:
                 try:
-                    record_usage(uid, 'llm_tokens', max(1, (len(full) + sum(len(str(m.get('content',''))) for m in messages)) // 4), model=requested_model)
+                    record_usage(uid, 'llm_tokens', usage["total_tokens"], model=requested_model)
                 except Exception:
                     pass
 
         return Response(sse(), mimetype='text/event-stream',
                         headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
-    # ---- NVIDIA path (qwen-coder / nemotron / mistral-daily) ----
+    # ---- NVIDIA path (kimi-coder / nemotron / mistral-daily) ----
     if not NVIDIA_API_KEYS:
         return jsonify({"error": {"message": "Model backend temporarily unavailable", "type": "upstream_error"}}), 503
 
@@ -505,19 +526,22 @@ def chat_completions():
     # for Mistral (kautilya-daily). Daily tier always uses lowest effort so
     # Cline/Cursor stay snappy.
     is_daily = 'mistral' in upstream_model.lower()
-    # Qwen3-Coder is NOT a reasoning model — it doesn't accept
-    # reasoning_effort or chat_template_kwargs.thinking. Passing either
-    # makes NVIDIA reject the whole request with a 400 ("invalid field"),
-    # which Cline surfaces as "model not capable". Treat the coder model as
-    # a plain non-reasoning chat model regardless of the OpenAI-style
-    # reasoning_effort the client sent.
-    is_qwen_coder = 'qwen' in upstream_model.lower() and 'coder' in upstream_model.lower()
-    rb = reasoning_budget if (max_thinking and not is_daily and not is_qwen_coder) else 0
+    # The coder backend (Kimi K2.6) is driven as a plain chat model — no
+    # reasoning_effort, no chat_template_kwargs.thinking. Sending thinking
+    # params a hosted model doesn't accept makes NVIDIA reject the whole
+    # request with a 400 ("invalid field"), which Cline surfaces as "model
+    # not capable" (this is exactly what broke the retired Qwen3-Coder).
+    is_coder = (
+        requested_model == 'kautilya-coder'
+        or 'kimi' in upstream_model.lower()
+        or ('qwen' in upstream_model.lower() and 'coder' in upstream_model.lower())
+    )
+    rb = reasoning_budget if (max_thinking and not is_daily and not is_coder) else 0
     # Map OpenAI-style reasoning_effort to the upstream value:
     #   high → enable thinking path (handled via max_thinking above)
     #   low / medium / none / unspecified → fastest path, no reasoning tokens
-    if is_qwen_coder:
-        upstream_effort = None  # never send reasoning_effort to a coder model
+    if is_coder:
+        upstream_effort = None  # never send reasoning_effort to the coder model
         thinking_on = False
         expose_thinking_flag = False
     elif is_daily:
@@ -556,11 +580,15 @@ def chat_completions():
         full_thinking = ""
         tool_calls_out = None
         length_capped = False
+        upstream_usage = None
         for ev in gen:
             if not isinstance(ev, dict):
                 continue
             if ev.get("_finish_reason") == "length":
                 length_capped = True
+                continue
+            if ev.get("_usage"):
+                upstream_usage = ev["_usage"]
                 continue
             if ev.get("chunk"):
                 full_content += ev["chunk"]
@@ -592,14 +620,15 @@ def chat_completions():
                         if a is not None:
                             slot["function"]["arguments"] += a if isinstance(a, str) else json.dumps(a)
         finish_r = "tool_calls" if tool_calls_out else ("length" if length_capped else "stop")
+        usage = _usage_payload(upstream_usage, messages, len(full_content) + len(full_thinking))
         envelope = _openai_completion_envelope(requested_model, full_content,
                                                tool_calls=tool_calls_out,
                                                reasoning=full_thinking or None,
-                                               finish_reason=finish_r)
+                                               finish_reason=finish_r,
+                                               usage=usage)
         if uid:
             try:
-                approx = max(1, (len(full_content) + len(full_thinking) + sum(len(str(m.get('content',''))) for m in messages)) // 4)
-                record_usage(uid, 'llm_tokens', approx, model=requested_model)
+                record_usage(uid, 'llm_tokens', usage["total_tokens"], model=requested_model)
             except Exception:
                 pass
         return jsonify(envelope)
@@ -614,6 +643,7 @@ def chat_completions():
         finish = "stop"
         had_tool_calls = False
         length_capped = False
+        upstream_usage = None
         for ev in gen:
             if not isinstance(ev, dict):
                 continue
@@ -623,6 +653,10 @@ def chat_completions():
             # ended naturally.
             if ev.get("_finish_reason") == "length":
                 length_capped = True
+                continue
+            # Real token counts captured from the provider's final chunk.
+            if ev.get("_usage"):
+                upstream_usage = ev["_usage"]
                 continue
             delta = {}
             if ev.get("thinking"):
@@ -675,12 +709,14 @@ def chat_completions():
             finish = "length"
         elif had_tool_calls:
             finish = "tool_calls"
-        yield _openai_stream_chunk(cid, created, requested_model, {}, finish_reason=finish)
+        usage = _usage_payload(upstream_usage, messages, len(full_text) + len(full_think))
+        yield _openai_stream_chunk(cid, created, requested_model, {}, finish_reason=finish, usage=usage)
+        if include_usage:
+            yield _usage_stream_chunk(cid, created, requested_model, usage)
         yield "data: [DONE]\n\n"
-        if uid and (full_text or full_think):
+        if uid and (full_text or full_think or had_tool_calls):
             try:
-                approx = max(1, (len(full_text) + len(full_think) + sum(len(str(m.get('content',''))) for m in messages)) // 4)
-                record_usage(uid, 'llm_tokens', approx, model=requested_model)
+                record_usage(uid, 'llm_tokens', usage["total_tokens"], model=requested_model)
             except Exception:
                 pass
 
@@ -689,6 +725,56 @@ def chat_completions():
 
 
 # ---------- helpers ----------
+def _estimate_tokens_from_messages(messages):
+    """chars//4 token estimate over an OpenAI message list (incl. tool_calls)."""
+    chars = 0
+    for m in messages or []:
+        c = m.get("content") or ""
+        if isinstance(c, str):
+            chars += len(c)
+        elif isinstance(c, list):
+            for p in c:
+                if isinstance(p, dict):
+                    chars += len(str(p.get("text", "")))
+        if m.get("tool_calls"):
+            try:
+                chars += len(json.dumps(m["tool_calls"]))
+            except Exception:
+                pass
+    return max(1, chars // 4)
+
+
+def _usage_payload(upstream_usage, messages, completion_chars):
+    """OpenAI usage object: real provider counts when the upstream sent them,
+    chars//4 estimate otherwise. Cline / Cursor / Continue read this to render
+    the context-window meter — without it they show 0 tokens forever."""
+    if isinstance(upstream_usage, dict) and (upstream_usage.get("total_tokens") or upstream_usage.get("prompt_tokens")):
+        try:
+            pt = int(upstream_usage.get("prompt_tokens") or 0)
+            ct = int(upstream_usage.get("completion_tokens") or 0)
+            tt = int(upstream_usage.get("total_tokens") or (pt + ct))
+            return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
+        except (TypeError, ValueError):
+            pass
+    pt = _estimate_tokens_from_messages(messages)
+    ct = max(0, int(completion_chars) // 4)
+    return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}
+
+
+def _usage_stream_chunk(cid, created, model, usage):
+    """The dedicated final usage chunk per OpenAI's stream_options spec:
+    empty choices array, usage attached."""
+    obj = {
+        "id": cid,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [],
+        "usage": usage,
+    }
+    return f"data: {json.dumps(obj)}\n\n"
+
+
 def _normalize_tool_calls(tool_calls):
     """Coerce upstream tool-call output into the strict OpenAI shape Cline /
     Cursor / LangChain / LiteLLM expect: each entry has `id`, `type:
@@ -725,7 +811,7 @@ def _normalize_tool_calls(tool_calls):
     return out or None
 
 
-def _openai_completion_envelope(model, content, tool_calls=None, reasoning=None, finish_reason=None):
+def _openai_completion_envelope(model, content, tool_calls=None, reasoning=None, finish_reason=None, usage=None):
     tool_calls = _normalize_tool_calls(tool_calls)
     msg = {"role": "assistant", "content": content if content else None}
     if tool_calls:
@@ -744,11 +830,11 @@ def _openai_completion_envelope(model, content, tool_calls=None, reasoning=None,
             "message": msg,
             "finish_reason": finish_reason,
         }],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "usage": usage or _usage_payload(None, [], len(content or "")),
     }
 
 
-def _openai_stream_chunk(cid, created, model, delta, finish_reason=None):
+def _openai_stream_chunk(cid, created, model, delta, finish_reason=None, usage=None):
     obj = {
         "id": cid,
         "object": "chat.completion.chunk",
@@ -756,4 +842,6 @@ def _openai_stream_chunk(cid, created, model, delta, finish_reason=None):
         "model": model,
         "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
     }
+    if usage is not None:
+        obj["usage"] = usage
     return f"data: {json.dumps(obj)}\n\n"

@@ -757,6 +757,17 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                 updateAssistant({ isSynthesizing: true });
                 continue;
               }
+              // Truth Lens — cross-model verification verdict for this answer
+              if (parsed.event === 'truth_lens') {
+                updateAssistant({
+                  truthLens: {
+                    verdict: parsed.verdict,
+                    confidence: parsed.confidence,
+                    flags: parsed.flags || [],
+                  },
+                });
+                continue;
+              }
               // Structured tool output (gmail list, calendar, python sandbox, etc.)
               if (parsed.event === 'tool_result') {
                 setMessages(prev => prev.map(msg => {

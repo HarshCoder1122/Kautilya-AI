@@ -68,7 +68,7 @@ def _save_active_call_mapping(db, phone_raw, agent_id, call_id):
             print(f"[Dialer] mapping write warning for {v}: {e}")
 
 
-def dial_outbound(uid, agent_id, agent, telephony_config, to_number, base_url, db=None):
+def dial_outbound(uid, agent_id, agent, telephony_config, to_number, base_url, db=None, provider=None):
     """Place a single outbound call. Returns:
         {"ok": True,  "call_id": "...", "provider": "vobiz|exotel"}
         {"ok": False, "error": "..."}
@@ -81,8 +81,18 @@ def dial_outbound(uid, agent_id, agent, telephony_config, to_number, base_url, d
       to_number         — destination phone (E.164 preferred)
       base_url          — public https URL of THIS Flask service for callbacks
       db                — Firestore client (optional; mappings skipped if None)
+      provider          — optional explicit provider override
+
+    Provider resolution order: explicit arg → config['type'] → the agent's
+    `telephony_provider` → exotel. The config's own type MUST outrank the
+    agent setting: the route may have resolved master-Vobiz creds for an
+    agent whose doc still says exotel, and routing a Vobiz config to the
+    Exotel dialer guarantees "credentials incomplete".
     """
-    provider = (agent.get('telephony_provider') or 'exotel').lower()
+    provider = (provider
+                or (telephony_config or {}).get('type')
+                or agent.get('telephony_provider')
+                or 'exotel').lower()
     base_url = (base_url or '').rstrip('/').replace('http://', 'https://')
     if not base_url:
         return {"ok": False, "error": "base_url required for callbacks"}
@@ -93,9 +103,12 @@ def dial_outbound(uid, agent_id, agent, telephony_config, to_number, base_url, d
 
 
 def _dial_vobiz(uid, agent_id, config, to_number, base_url, db):
-    auth_id = config.get('auth_id') or config.get('trunk_id')
-    auth_token = config.get('auth_token')
-    virtual_number = config.get('number')
+    # Accept every key shape in circulation: master config uses
+    # username/password/caller_id, legacy saved configs use
+    # auth_id/auth_token/number, trunk-style uses trunk_id.
+    auth_id = config.get('username') or config.get('auth_id') or config.get('trunk_id')
+    auth_token = config.get('password') or config.get('auth_token')
+    virtual_number = config.get('caller_id') or config.get('number')
     if not all([auth_id, auth_token, virtual_number]):
         return {"ok": False, "error": "Vobiz credentials incomplete"}
 
@@ -143,11 +156,13 @@ def _dial_vobiz(uid, agent_id, config, to_number, base_url, db):
 
 
 def _dial_exotel(uid, agent_id, config, to_number, base_url, db):
-    sid = config.get('sid')
+    # Accept both the new dashboard's keys (account_sid/api_token/caller_id)
+    # and the legacy ones (sid/token_val/exotel_number).
+    sid = config.get('account_sid') or config.get('sid')
     api_key = config.get('api_key')
-    token = config.get('token_val') or config.get('token')
+    token = config.get('api_token') or config.get('token_val') or config.get('token')
     subdomain = config.get('exotel_subdomain', 'api.exotel.com')
-    virtual_number = config.get('exotel_number') or config.get('number')
+    virtual_number = config.get('caller_id') or config.get('exotel_number') or config.get('number')
     if not all([sid, api_key, token, virtual_number]):
         return {"ok": False, "error": "Exotel credentials incomplete"}
 

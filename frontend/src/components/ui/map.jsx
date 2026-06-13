@@ -2,9 +2,15 @@
 import MapLibreGL from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
-// Fix Webpack 5 minification bug ("o is not defined" in web worker) by using the pre-built CSP worker
+// Use the pre-built CSP worker served from OUR origin (synced into public/
+// by scripts/sync-maplibre-worker.js). This avoids two crash modes:
+//   1. Webpack 5 minification breaks the default inline worker ("o is not
+//      defined") because maplibre stringifies its worker functions and the
+//      minifier renames outer-scope helpers out from under them.
+//   2. A CDN worker URL (unpkg) throws a synchronous SecurityError — browsers
+//      forbid `new Worker()` with a cross-origin URL, full stop.
 if (typeof window !== "undefined" && MapLibreGL.setWorkerUrl) {
-  MapLibreGL.setWorkerUrl("https://unpkg.com/maplibre-gl@5.16.0/dist/maplibre-gl-csp-worker.js");
+  MapLibreGL.setWorkerUrl(`${process.env.PUBLIC_URL || ""}/maplibre-gl-csp-worker.js`);
 }
 
 import {
@@ -158,6 +164,7 @@ const Map = forwardRef(function Map(
 ) {
   const containerRef = useRef(null);
   const [mapInstance, setMapInstance] = useState(null);
+  const [initError, setInitError] = useState(null);
   const [isLoaded, setIsLoaded] = useState(false);
   const [isStyleLoaded, setIsStyleLoaded] = useState(false);
   const currentStyleRef = useRef(null);
@@ -193,16 +200,26 @@ const Map = forwardRef(function Map(
       resolvedTheme === "dark" ? mapStyles.dark : mapStyles.light;
     currentStyleRef.current = initialStyle;
 
-    const map = new MapLibreGL.Map({
-      container: containerRef.current,
-      style: initialStyle,
-      renderWorldCopies: false,
-      attributionControl: {
-        compact: true,
-      },
-      ...props,
-      ...viewport,
-    });
+    // A throw here (no WebGL, worker blocked, …) would otherwise propagate
+    // out of the effect and unmount the whole React tree — degrade to the
+    // fallback panel instead.
+    let map;
+    try {
+      map = new MapLibreGL.Map({
+        container: containerRef.current,
+        style: initialStyle,
+        renderWorldCopies: false,
+        attributionControl: {
+          compact: true,
+        },
+        ...props,
+        ...viewport,
+      });
+    } catch (err) {
+      console.error("Map failed to initialize:", err);
+      setInitError(err?.message || "Map failed to initialize");
+      return;
+    }
 
     const styleDataHandler = () => {
       clearStyleTimeout();
@@ -290,6 +307,16 @@ const Map = forwardRef(function Map(
     map: mapInstance,
     isLoaded: isLoaded && isStyleLoaded,
   }), [mapInstance, isLoaded, isStyleLoaded]);
+
+  if (initError) {
+    return (
+      <div className={cn("relative flex h-full w-full items-center justify-center", className)}>
+        <span className="text-muted-foreground px-4 text-center text-xs">
+          Map could not be displayed on this device.
+        </span>
+      </div>
+    );
+  }
 
   return (
     <MapContext.Provider value={contextValue}>

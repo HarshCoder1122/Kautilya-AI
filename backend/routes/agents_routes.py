@@ -579,7 +579,7 @@ def api_agent_chat(agent_id):
     if model_choice == "pro":
         upstream_model = "nvidia/nemotron-3-super-120b-a12b"
     elif model_choice == "coder":
-        upstream_model = "deepseek-ai/deepseek-v4-pro"
+        upstream_model = "moonshotai/kimi-k2.6"
     # Gemini Live is voice-only — fall through to Groq for chat.
 
     chat_messages = [{"role": "system", "content": full_system}]

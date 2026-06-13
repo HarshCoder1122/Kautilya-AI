@@ -29,6 +29,11 @@ MODEL_ALIASES = {
     "nemotron": "pro",
     "nvidia/nemotron-3-super-120b-a12b": "pro",
     "kautilya-coder": "coder",
+    "kimi": "coder",
+    "kimi-k2.6": "coder",
+    "moonshotai/kimi-k2.6": "coder",
+    # Legacy aliases from the retired Qwen3-Coder backend — keep mapping to
+    # coder so old clients don't break.
     "qwen": "coder",
     "qwen-3": "coder",
     "qwen-3-coder-480b-a35b-instruct": "coder",
@@ -449,7 +454,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     # Model display names for UI status
     # NVIDIA NIM model IDs - verified available on https://build.nvidia.com
     _MODEL_LABELS = {
-        'coder': ('Kautilya Coder', 'qwen/qwen3-coder-480b-a35b-instruct'),
+        'coder': ('Kautilya Coder', 'moonshotai/kimi-k2.6'),
         'pro':   ('Kautilya Pro', 'z-ai/glm-5.1'),
         'daily': ('Kautilya Daily', 'mistralai/mistral-medium-3.5-128b'),
     }
@@ -642,12 +647,12 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         if model_choice == 'coder':
             from config import NVIDIA_API_KEYS
             label, model_id = _MODEL_LABELS['coder']
-            # Qwen3-Coder is a NON-reasoning model. Passing max_thinking /
-            # reasoning_budget to it either (a) makes NVIDIA inject
-            # `chat_template_kwargs.thinking` which Qwen3-Coder doesn't
-            # honour but still deducts from max_tokens, or (b) makes NVIDIA
-            # 400 the request entirely. Either way: zero benefit, eats
-            # output budget. So we hard-disable thinking for coder.
+            # The coder backend (Kimi K2.6) is driven as a plain chat model:
+            # no reasoning_effort, no chat_template_kwargs. Sending thinking
+            # params a hosted model doesn't accept makes NVIDIA 400 the whole
+            # request (this is what broke the retired Qwen3-Coder). If the
+            # model emits inline <think> tags, _ThinkSplitter already strips
+            # them from the visible answer.
             if not NVIDIA_API_KEYS:
                 yield json.dumps({"event": "status", "message": f"⚡ {label} temporarily unavailable — using fast model…"})
                 response_gen = _call_daily(current_messages, max_tokens=max_tokens,
@@ -972,6 +977,18 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             continue
 
         # No tool actions detected and no orphan preamble — we're done.
+        # Truth Lens: cross-examine pure-knowledge answers with an
+        # independent model family and stream the verdict badge. Runs after
+        # the full answer has already reached the user (zero answer latency)
+        # and fails silent — it can only add information, never break a reply.
+        try:
+            from services.truth_lens import should_verify, verify
+            if should_verify(model_choice, accumulated_response, turn):
+                lens = verify(last_user_msg, accumulated_response)
+                if lens:
+                    yield json.dumps(lens)
+        except Exception as _e:
+            print(f"[TruthLens] hook error (silent): {_e}")
         return
 
 # ──────────────────────────────────────────────────────────────────────
@@ -2465,6 +2482,40 @@ def _python_run(code, timeout_sec=15):
         wrapper = textwrap.dedent(f"""
             import os, sys, json, traceback
             os.chdir({workdir!r})
+            # SSRF guard: the env-proxy block (HTTPS_PROXY=127.0.0.1:1) only
+            # affects libraries that honour proxy env vars — raw socket /
+            # urllib / httpx ignore it, so user code could otherwise reach the
+            # cloud metadata endpoint (169.254.169.254) or internal services.
+            # Block any connection that resolves to a private / loopback /
+            # link-local / reserved address at the socket layer.
+            try:
+                import socket as _sock, ipaddress as _ipa
+                def _blocked(host):
+                    try:
+                        infos = _sock.getaddrinfo(host, None)
+                    except Exception:
+                        return False
+                    for fam, _t, _p, _c, sa in infos:
+                        try:
+                            a = _ipa.ip_address(sa[0])
+                        except Exception:
+                            continue
+                        if (a.is_private or a.is_loopback or a.is_link_local
+                                or a.is_reserved or a.is_multicast or a.is_unspecified):
+                            return True
+                    return False
+                _orig_conn = _sock.socket.connect
+                def _guarded_connect(self, address):
+                    try:
+                        host = address[0]
+                    except Exception:
+                        host = None
+                    if host and _blocked(host):
+                        raise OSError("Network access to internal addresses is blocked in the sandbox")
+                    return _orig_conn(self, address)
+                _sock.socket.connect = _guarded_connect
+            except Exception:
+                pass
             try:
                 import matplotlib
                 matplotlib.use('Agg')
