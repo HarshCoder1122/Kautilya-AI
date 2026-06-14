@@ -40,6 +40,13 @@ class LimitManager:
         # data_dir is kept for backward compatibility in imports, but ignored.
         self.db = None
         self._pro_cache = SimpleCache(ttl=300)      # Cache pro status for 5 mins
+        # Sticky PRO memory: once a user is CONFIRMED pro we remember it for a
+        # long window so a transient Firestore blip — or a lookup the caller
+        # times out on under load — can never silently flip a paying user back
+        # to "free". That flip is what both drops them off the reserved NVIDIA
+        # lane AND wrongly shows the "Upgrade to PRO" capacity upsell. Only ever
+        # holds True; cleared explicitly on remove_pro_user.
+        self._pro_sticky = SimpleCache(ttl=86400, max_size=5000)
         self._ban_cache = SimpleCache(ttl=300)      # Cache ban status for 5 mins
         self._credits_cache = SimpleCache(ttl=60)   # Cache credits for 1 min
         
@@ -122,10 +129,15 @@ class LimitManager:
             doc = self.db.collection('pro_users').document(user_id).get()
             is_pro = doc.exists
             self._pro_cache.set(user_id, is_pro)
+            if is_pro:
+                self._pro_sticky.set(user_id, True)
             return is_pro
         except Exception as e:
             print(f"[LimitManager] Firestore check pro failed: {e}")
-            return False
+            # Transient error → don't downgrade a user we've previously
+            # confirmed PRO. Falling back to False here is exactly what leaked
+            # the upsell to paying users when Firestore was slow under load.
+            return bool(self._pro_sticky.get(user_id))
 
     def add_pro_user(self, user_id):
         if not user_id or not self.db: return
@@ -139,6 +151,7 @@ class LimitManager:
                 "granted_at": datetime.now().isoformat()
             })
             self._pro_cache.set(user_id, True)
+            self._pro_sticky.set(user_id, True)
             print(f"[LimitManager] Added User {user_id} to PRO tier.")
             if not was_pro:
                 self._notify_tier_change(user_id, "upgraded")
@@ -152,6 +165,7 @@ class LimitManager:
             was_pro = existing.exists
             self.db.collection('pro_users').document(user_id).delete()
             self._pro_cache.set(user_id, False)
+            self._pro_sticky.invalidate(user_id)  # genuine downgrade — drop the sticky PRO flag
             print(f"[LimitManager] Removed User {user_id} from PRO tier.")
             if was_pro:
                 self._notify_tier_change(user_id, "demoted")

@@ -847,8 +847,18 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                 // Backend hit full LLM capacity. Show the text, and (for free
                 // users) flag the message so an "Upgrade to PRO" card renders.
                 markFirstChunk();
-                if (parsed.chunk) { fullContent += parsed.chunk; updateContent(); }
-                updateAssistant({ upgrade: parsed.upgrade !== false, capacity: true, thinkingDone: true });
+                const knownPro = (typeof localStorage !== 'undefined' && localStorage.getItem('k_is_pro') === '1');
+                if (knownPro) {
+                  // Client knows it's PRO → never show the upsell, even if the
+                  // backend is_pro lookup flaked under load and sent the free
+                  // variant. Suppress BOTH the card AND the upsell text.
+                  fullContent += "\n\n⚠️ Our AI is momentarily overloaded. Please try again in a few seconds.";
+                  updateContent();
+                  updateAssistant({ upgrade: false, capacity: true, thinkingDone: true });
+                } else {
+                  if (parsed.chunk) { fullContent += parsed.chunk; updateContent(); }
+                  updateAssistant({ upgrade: parsed.upgrade !== false, capacity: true, thinkingDone: true });
+                }
                 continue;
               }
               if (parsed.chunk) {

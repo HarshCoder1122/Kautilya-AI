@@ -187,118 +187,14 @@ def _get_available_nvidia_key(is_pro=None):
     return _pick_from_pool(shared or NVIDIA_API_KEYS, 'free')
 
 
-# ── NVIDIA keep-warm heartbeat ───────────────────────────────────────────
-# integrate.api.nvidia.com tears down idle TLS sockets AND lets its hosted
-# models go cold once traffic stops. So the FIRST request after any quiet
-# spell pays two penalties stacked together: a TLS handshake (~300-500ms)
-# and a model cold-start (frequently the bulk of a 5-6s time-to-first-token).
-# A one-shot prewarm at boot only covers the very first request and then
-# decays the moment the demo goes idle for a minute.
-#
-# Instead we run a lightweight background heartbeat that keeps BOTH warm:
-#   • reuses the shared _NVIDIA_SESSION pool  → connection stays handshaked
-#   • sends a real 1-token completion         → model stays loaded on NVIDIA
-# so a live user request lands on an already-hot path.
-#
-# Tunables (env):
-#   NVIDIA_KEEPWARM=0             → disable entirely
-#   NVIDIA_KEEPWARM_INTERVAL=240  → seconds between heartbeats (per model)
-#   NVIDIA_KEEPWARM_MODELS=a,b    → comma-separated model ids to keep warm
-#                                   (default: the Daily model, the hot path)
-_KEEPWARM_ENABLED = os.environ.get("NVIDIA_KEEPWARM", "1").strip().lower() not in ("0", "false", "no", "off")
-try:
-    _KEEPWARM_INTERVAL = max(30.0, float(os.environ.get("NVIDIA_KEEPWARM_INTERVAL", "240") or 240))
-except ValueError:
-    _KEEPWARM_INTERVAL = 240.0
-# Warm all three tier models by default. Daily (mistral-medium) is actually
-# the slowest cold-start of the three — slower than GLM — so it needs warming
-# most; Pro (GLM) and Coder (Kimi) also go cold per-model. The rate-limit
-# pressure this used to create is now handled by _nvidia_keepwarm_ping's
-# idle-gate + key rotation + circuit-respect, not by dropping models.
-# Override the set via NVIDIA_KEEPWARM_MODELS.
-_KEEPWARM_MODELS = [m.strip() for m in os.environ.get(
-    "NVIDIA_KEEPWARM_MODELS",
-    "mistralai/mistral-medium-3.5-128b,z-ai/glm-5.1,moonshotai/kimi-k2.6"
-).split(",") if m.strip()]
-
-# Last time REAL traffic (not a keepwarm ping) actually hit each model on this
-# worker. Updated only by call_nvidia just before it fires a live request, so
-# the heartbeat can skip any model users are already keeping hot — which is
-# exactly the busy Pro/GLM tier that was repeatedly tripping NVIDIA's per-model
-# rate limit. Per-process (gunicorn workers don't share it), so a worker only
-# suppresses pings for models IT recently served — still cuts the bulk of the
-# redundant load without needing shared state.
-_LAST_REAL_NVIDIA_CALL = {}
-
-
-def _nvidia_keepwarm_ping(model):
-    """Send one tiny completion to keep `model` (and the TLS pool) warm.
-
-    Deliberately bypasses the response cache and goes straight to the HTTP
-    session — a cached reply would never reach NVIDIA and so would never
-    keep anything warm. Returns True on a 200, None when intentionally skipped.
-
-    Three guards keep this from *causing* the rate-limit it's meant to dodge:
-      • idle-gate — if real traffic exercised this model within the interval
-        it's already hot; an extra ping only adds rate-limit pressure.
-      • circuit-respect — if the model is cooling down after failures, don't
-        pour more requests into a 429 wall.
-      • key rotation — spread the heartbeat across ALL configured keys instead
-        of pinning the entire warm-keeping load onto key #1."""
-    # Already warm from real traffic on this worker → skip.
-    if time.time() - _LAST_REAL_NVIDIA_CALL.get(model, 0.0) < _KEEPWARM_INTERVAL:
-        return None
-    # Cooling down after repeated failures → don't hammer it.
-    if model_circuit_open(model):
-        return None
-    api_key = _get_available_nvidia_key() or (NVIDIA_API_KEYS[0] if NVIDIA_API_KEYS else NVIDIA_API_KEY)
-    if not api_key:
-        return False
-    try:
-        resp = _NVIDIA_SESSION.post(
-            "https://integrate.api.nvidia.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "Connection": "keep-alive",
-            },
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": "ping"}],
-                "max_tokens": 1,
-                "temperature": 0,
-                "stream": False,
-            },
-            timeout=(5, 30),  # generous read budget for a genuine cold-start
-        )
-        return resp.status_code == 200
-    except Exception:
-        return False
-
-
-def _nvidia_keepwarm_loop():
-    # Stagger across gunicorn workers so N workers don't ping in lockstep and
-    # spike NVIDIA's per-minute rate limit. Each worker has its own connection
-    # pool, so each one warming itself is correct, not redundant.
-    import random
-    time.sleep(random.uniform(0, 5))
-    while True:
-        for model in _KEEPWARM_MODELS:
-            _nvidia_keepwarm_ping(model)
-        time.sleep(_KEEPWARM_INTERVAL)
-
-
-def _start_nvidia_keepwarm():
-    """Warm NVIDIA at import, then keep it warm on a daemon thread. No-op when
-    keep-warm is disabled or no NVIDIA key is configured (e.g. local dev)."""
-    if not _KEEPWARM_ENABLED:
-        return
-    if not (NVIDIA_API_KEYS or NVIDIA_API_KEY):
-        return
-    threading.Thread(target=_nvidia_keepwarm_loop, daemon=True, name="nvidia-keepwarm").start()
-
-
-_start_nvidia_keepwarm()
+# ── NVIDIA keep-warm heartbeat — REMOVED ─────────────────────────────────
+# A background thread used to fire a real 1-token completion at every tier
+# model on a timer to keep them hot. Those pings competed with live traffic
+# for NVIDIA's per-model rate limit — the GLM (z-ai/glm-5.1) synthesis behind
+# Deep Research kept landing on 429s the heartbeat itself had just provoked.
+# We now lean purely on real traffic to keep models warm: a slightly slower
+# first token beats self-inflicted rate-limiting. Do NOT re-add a timed ping
+# here without real per-model rate-limit accounting.
 
 
 def get_gemini_key():
@@ -799,9 +695,6 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
         #     (gzip would batch tokens until enough bytes accumulate for a frame)
         #   • Connection: keep-alive lets urllib3 hold the socket open
         #   • Lower connect timeout fails fast if NVIDIA edge is dead
-        # Mark this model as exercised by real traffic so the keepwarm
-        # heartbeat skips it — it's already hot, no need to ping it on top.
-        _LAST_REAL_NVIDIA_CALL[model] = time.time()
         _t0 = time.time()
         # Retry across keys on 429 / upstream-5xx so multiple keys actually give
         # a single request resilience (not just load-spread across requests).
@@ -811,7 +704,18 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
         last_status = None
         attempts = max(1, min(len(NVIDIA_API_KEYS), _NVIDIA_MAX_KEY_RETRIES))
         for _attempt in range(attempts):
-            nvidia_api_key = _get_available_nvidia_key(is_pro) or NVIDIA_API_KEY
+            picked = _get_available_nvidia_key(is_pro)
+            # If the rotator can only hand back a key that's STILL in cooldown,
+            # every key in the pool is benched from a recent 429. Firing anyway
+            # just earns another guaranteed 429 and re-benches the key — we'd be
+            # rate-limiting ourselves into a deeper hole (this is exactly what
+            # killed Deep Research: its 2s/4s synth retries kept slamming keys
+            # benched for 30s). Bail out so the caller's fallback fires now.
+            if picked and _nvidia_key_cooldowns.get(picked, 0) > time.time():
+                last_status = last_status or 429
+                print(f"[NVIDIA] all keys cooling down — skipping doomed 429 (model {model})")
+                break
+            nvidia_api_key = picked or NVIDIA_API_KEY
             headers = {
                 "Authorization": f"Bearer {nvidia_api_key}",
                 "Content-Type": "application/json",
