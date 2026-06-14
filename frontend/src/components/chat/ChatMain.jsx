@@ -101,23 +101,51 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   const staleTimerRef = useRef(null);
   const abortControllerRef = useRef(null);
 
-  // Auto-scroll: instant during streaming (smooth would jitter as tokens arrive
-  // faster than the animation finishes), smooth only on quiescent updates.
-  // Skip entirely if the user has scrolled up to read backscroll.
+  // ── Auto-scroll: only follow the stream while the user is AT the bottom ──
+  // The real scroll element is the Radix ScrollArea viewport (an ancestor of
+  // messagesEndRef), NOT messagesEndRef.parentElement — measuring the wrong
+  // node is what made auto-scroll drag the user down even after they scrolled
+  // up. We locate the viewport, track the user's position with a live scroll
+  // listener, and only snap to bottom when they're already parked there. A
+  // floating "scroll to bottom" button appears whenever they're scrolled up.
   const stickToBottomRef = useRef(true);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const BOTTOM_THRESHOLD = 120; // px from bottom that still counts as "at bottom"
+
+  const getScroller = () =>
+    messagesEndRef.current?.closest('[data-radix-scroll-area-viewport]') || null;
+
+  const scrollToBottom = (behavior = 'smooth') => {
+    stickToBottomRef.current = true;
+    setShowScrollBtn(false);
+    const scroller = getScroller();
+    if (scroller) scroller.scrollTo({ top: scroller.scrollHeight, behavior });
+    else messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+  };
+
+  // Live position tracking — the user can scroll ANYWHERE with no fight: this
+  // just records whether they're at the bottom (→ keep following) or not
+  // (→ stop following, show the jump-to-bottom button).
   useEffect(() => {
-    const el = messagesEndRef.current;
-    if (!el) return;
-    const scroller = el.parentElement;
-    if (scroller) {
+    const scroller = getScroller();
+    if (!scroller) return;
+    const onScroll = () => {
       const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-      if (distance > 120) {
-        stickToBottomRef.current = false;
-        return;
-      }
-      stickToBottomRef.current = true;
-    }
-    el.scrollIntoView({ behavior: isStreaming ? "auto" : "smooth", block: "end" });
+      const atBottom = distance <= BOTTOM_THRESHOLD;
+      stickToBottomRef.current = atBottom;
+      setShowScrollBtn(!atBottom);
+    };
+    scroller.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+    return () => scroller.removeEventListener('scroll', onScroll);
+  }, []); // viewport persists for the chat's lifetime — attach once
+
+  // New content arrived → follow it ONLY if the user is still at the bottom.
+  useEffect(() => {
+    if (!stickToBottomRef.current) return;
+    const scroller = getScroller();
+    if (scroller) scroller.scrollTo({ top: scroller.scrollHeight, behavior: isStreaming ? 'auto' : 'smooth' });
+    else messagesEndRef.current?.scrollIntoView({ behavior: isStreaming ? 'auto' : 'smooth', block: 'end' });
   }, [messages, isThinking, isStreaming]);
 
   // Tab refocus handling. IMPORTANT: switching away to another app/tab and
@@ -535,6 +563,11 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
     setMessages(prev => [...prev, userMsg]);
+    // Sending a new message always re-engages auto-follow + snaps to bottom,
+    // even if the user had scrolled up.
+    stickToBottomRef.current = true;
+    setShowScrollBtn(false);
+    requestAnimationFrame(() => scrollToBottom('auto'));
 
     const currentFiles = [...selectedFiles];
     const currentInput = inputValue;
@@ -930,7 +963,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   const modeLocked = (messages.length > 0) || isStreaming || isThinking;
 
   return (
-    <div className="chat-main" data-testid="chat-main">
+    <div className="chat-main relative" data-testid="chat-main">
       {/* Top Bar */}
       <div className="h-12 min-h-[48px] flex items-center justify-between px-4 border-b border-[var(--k-border)]">
         <div className="flex items-center gap-2">
@@ -1133,6 +1166,19 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
           <div ref={messagesEndRef} />
         </div>
       </ScrollArea>
+
+      {/* Jump-to-bottom button — shown only when the user has scrolled up.
+          Clicking re-engages auto-follow. */}
+      {showScrollBtn && (
+        <button
+          onClick={() => scrollToBottom('smooth')}
+          aria-label="Scroll to latest"
+          title="Scroll to latest"
+          className="absolute left-1/2 -translate-x-1/2 bottom-28 z-20 w-9 h-9 rounded-full bg-[var(--k-surface)] border border-[var(--k-border)] shadow-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-all duration-200 animate-fade-up"
+        >
+          <CaretDown className="w-5 h-5" weight="bold" />
+        </button>
+      )}
 
       {/* Input Area */}
       <div className="border-t border-[var(--k-border)] p-4">

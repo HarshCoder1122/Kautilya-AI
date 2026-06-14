@@ -34,6 +34,7 @@ export default function UserSettings({ user }) {
     try {
       const config = await billingAPI.getConfig();
       setBillingConfig(config);
+      try { localStorage.setItem('k_is_pro', (config?.is_pro || config?.tier === 'pro') ? '1' : '0'); } catch {}
     } catch (error) {
       console.error("Failed to load billing status:", error);
     }

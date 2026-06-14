@@ -909,8 +909,10 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
       </div>
 
       {/* Full-capacity → Upgrade-to-PRO card (backend emits event:"capacity",
-          upgrade:true for free users when all LLM lanes are saturated). */}
-      {message.upgrade && (
+          upgrade:true for free users when all LLM lanes are saturated). Never
+          shown to known-PRO users — belt-and-suspenders in case the backend
+          is_pro lookup flaked under load. */}
+      {message.upgrade && (typeof localStorage === 'undefined' || localStorage.getItem('k_is_pro') !== '1') && (
         <div className="mt-3 rounded-xl border border-amber-400/30 bg-gradient-to-br from-amber-400/10 to-[var(--k-brand)]/10 p-4">
           <div className="flex items-start gap-3">
             <div className="shrink-0 mt-0.5 w-9 h-9 rounded-lg bg-amber-400/15 flex items-center justify-center">

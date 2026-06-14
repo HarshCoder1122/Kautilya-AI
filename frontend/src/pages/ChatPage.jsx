@@ -11,7 +11,7 @@ export default function ChatPage({ theme, toggleTheme, user }) {
   const [canvasContent, setCanvasContent] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [activeMode, setActiveMode] = useState('chat');
+  const [activeMode, setActiveMode] = useState('pro'); // Pro selected by default on open
   const [conversations, setConversations] = useState([]);
   const [convoLoading, setConvoLoading] = useState(true);
   // Track artifacts the user explicitly closed so the live stream doesn't keep

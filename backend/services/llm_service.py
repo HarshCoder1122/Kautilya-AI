@@ -124,29 +124,67 @@ def _nvidia_key_pools():
 # NVIDIA key rotation state
 _nvidia_key_index = 0
 _nvidia_pro_key_index = 0
-_nvidia_key_cooldowns = {}
+_nvidia_key_cooldowns = {}   # key -> unix ts until which it's rate-limited
+# How long to bench a key after it 429s, and how many keys to try within ONE
+# request before giving up. Without the per-request retry, a single 429 killed
+# the whole call even with other keys idle — which is why deep research (GLM)
+# always died while light chat survived.
+try:
+    _NVIDIA_KEY_COOLDOWN_SECONDS = max(5, int(os.environ.get("NVIDIA_KEY_COOLDOWN_SECONDS", "30")))
+except ValueError:
+    _NVIDIA_KEY_COOLDOWN_SECONDS = 30
+try:
+    _NVIDIA_MAX_KEY_RETRIES = max(1, int(os.environ.get("NVIDIA_MAX_KEY_RETRIES", "4")))
+except ValueError:
+    _NVIDIA_MAX_KEY_RETRIES = 4
+
+
+def _mark_nvidia_key_cooldown(key, seconds=None):
+    """Bench a rate-limited key so the rotation skips it for a while."""
+    if key:
+        _nvidia_key_cooldowns[key] = time.time() + (seconds or _NVIDIA_KEY_COOLDOWN_SECONDS)
+
+
+def _pick_from_pool(pool, which):
+    """Round-robin `pool`, skipping keys currently in cooldown. `which` selects
+    the cursor ('pro' or 'free'). Falls back to the soonest-recovering key if
+    every key in the pool is cooling down."""
+    global _nvidia_key_index, _nvidia_pro_key_index
+    n = len(pool)
+    if n == 0:
+        return None
+    now = time.time()
+    for _ in range(n):
+        if which == 'pro':
+            key = pool[_nvidia_pro_key_index % n]
+            _nvidia_pro_key_index = (_nvidia_pro_key_index + 1) % n
+        else:
+            key = pool[_nvidia_key_index % n]
+            _nvidia_key_index = (_nvidia_key_index + 1) % n
+        if _nvidia_key_cooldowns.get(key, 0) <= now:
+            return key
+    return min(pool, key=lambda k: _nvidia_key_cooldowns.get(k, 0))
 
 
 # NVIDIA key rotation function
 def _get_available_nvidia_key(is_pro=None):
-    """Round-robin an NVIDIA key. PRO requests prefer the reserved lane; free
-    requests rotate only the shared pool. `is_pro=None` falls back to the
-    per-request contextvar so most callers don't need to pass anything."""
-    global _nvidia_key_index, _nvidia_pro_key_index
+    """Pick an NVIDIA key, skipping rate-limited ones. PRO requests prefer the
+    reserved lane (falling back to the shared pool only if all reserved keys are
+    cooling down); free requests rotate only the shared pool. `is_pro=None`
+    falls back to the per-request contextvar so most callers pass nothing."""
     if not NVIDIA_API_KEYS:
         return None
     if is_pro is None:
         is_pro = _request_is_pro.get()
     shared, reserved = _nvidia_key_pools()
     if is_pro and reserved:
-        # PRO lands on its un-contended reserved key(s) first.
-        key = reserved[_nvidia_pro_key_index % len(reserved)]
-        _nvidia_pro_key_index = (_nvidia_pro_key_index + 1) % len(reserved)
-        return key
-    pool = shared or NVIDIA_API_KEYS
-    key = pool[_nvidia_key_index % len(pool)]
-    _nvidia_key_index = (_nvidia_key_index + 1) % len(pool)
-    return key
+        now = time.time()
+        k = _pick_from_pool(reserved, 'pro')
+        if k and _nvidia_key_cooldowns.get(k, 0) <= now:
+            return k
+        # reserved lane is saturated → let PRO borrow the shared pool
+        return _pick_from_pool(shared or NVIDIA_API_KEYS, 'free') or k
+    return _pick_from_pool(shared or NVIDIA_API_KEYS, 'free')
 
 
 # ── NVIDIA keep-warm heartbeat ───────────────────────────────────────────
@@ -761,32 +799,57 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
         #     (gzip would batch tokens until enough bytes accumulate for a frame)
         #   • Connection: keep-alive lets urllib3 hold the socket open
         #   • Lower connect timeout fails fast if NVIDIA edge is dead
-        # Get available NVIDIA key using rotation. PRO requests (is_pro, or the
-        # per-request contextvar) land on the reserved lane so free-tier load
-        # can't starve them.
-        nvidia_api_key = _get_available_nvidia_key(is_pro) or NVIDIA_API_KEY
-        headers = {
-            "Authorization": f"Bearer {nvidia_api_key}",
-            "Content-Type": "application/json",
-            "Connection": "keep-alive",
-        }
-        if stream:
-            headers["Accept"] = "text/event-stream"
-            headers["Accept-Encoding"] = "identity"
-        else:
-            headers["Accept"] = "application/json"
         # Mark this model as exercised by real traffic so the keepwarm
         # heartbeat skips it — it's already hot, no need to ping it on top.
         _LAST_REAL_NVIDIA_CALL[model] = time.time()
         _t0 = time.time()
-        resp = _NVIDIA_SESSION.post(
-            "https://integrate.api.nvidia.com/v1/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=(5, 3600),  # (connect, read) — fail fast on connect, no timeout on streaming reads
-            stream=stream,
-        )
-        if resp.status_code == 200:
+        # Retry across keys on 429 / upstream-5xx so multiple keys actually give
+        # a single request resilience (not just load-spread across requests).
+        # PRO lands on the reserved lane first. Bounded by how many distinct
+        # keys we have.
+        resp = None
+        last_status = None
+        attempts = max(1, min(len(NVIDIA_API_KEYS), _NVIDIA_MAX_KEY_RETRIES))
+        for _attempt in range(attempts):
+            nvidia_api_key = _get_available_nvidia_key(is_pro) or NVIDIA_API_KEY
+            headers = {
+                "Authorization": f"Bearer {nvidia_api_key}",
+                "Content-Type": "application/json",
+                "Connection": "keep-alive",
+            }
+            if stream:
+                headers["Accept"] = "text/event-stream"
+                headers["Accept-Encoding"] = "identity"
+            else:
+                headers["Accept"] = "application/json"
+            try:
+                resp = _NVIDIA_SESSION.post(
+                    "https://integrate.api.nvidia.com/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=(5, 3600),  # (connect, read) — fail fast on connect, no timeout on streaming reads
+                    stream=stream,
+                )
+            except Exception as _e:
+                last_status = f"exc:{_e}"
+                resp = None
+                continue
+            if resp.status_code == 200:
+                break
+            last_status = resp.status_code
+            # Rate-limited / transient upstream error → cool this key and try
+            # the next one. Other 4xx (400/401/404) won't change across keys.
+            if resp.status_code in (429, 500, 502, 503, 504):
+                _mark_nvidia_key_cooldown(nvidia_api_key)
+                print(f"[NVIDIA] {resp.status_code} on key — cooling down, retrying "
+                      f"({_attempt + 1}/{attempts}, model {model})")
+                try: resp.close()
+                except Exception: pass
+                resp = None
+                continue
+            break
+
+        if resp is not None and resp.status_code == 200:
             record_model_result(model, True, latency_ms=(time.time() - _t0) * 1000)
             print(f"[NVIDIA] Success (model: {model})")
             if stream:
@@ -879,8 +942,14 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                     _save_to_cache(cache_key, "string", content)
                 return content
         else:
-            record_model_result(model, False, error=f"HTTP {resp.status_code}: {resp.text[:120]}")
-            print(f"[NVIDIA] Error {resp.status_code}: {resp.text[:200]}")
+            # All key attempts exhausted (resp is None or a non-200).
+            body = ""
+            try:
+                body = resp.text[:120] if resp is not None else ""
+            except Exception:
+                pass
+            record_model_result(model, False, error=f"HTTP {last_status}: {body}")
+            print(f"[NVIDIA] Error after {attempts} attempt(s) (status {last_status}, model {model})")
             return None
     except Exception as e:
         record_model_result(model, False, error=e)
