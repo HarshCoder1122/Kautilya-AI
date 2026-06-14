@@ -810,6 +810,14 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                 updateAssistant({ thinkingDone: true });
                 continue;
               }
+              if (parsed.event === 'capacity') {
+                // Backend hit full LLM capacity. Show the text, and (for free
+                // users) flag the message so an "Upgrade to PRO" card renders.
+                markFirstChunk();
+                if (parsed.chunk) { fullContent += parsed.chunk; updateContent(); }
+                updateAssistant({ upgrade: parsed.upgrade !== false, capacity: true, thinkingDone: true });
+                continue;
+              }
               if (parsed.chunk) {
                 markFirstChunk();
                 fullContent += parsed.chunk;

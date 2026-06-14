@@ -362,9 +362,24 @@ function AgentDetail({ agent, onClose, onUpdate }) {
     try {
       setIsTesting(true);
       const result = await telephonyAPI.outbound({ to: testNumber, agent_id: agent.agent_id });
-      alert(`✅ Call initiated to ${testNumber}!\nCall ID: ${result?.call_id || 'pending'}`);
+      // Surface remaining free quota so the user knows when PRO kicks in.
+      const left = result?.calls_remaining;
+      const remainingMsg = (left != null)
+        ? `\n\nYou have ${left} free test call${left === 1 ? '' : 's'} left.`
+        : '';
+      alert(`✅ Call initiated to ${testNumber}!\nCall ID: ${result?.call_id || 'pending'}${remainingMsg}`);
     } catch (error) {
-      const msg = error.response?.data?.error || error.message || 'Call failed';
+      const status = error.response?.status;
+      const data = error.response?.data || {};
+      // Free-call quota exhausted → PRO upsell.
+      if (status === 402 || data.code === 'upgrade_required') {
+        const go = window.confirm(
+          `${data.message || "You've used all your free test calls. Upgrade to PRO for unlimited outbound mobile calling."}\n\nGo to Billing to upgrade now?`
+        );
+        if (go) window.location.href = '/dashboard/billing';
+        return;
+      }
+      const msg = data.error || error.message || 'Call failed';
       if (msg.includes('telephony') || msg.includes('provider') || msg.includes('config') || msg.includes('Vobiz') || msg.includes('Exotel')) {
         alert(`📞 Telephony not configured.\n\nTo enable calls:\n1. Go to Dashboard → Settings → Telephony\n2. Add your Exotel or Vobiz credentials\n3. Then retry the call.\n\nError: ${msg}`);
       } else {

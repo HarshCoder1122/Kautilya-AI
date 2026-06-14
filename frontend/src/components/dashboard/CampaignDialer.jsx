@@ -56,7 +56,18 @@ export default function CampaignDialer() {
       await campaignsAPI.start(campaignId);
       loadCampaigns();
     } catch (error) {
+      const status = error.response?.status;
+      const data = error.response?.data || {};
+      // Bulk dialing is PRO-only → upsell.
+      if (status === 402 || data.code === 'upgrade_required') {
+        const go = window.confirm(
+          `${data.message || 'Outbound campaigns require PRO. Upgrade to launch bulk dialing.'}\n\nGo to Billing to upgrade now?`
+        );
+        if (go) window.location.href = '/dashboard/billing';
+        return;
+      }
       console.error('Failed to start campaign:', error);
+      alert(data.error || 'Failed to start campaign.');
     }
   };
 

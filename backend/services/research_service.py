@@ -41,7 +41,7 @@ from urllib.parse import urlparse
 import requests
 
 from config import SERPAPI_API_KEY
-from services.llm_service import call_groq, call_nvidia
+from services.llm_service import call_groq, call_nvidia, model_circuit_open, build_capacity_event
 
 
 def _envint(name: str, default: int) -> int:
@@ -62,6 +62,10 @@ MAX_DOC_CHARS      = _envint("RESEARCH_DOC_CHARS", 6000)     # readable text kep
 SYNTH_MAX_TOKENS   = _envint("RESEARCH_SYNTH_TOKENS", 16000)
 MAX_CONTINUATIONS  = _envint("RESEARCH_CONTINUATIONS", 2)    # auto-continue on truncation
 DEADLINE_S         = _envint("RESEARCH_DEADLINE_S", 540)     # stay under gunicorn 600s
+# When Pro/GLM is busy (429) it returns nothing — retry it a few times before
+# dropping to the weaker Groq fallback, since GLM writes the best long report.
+SYNTH_RETRIES      = _envint("RESEARCH_SYNTH_RETRIES", 2)    # extra GLM attempts on empty
+SYNTH_RETRY_BACKOFF = float(os.getenv("RESEARCH_SYNTH_RETRY_BACKOFF", "2.0"))  # sec, ×attempt
 
 # Second search pass (gap-fill round) — on by default; can be disabled via env.
 SEARCH_ROUNDS_ENABLED = os.getenv("RESEARCH_SECOND_PASS", "1") not in ("0", "false", "False")
@@ -421,13 +425,17 @@ def _bibliography_md(sources: List[Dict[str, Any]]) -> str:
 # Orchestration
 # =====================================================================
 
-def deep_research_stream(question: str, depth: str = "standard") -> Iterator[Dict[str, Any]]:
+def deep_research_stream(question: str, depth: str = "standard",
+                         is_pro: bool = False) -> Iterator[Dict[str, Any]]:
     """Stream an analyst-grade, multi-round deep-research report.
 
     `depth` tunes breadth/effort:
       • quick      — single search pass, fewer sources, shorter report (fast)
       • standard   — full multi-round pipeline (default)
       • exhaustive — widest source net + second pass + longest report
+
+    `is_pro` routes the GLM synthesis onto the reserved PRO NVIDIA lane and, on
+    total failure, decides whether the user sees the PRO upsell.
     """
     t0 = time.time()
     def time_left() -> float:
@@ -513,7 +521,8 @@ def deep_research_stream(question: str, depth: str = "standard") -> Iterator[Dic
         truncated = False
         try:
             gen = call_nvidia(call_messages, model=SYNTH_MODEL, temperature=0.45,
-                              stream=True, expose_thinking=True, max_tokens=max_tokens)
+                              stream=True, expose_thinking=True, max_tokens=max_tokens,
+                              is_pro=is_pro)
         except Exception as e:
             print(f"[Research] NVIDIA synth failed: {e}")
             gen = None
@@ -547,8 +556,28 @@ def deep_research_stream(question: str, depth: str = "standard") -> Iterator[Dic
     # hits its token ceiling mid-report (so long reports aren't cut off).
     continuation = 0
     cur_messages = messages
+    synth_attempt = 0
     while True:
         truncated = yield from _run(cur_messages, synth_tokens if continuation == 0 else 8000)
+        # GLM produced nothing on the FIRST pass → Pro is busy (429) or briefly
+        # cooling down. Retry it a couple of times with a short backoff before
+        # dropping to the weaker Groq fallback — GLM writes the best report, so
+        # it's worth waiting out a transient rate-limit. Skip the retry if the
+        # circuit is hard-open (no point: call_nvidia would no-op for ~45s) or
+        # we're low on deadline budget.
+        if (not streamed_anything
+                and continuation == 0
+                and synth_attempt < SYNTH_RETRIES
+                and time_left() > 30
+                and not model_circuit_open(SYNTH_MODEL)):
+            synth_attempt += 1
+            backoff = min(SYNTH_RETRY_BACKOFF * synth_attempt, max(0.0, time_left() - 20))
+            print(f"[Research] GLM synth empty (Pro busy?) — retry "
+                  f"{synth_attempt}/{SYNTH_RETRIES} after {backoff:.1f}s")
+            yield {"thinking": f"Pro model busy — retrying synthesis ({synth_attempt}/{SYNTH_RETRIES})…"}
+            if backoff > 0:
+                time.sleep(backoff)
+            continue
         if (truncated and streamed_anything
                 and continuation < MAX_CONTINUATIONS
                 and time_left() > 60):
@@ -580,9 +609,9 @@ def deep_research_stream(question: str, depth: str = "standard") -> Iterator[Dic
             print(f"[Research] Groq fallback failed: {e}")
 
     if not streamed_anything:
-        yield {"event": "chunk", "chunk":
-               "I gathered sources but the synthesis step is temporarily unavailable. "
-               "Please try again in a moment."}
+        # GLM + Groq both gave nothing → genuinely at capacity. Show the
+        # PRO upsell card (free) or a soft retry (PRO).
+        yield build_capacity_event(is_pro)
 
     # ---- 8. Bibliography (so PDF/DOCX downloads are self-contained) --------
     final = "".join(full_report)

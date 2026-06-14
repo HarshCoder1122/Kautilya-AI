@@ -415,6 +415,7 @@ def billing_config():
 
     is_pro = False
     credits = 0.0
+    uid = None
     try:
         token_data = verify_firebase_token()
         uid = token_data.get('uid') if token_data else None
@@ -456,6 +457,18 @@ def billing_config():
     except Exception as e:
         print(f"[Billing Config] usage snapshot failed: {e}")
 
+    # Outbound mobile-call quota so the UI can show "X free test calls left"
+    # and pre-gate the call button before the user even tries.
+    call_quota = {"is_pro": is_pro, "used": 0, "limit": 0, "remaining": 0}
+    try:
+        from config import FREE_OUTBOUND_CALL_LIMIT
+        if uid and limit_manager:
+            _, info = limit_manager.check_outbound_call_allowed(
+                uid, is_pro=is_pro, free_limit=FREE_OUTBOUND_CALL_LIMIT)
+            call_quota = info
+    except Exception as e:
+        print(f"[Billing Config] call quota snapshot failed: {e}")
+
     return jsonify({
         "razorpay_key_id": RAZORPAY_KEY_ID or os.environ.get('RAZORPAY_KEY_ID', ''),
         "is_pro": is_pro,
@@ -463,6 +476,7 @@ def billing_config():
         "credits": credits,
         "usage": usage,
         "api_usage": api_usage,
+        "call_quota": call_quota,
         "payg_price_per_message": 0.50,
         "pro_price_inr": 599,
     })

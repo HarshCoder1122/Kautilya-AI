@@ -651,6 +651,10 @@ async def entrypoint(ctx: JobContext):
     agent_language = "hi-IN"
     selected_model = "kautilya-daily"
     owner_uid = None
+    # For OUTBOUND calls we dialed the number ourselves, so we already have it —
+    # the dialer bakes it into room metadata as `to_number`. Captured below and
+    # used as the lead's phone (no need to mine it out of the transcript).
+    dialed_number = ""
 
     raw_agent_id, call_id = _resolve_agent_id(ctx.room.name)
     is_sip = _looks_like_sip_room(ctx.room.name, ctx.room)
@@ -676,6 +680,7 @@ async def entrypoint(ctx: JobContext):
                 selected_model = meta.get("model") or selected_model
                 agent_voice = meta.get("voice") or agent_voice
                 owner_uid = meta.get("uid")
+                dialed_number = meta.get("to_number") or dialed_number
                 meta_loaded = True
                 print(f"[Config] ⚡ Loaded from room metadata: agent={agent_id} model={selected_model}", flush=True)
     except Exception as e:
@@ -988,10 +993,19 @@ async def entrypoint(ctx: JobContext):
                     key_topics = (parsed.get('topics') or [])[:5]
                     print(f"[Agent] Analysis parsed: sentiment={sentiment}, outcome={outcome_label}", flush=True)
                     
-                    lead_data = parsed.get('lead')
-                    if lead_data and owner_uid:
-                        # Only save if there's some useful info
-                        if any(lead_data.get(k) for k in ['name', 'email', 'phone']):
+                    lead_data = parsed.get('lead') or {}
+                    if owner_uid:
+                        # We ALWAYS know the customer's number for a phone call —
+                        # the one we dialed (outbound) or the caller id (inbound).
+                        # Prefer that verified number over whatever the LLM mined
+                        # from the transcript (STT routinely garbles digits), and
+                        # fall back to the extracted one only if we have nothing.
+                        known_phone = (dialed_number or caller_phone or '').strip().lstrip('+')
+                        extracted_phone = str(lead_data.get('phone') or '').strip().lstrip('+')
+                        contact_phone = known_phone or extracted_phone
+                        # Save when there's anything useful — and a known phone
+                        # number alone is enough, since it's a real reachable lead.
+                        if contact_phone or any(lead_data.get(k) for k in ['name', 'email']):
                             lead_id = 'lead_' + uuid.uuid4().hex[:20]
                             lead_doc = {
                                 "id": lead_id,
@@ -999,7 +1013,7 @@ async def entrypoint(ctx: JobContext):
                                 "agent_id": agent_id,
                                 "name": str(lead_data.get('name') or '')[:120],
                                 "email": str(lead_data.get('email') or '')[:200],
-                                "phone": str(lead_data.get('phone') or '')[:40],
+                                "phone": contact_phone[:40],
                                 "message": summary,
                                 "source": 'voice_sip' if is_sip else 'voice_web',
                                 "status": "new",

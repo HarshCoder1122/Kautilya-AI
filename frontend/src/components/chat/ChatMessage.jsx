@@ -1,4 +1,4 @@
-import { Brain, Code, ChartBar, ArrowSquareOut, Play, Pause, Copy, Check, ArrowsClockwise, SpeakerHigh, StopCircle, CalendarCheck, VideoCamera, Link } from "@phosphor-icons/react";
+import { Brain, Code, ChartBar, ArrowSquareOut, Play, Pause, Copy, Check, ArrowsClockwise, SpeakerHigh, StopCircle, CalendarCheck, VideoCamera, Link, Crown, Lightning } from "@phosphor-icons/react";
 import React, { useState, useRef, useEffect } from "react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -907,6 +907,32 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
           {displayContent}
         </ReactMarkdown>
       </div>
+
+      {/* Full-capacity → Upgrade-to-PRO card (backend emits event:"capacity",
+          upgrade:true for free users when all LLM lanes are saturated). */}
+      {message.upgrade && (
+        <div className="mt-3 rounded-xl border border-amber-400/30 bg-gradient-to-br from-amber-400/10 to-[var(--k-brand)]/10 p-4">
+          <div className="flex items-start gap-3">
+            <div className="shrink-0 mt-0.5 w-9 h-9 rounded-lg bg-amber-400/15 flex items-center justify-center">
+              <Lightning className="w-5 h-5 text-amber-400" weight="fill" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-semibold text-foreground">We're at full capacity</div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                Free access is throttled right now. <span className="font-medium text-foreground">Kautilya PRO</span> requests
+                skip the queue on a reserved lane — no waiting, priority compute.
+              </div>
+              <a
+                href="/dashboard/billing"
+                className="inline-flex items-center gap-1.5 mt-3 px-3.5 py-2 rounded-lg bg-gradient-to-r from-amber-400 to-[var(--k-brand)] text-black text-xs font-bold hover:opacity-90 transition-opacity"
+              >
+                <Crown className="w-4 h-4" weight="fill" />
+                Upgrade to PRO
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* AI-generated disclosure label (Google Play + IT Rules 2021 compliance) */}
       {!isLiveStreaming && displayContent && (

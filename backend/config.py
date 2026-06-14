@@ -126,6 +126,9 @@ MAX_AGENTS_FREE = 1
 MAX_AGENTS_PRO = 5
 MAX_MEMORIES = 50
 API_KEY_PREFIX = "kautilya-"
+# Free users get this many lifetime outbound MOBILE (test) calls before PRO is
+# required. Web/browser calls (LiveKit) stay free. PRO = unlimited.
+FREE_OUTBOUND_CALL_LIMIT = int(os.environ.get("FREE_OUTBOUND_CALL_LIMIT", "5"))
 
 # ============== Rate Limits ==============
 API_RATE_LIMITS = {

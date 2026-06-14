@@ -65,10 +65,19 @@ def api_campaigns_create():
 @campaigns_bp.route('/campaigns/<camp_id>/start', methods=['POST'])
 @campaigns_bp.route('/campaigns/<camp_id>/resume', methods=['POST'])
 def api_campaigns_start(camp_id):
-    from extensions import db
+    from extensions import db, limit_manager
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
     if not uid: return jsonify({"error": "Auth required"}), 401
+    # Campaigns place outbound mobile calls in bulk — PRO-only. (Free users can
+    # still try single calls via the 5-call test quota on /telephony/outbound-call.)
+    if not limit_manager.is_pro_user(uid):
+        return jsonify({
+            "error": "Bulk campaign dialing is a PRO feature",
+            "code": "upgrade_required",
+            "upgrade": True,
+            "message": "Outbound campaigns require PRO. Upgrade to launch bulk dialing.",
+        }), 402
     try:
         camp_ref = db.collection('users').document(uid).collection('campaigns').document(camp_id)
         if not camp_ref.get().exists: return jsonify({"error": "Campaign not found"}), 404

@@ -135,17 +135,36 @@ def api_telephony_save():
 
 @telephony_bp.route('/telephony/outbound-call', methods=['POST'])
 def api_agent_call_outbound():
-    from extensions import db
+    from extensions import db, limit_manager
+    from config import FREE_OUTBOUND_CALL_LIMIT
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
     if not uid: return jsonify({"error": "Unauthorized"}), 401
-    
+
     data = request.get_json() or {}
     agent_id = data.get('agent_id')
     to_number = data.get('to_number')
     if not agent_id: return jsonify({"error": "Agent ID required"}), 400
     if not to_number: return jsonify({"error": "Destination number required"}), 400
-    
+
+    # Mobile-call gate: free users get FREE_OUTBOUND_CALL_LIMIT lifetime test
+    # calls, then PRO is required. (Browser/web calls stay free — different
+    # route.) PRO is unlimited. Checked here but only CONSUMED after a
+    # successful dial, so a failed dial doesn't burn the user's free quota.
+    is_pro = bool(limit_manager.is_pro_user(uid))
+    allowed, call_info = limit_manager.check_outbound_call_allowed(
+        uid, is_pro=is_pro, free_limit=FREE_OUTBOUND_CALL_LIMIT)
+    if not allowed:
+        return jsonify({
+            "error": "Free mobile-call limit reached",
+            "code": "upgrade_required",
+            "upgrade": True,
+            "used": call_info["used"],
+            "limit": call_info["limit"],
+            "message": (f"You've used all {call_info['limit']} free test calls. "
+                        f"Upgrade to PRO for unlimited outbound mobile calling."),
+        }), 402
+
     try:
         agent_doc = db.collection('agents').document(agent_id).get()
         if not agent_doc.exists or agent_doc.to_dict().get('uid') != uid:
@@ -195,17 +214,36 @@ def api_agent_call_outbound():
         except Exception as e:
             print(f"[Pre-call] CRM lookup soft-failed: {e}")
 
-        base_url = request.host_url.rstrip('/')
+        # Webhook callbacks MUST use a publicly-reachable URL. Behind the HF
+        # Spaces proxy (and the ai.revealiq.in custom domain in front of it),
+        # request.host_url can resolve to an internal/wrong host that the
+        # telephony provider cannot reach — so Vobiz/Exotel never hit the
+        # answer webhook, never get the <Dial> SIP instruction, and the call
+        # sits in dead air until it times out (LiveKit receives nothing).
+        # Prefer the configured/auto-detected PUBLIC_BASE_URL (same source the
+        # campaign worker uses); fall back to request.host_url only if unset.
+        from config import PUBLIC_BASE_URL
+        base_url = (PUBLIC_BASE_URL or request.host_url).rstrip('/')
         # Ensure base_url is HTTPS in production
         if not base_url.startswith('http'):
             base_url = f"https://{base_url}"
         elif 'localhost' not in base_url and '127.0.0.1' not in base_url:
             base_url = base_url.replace('http://', 'https://')
+        print(f"[Outbound] Using callback base_url: {base_url}")
 
         result = dial_outbound(uid, agent_id, agent, config, to_number, base_url, db=db,
                                provider=provider_type)
         if result.get('ok'):
-            return jsonify({"status": "ok", "call_id": result.get('call_id'), "provider": result.get('provider')})
+            # Consume one free call only on a successful dial. PRO is unlimited
+            # (increment is a no-op cost-wise but we skip it to keep the counter
+            # meaningful as "free calls used").
+            calls_remaining = None
+            if not is_pro:
+                limit_manager.increment_outbound_call_count(uid)
+                calls_remaining = max(0, (call_info["remaining"] or 0) - 1)
+            return jsonify({"status": "ok", "call_id": result.get('call_id'),
+                            "provider": result.get('provider'),
+                            "is_pro": is_pro, "calls_remaining": calls_remaining})
         return jsonify({"error": result.get('error') or "Dial failed"}), 500
     except Exception as e:
         print(f"[Outbound] Error: {e}")

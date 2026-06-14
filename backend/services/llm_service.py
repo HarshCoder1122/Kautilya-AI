@@ -9,6 +9,7 @@ import requests
 import sqlite3
 import hashlib
 import threading
+import contextvars
 from requests.adapters import HTTPAdapter
 from config import (
     GROQ_API_KEYS, GROQ_COOLDOWN_SECONDS,
@@ -56,18 +57,95 @@ _NVIDIA_SESSION = _make_pooled_session()
 _GROQ_SESSION = _make_pooled_session()
 _OPENROUTER_SESSION = _make_pooled_session()
 
+# ── Per-request PRO flag ─────────────────────────────────────────────────
+# Set once per request by the route handlers (set_request_pro). The NVIDIA key
+# selector reads it so PRO traffic gets the reserved lane WITHOUT having to
+# thread an is_pro flag through every call_nvidia call site. Reads default to
+# False (free). Note: ContextVars are per-thread — a PRO flag set in the
+# request thread is visible to LLM calls made on that same thread (the normal
+# streaming path), but NOT to calls offloaded onto a separate executor thread;
+# those callers can pass is_pro explicitly to call_nvidia instead.
+_request_is_pro = contextvars.ContextVar("kautilya_request_is_pro", default=False)
+
+
+def set_request_pro(is_pro):
+    """Mark the current request context as PRO (or not). Call once per request,
+    before any LLM call, so reserved-key routing kicks in."""
+    try:
+        _request_is_pro.set(bool(is_pro))
+    except Exception:
+        pass
+
+
+def build_capacity_event(is_pro=False):
+    """Structured SSE event for 'we hit full capacity'. Free users get the
+    PRO upsell (their requests would skip the queue on the reserved lane);
+    PRO users — who already had the reserved lane and still failed — get a
+    plain soft-retry with no upsell. The `chunk` keeps old clients working;
+    `event: capacity` lets the frontend render the upgrade card + PRO button."""
+    if is_pro:
+        return {
+            "event": "capacity", "upgrade": False,
+            "chunk": "\n\n⚠️ Our AI is momentarily overloaded. Please try again in a few seconds.",
+        }
+    return {
+        "event": "capacity", "upgrade": True,
+        "chunk": ("\n\n⚡ We're at **full capacity** right now and free access is temporarily "
+                  "throttled. **Upgrade to PRO** for priority access — PRO requests skip the "
+                  "queue on a reserved lane."),
+    }
+
+
+# ── NVIDIA key pools: reserve a lane for PRO ─────────────────────────────
+# A burst of free-tier traffic must not be able to rate-limit EVERY NVIDIA key
+# and starve paying users. So we reserve the tail of the key pool exclusively
+# for PRO requests: free traffic rotates only the shared keys, while PRO
+# rotates the reserved key(s) first (then the shared pool). When free load
+# exhausts the shared keys, PRO still has an un-contended lane to land on.
+# Tunable via NVIDIA_PRO_RESERVED_KEYS; auto-disabled when there's only one key
+# (nothing to reserve) so single-key dev/deploys behave exactly as before.
+try:
+    _NVIDIA_RESERVED_PRO_COUNT = max(0, int(os.environ.get("NVIDIA_PRO_RESERVED_KEYS", "1")))
+except ValueError:
+    _NVIDIA_RESERVED_PRO_COUNT = 1
+if len(NVIDIA_API_KEYS) <= 1:
+    _NVIDIA_RESERVED_PRO_COUNT = 0
+
+
+def _nvidia_key_pools():
+    """(shared_keys, reserved_pro_keys). Reserved is empty unless there are
+    strictly more keys than the reserve count (never reserve the whole pool)."""
+    n = _NVIDIA_RESERVED_PRO_COUNT
+    if n and len(NVIDIA_API_KEYS) > n:
+        return NVIDIA_API_KEYS[:-n], NVIDIA_API_KEYS[-n:]
+    return NVIDIA_API_KEYS, []
+
+
 # NVIDIA key rotation state
 _nvidia_key_index = 0
+_nvidia_pro_key_index = 0
 _nvidia_key_cooldowns = {}
 
+
 # NVIDIA key rotation function
-def _get_available_nvidia_key():
-    global _nvidia_key_index
+def _get_available_nvidia_key(is_pro=None):
+    """Round-robin an NVIDIA key. PRO requests prefer the reserved lane; free
+    requests rotate only the shared pool. `is_pro=None` falls back to the
+    per-request contextvar so most callers don't need to pass anything."""
+    global _nvidia_key_index, _nvidia_pro_key_index
     if not NVIDIA_API_KEYS:
         return None
-    # Simple round-robin rotation
-    key = NVIDIA_API_KEYS[_nvidia_key_index % len(NVIDIA_API_KEYS)]
-    _nvidia_key_index = (_nvidia_key_index + 1) % len(NVIDIA_API_KEYS)
+    if is_pro is None:
+        is_pro = _request_is_pro.get()
+    shared, reserved = _nvidia_key_pools()
+    if is_pro and reserved:
+        # PRO lands on its un-contended reserved key(s) first.
+        key = reserved[_nvidia_pro_key_index % len(reserved)]
+        _nvidia_pro_key_index = (_nvidia_pro_key_index + 1) % len(reserved)
+        return key
+    pool = shared or NVIDIA_API_KEYS
+    key = pool[_nvidia_key_index % len(pool)]
+    _nvidia_key_index = (_nvidia_key_index + 1) % len(pool)
     return key
 
 
@@ -94,12 +172,25 @@ try:
     _KEEPWARM_INTERVAL = max(30.0, float(os.environ.get("NVIDIA_KEEPWARM_INTERVAL", "240") or 240))
 except ValueError:
     _KEEPWARM_INTERVAL = 240.0
-# Warm all three tier models by default so Daily, Pro AND Coder demos all land
-# on a hot model (NVIDIA lets idle models go cold per-model, not per-account).
+# Warm all three tier models by default. Daily (mistral-medium) is actually
+# the slowest cold-start of the three — slower than GLM — so it needs warming
+# most; Pro (GLM) and Coder (Kimi) also go cold per-model. The rate-limit
+# pressure this used to create is now handled by _nvidia_keepwarm_ping's
+# idle-gate + key rotation + circuit-respect, not by dropping models.
+# Override the set via NVIDIA_KEEPWARM_MODELS.
 _KEEPWARM_MODELS = [m.strip() for m in os.environ.get(
     "NVIDIA_KEEPWARM_MODELS",
     "mistralai/mistral-medium-3.5-128b,z-ai/glm-5.1,moonshotai/kimi-k2.6"
 ).split(",") if m.strip()]
+
+# Last time REAL traffic (not a keepwarm ping) actually hit each model on this
+# worker. Updated only by call_nvidia just before it fires a live request, so
+# the heartbeat can skip any model users are already keeping hot — which is
+# exactly the busy Pro/GLM tier that was repeatedly tripping NVIDIA's per-model
+# rate limit. Per-process (gunicorn workers don't share it), so a worker only
+# suppresses pings for models IT recently served — still cuts the bulk of the
+# redundant load without needing shared state.
+_LAST_REAL_NVIDIA_CALL = {}
 
 
 def _nvidia_keepwarm_ping(model):
@@ -107,8 +198,22 @@ def _nvidia_keepwarm_ping(model):
 
     Deliberately bypasses the response cache and goes straight to the HTTP
     session — a cached reply would never reach NVIDIA and so would never
-    keep anything warm. Returns True on a 200."""
-    api_key = NVIDIA_API_KEYS[0] if NVIDIA_API_KEYS else NVIDIA_API_KEY
+    keep anything warm. Returns True on a 200, None when intentionally skipped.
+
+    Three guards keep this from *causing* the rate-limit it's meant to dodge:
+      • idle-gate — if real traffic exercised this model within the interval
+        it's already hot; an extra ping only adds rate-limit pressure.
+      • circuit-respect — if the model is cooling down after failures, don't
+        pour more requests into a 429 wall.
+      • key rotation — spread the heartbeat across ALL configured keys instead
+        of pinning the entire warm-keeping load onto key #1."""
+    # Already warm from real traffic on this worker → skip.
+    if time.time() - _LAST_REAL_NVIDIA_CALL.get(model, 0.0) < _KEEPWARM_INTERVAL:
+        return None
+    # Cooling down after repeated failures → don't hammer it.
+    if model_circuit_open(model):
+        return None
+    api_key = _get_available_nvidia_key() or (NVIDIA_API_KEYS[0] if NVIDIA_API_KEYS else NVIDIA_API_KEY)
     if not api_key:
         return False
     try:
@@ -537,7 +642,7 @@ def llm_health_snapshot():
 def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                 model="nvidia/nemotron-3-super-120b-a12b", tools=None, tool_choice=None,
                 expose_thinking=True, max_thinking=False, top_p=0.9,
-                reasoning_budget=None, reasoning_effort=None):
+                reasoning_budget=None, reasoning_effort=None, is_pro=None):
     """Call NVIDIA NIM API with tool support.
 
     Streaming protocol:
@@ -656,8 +761,10 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
         #     (gzip would batch tokens until enough bytes accumulate for a frame)
         #   • Connection: keep-alive lets urllib3 hold the socket open
         #   • Lower connect timeout fails fast if NVIDIA edge is dead
-        # Get available NVIDIA key using rotation
-        nvidia_api_key = _get_available_nvidia_key() or NVIDIA_API_KEY
+        # Get available NVIDIA key using rotation. PRO requests (is_pro, or the
+        # per-request contextvar) land on the reserved lane so free-tier load
+        # can't starve them.
+        nvidia_api_key = _get_available_nvidia_key(is_pro) or NVIDIA_API_KEY
         headers = {
             "Authorization": f"Bearer {nvidia_api_key}",
             "Content-Type": "application/json",
@@ -668,6 +775,9 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
             headers["Accept-Encoding"] = "identity"
         else:
             headers["Accept"] = "application/json"
+        # Mark this model as exercised by real traffic so the keepwarm
+        # heartbeat skips it — it's already hot, no need to ping it on top.
+        _LAST_REAL_NVIDIA_CALL[model] = time.time()
         _t0 = time.time()
         resp = _NVIDIA_SESSION.post(
             "https://integrate.api.nvidia.com/v1/chat/completions",

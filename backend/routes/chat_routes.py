@@ -21,6 +21,7 @@ from services.memory_service import (
 )
 from services.agent_loop_service import get_llm_response, normalize_model_choice
 from services.research_service import deep_research_stream
+from services.llm_service import set_request_pro, build_capacity_event
 from services.fast_response_cache import (
     try_canned_reply, cache_get as fast_cache_get, cache_put as fast_cache_put,
 )
@@ -465,9 +466,12 @@ def jarvis_stream():
         research_flush_ts = [time.time()]
 
         def _run_research():
+            set_request_pro(is_pro)  # own thread → set PRO here for reserved-key routing
             try:
-                for event in deep_research_stream(message):
-                    if event.get("event") == "chunk":
+                for event in deep_research_stream(message, is_pro=is_pro):
+                    # Accumulate any event carrying text (report chunks AND the
+                    # capacity message) so the saved transcript isn't blank.
+                    if event.get("chunk"):
                         research_content_holder[0] += event.get("chunk", "")
                         # Flush every 1.5s so it's visible after reopen
                         if research_msg_id and time.time() - research_flush_ts[0] >= 1.5:
@@ -620,13 +624,22 @@ def jarvis_stream():
                 print(f"[Stream] partial flush failed: {e}")
 
         def _run_llm():
+            # This runs in its OWN thread, so set the PRO flag here (not in the
+            # request thread) — that's the context the LLM calls actually run in,
+            # so reserved-key routing applies to this user's generation.
+            set_request_pro(is_pro)
             try:
                 gen = get_llm_response(
                     conv['messages'], uid=uid, model=model,
                     user_ip=client_ip, max_thinking=max_thinking
                 )
                 if gen is None:
-                    chunk_queue.put(json.dumps({'chunk': 'Service temporarily unavailable.'}))
+                    # Total upstream failure → tell the user we're at capacity and
+                    # (for free users) surface the PRO upsell card. Also fold the
+                    # text into the saved response so a reload isn't blank.
+                    cap = build_capacity_event(is_pro)
+                    full_response_holder[0] += cap.get("chunk", "")
+                    chunk_queue.put(json.dumps(cap))
                     return
 
                 def _capture(parsed):

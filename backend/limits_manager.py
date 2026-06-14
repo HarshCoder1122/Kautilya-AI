@@ -306,6 +306,50 @@ class LimitManager:
         record['chat_count'] += 1
         self._save_daily_usage(user_id, record)
 
+    # ============ OUTBOUND MOBILE-CALL LIMITS (test calls) ============
+    # Browser/web calls (LiveKit) are free for everyone. Placing an outbound
+    # call to a real MOBILE number costs telephony minutes, so free users get a
+    # small lifetime trial (default 5 calls); after that it's PRO-only. PRO is
+    # unlimited. Counter lives in `outbound_call_usage/<uid>.count`.
+    def get_outbound_call_count(self, user_id):
+        if not user_id or not self.db:
+            return 0
+        try:
+            doc = self.db.collection('outbound_call_usage').document(user_id).get()
+            if doc.exists:
+                return int(doc.to_dict().get('count', 0) or 0)
+        except Exception as e:
+            print(f"[LimitManager] get outbound call count failed: {e}")
+        return 0
+
+    def check_outbound_call_allowed(self, user_id, is_pro=False, free_limit=5):
+        """May this user place an outbound mobile call right now?
+        PRO → always (unlimited). Free → until `free_limit` lifetime calls used.
+        Returns (allowed, info) with info = {is_pro, used, limit, remaining}.
+        Does NOT consume — call increment_outbound_call_count() after a
+        successful dial so failed dials don't burn the user's free quota."""
+        if is_pro:
+            return True, {"is_pro": True, "used": 0, "limit": None, "remaining": None}
+        if not user_id:
+            return False, {"is_pro": False, "used": 0, "limit": free_limit, "remaining": 0}
+        used = self.get_outbound_call_count(user_id)
+        remaining = max(0, free_limit - used)
+        return (used < free_limit), {"is_pro": False, "used": used,
+                                     "limit": free_limit, "remaining": remaining}
+
+    def increment_outbound_call_count(self, user_id):
+        if not user_id or not self.db:
+            return
+        try:
+            from firebase_admin import firestore as _fs
+            self.db.collection('outbound_call_usage').document(user_id).set({
+                "uid": user_id,
+                "count": _fs.Increment(1),
+                "updated_at": datetime.now().isoformat(),
+            }, merge=True)
+        except Exception as e:
+            print(f"[LimitManager] increment outbound call failed: {e}")
+
     # ================= CONTEXT LIMITS =================
     def check_context_limit(self, messages, model_mode, limit_tokens=50000, is_pro=False):
         total_chars = sum([len(str(m.get("content", ""))) for m in messages])
