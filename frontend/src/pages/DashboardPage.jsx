@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
 import {
   Robot, Users, Megaphone, Phone, ChartBar, ChatCircleDots,
-  Gear, SignOut, CaretLeft, SpeakerHigh, PlugsConnected, Terminal, List, CreditCard
+  Gear, SignOut, CaretLeft, SpeakerHigh, PlugsConnected, Terminal, List, CreditCard, Microphone
 } from "@phosphor-icons/react";
 import { ThemeToggle } from "@/components/shared/ThemeToggle";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -16,6 +16,7 @@ import CallAnalytics from "@/components/dashboard/CallAnalytics";
 import BIAnalytics from "@/components/dashboard/BIAnalytics";
 import WidgetPreview from "@/components/dashboard/WidgetPreview";
 import TextToSpeechStudio from "@/components/dashboard/TextToSpeechStudio";
+import SpeechToTextStudio from "@/components/dashboard/SpeechToTextStudio";
 import UserSettings from "@/components/dashboard/UserSettings";
 import Integrations from "@/components/dashboard/Integrations";
 import DeveloperAPI from "@/components/dashboard/DeveloperAPI";
@@ -29,6 +30,7 @@ const navItems = [
   { id: 'analytics', label: 'BI Analytics', icon: ChartBar, path: '/dashboard/analytics' },
   { id: 'widgets', label: 'Widgets', icon: ChatCircleDots, path: '/dashboard/widgets' },
   { id: 'tts', label: 'TTS Studio', icon: SpeakerHigh, path: '/dashboard/tts' },
+  { id: 'stt', label: 'STT Studio', icon: Microphone, path: '/dashboard/stt' },
   { id: 'integrations', label: 'Integrations', icon: PlugsConnected, path: '/dashboard/integrations' },
   { id: 'api', label: 'Developer API', icon: Terminal, path: '/dashboard/api' },
   { id: 'billing', label: 'Billing', icon: CreditCard, path: '/dashboard/billing' },
@@ -162,6 +164,7 @@ export default function DashboardPage({ theme, toggleTheme, user }) {
           <Route path="analytics" element={<BIAnalytics />} />
           <Route path="widgets" element={<WidgetPreview />} />
           <Route path="tts" element={<TextToSpeechStudio />} />
+          <Route path="stt" element={<SpeechToTextStudio />} />
           <Route path="integrations" element={<Integrations />} />
           <Route path="api" element={<DeveloperAPI />} />
           <Route path="billing" element={<Billing user={user} />} />

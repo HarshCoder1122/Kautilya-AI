@@ -654,6 +654,49 @@ export const ttsAPI = {
   },
 };
 
+// STT API — RevealIQ STT Studio (Nemotron 3.5 streaming ASR on HF CPU Space).
+// Always goes through the backend proxy so HF auth / rate-limit / billing apply.
+export const sttAPI = {
+  revealIQ: {
+    // Transcribe one audio blob (a full file upload, or one live segment).
+    // `blob` is a Blob/File; `language` empty = auto-detect.
+    transcribe: async (blob, language = '', filename = 'audio.webm') => {
+      const baseUrl = API_BASE_URL.replace(/\/+$/, '');
+      const form = new FormData();
+      form.append('file', blob, filename);
+      if (language) form.append('language', language);
+      // IMPORTANT: do NOT set Content-Type — the browser must set the
+      // multipart boundary itself. getAuthHeaders() only adds auth headers.
+      const res = await fetch(`${baseUrl}/api/stt/revealiq/transcribe`, {
+        method: 'POST',
+        headers: { ...getAuthHeaders() },
+        body: form,
+      });
+      if (!res.ok) {
+        let msg = `Transcription error (${res.status})`;
+        try { const j = await res.json(); msg = j.error || msg; } catch {}
+        const err = new Error(msg);
+        err.status = res.status;
+        throw err;
+      }
+      return res.json(); // { text, duration, latency_ms }
+    },
+
+    // Space/model readiness so the UI can show a "warming up" state.
+    status: async () => {
+      const baseUrl = API_BASE_URL.replace(/\/+$/, '');
+      try {
+        const res = await fetch(`${baseUrl}/api/stt/revealiq/status`, {
+          headers: { ...getAuthHeaders() },
+        });
+        return res.json();
+      } catch {
+        return { status: 'unreachable', ready: false };
+      }
+    },
+  },
+};
+
 // Integrations API
 export const integrationsAPI = {
   list: async () => {

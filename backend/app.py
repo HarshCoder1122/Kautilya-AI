@@ -40,6 +40,7 @@ from routes.embed_routes import embed_bp
 from routes.artifact_routes import artifact_bp
 from routes.invoice_routes import invoice_bp
 from routes.tts_routes import tts_bp
+from routes.stt_routes import stt_bp
 from routes.analytics_routes import analytics_bp
 from routes.projects_routes import projects_bp
 from routes.maps_routes import maps_bp
@@ -103,6 +104,7 @@ app.register_blueprint(embed_bp, url_prefix='/api')
 app.register_blueprint(artifact_bp, url_prefix='/api')
 app.register_blueprint(invoice_bp, url_prefix='/api')
 app.register_blueprint(tts_bp, url_prefix='/api')
+app.register_blueprint(stt_bp, url_prefix='/api')
 app.register_blueprint(analytics_bp, url_prefix='/api')
 app.register_blueprint(projects_bp, url_prefix='/api')
 app.register_blueprint(maps_bp, url_prefix='/api')
