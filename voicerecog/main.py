@@ -29,6 +29,15 @@ MODEL_DIR = os.environ.get("ASR_MODEL_DIR", os.path.expanduser("~/asr_model"))
 # model's built-in language detection (lang_id 101).
 DEFAULT_LANG = os.environ.get("ASR_LANG", "")
 
+# Thread tuning (HF free CPU = 2 vCPU). The genai_config ships NO session_options
+# so ORT defaults to host-core thread counts → oversubscription in the 2-core
+# cgroup. The encoder (24-layer conformer) benefits from both cores; the tiny
+# decoder/joiner graphs are called per token (thousands of times) so extra
+# threads there are pure overhead → pin to 1.
+ENCODER_THREADS = int(os.environ.get("ASR_ENCODER_THREADS", "2"))
+SMALL_THREADS = int(os.environ.get("ASR_SMALL_THREADS", "1"))
+USE_VAD = os.environ.get("ASR_USE_VAD", "false").lower() in ("1", "true", "yes")
+
 # Locale → (lang_id, name), per the onnxruntime-genai nemotron_speech example.
 # lang_id is fed to the multilingual encoder via Generator.set_runtime_option.
 LANG_TO_ID = {
@@ -71,6 +80,51 @@ def _ensure_model_local() -> str:
     )
 
 
+def _patch_thread_options(path: str):
+    """Inject per-graph session_options (intra/inter-op thread counts) into
+    genai_config.json so ORT doesn't oversubscribe the 2-core container. Keeps a
+    pristine .orig backup so a bad patch can be reverted."""
+    import shutil
+    cfgfile = os.path.join(path, "genai_config.json")
+    backup = cfgfile + ".orig"
+    if not os.path.exists(backup):
+        shutil.copy(cfgfile, backup)
+    shutil.copy(backup, cfgfile)  # always patch from the pristine original
+    with open(cfgfile) as f:
+        gc = json.load(f)
+    model = gc.get("model", {})
+    plan = {"encoder": ENCODER_THREADS, "decoder": SMALL_THREADS, "joiner": SMALL_THREADS}
+    for comp, n in plan.items():
+        node = model.get(comp)
+        if isinstance(node, dict):
+            so = node.setdefault("session_options", {})
+            so["intra_op_num_threads"] = int(n)
+            so["inter_op_num_threads"] = 1
+    with open(cfgfile, "w") as f:
+        json.dump(gc, f, indent=1)
+    print(f"[load] patched session_options "
+          f"(encoder={ENCODER_THREADS}, decoder/joiner={SMALL_THREADS})", flush=True)
+
+
+def _restore_config(path: str):
+    import shutil
+    cfgfile = os.path.join(path, "genai_config.json")
+    backup = cfgfile + ".orig"
+    if os.path.exists(backup):
+        shutil.copy(backup, cfgfile)
+
+
+def _build_model(path: str):
+    cfg = og.Config(path)
+    # ort-genai validates provider at Model() and wants canonical "CPU".
+    try:
+        cfg.clear_providers()
+        cfg.append_provider("CPU")
+    except Exception as pe:
+        print(f"[load] provider config note: {pe}", flush=True)
+    return og.Model(cfg)
+
+
 def _load_model():
     global og, _model, _tokenizer, _ready, _load_error, SAMPLE_RATE, CHUNK_SAMPLES
     with _load_lock:
@@ -91,22 +145,28 @@ def _load_model():
                 print(f"[load] genai_config read note: {ce}", flush=True)
 
             print(f"[load] init ort-genai from {path} "
-                  f"(sr={SAMPLE_RATE}, chunk={CHUNK_SAMPLES}) ...", flush=True)
-            cfg = og.Config(path)
-            # ort-genai validates provider at Model() and wants canonical "CPU".
+                  f"(sr={SAMPLE_RATE}, chunk={CHUNK_SAMPLES}, "
+                  f"threads enc={ENCODER_THREADS}/small={SMALL_THREADS}, "
+                  f"cpu_count={os.cpu_count()}) ...", flush=True)
+            _patch_thread_options(path)
             try:
-                cfg.clear_providers()
-                cfg.append_provider("CPU")
-            except Exception as pe:
-                print(f"[load] provider config note: {pe}", flush=True)
-            _model = og.Model(cfg)
+                _model = _build_model(path)
+            except Exception as be:
+                # If the session_options patch makes ort-genai unhappy, restore
+                # the pristine config and load unpatched rather than failing.
+                print(f"[load] patched load failed ({be}); restoring config", flush=True)
+                _restore_config(path)
+                _model = _build_model(path)
             _tokenizer = og.Tokenizer(_model)
 
-            # Warm-up: push ~0.5s of silence through the streaming path so the
-            # first real request doesn't pay the lazy-init penalty.
+            # Warm-up: push ~2 chunks of low-amplitude noise (NOT silence) through
+            # the full streaming path so the encoder/decoder/joiner kernels are
+            # JIT-compiled and allocated now — the first real request is then fast.
             try:
-                _run_inference(np.zeros(SAMPLE_RATE // 2, dtype=np.float32), None)
-                print("[load] warm-up OK", flush=True)
+                warm = (np.random.randn(CHUNK_SAMPLES * 2) * 0.01).astype(np.float32)
+                t0 = time.time()
+                _run_inference(warm, None)
+                print(f"[load] warm-up OK ({int((time.time()-t0)*1000)}ms)", flush=True)
             except Exception as we:
                 print(f"[load] warm-up note (non-fatal): {we}", flush=True)
 
@@ -182,7 +242,7 @@ def _run_inference(samples: np.ndarray, language: Optional[str]) -> str:
 
     processor = og.StreamingProcessor(_model)
     try:
-        processor.set_option("use_vad", "false")
+        processor.set_option("use_vad", "true" if USE_VAD else "false")
     except Exception:
         pass
     tok_stream = _tokenizer.create_stream()
@@ -256,6 +316,10 @@ async def root():
         "load_error": _load_error,
         "sample_rate": SAMPLE_RATE,
         "chunk_samples": CHUNK_SAMPLES,
+        "cpu_count": os.cpu_count(),
+        "encoder_threads": ENCODER_THREADS,
+        "small_threads": SMALL_THREADS,
+        "use_vad": USE_VAD,
     }
 
 
