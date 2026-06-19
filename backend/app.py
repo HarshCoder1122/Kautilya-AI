@@ -185,8 +185,34 @@ def _miss_you_scheduler():
             logger.warning(f"[MissYou] Scheduler error: {_e}")
         _sched_time.sleep(24 * 3600)  # run every 24 hours
 
-_sched_threading.Thread(target=_miss_you_scheduler, daemon=True).start()
-logger.info("[App] Miss-you email scheduler started")
+# Elect a SINGLE worker to run the scheduler. gunicorn runs ~12 workers and
+# each used to start its own _miss_you_scheduler thread → every inactive user
+# got emailed up to 12× simultaneously, blowing past Resend's 2 req/s limit
+# (HTTP 429) and dropping welcome emails caught in the burst. An atomic
+# O_EXCL lock file (workers share the container fs) lets exactly one worker win;
+# /tmp is wiped on container restart, so it self-heals.
+def _is_scheduler_leader():
+    import tempfile
+    lock_path = os.environ.get(
+        "SCHEDULER_LOCK_PATH", os.path.join(tempfile.gettempdir(), "kautilya_miss_you.lock"))
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+    except Exception as _e:
+        # If the lock mechanism itself fails, run anyway — a missed scheduler is
+        # worse than a rare duplicate (and the Resend throttle still paces it).
+        logger.warning(f"[App] scheduler lock failed ({_e}); running unguarded")
+        return True
+
+if _is_scheduler_leader():
+    _sched_threading.Thread(target=_miss_you_scheduler, daemon=True).start()
+    logger.info(f"[App] Miss-you email scheduler started (leader pid={os.getpid()})")
+else:
+    logger.info("[App] Miss-you scheduler skipped (another worker is leader)")
 
 # CORS for special endpoints
 CORS(app, resources={r"/embed/*": {"origins": "*"}, r"/embed.js": {"origins": "*"}})

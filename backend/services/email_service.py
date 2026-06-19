@@ -21,6 +21,7 @@ Env vars:
   APP_URL          (default: https://ai.revealiq.in — for CTA links)
 """
 import os
+import time
 import threading
 
 import requests
@@ -46,6 +47,23 @@ _RESEND_ENDPOINT = "https://api.resend.com/emails"
 
 if not RESEND_API_KEY:
     print("[Email] WARNING: RESEND_API_KEY not set — lifecycle emails will be skipped.")
+
+# Resend's free tier allows only 2 requests/second; bursts (e.g. the miss-you
+# scheduler emailing many users) get HTTP 429 and silently dropped. Pace every
+# send through a process-wide throttle so we stay under the cap. 0.6s spacing ≈
+# 1.67 req/s. Override with RESEND_MIN_INTERVAL.
+_RESEND_MIN_INTERVAL = float(os.environ.get("RESEND_MIN_INTERVAL", "0.6"))
+_rate_lock = threading.Lock()
+_last_send_ts = [0.0]
+
+
+def _throttle():
+    with _rate_lock:
+        now = time.monotonic()
+        wait = _RESEND_MIN_INTERVAL - (now - _last_send_ts[0])
+        if wait > 0:
+            time.sleep(wait)
+        _last_send_ts[0] = time.monotonic()
 
 
 # ---------- HTML templates ----------
@@ -174,31 +192,38 @@ def _send_raw(to_email: str, subject: str, html_body: str) -> bool:
         "subject": subject,
         "html": html_body,
     }
-    try:
-        resp = requests.post(
-            _RESEND_ENDPOINT,
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {RESEND_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            timeout=15,
-        )
-    except Exception as e:
-        print(f"[Email] Resend request to {to_email} failed: {e}")
-        return False
-
-    if 200 <= resp.status_code < 300:
+    headers = {
+        "Authorization": f"Bearer {RESEND_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    # Up to 3 attempts: a 429 (rate limit) is transient, so throttle harder and
+    # retry rather than silently dropping the email. Each attempt is paced by
+    # the process-wide throttle so we don't exceed Resend's 2 req/s.
+    resp = None
+    for attempt in range(3):
+        _throttle()
         try:
-            msg_id = (resp.json() or {}).get("id", "?")
-        except Exception:
-            msg_id = "?"
-        print(f"[Email] Sent '{subject}' to {to_email} via Resend (id={msg_id})")
-        return True
+            resp = requests.post(_RESEND_ENDPOINT, json=payload, headers=headers, timeout=15)
+        except Exception as e:
+            print(f"[Email] Resend request to {to_email} failed: {e}")
+            return False
 
-    # 4xx: usually domain not verified, invalid From, or bad API key.
-    # 5xx: Resend hiccup — caller will not retry; lifecycle emails are
-    # idempotent enough that a single miss isn't worth a retry queue.
+        if 200 <= resp.status_code < 300:
+            try:
+                msg_id = (resp.json() or {}).get("id", "?")
+            except Exception:
+                msg_id = "?"
+            print(f"[Email] Sent '{subject}' to {to_email} via Resend (id={msg_id})")
+            return True
+
+        if resp.status_code == 429 and attempt < 2:
+            print(f"[Email] Resend 429 for {to_email} (attempt {attempt + 1}) — backing off")
+            time.sleep(1.0 * (attempt + 1))
+            continue
+        break
+
+    # 4xx (non-429): usually domain not verified, invalid From, or bad API key.
+    # 5xx / exhausted 429: Resend hiccup — a single miss isn't worth a queue.
     print(f"[Email] Resend rejected send to {to_email}: "
           f"HTTP {resp.status_code} — {resp.text[:300]}")
     return False
