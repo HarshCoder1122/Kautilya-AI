@@ -785,6 +785,23 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
               return <LinkCard href={href}>{children}</LinkCard>;
             },
 
+            // Diagrams (mermaid/svg) must be full-width BLOCKS so the text that
+            // follows them stacks underneath, not beside. react-markdown wraps
+            // fenced code in <pre>; for diagram languages we unwrap it so the
+            // diagram <div> sits directly in the message flow.
+            pre({ node, children }) {
+              try {
+                const codeEl = (node?.children || []).find((c) => c.tagName === 'code');
+                const cls = codeEl?.properties?.className || [];
+                const langClass = (Array.isArray(cls) ? cls : [cls])
+                  .find((c) => typeof c === 'string' && c.startsWith('language-'));
+                if (langClass === 'language-mermaid' || langClass === 'language-svg') {
+                  return <>{children}</>;
+                }
+              } catch { /* fall through to default <pre> */ }
+              return <pre className="w-full max-w-full min-w-0">{children}</pre>;
+            },
+
             table({ children }) {
               return (
                 <div className="overflow-x-auto w-full max-w-full min-w-0 my-6 rounded-xl border border-[var(--k-border)] bg-black/20 shadow-sm">

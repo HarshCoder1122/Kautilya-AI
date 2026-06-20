@@ -412,14 +412,18 @@ export function SvgBlock({ code, title = "Vector graphic" }) {
           </button>
         </div>
       </div>
-      <div className="bg-[var(--k-bg)]/40 p-2 flex justify-center">
-        <iframe
-          srcDoc={doc}
-          sandbox=""
-          title={title}
-          className="w-full border-none"
-          style={{ aspectRatio: String(aspect), maxHeight: "70vh", background: "transparent" }}
-        />
+      <div className="bg-[var(--k-bg)]/40 p-2">
+        {/* padding-bottom aspect-ratio box → iframe always fills full width and
+            can't collapse to its 300px intrinsic default. */}
+        <div style={{ position: "relative", width: "100%", paddingBottom: `${Math.min(135, 100 / aspect)}%` }}>
+          <iframe
+            srcDoc={doc}
+            sandbox=""
+            title={title}
+            className="border-none"
+            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", background: "transparent" }}
+          />
+        </div>
       </div>
 
       {zoom && (

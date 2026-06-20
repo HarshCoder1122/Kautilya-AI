@@ -1021,8 +1021,13 @@ export function CanvasPane({ content, onClose, activeMode }) {
         const a = document.createElement('a');
         a.href = url;
         const ext = kind === 'excel' ? 'xlsx' : kind;
-        const name = content.filename || `${(content.title || 'kautilya-export').replace(/[^a-z0-9]/gi, '-').toLowerCase()}.${ext}`;
-        a.download = name;
+        // Force the export kind's extension. The model's artifact `filename`
+        // often carries a wrong extension (e.g. .md), which would otherwise
+        // save a real DOCX/PDF/XLSX blob under that wrong name.
+        const base = (content.filename || content.title || 'kautilya-export')
+          .replace(/\.[a-z0-9]+$/i, '')
+          .replace(/[^a-z0-9._-]+/gi, '-');
+        a.download = `${base}.${ext}`;
         a.click();
         URL.revokeObjectURL(url);
       } catch (err) {
