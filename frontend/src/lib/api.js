@@ -660,6 +660,10 @@ export const ttsAPI = {
 export const clawAPI = {
   get: async () => (await api.get('/api/claw')).data,
   update: async (payload) => (await api.post('/api/claw/update', payload)).data,
+  web: {
+    chat: async (message, sessionId = 'web') =>
+      (await api.post('/api/claw/web/chat', { message, session_id: sessionId })).data,
+  },
   telegram: {
     setup: async (payload) => (await api.post('/api/claw/telegram/setup', payload)).data,
     remove: async () => (await api.post('/api/claw/telegram/delete')).data,

@@ -204,7 +204,10 @@ def claw_get():
     tg_on = bool(d.get("tg_token"))
     wa_on = bool(d.get("wa_phone_id"))
     return jsonify({
-        "configured": tg_on or wa_on,
+        # The doc exists → the Claw is set up (Web Chat works with zero setup,
+        # even before any external messaging channel is connected).
+        "configured": True,
+        "web": {"enabled": True},
         "enabled": d.get("enabled", True),
         "name": d.get("name"),
         "model": d.get("model", "kautilya-daily"),
@@ -391,6 +394,42 @@ def claw_wa_delete():
             except Exception: pass
         ref.update({"wa_phone_id": None, "wa_token": None, "wa_secret": None})
     return jsonify({"ok": True})
+
+
+# ───────────────────────── web chat (free, zero-setup) ─────────────────────────
+@claw_bp.route('/claw/web/chat', methods=['POST', 'OPTIONS'])
+@cross_origin()
+def claw_web_chat():
+    """Chat with your Claw straight from the dashboard — no token, no phone,
+    free, works everywhere. Runs the same agent as your uid (your limits)."""
+    if request.method == 'OPTIONS':
+        return '', 200
+    from extensions import db
+    from firebase_admin import firestore
+    uid = _uid()
+    if not uid:
+        return jsonify({"error": "Authentication required"}), 401
+    body = request.get_json(silent=True) or {}
+    message = (body.get('message') or '').strip()
+    session_id = (body.get('session_id') or 'web')[:60]
+    if not message:
+        return jsonify({"error": "message is required"}), 400
+
+    ref = db.collection('claws').document(uid)
+    snap = ref.get()
+    if snap.exists:
+        claw = snap.to_dict() or {}
+    else:
+        # First web message auto-creates a default Claw so settings/channels light up.
+        claw = {"uid": uid, "name": "My Claw", "model": "kautilya-daily",
+                "system_prompt": "", "enabled": True, "created_at_ts": int(time.time())}
+        ref.set({**claw, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True)
+
+    if not claw.get("enabled", True):
+        return jsonify({"reply": "⏸️ This Claw is paused. Resume it in Agent settings."})
+
+    reply = _generate(uid, claw, f"web_{session_id}", message)
+    return jsonify({"reply": reply})
 
 
 # ───────────────────────── inbound webhooks ─────────────────────────
