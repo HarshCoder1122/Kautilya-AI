@@ -139,7 +139,11 @@ def verify_payment():
                 print(f"[Verify] payment {razorpay_payment_id} already processed — skip")
                 return jsonify({"success": True, "already_processed": True})
 
-        # 2. Try signature verification.
+        # 2. Try signature verification — for confidence/logging ONLY.
+        # The signature covers (order_id|payment_id) but NOT the amount or
+        # plan, so a valid signature must NEVER be allowed to credit a
+        # client-supplied amount/plan. The fetched payment is the sole source
+        # of truth for amount, plan_type, and ownership (see step 3).
         signature_ok = False
         sig_error = None
         try:
@@ -149,61 +153,61 @@ def verify_payment():
                 'razorpay_signature': razorpay_signature
             })
             signature_ok = True
-            # Even with a valid signature, double-check Razorpay status —
-            # the browser's "success" callback can fire on authorization too.
-            try:
-                payment = razorpay_client.payment.fetch(razorpay_payment_id)
-                if payment.get('status') == 'authorized':
-                    payment = _ensure_captured(razorpay_client, payment)
-                if payment.get('status') != 'captured':
-                    return jsonify({
-                        "error": f"Payment status is '{payment.get('status')}', not captured",
-                        "hint": "Authorization held but not captured. Retry via Reconcile in a moment.",
-                    }), 400
-            except Exception as fetch_err:
-                print(f"[Verify] post-signature fetch failed (non-fatal): {fetch_err}")
         except Exception as e:
             sig_error = str(e)
             print(f"[Verify] Signature mismatch uid={uid} payment_id={razorpay_payment_id} err={e}")
 
-        # 3. If signature failed, fall back to fetching the payment from Razorpay.
+        # 3. ALWAYS fetch the payment from Razorpay and treat it as the source
+        # of truth. We never trust the client's `amount`/`plan_type` — that was
+        # a credit-inflation / cheap-Pro hole (pay ₹1, claim amount=100000 or
+        # plan_type='pro' with a valid signature).
+        try:
+            payment = razorpay_client.payment.fetch(razorpay_payment_id)
+        except Exception as e:
+            return jsonify({
+                "error": "Could not verify payment with Razorpay",
+                "details": str(e), "signature_error": sig_error,
+            }), 400
+
+        # If Razorpay only authorized (held funds) but didn't capture, capture
+        # it now so the money actually moves.
+        if payment.get('status') == 'authorized':
+            payment = _ensure_captured(razorpay_client, payment)
+        if payment.get('status') != 'captured':
+            return jsonify({
+                "error": f"Payment status is '{payment.get('status')}', not captured",
+                "signature_error": sig_error,
+                "hint": "Funds may be held in authorization. Try Reconcile after a minute, or contact support.",
+            }), 400
+
+        # Confirm the payment belongs to this user (via notes.uid set on create).
+        notes = payment.get('notes') or {}
+        payment_uid = notes.get('uid')
+        if payment_uid and payment_uid != uid:
+            return jsonify({"error": "Payment does not belong to this user"}), 403
+
+        # Authoritative amount + plan from Razorpay, NOT the request body.
+        amount = float(payment.get('amount', 0)) / 100.0
+        plan_type = notes.get('plan_type', 'pay_as_you_go')
+        razorpay_order_id = payment.get('order_id') or razorpay_order_id
         if not signature_ok:
-            try:
-                payment = razorpay_client.payment.fetch(razorpay_payment_id)
-            except Exception as e:
-                return jsonify({
-                    "error": "Could not verify payment with Razorpay",
-                    "details": str(e), "signature_error": sig_error,
-                }), 400
-
-            # If Razorpay only authorized (held funds) but didn't capture,
-            # capture it now so the money actually moves.
-            if payment.get('status') == 'authorized':
-                payment = _ensure_captured(razorpay_client, payment)
-
-            if payment.get('status') != 'captured':
-                return jsonify({
-                    "error": f"Payment status is '{payment.get('status')}', not captured",
-                    "signature_error": sig_error,
-                    "hint": "Funds may be held in authorization. Try Reconcile after a minute, or contact support.",
-                }), 400
-
-            # Confirm the payment belongs to this user (via notes.uid we set on create)
-            payment_uid = (payment.get('notes') or {}).get('uid')
-            if payment_uid and payment_uid != uid:
-                return jsonify({"error": "Payment does not belong to this user"}), 403
-
-            # Trust Razorpay's reported amount, not the client's claim
-            amount = float(payment.get('amount', 0)) / 100.0
             print(f"[Verify] Signature failed but Razorpay confirms capture — crediting via fallback. payment={razorpay_payment_id} amount=₹{amount}")
 
-        # 4. Credit the account (whichever path got us here).
-        limit_manager.add_transaction(uid, amount, plan_type, razorpay_order_id, razorpay_payment_id)
-
+        # 4. Credit the account using the authoritative amount/plan.
         if plan_type in ['pro', 'pro_subscription']:
+            # A one-off payment can only buy Pro if it actually covers the Pro
+            # price — stops a ₹1 PAYG order mislabelled as 'pro' at create time.
+            pro_min = float(os.environ.get('PRO_PRICE_INR', '599'))
+            if amount + 1e-6 < pro_min:
+                return jsonify({
+                    "error": "Payment amount does not cover the Pro plan",
+                    "paid": amount, "required": pro_min,
+                }), 400
+            limit_manager.add_transaction(uid, amount, plan_type, razorpay_order_id, razorpay_payment_id)
             limit_manager.add_pro_user(uid)
             msg = "Successfully upgraded to Pro!"
         elif plan_type == 'pay_as_you_go':
+            limit_manager.add_transaction(uid, amount, plan_type, razorpay_order_id, razorpay_payment_id)
             limit_manager.add_credits(uid, amount)
             msg = f"Successfully added ₹{amount:.2f} credits!"
         else:

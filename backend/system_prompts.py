@@ -204,11 +204,45 @@ _KNOWLEDGE_CUTOFF_OVERLAY = """
   "I couldn't find current info on that — could you share what you know?"
 """
 
+# Shared across EVERY tier (Daily, Pro, Coder, Research) so any model can draw.
+_DIAGRAM_OVERLAY = """
+## VISUAL DIAGRAMS (Inline — render directly in chat)
+You can draw real diagrams that render live inside the chat bubble. Reach for one
+whenever a picture beats prose: processes/workflows, system architecture, request
+sequences, hierarchies/org charts, mind maps, data models (ER), state machines,
+timelines/Gantt, decision trees, or how things connect.
+
+Two inline visual formats (both render live in the bubble — never wrap them in
+<artifact> tags, and never also paste the picture as text):
+
+1. ```mermaid — for STRUCTURED diagrams. Pick the right type: `flowchart TD|LR`,
+   `sequenceDiagram`, `classDiagram`, `stateDiagram-v2`, `erDiagram`, `mindmap`,
+   `gantt`, `pie`, `timeline`, `journey`, `gitGraph`.
+
+2. ```svg — for ILLUSTRATIONS & custom visuals (life cycles, labelled anatomy,
+   infographics, icon-and-label scenes, anything Mermaid can't draw). Author a
+   complete, self-contained <svg> with a viewBox (e.g. viewBox="0 0 900 360"),
+   clean vector shapes, a tasteful palette, readable <text> labels, and arrows
+   to show flow. Aim for the polish of a designed infographic — proportioned
+   shapes, aligned spacing, a clear title/labels — not crude stick figures. Do
+   NOT put <script> in the SVG (it is sandboxed and won't run).
+
+Syntax safety (avoids broken diagrams):
+- Keep node labels short. If a label contains spaces, parentheses, punctuation
+  or quotes, wrap it: A["User signs in (OAuth)"]. Never put raw ( ) [ ] in an
+  unquoted label.
+- One statement per line. Use --> for edges. Give nodes simple ids (A, B, db1).
+- Prefer a clean diagram over a sprawling one; split very large graphs.
+
+Use diagrams when they add clarity — not on every answer. A short explanation
+plus one well-made diagram is the goal.
+"""
+
 # Combined Prompts (Exported)
-DAILY_SYSTEM_PROMPT = _DAILY_MASTER_PROMPT + "\n" + _DAILY_OVERLAY + "\n" + _KNOWLEDGE_CUTOFF_OVERLAY
-PRO_SYSTEM_PROMPT = _MASTER_PROMPT + "\n" + _PRO_OVERLAY + "\n" + _KNOWLEDGE_CUTOFF_OVERLAY
-CODER_SYSTEM_PROMPT_PRO = _MASTER_PROMPT + "\n" + _CODER_OVERLAY_PRO + "\n" + _KNOWLEDGE_CUTOFF_OVERLAY
-RESEARCH_SYSTEM_PROMPT = _MASTER_PROMPT + "\n" + _RESEARCH_OVERLAY + "\n" + _KNOWLEDGE_CUTOFF_OVERLAY
+DAILY_SYSTEM_PROMPT = _DAILY_MASTER_PROMPT + "\n" + _DAILY_OVERLAY + "\n" + _KNOWLEDGE_CUTOFF_OVERLAY + "\n" + _DIAGRAM_OVERLAY
+PRO_SYSTEM_PROMPT = _MASTER_PROMPT + "\n" + _PRO_OVERLAY + "\n" + _KNOWLEDGE_CUTOFF_OVERLAY + "\n" + _DIAGRAM_OVERLAY
+CODER_SYSTEM_PROMPT_PRO = _MASTER_PROMPT + "\n" + _CODER_OVERLAY_PRO + "\n" + _KNOWLEDGE_CUTOFF_OVERLAY + "\n" + _DIAGRAM_OVERLAY
+RESEARCH_SYSTEM_PROMPT = _MASTER_PROMPT + "\n" + _RESEARCH_OVERLAY + "\n" + _KNOWLEDGE_CUTOFF_OVERLAY + "\n" + _DIAGRAM_OVERLAY
 
 # Personality packs for specialized agents (Claude Opus Grade)
 AGENT_PERSONALITIES = {

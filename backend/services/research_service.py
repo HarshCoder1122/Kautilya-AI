@@ -52,14 +52,19 @@ def _envint(name: str, default: int) -> int:
 
 
 # ---- Depth knobs (env-tunable so depth can be dialled up without code edits) --
-MAX_SOURCES        = _envint("RESEARCH_MAX_SOURCES", 22)     # final cap fed to synthesis
+# Input-token budget is the binding constraint: NVIDIA/Groq throttle per-minute
+# tokens (TPM), and ONE synthesis request packs sources×chars. At 22×6000 that's
+# ~33k input tokens — which alone busts low free-tier TPM limits (Groq returned
+# HTTP 413 "Request too large, TPM limit 12000"). So sources×chars is kept small
+# by default; dial up via env only on an account with headroom.
+MAX_SOURCES        = _envint("RESEARCH_MAX_SOURCES", 12)     # final cap fed to synthesis
 PER_QUERY_RESULTS  = _envint("RESEARCH_PER_QUERY", 6)        # results per search query
 MAX_QUERIES_R1     = _envint("RESEARCH_QUERIES_R1", 6)       # round-1 query count
 MAX_FOLLOWUPS      = _envint("RESEARCH_FOLLOWUPS", 5)        # round-2 gap-fill queries
 PER_DOMAIN_CAP     = _envint("RESEARCH_PER_DOMAIN", 3)       # diversity: max sources / site
 FETCH_TIMEOUT      = _envint("RESEARCH_FETCH_TIMEOUT", 7)
-MAX_DOC_CHARS      = _envint("RESEARCH_DOC_CHARS", 6000)     # readable text kept per source
-SYNTH_MAX_TOKENS   = _envint("RESEARCH_SYNTH_TOKENS", 16000)
+MAX_DOC_CHARS      = _envint("RESEARCH_DOC_CHARS", 3000)     # readable text kept per source
+SYNTH_MAX_TOKENS   = _envint("RESEARCH_SYNTH_TOKENS", 12000)
 MAX_CONTINUATIONS  = _envint("RESEARCH_CONTINUATIONS", 2)    # auto-continue on truncation
 DEADLINE_S         = _envint("RESEARCH_DEADLINE_S", 540)     # stay under gunicorn 600s
 # When Pro/GLM is busy (429) it returns nothing — retry it a few times before
@@ -73,6 +78,11 @@ SEARCH_ROUNDS_ENABLED = os.getenv("RESEARCH_SECOND_PASS", "1") not in ("0", "fal
 # Synthesis runs on GLM (z-ai/glm-5.1) — stronger long-form report writing than
 # Nemotron for this task. Routed through call_nvidia (NVIDIA NIM endpoint).
 SYNTH_MODEL = os.getenv("RESEARCH_SYNTH_MODEL", "z-ai/glm-5.1")
+# When GLM is saturated (429), synthesis falls back to Mistral on NVIDIA —
+# a DIFFERENT model = a different rate-limit bucket, so it's usually free even
+# while GLM is hammered. Still a strong long-form writer; far better than
+# dropping straight to the weaker Groq llama. Override/disable via env.
+SYNTH_FALLBACK_MODEL = os.getenv("RESEARCH_SYNTH_FALLBACK_MODEL", "mistralai/mistral-medium-3.5-128b")
 PLANNER_MODEL = os.getenv("RESEARCH_PLANNER_MODEL", "llama-3.3-70b-versatile")
 
 
@@ -513,18 +523,18 @@ def deep_research_stream(question: str, depth: str = "standard",
     full_report: List[str] = []
     streamed_anything = False
 
-    def _run(call_messages, max_tokens):
+    def _run(call_messages, max_tokens, model=SYNTH_MODEL):
         """Generator: yields events from one NVIDIA synthesis call and RETURNS
         whether the model was truncated (hit its token ceiling). Consumed with
         `yield from`, which both streams the events and captures the return."""
         nonlocal streamed_anything
         truncated = False
         try:
-            gen = call_nvidia(call_messages, model=SYNTH_MODEL, temperature=0.45,
+            gen = call_nvidia(call_messages, model=model, temperature=0.45,
                               stream=True, expose_thinking=True, max_tokens=max_tokens,
                               is_pro=is_pro)
         except Exception as e:
-            print(f"[Research] NVIDIA synth failed: {e}")
+            print(f"[Research] NVIDIA synth failed ({model}): {e}")
             gen = None
         if not gen:
             return truncated
@@ -552,52 +562,89 @@ def deep_research_stream(question: str, depth: str = "standard",
             print(f"[Research] NVIDIA stream error: {e}")
         return truncated
 
-    # Primary synthesis + up to MAX_CONTINUATIONS continuations if the model
-    # hits its token ceiling mid-report (so long reports aren't cut off).
-    continuation = 0
-    cur_messages = messages
-    synth_attempt = 0
-    while True:
-        truncated = yield from _run(cur_messages, synth_tokens if continuation == 0 else 8000)
-        # GLM produced nothing on the FIRST pass → Pro is busy (429) or briefly
-        # cooling down. Retry it a couple of times with a short backoff before
-        # dropping to the weaker Groq fallback — GLM writes the best report, so
-        # it's worth waiting out a transient rate-limit. Skip the retry if the
-        # circuit is hard-open (no point: call_nvidia would no-op for ~45s) or
-        # we're low on deadline budget.
-        if (not streamed_anything
-                and continuation == 0
-                and synth_attempt < SYNTH_RETRIES
-                and time_left() > 30
-                and not model_circuit_open(SYNTH_MODEL)):
-            synth_attempt += 1
-            backoff = min(SYNTH_RETRY_BACKOFF * synth_attempt, max(0.0, time_left() - 20))
-            print(f"[Research] GLM synth empty (Pro busy?) — retry "
-                  f"{synth_attempt}/{SYNTH_RETRIES} after {backoff:.1f}s")
-            yield {"thinking": f"Pro model busy — retrying synthesis ({synth_attempt}/{SYNTH_RETRIES})…"}
-            if backoff > 0:
-                time.sleep(backoff)
-            continue
-        if (truncated and streamed_anything
-                and continuation < MAX_CONTINUATIONS
-                and time_left() > 60):
-            continuation += 1
-            partial = "".join(full_report)
-            cur_messages = messages + [
-                {"role": "assistant", "content": partial[-6000:]},
-                {"role": "user", "content":
-                 "Continue the report from exactly where you stopped. Do not repeat any "
-                 "content already written, do not restart sections, and keep the same "
-                 "citation style. If the report is complete, end cleanly."},
-            ]
-            continue
-        break
+    def _synthesize(model, allow_empty_retry):
+        """Run ONE model's synthesis with auto-continue on truncation. GLM also
+        gets a couple of empty-result retries (transient 429 while Pro is busy);
+        the Mistral fallback just falls through if it yields nothing. Streams via
+        `yield`; updates full_report / streamed_anything through _run."""
+        continuation = 0
+        synth_attempt = 0
+        cur_messages = messages
+        while True:
+            truncated = yield from _run(cur_messages,
+                                        synth_tokens if continuation == 0 else 8000,
+                                        model=model)
+            # Empty on the FIRST pass → model busy (429) or briefly cooling.
+            # Retry a couple of times with a short backoff before moving on.
+            # Skip if its circuit is hard-open (call_nvidia would no-op for
+            # ~45s) or we're low on deadline budget.
+            if (allow_empty_retry
+                    and not streamed_anything
+                    and continuation == 0
+                    and synth_attempt < SYNTH_RETRIES
+                    and time_left() > 30
+                    and not model_circuit_open(model)):
+                synth_attempt += 1
+                backoff = min(SYNTH_RETRY_BACKOFF * synth_attempt, max(0.0, time_left() - 20))
+                print(f"[Research] {model} synth empty (busy?) — retry "
+                      f"{synth_attempt}/{SYNTH_RETRIES} after {backoff:.1f}s")
+                yield {"thinking": f"Pro model busy — retrying synthesis ({synth_attempt}/{SYNTH_RETRIES})…"}
+                if backoff > 0:
+                    time.sleep(backoff)
+                continue
+            # Truncated mid-report → continue from exactly where it stopped so
+            # long reports aren't cut off.
+            if (truncated and streamed_anything
+                    and continuation < MAX_CONTINUATIONS
+                    and time_left() > 60):
+                continuation += 1
+                partial = "".join(full_report)
+                cur_messages = messages + [
+                    {"role": "assistant", "content": partial[-6000:]},
+                    {"role": "user", "content":
+                     "Continue the report from exactly where you stopped. Do not repeat any "
+                     "content already written, do not restart sections, and keep the same "
+                     "citation style. If the report is complete, end cleanly."},
+                ]
+                continue
+            break
 
-    # ---- Fallback to Groq if NVIDIA produced nothing -----------------------
+    # Primary synthesis on GLM — the strongest long-form report writer.
+    yield from _synthesize(SYNTH_MODEL, allow_empty_retry=True)
+
+    # ---- GLM dead → fall back to Mistral (Daily) BEFORE Groq --------------
+    # GLM and Mistral are DIFFERENT NVIDIA models = different rate-limit
+    # buckets. A research run's burst (huge context + 16k output, fired 3-5×
+    # back-to-back) blows GLM's per-minute token budget, but Mistral's bucket
+    # is usually still free — so when GLM 429s we keep the report on a strong
+    # NVIDIA model instead of dropping straight to the weaker Groq llama.
+    if not streamed_anything and time_left() > 30:
+        yield {"event": "status",
+               "message": "🔁 Pro model busy — switching to the Daily model to finish the report…"}
+        yield from _synthesize(SYNTH_FALLBACK_MODEL, allow_empty_retry=False)
+
+    # ---- Last-ditch Groq fallback if both NVIDIA models produced nothing ---
+    # Groq's free tier is a tiny 12k TPM (it returned HTTP 413 on the full
+    # sources context). So this last-ditch builds a COMPACT context — fewer
+    # sources, shorter excerpts — so the request fits and still yields a cited
+    # report instead of nothing. NVIDIA (GLM/Mistral) gets the full context;
+    # only this fallback is squeezed.
     if not streamed_anything:
+        gq_sources = sources[:8]
+        gq_context = "\n\n".join(
+            f"SOURCE [{i}] — {s['title']} ({s['site']})\nURL: {s['url']}\n"
+            f"CONTENT: {(b or s.get('snippet', ''))[:1200]}"
+            for i, (s, b) in enumerate(zip(gq_sources, bodies[:8]), 1)
+        )
+        gq_messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": (f"USER QUESTION: {question}\n\n"
+                "Write the full report now, citing the numbered sources below.\n\n"
+                f"SOURCES:\n{gq_context}")},
+        ]
         try:
-            gq_gen = call_groq(messages, stream=True, model=PLANNER_MODEL,
-                               temperature=0.4, max_tokens=4096)
+            gq_gen = call_groq(gq_messages, stream=True, model=PLANNER_MODEL,
+                               temperature=0.4, max_tokens=3072)
             if gq_gen:
                 for item in gq_gen:
                     chunk = item.get("chunk", "") if isinstance(item, dict) else item
@@ -609,8 +656,8 @@ def deep_research_stream(question: str, depth: str = "standard",
             print(f"[Research] Groq fallback failed: {e}")
 
     if not streamed_anything:
-        # GLM + Groq both gave nothing → genuinely at capacity. Show the
-        # PRO upsell card (free) or a soft retry (PRO).
+        # GLM + Mistral + Groq all gave nothing → genuinely at capacity. Show
+        # the PRO upsell card (free) or a soft retry (PRO).
         yield build_capacity_event(is_pro)
 
     # ---- 8. Bibliography (so PDF/DOCX downloads are self-contained) --------

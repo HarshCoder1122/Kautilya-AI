@@ -6,9 +6,36 @@ from flask import Blueprint, request, jsonify
 
 from services.auth_service import verify_firebase_token
 from services.memory_service import record_user_session, _invalidate_user_settings_cache
-from services.email_service import send_welcome_email
+from services.email_service import (
+    send_welcome_email, send_pro_upgraded_email,
+    send_pro_demoted_email, send_miss_you_email,
+)
 
 user_bp = Blueprint('user', __name__)
+
+
+@user_bp.route('/admin/send-test-emails', methods=['POST'])
+def admin_send_test_emails():
+    """One-off: fire every lifecycle email (welcome, pro upgraded/demoted,
+    miss-you) to a given address so we can eyeball all templates. Token-gated
+    via the EMAIL_TEST_TOKEN Space secret; returns 403 if the secret is unset."""
+    import os
+    expected = os.environ.get('EMAIL_TEST_TOKEN')
+    body = request.get_json(silent=True) or {}
+    token = request.headers.get('X-Admin-Token') or body.get('token')
+    if not expected or token != expected:
+        return jsonify({"error": "forbidden"}), 403
+    email = (body.get('email') or '').strip()
+    name = body.get('name') or 'Harsh'
+    if not email:
+        return jsonify({"error": "email required"}), 400
+    # The Resend throttle in email_service paces these ~0.6s apart → no 429.
+    send_welcome_email(email, name)
+    send_pro_upgraded_email(email, name)
+    send_pro_demoted_email(email, name)
+    send_miss_you_email(email, name)
+    return jsonify({"status": "queued", "email": email,
+                    "sent": ["welcome", "pro_upgraded", "pro_demoted", "miss_you"]})
 
 
 @user_bp.route('/user/welcome-check', methods=['POST'])

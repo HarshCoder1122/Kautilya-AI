@@ -9,7 +9,7 @@ import secrets
 from flask import Blueprint, request, jsonify, Response
 
 from config import MAX_AGENTS_FREE, MAX_AGENTS_PRO
-from services.auth_service import verify_firebase_token, record_usage
+from services.auth_service import verify_firebase_token, record_usage, hash_api_key
 from services.memory_service import process_uploaded_file, generate_semantic_chunks, read_website
 
 agents_bp = Blueprint('agents', __name__)
@@ -273,16 +273,20 @@ def generate_external_livekit_token(agent_id):
         return jsonify({"error": "Missing or invalid Authorization header. Use Bearer <api_key>"}), 401
     
     api_key = auth_header.split('Bearer ')[1].strip()
-    
-    # 2. Check key in database
+
+    # 2. Check key in database. Keys are stored under their SHA-256 hash (see
+    # auth_service.hash_api_key / keys_routes) — looking up the RAW key as the
+    # doc id (the previous behaviour) never matched, so this endpoint was dead.
     if not db:
         return jsonify({"error": "Database unavailable"}), 503
-        
-    key_doc = db.collection('api_keys').document(api_key).get()
+
+    key_doc = db.collection('api_keys').document(hash_api_key(api_key)).get()
     if not key_doc.exists:
         return jsonify({"error": "Invalid API key"}), 401
-        
+
     key_data = key_doc.to_dict()
+    if not key_data.get('is_active', False):
+        return jsonify({"error": "API key is revoked"}), 401
     uid = key_data.get('uid')
     
     # 3. Verify agent belongs to this user

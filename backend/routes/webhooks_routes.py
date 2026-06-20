@@ -4,6 +4,7 @@ Vobiz uses Plivo XML — <Say> and <Pause> are INVALID.
 Only <Dial><Sip> is supported for SIP bridging.
 """
 import os
+import re
 import json
 import uuid
 import hmac
@@ -16,7 +17,14 @@ from extensions import db
 from config import LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL, LIVEKIT_SIP_URI
 import services.nim_service as nim_service
 from firebase_admin import firestore
-import services.nim_service as nim_service
+
+
+def _clean_phone(value: str) -> str:
+    """Reduce a provider-supplied phone/caller value to digits and a leading
+    '+'. The `From`/`To` fields land inside the SIP XML we return to Vobiz;
+    without this, a crafted value like `1"><Dial><User>sip:attacker@evil`
+    could inject extra dial directives (call redirection / toll fraud)."""
+    return re.sub(r'[^0-9+]', '', value or '')
 
 # ============== Firebase Initialization for Webhooks ==============
 try:
@@ -235,7 +243,7 @@ def vobiz_answer(agent_id):
     #     auto-dispatches the agent. Single-room guarantee.
     direct_dispatch = os.environ.get("LIVEKIT_SIP_DIRECT_DISPATCH", "").strip().lower() in ("1", "true", "yes")
     agent_worker_name = os.environ.get("LIVEKIT_AGENT_NAME", "").strip()
-    caller_id = request.values.get('From', '')
+    caller_id = _clean_phone(request.values.get('From', ''))
 
     if direct_dispatch:
         room_name = f"voice-{agent_id}--{call_uuid}"
@@ -247,9 +255,9 @@ def vobiz_answer(agent_id):
         sip_uri = f"sip:{room_name}@{SIP_DOMAIN}"
         log_suffix = "(direct dispatch, pre-warmed)"
     else:
-        from_number = (request.values.get('From') or '').strip().lstrip('+') or 'caller'
-        # SINGLE ROOM GUARANTEE: In standard SIP mode, we cannot predict the 
-        # random suffix LiveKit will append to the room name. We stop 
+        from_number = _clean_phone(request.values.get('From', '')).lstrip('+') or 'caller'
+        # SINGLE ROOM GUARANTEE: In standard SIP mode, we cannot predict the
+        # random suffix LiveKit will append to the room name. We stop
         # pre-warming here to prevent "ghost rooms" from being created.
         sip_uri = f"sip:{from_number}@{SIP_DOMAIN}"
         log_suffix = "(safe mode, single-room mode)"
@@ -269,8 +277,8 @@ def exotel_answer(agent_id):
     if not _verify_webhook_secret(secret):
         print(f"[Exotel] Rejected: invalid webhook secret for agent {agent_id}")
         return Response("Forbidden", status=403)
-    caller_id = request.values.get('From', '')
-    from_number = caller_id.strip().lstrip('+') or 'caller'
+    caller_id = _clean_phone(request.values.get('From', ''))
+    from_number = caller_id.lstrip('+') or 'caller'
     sip_uri = f"sip:{from_number}@{SIP_DOMAIN}"
     
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>

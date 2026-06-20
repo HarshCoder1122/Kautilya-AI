@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Extensions & Config
-from config import STATIC_FOLDER
+from config import STATIC_FOLDER, FLASK_SECRET_KEY
 from extensions import db, limit_manager
 
 # Import Blueprints
@@ -46,7 +46,10 @@ from routes.projects_routes import projects_bp
 from routes.maps_routes import maps_bp
 
 app = Flask(__name__, static_folder=STATIC_FOLDER)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24).hex())
+# Reuse the single secret resolved in config — previously app.py re-derived its
+# own os.urandom() default, so config and app disagreed on the key whenever
+# FLASK_SECRET_KEY was unset (each import a different random value).
+app.secret_key = FLASK_SECRET_KEY
 
 # Optional Gzip Compression for Performance
 try:
@@ -80,6 +83,7 @@ if _extra:
 # widget gets CORS-blocked on every third-party site.
 CORS(app, resources={
     r"/api/embed/*": {"origins": "*"},
+    r"/api/embed.js": {"origins": "*"},
     r"/api/*": {"origins": _default_origins},
 }, supports_credentials=False)
 
@@ -213,9 +217,6 @@ if _is_scheduler_leader():
     logger.info(f"[App] Miss-you email scheduler started (leader pid={os.getpid()})")
 else:
     logger.info("[App] Miss-you scheduler skipped (another worker is leader)")
-
-# CORS for special endpoints
-CORS(app, resources={r"/embed/*": {"origins": "*"}, r"/embed.js": {"origins": "*"}})
 
 # Global Security & Cache Headers
 @app.after_request

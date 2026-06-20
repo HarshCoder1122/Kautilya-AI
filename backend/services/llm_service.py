@@ -124,7 +124,11 @@ def _nvidia_key_pools():
 # NVIDIA key rotation state
 _nvidia_key_index = 0
 _nvidia_pro_key_index = 0
-_nvidia_key_cooldowns = {}   # key -> unix ts until which it's rate-limited
+# (key, model) -> unix ts until which that key is benched FOR THAT MODEL.
+# Per-MODEL because NVIDIA throttles per model: a 429 on GLM must NOT bench the
+# key for Mistral too (different model = different bucket), else the GLM→Mistral
+# research fallback can never land — it'd see every key as "cooling".
+_nvidia_key_cooldowns = {}
 # How long to bench a key after it 429s, and how many keys to try within ONE
 # request before giving up. Without the per-request retry, a single 429 killed
 # the whole call even with other keys idle — which is why deep research (GLM)
@@ -139,16 +143,16 @@ except ValueError:
     _NVIDIA_MAX_KEY_RETRIES = 4
 
 
-def _mark_nvidia_key_cooldown(key, seconds=None):
-    """Bench a rate-limited key so the rotation skips it for a while."""
+def _mark_nvidia_key_cooldown(key, model, seconds=None):
+    """Bench a rate-limited key FOR ONE MODEL so rotation skips it for a while."""
     if key:
-        _nvidia_key_cooldowns[key] = time.time() + (seconds or _NVIDIA_KEY_COOLDOWN_SECONDS)
+        _nvidia_key_cooldowns[(key, model)] = time.time() + (seconds or _NVIDIA_KEY_COOLDOWN_SECONDS)
 
 
-def _pick_from_pool(pool, which):
-    """Round-robin `pool`, skipping keys currently in cooldown. `which` selects
-    the cursor ('pro' or 'free'). Falls back to the soonest-recovering key if
-    every key in the pool is cooling down."""
+def _pick_from_pool(pool, which, model):
+    """Round-robin `pool`, skipping keys currently benched for `model`. `which`
+    selects the cursor ('pro' or 'free'). Falls back to the soonest-recovering
+    key if every key in the pool is cooling down for this model."""
     global _nvidia_key_index, _nvidia_pro_key_index
     n = len(pool)
     if n == 0:
@@ -161,16 +165,16 @@ def _pick_from_pool(pool, which):
         else:
             key = pool[_nvidia_key_index % n]
             _nvidia_key_index = (_nvidia_key_index + 1) % n
-        if _nvidia_key_cooldowns.get(key, 0) <= now:
+        if _nvidia_key_cooldowns.get((key, model), 0) <= now:
             return key
-    return min(pool, key=lambda k: _nvidia_key_cooldowns.get(k, 0))
+    return min(pool, key=lambda k: _nvidia_key_cooldowns.get((k, model), 0))
 
 
 # NVIDIA key rotation function
-def _get_available_nvidia_key(is_pro=None):
-    """Pick an NVIDIA key, skipping rate-limited ones. PRO requests prefer the
-    reserved lane (falling back to the shared pool only if all reserved keys are
-    cooling down); free requests rotate only the shared pool. `is_pro=None`
+def _get_available_nvidia_key(is_pro=None, model=""):
+    """Pick an NVIDIA key, skipping ones benched for `model`. PRO requests prefer
+    the reserved lane (falling back to the shared pool only if all reserved keys
+    are cooling down); free requests rotate only the shared pool. `is_pro=None`
     falls back to the per-request contextvar so most callers pass nothing."""
     if not NVIDIA_API_KEYS:
         return None
@@ -179,12 +183,12 @@ def _get_available_nvidia_key(is_pro=None):
     shared, reserved = _nvidia_key_pools()
     if is_pro and reserved:
         now = time.time()
-        k = _pick_from_pool(reserved, 'pro')
-        if k and _nvidia_key_cooldowns.get(k, 0) <= now:
+        k = _pick_from_pool(reserved, 'pro', model)
+        if k and _nvidia_key_cooldowns.get((k, model), 0) <= now:
             return k
         # reserved lane is saturated → let PRO borrow the shared pool
-        return _pick_from_pool(shared or NVIDIA_API_KEYS, 'free') or k
-    return _pick_from_pool(shared or NVIDIA_API_KEYS, 'free')
+        return _pick_from_pool(shared or NVIDIA_API_KEYS, 'free', model) or k
+    return _pick_from_pool(shared or NVIDIA_API_KEYS, 'free', model)
 
 
 # ── NVIDIA keep-warm heartbeat — REMOVED ─────────────────────────────────
@@ -704,14 +708,14 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
         last_status = None
         attempts = max(1, min(len(NVIDIA_API_KEYS), _NVIDIA_MAX_KEY_RETRIES))
         for _attempt in range(attempts):
-            picked = _get_available_nvidia_key(is_pro)
-            # If the rotator can only hand back a key that's STILL in cooldown,
-            # every key in the pool is benched from a recent 429. Firing anyway
-            # just earns another guaranteed 429 and re-benches the key — we'd be
-            # rate-limiting ourselves into a deeper hole (this is exactly what
-            # killed Deep Research: its 2s/4s synth retries kept slamming keys
-            # benched for 30s). Bail out so the caller's fallback fires now.
-            if picked and _nvidia_key_cooldowns.get(picked, 0) > time.time():
+            picked = _get_available_nvidia_key(is_pro, model)
+            # If the rotator can only hand back a key that's STILL in cooldown
+            # for THIS model, every key is benched from a recent 429. Firing
+            # anyway just earns another guaranteed 429 and re-benches the key —
+            # we'd be rate-limiting ourselves into a deeper hole (this is exactly
+            # what killed Deep Research: its 2s/4s synth retries kept slamming
+            # keys benched for 30s). Bail out so the caller's fallback fires now.
+            if picked and _nvidia_key_cooldowns.get((picked, model), 0) > time.time():
                 last_status = last_status or 429
                 print(f"[NVIDIA] all keys cooling down — skipping doomed 429 (model {model})")
                 break
@@ -744,9 +748,23 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
             # Rate-limited / transient upstream error → cool this key and try
             # the next one. Other 4xx (400/401/404) won't change across keys.
             if resp.status_code in (429, 500, 502, 503, 504):
-                _mark_nvidia_key_cooldown(nvidia_api_key)
+                _mark_nvidia_key_cooldown(nvidia_api_key, model)
+                # On a 429, log WHY NVIDIA throttled — the body + rate-limit
+                # headers say whether it was a requests/min, tokens/min, or
+                # concurrency limit, and for how long (Retry-After). This is the
+                # only way to know if input or output VOLUME is the real cause
+                # instead of guessing. (Also reveals if every key shares ONE
+                # account's bucket — then they all 429 together regardless.)
+                diag = ""
+                if resp.status_code == 429:
+                    try:
+                        rl_hdrs = {k: v for k, v in resp.headers.items()
+                                   if k.lower().startswith(("x-ratelimit", "ratelimit", "retry-after"))}
+                        diag = f" | hdrs={rl_hdrs} body={resp.text[:300]!r}"
+                    except Exception:
+                        pass
                 print(f"[NVIDIA] {resp.status_code} on key — cooling down, retrying "
-                      f"({_attempt + 1}/{attempts}, model {model})")
+                      f"({_attempt + 1}/{attempts}, model {model}){diag}")
                 try: resp.close()
                 except Exception: pass
                 resp = None

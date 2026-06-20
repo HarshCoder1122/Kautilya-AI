@@ -11,6 +11,7 @@ import { ToolResultCards } from "./ToolResultCards";
 import { ttsAPI } from "../../lib/api";
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { MermaidDiagram, SvgBlock } from "./MermaidDiagram";
 
 const CALENDAR_RE = /https?:\/\/(calendar\.google\.com|meet\.google\.com|zoom\.us|teams\.microsoft\.com)[^\s\)\]"<]*/g;
 
@@ -812,6 +813,18 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
               const match = /language-(\w+)/.exec(className || '');
               const lang = match ? match[1] : '';
               const codeString = String(children).replace(/\n$/, '');
+
+              // Claude-style inline diagrams: a ```mermaid block renders as a
+              // live, theme-matched SVG right inside the bubble; a ```svg block
+              // renders sanitised in a locked sandbox. Both stay out of the
+              // syntax-highlighter path below.
+              if (!inline && lang === 'mermaid') {
+                return <MermaidDiagram code={codeString} streaming={isLiveStreaming} />;
+              }
+              if (!inline && (lang === 'svg' ||
+                  (!lang && codeString.includes('\n') && codeString.trim().startsWith('<svg')))) {
+                return <SvgBlock code={codeString} />;
+              }
 
               // Stray-fragment guard: react-markdown promotes single chars to
               // "block" code when the model emits a half-finished fence mid-

@@ -1431,7 +1431,17 @@ def _safe_math_eval(expr: str):
                 return node.value
             raise ValueError("only numeric constants allowed")
         if isinstance(node, ast.BinOp) and isinstance(node.op, allowed_bin):
-            return _BINOPS[type(node.op)](_ev(node.left), _ev(node.right))
+            left = _ev(node.left)
+            right = _ev(node.right)
+            # Cap exponent/shift magnitude: `9**9**9` or `1<<10**9` would peg a
+            # CPU / exhaust memory computing a giant int inside the web worker.
+            if isinstance(node.op, (ast.Pow, ast.LShift)):
+                try:
+                    if abs(right) > 1000:
+                        raise ValueError("exponent/shift too large")
+                except TypeError:
+                    pass
+            return _BINOPS[type(node.op)](left, right)
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, allowed_unary):
             v = _ev(node.operand)
             return +v if isinstance(node.op, ast.UAdd) else -v
