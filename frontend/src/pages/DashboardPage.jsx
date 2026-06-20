@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
 import {
   Robot, Users, Megaphone, Phone, ChartBar, ChatCircleDots,
-  Gear, SignOut, CaretLeft, SpeakerHigh, PlugsConnected, Terminal, List, CreditCard, Microphone
+  Gear, SignOut, CaretLeft, SpeakerHigh, PlugsConnected, Terminal, List, CreditCard, Microphone, Sparkle
 } from "@phosphor-icons/react";
 import { ThemeToggle } from "@/components/shared/ThemeToggle";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -21,9 +21,11 @@ import UserSettings from "@/components/dashboard/UserSettings";
 import Integrations from "@/components/dashboard/Integrations";
 import DeveloperAPI from "@/components/dashboard/DeveloperAPI";
 import Billing from "@/components/dashboard/Billing";
+import KautilyaClaw from "@/components/dashboard/KautilyaClaw";
 
 const navItems = [
   { id: 'agents', label: 'Agent Studio', icon: Robot, path: '/dashboard' },
+  { id: 'kautilyaclaw', label: 'KautilyaClaw', icon: Sparkle, path: '/dashboard/kautilyaclaw' },
   { id: 'leads', label: 'Leads', icon: Users, path: '/dashboard/leads' },
   { id: 'campaigns', label: 'Campaigns', icon: Megaphone, path: '/dashboard/campaigns' },
   { id: 'calls', label: 'Call Analytics', icon: Phone, path: '/dashboard/calls' },
@@ -157,6 +159,7 @@ export default function DashboardPage({ theme, toggleTheme, user }) {
         </div>
         <Routes>
           <Route index element={<AgentStudio />} />
+          <Route path="kautilyaclaw" element={<KautilyaClaw />} />
           <Route path="agents/:agentId" element={<AgentDetailPage />} />
           <Route path="leads" element={<LeadManagement />} />
           <Route path="campaigns" element={<CampaignDialer />} />

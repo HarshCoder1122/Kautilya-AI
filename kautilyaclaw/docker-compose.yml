@@ -1,0 +1,31 @@
+# ============================================================================
+#  KautilyaClaw — 24/7 via Docker Compose.
+#    cp .env.example .env && nano .env
+#    docker compose up -d --build
+#    docker compose logs -f
+# ============================================================================
+services:
+  kautilyaclaw:
+    build: .
+    container_name: kautilyaclaw
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Surface every config var to envsubst + OpenClaw inside the container.
+      KAUTILYA_BASE_URL: ${KAUTILYA_BASE_URL}
+      KAUTILYA_API_KEY: ${KAUTILYA_API_KEY}
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_ALLOW_FROM: ${TELEGRAM_ALLOW_FROM}
+      WHATSAPP_ALLOW_FROM: ${WHATSAPP_ALLOW_FROM}
+    ports:
+      - "${OPENCLAW_PORT:-18789}:18789"
+    volumes:
+      # Persist config, memory, skills, and channel logins across restarts.
+      - kautilyaclaw_data:/data/.openclaw
+    # If `openclaw gateway` isn't the right subcommand for your version,
+    # uncomment and adjust (run `docker compose run --rm kautilyaclaw openclaw --help`):
+    # command: ["openclaw", "gateway", "run"]
+
+volumes:
+  kautilyaclaw_data:

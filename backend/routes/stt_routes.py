@@ -11,10 +11,12 @@ logger = logging.getLogger(__name__)
 
 stt_bp = Blueprint('stt', __name__)
 
-# RevealIQ STT Space (Nemotron 3.5 streaming ASR, ONNX INT4). Separate Space
-# from the TTS one — override with STT_SPACE_BASE if the repo name differs.
+# RevealIQ STT (Nemotron 3.5 streaming ASR, ONNX INT4). STT now lives in the
+# SAME Space as TTS (RevealIQ-ASR) — the two were merged into one cpu-basic
+# Space to fit the HF quota. Endpoints are disjoint (/v1/audio/transcriptions
+# here vs /v1/audio/speech for TTS). Override with STT_SPACE_BASE if needed.
 STT_BASE = (os.environ.get('STT_SPACE_BASE')
-            or 'https://HarshSharma1212-RevealIQ-STT.hf.space').rstrip('/')
+            or 'https://HarshSharma1212-RevealIQ-ASR.hf.space').rstrip('/')
 
 
 def _hf_headers():

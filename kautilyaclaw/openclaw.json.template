@@ -1,0 +1,93 @@
+// ============================================================================
+//  KautilyaClaw — OpenClaw running entirely on Kautilya AI (by RevealIQ) models
+//  ----------------------------------------------------------------------------
+//  This is the heart of KautilyaClaw. It points OpenClaw's agent runtime at the
+//  Kautilya OpenAI-compatible endpoint (/v1/chat/completions) instead of
+//  Anthropic/OpenAI. The bot's "brain" therefore runs on YOUR infra
+//  (NVIDIA NIM / Groq behind backend/routes/openai_compat_routes.py).
+//
+//  ${VARS} are filled from .env by setup.sh / entrypoint.sh (envsubst). OpenClaw
+//  itself ALSO expands ${VARS} at runtime, so this works either way.
+//  This file is JSON5: comments and trailing commas are allowed.
+// ============================================================================
+{
+  agents: {
+    defaults: {
+      // provider-id/model-id — this is the model the bot thinks with.
+      // Kimi K2.6 (kautilya-coder) is the strongest agentic/tool-use tier.
+      model: { primary: "kautilya/kautilya-coder" },
+
+      // Per-session Docker sandbox for non-main sessions (groups/channels).
+      // The agent can run code/commands — keep untrusted sessions isolated.
+      sandbox: { mode: "non-main" }
+    }
+  },
+
+  models: {
+    // "replace" = ONLY Kautilya models exist (true KimiClaw-style — no Claude,
+    // no GPT). If the runtime ever complains about a missing built-in, switch
+    // this to "merge".
+    mode: "replace",
+    providers: {
+      kautilya: {
+        // Your Kautilya backend's OpenAI-compatible base, e.g.
+        //   https://api.kautilya.your-domain.com/v1
+        baseUrl: "${KAUTILYA_BASE_URL}",
+        // Use the master KAUTILYA_API_KEY → maps to uid "admin" → UNMETERED
+        // (bypasses the per-user daily Developer-API cap). The agentic loop
+        // makes many calls per task, so a metered key would throttle the bot.
+        apiKey: "${KAUTILYA_API_KEY}",
+        api: "openai-completions",
+        timeoutSeconds: 300,
+        models: [
+          {
+            id: "kautilya-coder",
+            name: "Kautilya Coder",
+            reasoning: false,
+            input: ["text"],
+            contextWindow: 256000,
+            maxTokens: 32768,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+          },
+          {
+            id: "kautilya-pro",
+            name: "Kautilya Pro",
+            reasoning: true,
+            input: ["text"],
+            contextWindow: 128000,
+            maxTokens: 16384,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+          },
+          {
+            id: "kautilya-daily",
+            name: "Kautilya Daily",
+            reasoning: false,
+            input: ["text"],
+            contextWindow: 64000,
+            maxTokens: 8192,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+          }
+        ]
+      }
+    }
+  },
+
+  channels: {
+    // ---- Telegram (easiest to start with: just a bot token) ----
+    telegram: {
+      enabled: true,
+      botToken: "${TELEGRAM_BOT_TOKEN}",
+      // Only YOU (and anyone you list) can talk to the bot. Numeric Telegram
+      // user IDs — get yours from @userinfobot. Add more inside the array.
+      dmPolicy: "allowlist",
+      allowFrom: ["${TELEGRAM_ALLOW_FROM}"]
+    },
+
+    // ---- WhatsApp (links via QR scan on first run — see README) ----
+    whatsapp: {
+      enabled: true,
+      // Phone numbers (with country code, no +) allowed to message the bot.
+      allowFrom: ["${WHATSAPP_ALLOW_FROM}"]
+    }
+  }
+}

@@ -44,6 +44,7 @@ from routes.stt_routes import stt_bp
 from routes.analytics_routes import analytics_bp
 from routes.projects_routes import projects_bp
 from routes.maps_routes import maps_bp
+from routes.claw_routes import claw_bp
 
 app = Flask(__name__, static_folder=STATIC_FOLDER)
 # Reuse the single secret resolved in config — previously app.py re-derived its
@@ -112,6 +113,7 @@ app.register_blueprint(stt_bp, url_prefix='/api')
 app.register_blueprint(analytics_bp, url_prefix='/api')
 app.register_blueprint(projects_bp, url_prefix='/api')
 app.register_blueprint(maps_bp, url_prefix='/api')
+app.register_blueprint(claw_bp, url_prefix='/api')  # KautilyaClaw — per-user Telegram agents
 
 # Boot MCP (Model Context Protocol) client — spawns enabled stdio servers
 # from mcp_config.json and registers their tools with the agent loop.
