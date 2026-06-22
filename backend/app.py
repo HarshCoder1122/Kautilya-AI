@@ -113,6 +113,15 @@ app.register_blueprint(analytics_bp, url_prefix='/api')
 app.register_blueprint(projects_bp, url_prefix='/api')
 app.register_blueprint(maps_bp, url_prefix='/api')
 
+# Keep our free HF Spaces (RevealIQ-ASR for STT/TTS, KautilyaVoice for the
+# LiveKit agent) warm. ONE pinger for the whole deployment — single-flighted
+# across all gunicorn workers (see services/warmup_service.py).
+try:
+    from services.warmup_service import start_warmup_once
+    start_warmup_once()
+except Exception as _warm_e:
+    logger.warning(f"[App] Space warmup not started: {_warm_e}")
+
 # Boot MCP (Model Context Protocol) client — spawns enabled stdio servers
 # from mcp_config.json and registers their tools with the agent loop.
 try:

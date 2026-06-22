@@ -24,17 +24,9 @@ def _hf_headers():
     return {'Authorization': f'Bearer {hf_token}'} if hf_token else {}
 
 
-def _warmup_stt():
-    """Ping the STT Space every 4 minutes to keep it warm (free CPU sleeps)."""
-    while True:
-        try:
-            requests.get(f'{STT_BASE}/health', headers=_hf_headers(), timeout=10)
-        except Exception:
-            pass
-        time.sleep(240)
-
-
-threading.Thread(target=_warmup_stt, daemon=True).start()
+# NOTE: keep-warm pinging moved to services/warmup_service.py — a SINGLE
+# single-flighted pinger for the whole deployment (was 12 workers × 2 modules =
+# 24 threads hammering /health). Started once from app.py.
 
 
 @stt_bp.route('/stt/revealiq/status', methods=['GET', 'OPTIONS'])

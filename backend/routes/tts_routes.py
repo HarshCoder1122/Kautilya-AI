@@ -14,18 +14,9 @@ tts_bp = Blueprint('tts', __name__)
 
 REVEALIQ_BASE = 'https://HarshSharma1212-RevealIQ-ASR.hf.space'
 
-def _warmup_revealiq():
-    """Ping the RevealIQ Space every 4 minutes to prevent cold starts."""
-    hf_token = os.environ.get('REVEALIQ_HF_TOKEN') or os.environ.get('HF_TOKEN')
-    headers = {'Authorization': f'Bearer {hf_token}'} if hf_token else {}
-    while True:
-        try:
-            requests.get(f'{REVEALIQ_BASE}/health', headers=headers, timeout=10)
-        except Exception:
-            pass
-        time.sleep(240)
-
-threading.Thread(target=_warmup_revealiq, daemon=True).start()
+# NOTE: keep-warm pinging moved to services/warmup_service.py (one single-
+# flighted pinger for STT + TTS + voice, instead of one thread per worker per
+# module). Started once from app.py.
 
 
 @tts_bp.route('/tts/revealiq/stream', methods=['POST', 'OPTIONS'])
