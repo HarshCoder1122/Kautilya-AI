@@ -16,19 +16,22 @@ RUN apt-get update \
 
 RUN npm install -g openclaw@latest
 
-# HF Spaces execute the container as UID 1000.
-RUN useradd -m -u 1000 user
-USER user
-ENV HOME=/home/user
-WORKDIR /home/user/app
+# node:24 already ships a non-root user "node" at UID 1000 (exactly what HF
+# requires) — reuse it instead of creating a new UID-1000 user (which collides).
+ENV HOME=/home/node
+WORKDIR /home/node/app
 
-COPY --chown=user:user openclaw.json.template ./openclaw.json.template
-COPY --chown=user:user entrypoint.sh ./entrypoint.sh
-RUN chmod +x ./entrypoint.sh
+COPY --chown=node:node openclaw.json.template ./openclaw.json.template
+COPY --chown=node:node entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh \
+ && mkdir -p /data \
+ && chown -R node:node /data /home/node/app
+
+USER node
 
 # Bind to all interfaces so HF can route to the gateway. Port 18789 must match
 # `app_port` in the Space README front-matter.
 ENV OPENCLAW_GATEWAY_BIND=custom:0.0.0.0
 EXPOSE 18789
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/home/user/app/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/home/node/app/entrypoint.sh"]

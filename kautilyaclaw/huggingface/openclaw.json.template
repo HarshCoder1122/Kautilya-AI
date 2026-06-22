@@ -7,10 +7,23 @@
 {
   agents: {
     defaults: {
-      model: { primary: "kautilya/kautilya-coder" },
+      model: { primary: "kautilya/kautilya-daily" },
       // HF Spaces cannot spawn nested Docker containers → sandbox MUST be off.
       sandbox: { mode: "off" }
     }
+  },
+
+  // The Control UI is opened at the Space's own public URL, but the gateway
+  // only allows localhost origins by default → "Browser origin not allowed".
+  // Allow the Space origin so the console can connect over WebSocket.
+  gateway: {
+    controlUi: {
+      allowedOrigins: ["https://harshsharma1212-kautilyaclaw.hf.space"]
+    },
+    // HF routes the browser through an internal proxy (10.x); trust it so the
+    // token-authenticated Control UI WebSocket isn't rejected as "untrusted
+    // address" (which was closing the connection before connect).
+    trustedProxies: ["127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
   },
 
   models: {

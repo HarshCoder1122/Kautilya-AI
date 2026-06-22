@@ -654,26 +654,6 @@ export const ttsAPI = {
   },
 };
 
-// KautilyaClaw — each user's personal multi-tenant Telegram agent.
-// All calls are authenticated (firebase token via the axios interceptor); the
-// backend runs the bot as the caller's uid, so the user's own tier limits apply.
-export const clawAPI = {
-  get: async () => (await api.get('/api/claw')).data,
-  update: async (payload) => (await api.post('/api/claw/update', payload)).data,
-  web: {
-    chat: async (message, sessionId = 'web') =>
-      (await api.post('/api/claw/web/chat', { message, session_id: sessionId })).data,
-  },
-  telegram: {
-    setup: async (payload) => (await api.post('/api/claw/telegram/setup', payload)).data,
-    remove: async () => (await api.post('/api/claw/telegram/delete')).data,
-  },
-  whatsapp: {
-    setup: async (payload) => (await api.post('/api/claw/whatsapp/setup', payload)).data,
-    remove: async () => (await api.post('/api/claw/whatsapp/delete')).data,
-  },
-};
-
 // STT API — RevealIQ STT Studio (Nemotron 3.5 streaming ASR on HF CPU Space).
 // Always goes through the backend proxy so HF auth / rate-limit / billing apply.
 export const sttAPI = {

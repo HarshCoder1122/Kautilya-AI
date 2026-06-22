@@ -432,6 +432,66 @@ def claw_web_chat():
     return jsonify({"reply": reply})
 
 
+# ───────────── real OpenClaw console (per-user, owner-only link) ─────────────
+# Each user links their OWN hosted OpenClaw (Clawdbot) console — its URL + gateway
+# token are stored under THEIR uid and only ever returned to that same uid. So a
+# Clawdbot linked to one account is invisible/inaccessible to every other user.
+@claw_bp.route('/claw/openclaw', methods=['GET', 'OPTIONS'])
+@cross_origin()
+def claw_openclaw_get():
+    if request.method == 'OPTIONS':
+        return '', 200
+    from extensions import db
+    uid = _uid()
+    if not uid:
+        return jsonify({"error": "Authentication required"}), 401
+    doc = db.collection('claws').document(uid).get()
+    d = doc.to_dict() if doc.exists else {}
+    url = (d or {}).get('openclaw_url')
+    tok = (d or {}).get('openclaw_token')
+    if url and tok:
+        sep = '&' if '?' in url else '?'
+        return jsonify({"linked": True, "console_url": f"{url}{sep}token={tok}", "base_url": url})
+    return jsonify({"linked": False})
+
+
+@claw_bp.route('/claw/openclaw/link', methods=['POST', 'OPTIONS'])
+@cross_origin()
+def claw_openclaw_link():
+    if request.method == 'OPTIONS':
+        return '', 200
+    from extensions import db
+    from firebase_admin import firestore
+    uid = _uid()
+    if not uid:
+        return jsonify({"error": "Authentication required"}), 401
+    b = request.get_json(silent=True) or {}
+    url = (b.get('url') or '').strip().rstrip('/')
+    tok = (b.get('token') or '').strip()
+    if not url.startswith('http') or not tok:
+        return jsonify({"error": "A valid console URL and gateway token are required."}), 400
+    db.collection('claws').document(uid).set({
+        "uid": uid, "openclaw_url": url, "openclaw_token": tok,
+        "updated_at": firestore.SERVER_TIMESTAMP,
+    }, merge=True)
+    return jsonify({"ok": True})
+
+
+@claw_bp.route('/claw/openclaw/unlink', methods=['POST', 'OPTIONS'])
+@cross_origin()
+def claw_openclaw_unlink():
+    if request.method == 'OPTIONS':
+        return '', 200
+    from extensions import db
+    uid = _uid()
+    if not uid:
+        return jsonify({"error": "Authentication required"}), 401
+    ref = db.collection('claws').document(uid)
+    if ref.get().exists:
+        ref.update({"openclaw_url": None, "openclaw_token": None})
+    return jsonify({"ok": True})
+
+
 # ───────────────────────── inbound webhooks ─────────────────────────
 @claw_bp.route('/claw/tg/<secret>', methods=['POST'])
 def claw_tg_inbound(secret):
