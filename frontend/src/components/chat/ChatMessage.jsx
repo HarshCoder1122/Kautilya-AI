@@ -12,7 +12,7 @@ import { ttsAPI } from "../../lib/api";
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { MermaidDiagram, SvgBlock } from "./MermaidDiagram";
-import { QuestionPrompt } from "./QuestionPrompt";
+import { extractQuestionBlock } from "../../lib/questionBlock";
 
 const CALENDAR_RE = /https?:\/\/(calendar\.google\.com|meet\.google\.com|zoom\.us|teams\.microsoft\.com)[^\s\)\]"<]*/g;
 
@@ -339,7 +339,7 @@ const agentBadge = {
   sales: { icon: ChartBar, label: 'Sales Agent', color: 'text-amber-400', bg: 'bg-amber-400/10' },
 };
 
-export function ChatMessage({ message, onOpenArtifact, onRegenerate, onAnswer, isLast = false }) {
+export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
   const [copied, setCopied] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isSynthesizing, setIsSynthesizing] = useState(false);
@@ -374,7 +374,11 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate, onAnswer, i
 
   const { sources: extractedSources, cleanText } = extractSources(message.responseText || normalizedContent || '');
   const agent = message.agentType ? agentBadge[message.agentType] : null;
-  const rawContent = cleanText
+  // Strip any ```question/```ask block — it's rendered as a card docked above
+  // the composer (by ChatMain), never inline, so the raw JSON must not leak
+  // into the message even when the model emits the fence mid-line.
+  const { cleaned: contentSansQuestion } = extractQuestionBlock(cleanText);
+  const rawContent = contentSansQuestion
     .replace(/<think>[\s\S]*?<\/think>/g, '')
     .trim();
 
@@ -840,16 +844,11 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate, onAnswer, i
               if (!inline && lang === 'mermaid') {
                 return <MermaidDiagram code={codeString} streaming={isLiveStreaming} />;
               }
-              // Interactive question card — clickable only on the latest message
-              // and once the stream is done (mid-stream JSON is incomplete).
+              // Interactive question blocks are stripped from the message and
+              // rendered as a card docked above the composer (see ChatMain), so
+              // any that slip through to markdown render nothing inline.
               if (!inline && (lang === 'question' || lang === 'ask')) {
-                return (
-                  <QuestionPrompt
-                    code={codeString}
-                    interactive={isLast && !isLiveStreaming}
-                    onAnswer={onAnswer}
-                  />
-                );
+                return null;
               }
               if (!inline && (lang === 'svg' ||
                   (!lang && codeString.includes('\n') && codeString.trim().startsWith('<svg')))) {

@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning, Columns, CaretDown, X, Microphone, MicrophoneSlash, Phone, StopCircle, File, Image, Camera, HardDrive, Cpu, Brain, Diamond, Lock } from "@phosphor-icons/react";
 import { ChatMessage } from "@/components/chat/ChatMessage";
+import { QuestionPrompt } from "@/components/chat/QuestionPrompt";
+import { extractQuestionBlock, parseQuestion } from "../../lib/questionBlock";
 import { ThinkingTokens } from "@/components/chat/ThinkingTokens";
 import { LiveKitVoice } from "@/components/chat/LiveKitVoice";
 import { chatAPI, getAuthHeaders, integrationsAPI } from "../../lib/api";
@@ -1121,12 +1123,6 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
             <ChatMessage
               key={msg.id}
               message={msg}
-              isLast={index === messages.length - 1}
-              onAnswer={(text) => {
-                if (!text || isStreaming) return;
-                setInputValue(text);
-                setTimeout(() => handleSend(), 60);
-              }}
               onRegenerate={async (failedMsg) => {
                 const userMsgIndex = messages.findIndex(m => m.id === failedMsg.id) - 1;
                 if (userMsgIndex >= 0) {
@@ -1246,6 +1242,28 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
               <span>Recording… click Stop Voice to finish</span>
             </div>
           )}
+
+          {/* Interactive question — docked right above the composer (Claude-style)
+              when the latest assistant turn asks one. Picking an option / typing
+              a custom reply sends it as the next message. */}
+          {(() => {
+            const last = messages[messages.length - 1];
+            if (!last || last.role !== 'assistant' || last.streaming || isStreaming) return null;
+            const content = last.responseText || (typeof last.content === 'string' ? last.content : '');
+            const { code } = extractQuestionBlock(content);
+            if (!code || !parseQuestion(code)) return null;
+            return (
+              <QuestionPrompt
+                code={code}
+                interactive
+                onAnswer={(text) => {
+                  if (!text || isStreaming) return;
+                  setInputValue(text);
+                  setTimeout(() => handleSend(), 60);
+                }}
+              />
+            );
+          })()}
 
           <div className="relative flex items-end border border-[var(--k-border)] rounded-lg bg-[var(--k-surface)] focus-within:ring-1 focus-within:ring-[var(--k-brand)] transition-all duration-200">
             <input

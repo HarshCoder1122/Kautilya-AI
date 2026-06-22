@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Question, PencilSimple, ArrowRight, Check } from "@phosphor-icons/react";
+import { parseQuestion } from "../../lib/questionBlock";
 
 /* ──────────────────────────────────────────────────────────────────────────
  * Interactive question prompt — Claude-style. When the assistant needs a
@@ -19,41 +20,6 @@ import { Question, PencilSimple, ArrowRight, Check } from "@phosphor-icons/react
  * the user's next message via onAnswer(). The card is only interactive on the
  * latest message — older ones render as a read-only record of what was asked.
  * ────────────────────────────────────────────────────────────────────────── */
-
-/** Tolerant parse of the fenced JSON — model output isn't always perfect, and
- * mid-stream the block is incomplete. Returns null until it's valid. */
-function parseQuestion(raw) {
-  const src = (raw || "").trim();
-  if (!src) return null;
-  let data;
-  try {
-    data = JSON.parse(src);
-  } catch {
-    // Salvage attempt: grab the outermost {...} (handles trailing prose).
-    const a = src.indexOf("{");
-    const b = src.lastIndexOf("}");
-    if (a < 0 || b <= a) return null;
-    try { data = JSON.parse(src.slice(a, b + 1)); } catch { return null; }
-  }
-  if (!data || typeof data !== "object") return null;
-  const question = String(data.question || data.prompt || data.title || "").trim();
-  const rawOpts = Array.isArray(data.options) ? data.options
-    : Array.isArray(data.choices) ? data.choices : [];
-  const options = rawOpts
-    .map((o) => (typeof o === "string"
-      ? { label: o.trim(), description: "" }
-      : { label: String(o.label ?? o.text ?? o.value ?? "").trim(),
-          description: String(o.description ?? o.detail ?? "").trim() }))
-    .filter((o) => o.label);
-  if (!question || options.length === 0) return null;
-  return {
-    question,
-    options,
-    allowCustom: data.allowCustom !== false, // default on
-    multiSelect: Boolean(data.multiSelect || data.multi),
-    skipLabel: typeof data.skipLabel === "string" ? data.skipLabel : "Skip",
-  };
-}
 
 export function QuestionPrompt({ code, interactive = true, onAnswer }) {
   const data = useMemo(() => parseQuestion(code), [code]);
