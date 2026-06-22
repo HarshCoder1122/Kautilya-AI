@@ -852,7 +852,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
               }
               if (!inline && (lang === 'svg' ||
                   (!lang && codeString.includes('\n') && codeString.trim().startsWith('<svg')))) {
-                return <SvgBlock code={codeString} />;
+                return <SvgBlock code={codeString} streaming={isLiveStreaming} />;
               }
 
               // Stray-fragment guard: react-markdown promotes single chars to

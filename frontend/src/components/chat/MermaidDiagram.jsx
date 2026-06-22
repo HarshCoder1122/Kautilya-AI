@@ -110,11 +110,18 @@ function repairSvg(src) {
   const start = s.indexOf("<svg");
   if (start < 0) return s;            // no svg at all — caller handles
   if (start > 0) s = s.slice(start);  // strip any leading prose/fence remnants
-  // Truncated mid-tag (e.g. "…<rect x=\"1") — the last '<' has no closing '>'.
-  const lastLt = s.lastIndexOf("<");
-  const lastGt = s.lastIndexOf(">");
-  if (lastLt > lastGt) s = s.slice(0, lastLt).trimEnd();
-  if (!/<\/svg>\s*$/i.test(s)) s += "</svg>";
+  const close = s.toLowerCase().lastIndexOf("</svg>");
+  if (close >= 0) {
+    // Closed — drop any trailing fence/prose after </svg> so the output is
+    // stable (a growing tail would otherwise re-trigger renders / flicker).
+    s = s.slice(0, close + 6);
+  } else {
+    // Truncated mid-draw: drop a dangling partial tag, then close it.
+    const lastLt = s.lastIndexOf("<");
+    const lastGt = s.lastIndexOf(">");
+    if (lastLt > lastGt) s = s.slice(0, lastLt).trimEnd();
+    s += "</svg>";
+  }
   return s;
 }
 
@@ -139,15 +146,18 @@ function sanitizeSvg(src) {
  * SVG's own <style> blocks and id refs (url(#grad)) contained — so they can't
  * leak onto the page or collide between two diagrams — while still painting
  * instantly (no iframe document spin-up, no frame-src CSP gate). */
-function ShadowSvg({ html, svgCss = "max-width:100%;height:auto", className = "", onClick }) {
+function ShadowSvg({ html, svgCss = "max-width:100%;height:auto", className = "", style, onClick }) {
   const hostRef = useRef(null);
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     const root = host.shadowRoot || host.attachShadow({ mode: "open" });
-    root.innerHTML = `<style>:host{display:block}svg{display:block;margin:0 auto;${svgCss}}</style>${html || ""}`;
+    // Flex-center so a width:100% / viewBox-only SVG fills the host's box. The
+    // host MUST have a defined size (w-full inline, explicit style in the zoom
+    // overlay) — otherwise a percentage-sized SVG collapses to 0 and shows blank.
+    root.innerHTML = `<style>:host{display:flex;align-items:center;justify-content:center}svg{display:block;${svgCss}}</style>${html || ""}`;
   }, [html, svgCss]);
-  return <div ref={hostRef} className={className} onClick={onClick} />;
+  return <div ref={hostRef} className={className} style={style} onClick={onClick} />;
 }
 
 function downloadBlob(blob, filename) {
@@ -410,17 +420,24 @@ export function MermaidDiagram({ code, streaming = false, title = "Diagram" }) {
 }
 
 /* ── Raw SVG block (sandboxed) ─────────────────────────────────────────────── */
-export function SvgBlock({ code, title = "Vector graphic" }) {
+export function SvgBlock({ code, title = "Vector graphic", streaming = false }) {
   const [copied, setCopied] = useState(false);
   const [zoom, setZoom] = useState(false);
   const source = (code || "").trim();
 
-  // Repair (truncation-tolerant) then sanitise once. We render the SVG inline
-  // — model-authored SVG is untrusted, so DOMPurify strips <script>/onload —
-  // which paints instantly and, unlike the old sandboxed iframe, isn't gated
-  // by the page's frame-src CSP (the reason the box was rendering blank).
-  const repaired = useMemo(() => repairSvg(source), [source]);
-  const safeSvg = useMemo(() => sanitizeSvg(repaired), [repaired]);
+  // Anti-flicker: while the SVG is still streaming/typing in, `source` grows on
+  // every chunk and re-rendering each partial repaints (and flashes) the whole
+  // graphic. So hold a calm placeholder until the SVG is COMPLETE (its </svg>
+  // has arrived), then render once. A genuinely-truncated final SVG (no </svg>
+  // but the stream has finished) still renders via repairSvg.
+  const isComplete = /<\/svg\s*>/i.test(source);
+  const ready = isComplete || !streaming;
+
+  // Repair (truncation-tolerant) then sanitise. Rendered inline (model SVG is
+  // untrusted, so DOMPurify strips <script>/onload) — paints instantly and,
+  // unlike the old sandboxed iframe, isn't gated by the page's frame-src CSP.
+  const repaired = useMemo(() => (ready ? repairSvg(source) : ""), [source, ready]);
+  const safeSvg = useMemo(() => (ready ? sanitizeSvg(repaired) : ""), [repaired, ready]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(source).catch(() => {});
@@ -436,6 +453,26 @@ export function SvgBlock({ code, title = "Vector graphic" }) {
       handleDownloadSvg();
     }
   };
+
+  // Still drawing (streaming, not yet closed) → calm placeholder, no flicker.
+  if (!ready) {
+    return (
+      <div className="my-4 rounded-xl overflow-hidden border border-[var(--k-border)] bg-black/20 dark:bg-black/30 w-full max-w-full min-w-0" data-testid="svg-block-loading">
+        <div className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-[var(--k-brand)]/10 via-transparent to-transparent border-b border-white/5">
+          <TreeStructure className="w-4 h-4 text-[var(--k-brand)] shrink-0" weight="duotone" />
+          <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">SVG</span>
+          <span className="text-[10px] text-muted-foreground/60 italic">· rendering…</span>
+        </div>
+        <div className="flex items-center justify-center gap-2 py-10 text-xs text-muted-foreground/70 italic">
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--k-brand)] opacity-60" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-[var(--k-brand)]" />
+          </span>
+          Drawing graphic…
+        </div>
+      </div>
+    );
+  }
 
   // No <svg> at all (or sanitiser stripped everything) → show the source text
   // rather than a deceptive empty card.
@@ -479,7 +516,11 @@ export function SvgBlock({ code, title = "Vector graphic" }) {
           onDownloadSvg={handleDownloadSvg}
           onDownloadPng={handleDownloadPng}
         >
-          <ShadowSvg html={safeSvg} svgCss="height:auto;max-height:82vh;max-width:88vw" />
+          <ShadowSvg
+            html={safeSvg}
+            style={{ width: "88vw", height: "82vh" }}
+            svgCss="max-width:88vw;max-height:82vh;width:auto;height:auto"
+          />
         </ZoomOverlay>
       )}
     </div>
