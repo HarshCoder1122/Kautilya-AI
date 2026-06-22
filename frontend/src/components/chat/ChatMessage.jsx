@@ -12,6 +12,7 @@ import { ttsAPI } from "../../lib/api";
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { MermaidDiagram, SvgBlock } from "./MermaidDiagram";
+import { QuestionPrompt } from "./QuestionPrompt";
 
 const CALENDAR_RE = /https?:\/\/(calendar\.google\.com|meet\.google\.com|zoom\.us|teams\.microsoft\.com)[^\s\)\]"<]*/g;
 
@@ -338,7 +339,7 @@ const agentBadge = {
   sales: { icon: ChartBar, label: 'Sales Agent', color: 'text-amber-400', bg: 'bg-amber-400/10' },
 };
 
-export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
+export function ChatMessage({ message, onOpenArtifact, onRegenerate, onAnswer, isLast = false }) {
   const [copied, setCopied] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isSynthesizing, setIsSynthesizing] = useState(false);
@@ -795,7 +796,8 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
                 const cls = codeEl?.properties?.className || [];
                 const langClass = (Array.isArray(cls) ? cls : [cls])
                   .find((c) => typeof c === 'string' && c.startsWith('language-'));
-                if (langClass === 'language-mermaid' || langClass === 'language-svg') {
+                if (langClass === 'language-mermaid' || langClass === 'language-svg' ||
+                    langClass === 'language-question' || langClass === 'language-ask') {
                   return <>{children}</>;
                 }
               } catch { /* fall through to default <pre> */ }
@@ -837,6 +839,17 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
               // syntax-highlighter path below.
               if (!inline && lang === 'mermaid') {
                 return <MermaidDiagram code={codeString} streaming={isLiveStreaming} />;
+              }
+              // Interactive question card — clickable only on the latest message
+              // and once the stream is done (mid-stream JSON is incomplete).
+              if (!inline && (lang === 'question' || lang === 'ask')) {
+                return (
+                  <QuestionPrompt
+                    code={codeString}
+                    interactive={isLast && !isLiveStreaming}
+                    onAnswer={onAnswer}
+                  />
+                );
               }
               if (!inline && (lang === 'svg' ||
                   (!lang && codeString.includes('\n') && codeString.trim().startsWith('<svg')))) {

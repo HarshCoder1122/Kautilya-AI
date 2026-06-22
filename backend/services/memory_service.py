@@ -4,10 +4,12 @@ User memory, session recording, file processing, prompt building.
 """
 import os
 import io
+import re
 import json
 import time
 import hashlib
 import base64
+import zipfile
 import requests
 from PIL import Image
 import PyPDF2
@@ -427,6 +429,185 @@ _PDF_RASTERIZE_DPI = 144             # readable for vision OCR without bloat
 _PDF_LOW_TEXT_THRESHOLD = 40         # < N chars on a page → assume scanned
 _DOCX_MAX_EMBEDDED_IMAGES = 6
 
+# ── Archive (ZIP) limits — defend against zip bombs / context blow-up ──
+_ZIP_MAX_FILES = 50                  # stop after N entries
+_ZIP_MAX_TOTAL_BYTES = 80 * 1024 * 1024   # cap total uncompressed bytes read
+_ARCHIVE_EXTS = ('.zip', '.rar', '.7z', '.tar', '.gz', '.tgz', '.bz2', '.xz')
+
+
+class _MemFile:
+    """Minimal stand-in for a Werkzeug FileStorage. Lets process_uploaded_file
+    handle bytes pulled out of an archive (ZIP) with zero rewrites — it only
+    ever touches `.filename` and `.stream`."""
+    def __init__(self, filename, data):
+        self.filename = filename
+        self.stream = io.BytesIO(data)
+
+
+def _strip_xml_text(xml_bytes):
+    """Dependency-free text extraction from an OOXML / OpenDocument / (x)html
+    part. Inserts a newline at paragraph boundaries so words don't glue, then
+    drops every tag and unescapes the common entities. Good enough to let the
+    model read PPTX/ODT/EPUB content without heavyweight parsers."""
+    try:
+        s = xml_bytes.decode('utf-8', errors='ignore')
+    except Exception:
+        return ""
+    # paragraph / line-break boundaries → newline (OOXML, ODF, html)
+    s = re.sub(r'</(a:p|w:p|text:p|text:h|p|li|h[1-6]|tr|div|br\s*/?)>', '\n', s, flags=re.I)
+    s = re.sub(r'<a:br\s*/?>|<w:br\s*/?>|<br\s*/?>', '\n', s, flags=re.I)
+    s = re.sub(r'<[^>]+>', ' ', s)                     # strip all remaining tags
+    s = (s.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
+           .replace('&quot;', '"').replace('&apos;', "'").replace('&#39;', "'")
+           .replace('&nbsp;', ' '))
+    s = re.sub(r'[ \t]+', ' ', s)
+    s = re.sub(r'\n[ \t]*\n[\s]*', '\n\n', s)
+    return s.strip()
+
+
+def _text_block(fname, label, text, extra=""):
+    """Build a truncated text content block for a parsed document."""
+    text = (text or "").strip()
+    if not text:
+        return {"type": "text", "text": f"\n[{label}: {fname} — no extractable text]\n"}
+    truncated = ""
+    if len(text) > MAX_TEXT_CHARS:
+        truncated = f"\n\n…[truncated — full text was {len(text)} chars]"
+        text = text[:MAX_TEXT_CHARS]
+    return {"type": "text", "text": f"\n[{label}: {fname}{extra}]\n{text}{truncated}\n"}
+
+
+def _open_zip(file):
+    file.stream.seek(0)
+    return zipfile.ZipFile(io.BytesIO(file.stream.read()))
+
+
+def _process_pptx(file, fname):
+    """PowerPoint → slide text. PPTX is a zip of slideN.xml parts; pull text in
+    slide order (no python-pptx dependency required)."""
+    try:
+        zf = _open_zip(file)
+    except Exception as e:
+        return {"type": "text", "text": f"\n[PowerPoint: {fname} — could not open: {e}]\n"}
+    try:
+        slides = sorted(
+            (n for n in zf.namelist() if re.match(r'ppt/slides/slide\d+\.xml$', n)),
+            key=lambda n: int(re.search(r'(\d+)', n).group(1)),
+        )
+        parts = []
+        for i, n in enumerate(slides, 1):
+            t = _strip_xml_text(zf.read(n))
+            if t:
+                parts.append(f"--- Slide {i} ---\n{t}")
+        return _text_block(fname, "PowerPoint", "\n\n".join(parts),
+                           extra=f" — {len(slides)} slides")
+    finally:
+        zf.close()
+
+
+def _process_opendocument(file, fname, label):
+    """ODT/ODS/ODP → text from content.xml (OpenDocument is a zip)."""
+    try:
+        zf = _open_zip(file)
+    except Exception as e:
+        return {"type": "text", "text": f"\n[{label}: {fname} — could not open: {e}]\n"}
+    try:
+        names = zf.namelist()
+        text = _strip_xml_text(zf.read('content.xml')) if 'content.xml' in names else ""
+        return _text_block(fname, label, text)
+    finally:
+        zf.close()
+
+
+def _process_epub(file, fname):
+    """EPUB → concatenated chapter text (EPUB is a zip of XHTML)."""
+    try:
+        zf = _open_zip(file)
+    except Exception as e:
+        return {"type": "text", "text": f"\n[EPUB: {fname} — could not open: {e}]\n"}
+    try:
+        chapters = sorted(n for n in zf.namelist()
+                          if n.lower().endswith(('.xhtml', '.html', '.htm')))
+        parts = []
+        for n in chapters:
+            t = _strip_xml_text(zf.read(n))
+            if t and len(t) > 20:
+                parts.append(t)
+            if sum(len(p) for p in parts) > MAX_TEXT_CHARS:
+                break
+        return _text_block(fname, "EPUB", "\n\n".join(parts))
+    finally:
+        zf.close()
+
+
+def _process_rtf(file, fname):
+    """RTF → plain text. Strips control words/groups without a dependency."""
+    try:
+        file.stream.seek(0)
+        raw = file.stream.read().decode('latin-1', errors='ignore')
+    except Exception as e:
+        return {"type": "text", "text": f"\n[RTF: {fname} — could not read: {e}]\n"}
+    s = re.sub(r'\\par[d]?', '\n', raw)
+    s = re.sub(r'\\tab', '\t', s)
+    s = re.sub(r"\\'[0-9a-fA-F]{2}", '', s)      # hex-escaped chars
+    s = re.sub(r'\\[a-zA-Z]+-?\d* ?', '', s)      # control words
+    s = s.replace('{', '').replace('}', '')
+    s = re.sub(r'[ \t]+', ' ', s)
+    s = re.sub(r'\n\s*\n+', '\n\n', s)
+    return _text_block(fname, "RTF", s)
+
+
+def _process_zip(file, fname):
+    """ZIP → list the entries, then recurse each supported file back through
+    process_uploaded_file so images get OCR/vision, PDFs get extracted, etc.
+    Capped on file count and total bytes to defend against zip bombs."""
+    try:
+        zf = _open_zip(file)
+    except Exception as e:
+        return {"type": "text", "text": f"\n[ZIP: {fname} — could not open (corrupt or not a zip?): {e}]\n"}
+    try:
+        entries = [i for i in zf.infolist() if not i.is_dir()
+                   and '__MACOSX' not in i.filename
+                   and not i.filename.split('/')[-1].startswith('.')]
+        listing = "\n".join(f"  • {i.filename} ({i.file_size:,} bytes)" for i in entries[:200])
+        blocks = [{"type": "text",
+                   "text": f"\n[ZIP archive: {fname} — {len(entries)} file(s)]\n{listing}\n"}]
+        total = 0
+        count = 0
+        for info in entries:
+            name = info.filename
+            base = name.split('/')[-1]
+            low = base.lower()
+            if count >= _ZIP_MAX_FILES:
+                blocks.append({"type": "text", "text": f"\n[…stopped after {_ZIP_MAX_FILES} files; archive has more.]\n"})
+                break
+            if low.endswith(_ARCHIVE_EXTS):
+                blocks.append({"type": "text", "text": f"\n=== {name} ===\n[Nested archive skipped — unzip it separately.]\n"})
+                continue
+            if info.file_size > MAX_UPLOAD_MB * 1024 * 1024:
+                blocks.append({"type": "text", "text": f"\n=== {name} ===\n[Skipped — {info.file_size/1024/1024:.1f}MB exceeds {MAX_UPLOAD_MB}MB.]\n"})
+                continue
+            if total + info.file_size > _ZIP_MAX_TOTAL_BYTES:
+                blocks.append({"type": "text", "text": "\n[…remaining files skipped — archive total too large.]\n"})
+                break
+            try:
+                data = zf.read(info)
+            except Exception as e:
+                blocks.append({"type": "text", "text": f"\n=== {name} ===\n[Could not read: {e}]\n"})
+                continue
+            total += len(data)
+            count += 1
+            blocks.append({"type": "text", "text": f"\n=== {name} ===\n"})
+            sub = process_uploaded_file(_MemFile(name, data))
+            if isinstance(sub, list):
+                blocks.extend(sub)
+            elif sub:
+                blocks.append(sub)
+        print(f"[File] ZIP {fname} → extracted {count} file(s), {total//1024}KB")
+        return blocks
+    finally:
+        zf.close()
+
 
 def _img_to_image_block(pil_img, target_max_dim=1280, prefer_jpeg=True):
     """Standard image → multipart block. Mirrors the existing image branch
@@ -730,8 +911,58 @@ def process_uploaded_file(file):
             print(f"[File] XLSX processing failed for {fname}: {e}")
             return {"type": "text", "text": f"\n[Excel: {fname} — could not parse: {e}]\n"}
 
+    # ============ PowerPoint ============
+    if lower.endswith(('.pptx', '.pptm')):
+        return _process_pptx(file, fname)
+
+    # ============ OpenDocument (LibreOffice / OpenOffice) ============
+    if lower.endswith('.odt'):
+        return _process_opendocument(file, fname, "OpenDocument Text")
+    if lower.endswith('.ods'):
+        return _process_opendocument(file, fname, "OpenDocument Spreadsheet")
+    if lower.endswith('.odp'):
+        return _process_opendocument(file, fname, "OpenDocument Presentation")
+
+    # ============ EPUB / RTF ============
+    if lower.endswith('.epub'):
+        return _process_epub(file, fname)
+    if lower.endswith('.rtf'):
+        return _process_rtf(file, fname)
+
+    # ============ ZIP archive (recurses into its contents) ============
+    if lower.endswith('.zip'):
+        return _process_zip(file, fname)
+
+    # Other archive formats we can't open without extra deps — say so clearly.
+    if lower.endswith(_ARCHIVE_EXTS):
+        return {"type": "text", "text": f"\n[Archive: {fname} — only .zip is supported. Re-zip as .zip to read its contents.]\n"}
+
+    # ============ Last-resort: sniff for plain text ============
+    # Many useful files (.tex, .rst, .vue, .gradle, .properties, dotfiles, etc.)
+    # aren't in the allowlist but ARE text. Decode and, if it looks like text
+    # (mostly printable, few NULs), treat it as a code/text block instead of
+    # giving up — this is what makes "most files" readable.
+    try:
+        file.stream.seek(0)
+        raw = file.stream.read(MAX_TEXT_CHARS * 2)
+        if raw:
+            sample = raw[:4096]
+            nul = sample.count(0)
+            decoded = raw.decode('utf-8', errors='ignore')
+            printable = sum(1 for c in decoded[:4096] if c.isprintable() or c in '\n\r\t')
+            if nul == 0 and decoded and printable / max(1, len(decoded[:4096])) > 0.85:
+                text = decoded.strip()
+                truncated = ""
+                if len(text) > MAX_TEXT_CHARS:
+                    truncated = f"\n\n…[truncated — original was {len(text)} chars]"
+                    text = text[:MAX_TEXT_CHARS]
+                print(f"[File] {fname} → read as plain text (fallback)")
+                return {"type": "text", "text": f"\n[File: {fname}]\n```\n{text}\n```{truncated}\n"}
+    except Exception as e:
+        print(f"[File] Text-sniff failed for {fname}: {e}")
+
     print(f"[File] Unsupported type: {fname}")
-    return {"type": "text", "text": f"\n[File: {fname} — unsupported type. Try .pdf, .docx, .xlsx, image, or text/code.]\n"}
+    return {"type": "text", "text": f"\n[File: {fname} — unsupported binary type. Supported: PDF, Word, Excel, PowerPoint, OpenDocument, EPUB, RTF, ZIP, images, and any text/code file.]\n"}
 
 
 def generate_semantic_chunks(text, max_chunks=10):

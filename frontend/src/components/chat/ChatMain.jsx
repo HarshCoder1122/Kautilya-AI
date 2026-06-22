@@ -1121,6 +1121,12 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
             <ChatMessage
               key={msg.id}
               message={msg}
+              isLast={index === messages.length - 1}
+              onAnswer={(text) => {
+                if (!text || isStreaming) return;
+                setInputValue(text);
+                setTimeout(() => handleSend(), 60);
+              }}
               onRegenerate={async (failedMsg) => {
                 const userMsgIndex = messages.findIndex(m => m.id === failedMsg.id) - 1;
                 if (userMsgIndex >= 0) {

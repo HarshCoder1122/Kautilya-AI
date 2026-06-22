@@ -1945,6 +1945,19 @@ def _estimate_tokens(user_msg, mode):
     if msg_lower in greetings or msg_len < 6:
         return 512   # one-line reply, no thinking budget needed
 
+    # Visual generation (SVG illustrations, diagrams, charts). The request is
+    # usually SHORT ("draw a frog life cycle") but the OUTPUT is very token-
+    # heavy — and an SVG that gets cut off mid-tag renders as a blank box. So
+    # match the budget to the OUTPUT, not the message length, and give it plenty
+    # of headroom (tokens are on-demand, not a hard cap). This is the real fix
+    # for "SVG blank / cut off".
+    visual_intent_kw = ('svg', 'diagram', 'draw', 'illustrat', 'infographic',
+                        'flowchart', 'flow chart', 'mind map', 'mindmap', 'mermaid',
+                        'sketch', 'visualiz', 'visualis', 'graphic', 'life cycle',
+                        'lifecycle', 'anatomy', 'poster', 'chart')
+    if any(k in msg_lower for k in visual_intent_kw):
+        return 24576
+
     # Long-content intent dominates — research, draft a doc, code generation.
     long_intent_kw = ('report', 'research', 'document', 'article',
                       'essay', 'write a', 'draft', 'full', 'detailed',

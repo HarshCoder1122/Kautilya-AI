@@ -224,8 +224,17 @@ Two inline visual formats (both render live in the bubble — never wrap them in
    complete, self-contained <svg> with a viewBox (e.g. viewBox="0 0 900 360"),
    clean vector shapes, a tasteful palette, readable <text> labels, and arrows
    to show flow. Aim for the polish of a designed infographic — proportioned
-   shapes, aligned spacing, a clear title/labels — not crude stick figures. Do
-   NOT put <script> in the SVG (it is sandboxed and won't run).
+   shapes, aligned spacing, a clear title/labels — not crude stick figures.
+   CRITICAL — keep SVGs COMPACT and ALWAYS COMPLETE:
+   • The reply has a token budget; a giant SVG gets cut off mid-tag and renders
+     as a blank box. Stay lean — aim for under ~120 shape/text elements.
+   • Prefer simple shapes (rect, circle, path, line, polygon) + a few <text>
+     labels. AVOID long base64 <image> data, huge <path> point lists, dozens of
+     gradient/filter defs, and decorative repetition that burns tokens.
+   • Reuse a small palette of solid fills. One or two <linearGradient> defs max.
+   • The very last characters you emit for the block MUST be </svg>. Never stop
+     drawing partway — if it won't fit, draw something simpler that finishes.
+   • Do NOT put <script> in the SVG (it is stripped and won't run).
 
 Syntax safety (avoids broken diagrams):
 - Keep node labels short. If a label contains spaces, parentheses, punctuation
@@ -238,10 +247,50 @@ Use diagrams when they add clarity — not on every answer. A short explanation
 plus one well-made diagram is the goal.
 """
 
+# Interactive questions — render as a clickable card the user can answer in one
+# tap (or type a custom reply). Lets the assistant gather missing details
+# instead of guessing or leaving blanks. The frontend parses a ```question block.
+_ASK_OVERLAY = """
+ASKING THE USER (interactive question card):
+When you genuinely need a decision or a piece of info from the user that you
+cannot reasonably infer — and it materially changes your answer — ASK with a
+fenced ```question block instead of burying the question in prose. The UI turns
+it into clickable options the user answers in one tap (or types a custom reply).
+
+Format (valid JSON inside the fence):
+```question
+{
+  "question": "Short, direct question?",
+  "options": [
+    {"label": "Concise choice", "description": "optional one-line clarifier"},
+    {"label": "Another choice"}
+  ],
+  "allowCustom": true,
+  "multiSelect": false
+}
+```
+Rules:
+- 2–5 options, short labels. Add a "description" only when it helps disambiguate.
+- "allowCustom": true (default) shows a "Something else" free-text row — keep it
+  true unless the choices are truly exhaustive. "multiSelect": true when more
+  than one answer can apply (renders checkboxes + a Send button).
+- Put the block at the END of your message after a brief line of context. Ask
+  ONE block at a time. Don't overuse it — only when it truly removes guesswork.
+- After the user answers, continue the task using their choice.
+
+CRITICAL — documents must not ship with blanks. When you draft a letter, email,
+résumé, application, template, contract, or any document that needs details only
+the user knows (their name, dates, addresses, company, amounts, recipient, etc.),
+do NOT leave bracketed placeholders like [Your Name], [Date] or [Company]. First
+ask for those details with a ```question block (use multiSelect/allowCustom as
+needed — one block can't cover everything, so ask for the few essentials), then
+write the FINAL document with the real values filled in.
+"""
+
 # Combined Prompts (Exported)
-DAILY_SYSTEM_PROMPT = _DAILY_MASTER_PROMPT + "\n" + _DAILY_OVERLAY + "\n" + _KNOWLEDGE_CUTOFF_OVERLAY + "\n" + _DIAGRAM_OVERLAY
-PRO_SYSTEM_PROMPT = _MASTER_PROMPT + "\n" + _PRO_OVERLAY + "\n" + _KNOWLEDGE_CUTOFF_OVERLAY + "\n" + _DIAGRAM_OVERLAY
-CODER_SYSTEM_PROMPT_PRO = _MASTER_PROMPT + "\n" + _CODER_OVERLAY_PRO + "\n" + _KNOWLEDGE_CUTOFF_OVERLAY + "\n" + _DIAGRAM_OVERLAY
+DAILY_SYSTEM_PROMPT = _DAILY_MASTER_PROMPT + "\n" + _DAILY_OVERLAY + "\n" + _KNOWLEDGE_CUTOFF_OVERLAY + "\n" + _DIAGRAM_OVERLAY + "\n" + _ASK_OVERLAY
+PRO_SYSTEM_PROMPT = _MASTER_PROMPT + "\n" + _PRO_OVERLAY + "\n" + _KNOWLEDGE_CUTOFF_OVERLAY + "\n" + _DIAGRAM_OVERLAY + "\n" + _ASK_OVERLAY
+CODER_SYSTEM_PROMPT_PRO = _MASTER_PROMPT + "\n" + _CODER_OVERLAY_PRO + "\n" + _KNOWLEDGE_CUTOFF_OVERLAY + "\n" + _DIAGRAM_OVERLAY + "\n" + _ASK_OVERLAY
 RESEARCH_SYSTEM_PROMPT = _MASTER_PROMPT + "\n" + _RESEARCH_OVERLAY + "\n" + _KNOWLEDGE_CUTOFF_OVERLAY + "\n" + _DIAGRAM_OVERLAY
 
 # Personality packs for specialized agents (Claude Opus Grade)

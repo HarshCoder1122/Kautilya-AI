@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import DOMPurify from "dompurify";
 import { TreeStructure, Copy, Check, Download, ArrowsOutSimple, X, Plus, Minus, ArrowCounterClockwise, Code as CodeIcon } from "@phosphor-icons/react";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -97,6 +98,56 @@ function svgDimensions(svgString) {
   if (hm) h = parseFloat(hm[1]) || h;
   if (!w || !h) { w = 1200; h = 800; }
   return { w, h };
+}
+
+/** Best-effort repair of a possibly-truncated model SVG so it still renders.
+ * The model can hit max_tokens mid-drawing, leaving an unclosed tag or a
+ * missing </svg>. We drop any prose before <svg, trim a dangling partial tag,
+ * and append </svg> if it's missing — so a partial illustration shows what it
+ * has instead of a blank box. */
+function repairSvg(src) {
+  let s = (src || "").trim();
+  const start = s.indexOf("<svg");
+  if (start < 0) return s;            // no svg at all — caller handles
+  if (start > 0) s = s.slice(start);  // strip any leading prose/fence remnants
+  // Truncated mid-tag (e.g. "…<rect x=\"1") — the last '<' has no closing '>'.
+  const lastLt = s.lastIndexOf("<");
+  const lastGt = s.lastIndexOf(">");
+  if (lastLt > lastGt) s = s.slice(0, lastLt).trimEnd();
+  if (!/<\/svg>\s*$/i.test(s)) s += "</svg>";
+  return s;
+}
+
+/** Sanitise model-authored SVG for safe inline injection. DOMPurify's SVG
+ * profile drops <script>, foreignObject and on* handlers (model output is
+ * untrusted) while keeping shapes, gradients, text and filters. Rendering
+ * inline (vs a sandboxed srcdoc iframe) shows up instantly and isn't subject
+ * to the page's frame-src CSP — which is what was leaving the box blank. */
+function sanitizeSvg(src) {
+  try {
+    return DOMPurify.sanitize(src, {
+      USE_PROFILES: { svg: true, svgFilters: true },
+      ADD_ATTR: ["viewBox", "preserveAspectRatio"],
+      FORBID_TAGS: ["script", "foreignObject"],
+    });
+  } catch {
+    return "";
+  }
+}
+
+/** Render sanitised SVG inside a Shadow DOM root. Shadow scoping keeps the
+ * SVG's own <style> blocks and id refs (url(#grad)) contained — so they can't
+ * leak onto the page or collide between two diagrams — while still painting
+ * instantly (no iframe document spin-up, no frame-src CSP gate). */
+function ShadowSvg({ html, svgCss = "max-width:100%;height:auto", className = "", onClick }) {
+  const hostRef = useRef(null);
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const root = host.shadowRoot || host.attachShadow({ mode: "open" });
+    root.innerHTML = `<style>:host{display:block}svg{display:block;margin:0 auto;${svgCss}}</style>${html || ""}`;
+  }, [html, svgCss]);
+  return <div ref={hostRef} className={className} onClick={onClick} />;
 }
 
 function downloadBlob(blob, filename) {
@@ -364,34 +415,33 @@ export function SvgBlock({ code, title = "Vector graphic" }) {
   const [zoom, setZoom] = useState(false);
   const source = (code || "").trim();
 
-  // Lock the SVG inside a script-less sandbox iframe — model-authored SVG can
-  // carry <script>/onload; sandbox="" gives it a unique origin with no script
-  // execution, so it renders but can't run anything.
-  const doc = `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;padding:0;background:transparent;display:flex;align-items:center;justify-content:center;min-height:100%}svg{max-width:100%;height:auto}</style></head><body>${source}</body></html>`;
+  // Repair (truncation-tolerant) then sanitise once. We render the SVG inline
+  // — model-authored SVG is untrusted, so DOMPurify strips <script>/onload —
+  // which paints instantly and, unlike the old sandboxed iframe, isn't gated
+  // by the page's frame-src CSP (the reason the box was rendering blank).
+  const repaired = useMemo(() => repairSvg(source), [source]);
+  const safeSvg = useMemo(() => sanitizeSvg(repaired), [repaired]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(source).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
-  const handleDownloadSvg = () => downloadSvg(source, title);
+  const handleDownloadSvg = () => downloadSvg(repaired, title);
   const handleDownloadPng = async () => {
     try {
-      const blob = await svgToPng(source, 2);
+      const blob = await svgToPng(repaired, 2);
       downloadBlob(blob, `${(title || "graphic").replace(/[^a-z0-9-_]+/gi, "-").toLowerCase()}.png`);
     } catch {
       handleDownloadSvg();
     }
   };
 
-  if (!source.includes("<svg")) {
+  // No <svg> at all (or sanitiser stripped everything) → show the source text
+  // rather than a deceptive empty card.
+  if (!source.includes("<svg") || !safeSvg.includes("<svg")) {
     return <pre className="my-2 p-3 bg-accent/20 rounded-lg overflow-x-auto text-xs font-mono whitespace-pre-wrap break-words">{source}</pre>;
   }
-
-  // Size the frame to the illustration's own aspect ratio so custom SVG art
-  // renders edge-to-edge (like Claude) instead of inside a fixed box.
-  const { w, h } = svgDimensions(source);
-  const aspect = Math.max(0.3, Math.min(4, w / h));
 
   return (
     <div className="my-4 rounded-xl overflow-hidden border border-[var(--k-border)] bg-black/20 dark:bg-black/30 w-full max-w-full min-w-0" data-testid="svg-block">
@@ -412,18 +462,12 @@ export function SvgBlock({ code, title = "Vector graphic" }) {
           </button>
         </div>
       </div>
-      <div className="bg-[var(--k-bg)]/40 p-2">
-        {/* padding-bottom aspect-ratio box → iframe always fills full width and
-            can't collapse to its 300px intrinsic default. */}
-        <div style={{ position: "relative", width: "100%", paddingBottom: `${Math.min(135, 100 / aspect)}%` }}>
-          <iframe
-            srcDoc={doc}
-            sandbox=""
-            title={title}
-            className="border-none"
-            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", background: "transparent" }}
-          />
-        </div>
+      <div className="bg-[var(--k-bg)]/40 p-4 flex justify-center overflow-x-auto">
+        <ShadowSvg
+          html={safeSvg}
+          className="k-svg w-full cursor-zoom-in"
+          onClick={() => setZoom(true)}
+        />
       </div>
 
       {zoom && (
@@ -435,7 +479,7 @@ export function SvgBlock({ code, title = "Vector graphic" }) {
           onDownloadSvg={handleDownloadSvg}
           onDownloadPng={handleDownloadPng}
         >
-          <iframe srcDoc={doc} sandbox="" title={`${title} (expanded)`} style={{ width: "80vw", height: "80vh", border: "none", background: "transparent" }} />
+          <ShadowSvg html={safeSvg} svgCss="height:auto;max-height:82vh;max-width:88vw" />
         </ZoomOverlay>
       )}
     </div>
