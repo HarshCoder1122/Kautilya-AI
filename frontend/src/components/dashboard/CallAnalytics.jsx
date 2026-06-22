@@ -18,15 +18,58 @@ const sentimentIcons = {
   negative: { icon: SmileyMelting, color: 'text-red-400', bg: 'bg-red-400/10' },
 };
 
-// Safely parse a transcript that may arrive as JSON string, array, or undefined
-function parseTranscript(raw) {
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw;
-  if (typeof raw === 'string') {
-    try { const p = JSON.parse(raw); return Array.isArray(p) ? p : []; } catch { return []; }
+// Normalise a single transcript turn's role to 'agent' | 'customer'
+function normRole(role) {
+  const r = String(role || '').toLowerCase();
+  if (['agent', 'assistant', 'ai', 'bot'].includes(r)) return 'agent';
+  return 'customer';
+}
+
+// Build a renderable transcript from a call log. Prefers the structured
+// `transcript_json` ([{role,text}]); falls back to a JSON string; and finally
+// parses the flat "ROLE: text\nROLE: text" format the voice agent saves.
+function getTranscript(log) {
+  if (!log) return [];
+  const tj = log.transcript_json;
+  if (Array.isArray(tj) && tj.length) {
+    return tj.map(t => ({ role: normRole(t.role), text: t.text || t.content || '' }));
+  }
+  const raw = log.transcript;
+  if (Array.isArray(raw)) return raw.map(t => ({ role: normRole(t.role), text: t.text || t.content || '' }));
+  if (typeof raw === 'string' && raw.trim()) {
+    // Try JSON-array first, then the "ROLE: text" line format.
+    try {
+      const p = JSON.parse(raw);
+      if (Array.isArray(p)) return p.map(t => ({ role: normRole(t.role), text: t.text || t.content || '' }));
+    } catch { /* not JSON — fall through to line parsing */ }
+    const turns = [];
+    for (const line of raw.split('\n')) {
+      const m = line.match(/^\s*([A-Za-z_]+)\s*:\s*(.*)$/);
+      if (m && m[2].trim()) {
+        turns.push({ role: normRole(m[1]), text: m[2].trim() });
+      } else if (turns.length && line.trim()) {
+        turns[turns.length - 1].text += ' ' + line.trim();
+      }
+    }
+    return turns;
   }
   return [];
 }
+
+const sentKey = (s) => {
+  const v = String(s || 'neutral').toLowerCase();
+  if (['positive', 'happy', 'satisfied'].includes(v)) return 'positive';
+  if (['negative', 'frustrated', 'angry'].includes(v)) return 'negative';
+  return 'neutral';
+};
+
+// Icon per integration action type shown in the "Actions taken" panel.
+const actionMeta = {
+  email: { label: 'Email', emoji: '✉️' },
+  calendar: { label: 'Calendar', emoji: '📅' },
+  crm: { label: 'CRM', emoji: '🗂️' },
+  slack: { label: 'Slack', emoji: '💬' },
+};
 
 // Safely coerce a Firestore Timestamp, ISO string, or number to a Date
 function toDate(val) {
@@ -91,9 +134,9 @@ export default function CallAnalytics() {
   };
 
   const sentimentData = [
-    { name: 'Positive', value: agentLogs.filter(l => l.sentiment === 'positive').length || 0, fill: '#10B981' },
-    { name: 'Neutral', value: agentLogs.filter(l => l.sentiment === 'neutral').length || 0, fill: '#F59E0B' },
-    { name: 'Negative', value: agentLogs.filter(l => l.sentiment === 'negative').length || 0, fill: '#EF4444' },
+    { name: 'Positive', value: agentLogs.filter(l => sentKey(l.sentiment) === 'positive').length || 0, fill: '#10B981' },
+    { name: 'Neutral', value: agentLogs.filter(l => sentKey(l.sentiment) === 'neutral').length || 0, fill: '#F59E0B' },
+    { name: 'Negative', value: agentLogs.filter(l => sentKey(l.sentiment) === 'negative').length || 0, fill: '#EF4444' },
   ];
 
   return (
@@ -183,12 +226,15 @@ export default function CallAnalytics() {
                 ) : (
                   <div className="grid grid-cols-1 gap-3">
                     {agentLogs.map((log) => {
-                      const sent = sentimentIcons[log.sentiment] || sentimentIcons.neutral;
+                      const sk = sentKey(log.sentiment);
+                      const sent = sentimentIcons[sk] || sentimentIcons.neutral;
                       const _d = toDate(log.created_at);
                       const callDate = _d ? _d.toLocaleString('en-IN', {
                         day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'
                       }) : 'Unknown';
-                      
+                      const title = log.lead_name || log.to_number || log.from_number || 'Inbound Call';
+                      const subtitle = [log.lead_company, log.lead_email].filter(Boolean).join(' · ');
+
                       return (
                         <div
                           key={log.id}
@@ -198,17 +244,22 @@ export default function CallAnalytics() {
                           <div className="w-12 h-12 rounded-full bg-accent/50 flex items-center justify-center group-hover:scale-110 transition-transform flex-shrink-0">
                             <Play className="w-5 h-5 text-[var(--k-brand)]" weight="fill" />
                           </div>
-                          
+
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-3 mb-1">
                                <span className="text-sm font-bold text-foreground truncate">
-                                  {log.to_number || 'Inbound Call'}
+                                  {title}
                                </span>
                                <Badge className={`bg-transparent border ${sent.color.replace('text-', 'border-')}/30 ${sent.color} text-[9px] px-1.5 py-0 uppercase font-bold`}>
-                                  {log.sentiment || 'neutral'}
+                                  {sk}
                                </Badge>
+                               {(log.actions?.length > 0) && (
+                                 <span className="text-[9px] text-muted-foreground font-medium" title="Automated follow-ups">
+                                   {log.actions.map(a => actionMeta[a.type]?.emoji || '•').join(' ')}
+                                 </span>
+                               )}
                             </div>
-                            <p className="text-xs text-muted-foreground truncate max-w-2xl">{log.summary || 'Click to view call details and transcript...'}</p>
+                            <p className="text-xs text-muted-foreground truncate max-w-2xl">{subtitle || log.summary || 'Click to view call details and transcript...'}</p>
                           </div>
 
                           <div className="text-right flex-shrink-0">
@@ -287,6 +338,55 @@ export default function CallAnalytics() {
                         </p>
                      </div>
 
+                     {/* Extracted Contact / Lead */}
+                     {(selectedCall.lead_name || selectedCall.lead_email || selectedCall.lead_company || selectedCall.lead_phone || selectedCall.to_number) && (
+                       <div className="space-y-3">
+                          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                             <Info className="w-4 h-4 text-[var(--k-brand)]" weight="fill" />
+                             Extracted Contact
+                          </div>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                             {[
+                               { label: 'Name', val: selectedCall.lead_name },
+                               { label: 'Company', val: selectedCall.lead_company },
+                               { label: 'Email', val: selectedCall.lead_email },
+                               { label: 'Phone', val: selectedCall.lead_phone || selectedCall.to_number || selectedCall.from_number },
+                               { label: 'Intent', val: selectedCall.intent },
+                               { label: 'Lead Score', val: selectedCall.lead_score != null ? `${selectedCall.lead_score}/10` : null },
+                             ].filter(f => f.val).map((f, i) => (
+                               <div key={i} className="p-3 rounded-xl bg-accent/10 border border-[var(--k-border)] min-w-0">
+                                  <div className="text-[9px] uppercase tracking-wider text-muted-foreground font-bold mb-0.5">{f.label}</div>
+                                  <div className="text-sm text-foreground truncate" title={String(f.val)}>{f.val}</div>
+                               </div>
+                             ))}
+                          </div>
+                       </div>
+                     )}
+
+                     {/* Automated Actions taken (emails / calendar / CRM / Slack) */}
+                     {Array.isArray(selectedCall.actions) && selectedCall.actions.length > 0 && (
+                       <div className="space-y-3">
+                          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                             <Lightning className="w-4 h-4 text-[var(--k-green)]" weight="fill" />
+                             Automated Follow-ups
+                          </div>
+                          <div className="space-y-2">
+                             {selectedCall.actions.map((a, i) => (
+                               <div key={i} className="flex items-center gap-3 p-3 rounded-xl bg-accent/10 border border-[var(--k-border)]">
+                                  <span className="text-lg">{actionMeta[a.type]?.emoji || '•'}</span>
+                                  <div className="flex-1 min-w-0">
+                                     <div className="text-sm text-foreground truncate">{a.label}</div>
+                                     {a.detail && <div className="text-[11px] text-muted-foreground truncate">{a.detail}</div>}
+                                  </div>
+                                  <Badge className={`text-[9px] px-1.5 py-0 uppercase font-bold border ${a.status === 'failed' ? 'border-red-400/30 text-red-400' : 'border-[var(--k-green)]/30 text-[var(--k-green)]'} bg-transparent`}>
+                                     {a.status === 'failed' ? 'failed' : 'done'}
+                                  </Badge>
+                               </div>
+                             ))}
+                          </div>
+                       </div>
+                     )}
+
                      {/* AI Summary */}
                      <div className="space-y-3">
                         <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-muted-foreground">
@@ -296,6 +396,13 @@ export default function CallAnalytics() {
                         <div className="p-5 rounded-2xl bg-accent/10 border border-[var(--k-border)]">
                            <p className="text-sm text-foreground leading-relaxed italic">"{selectedCall.summary || 'AI was unable to generate a summary for this short interaction.'}"</p>
                         </div>
+                        {Array.isArray(selectedCall.topics) && selectedCall.topics.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5">
+                             {selectedCall.topics.map((t, i) => (
+                               <Badge key={i} className="bg-[var(--k-brand)]/10 text-[var(--k-brand)] border-none text-[10px] px-2 py-0.5">{t}</Badge>
+                             ))}
+                          </div>
+                        )}
                      </div>
 
                      {/* Transcript */}
@@ -309,7 +416,7 @@ export default function CallAnalytics() {
                         </div>
                         
                         <div className="space-y-4 font-sans">
-                           {(() => { const tr = parseTranscript(selectedCall.transcript); return tr.length > 0 ? (
+                           {(() => { const tr = getTranscript(selectedCall); return tr.length > 0 ? (
                              tr.map((t, i) => (
                                <div key={i} className={`flex ${t.role === 'agent' ? 'justify-start' : 'justify-end'}`}>
                                   <div className={`max-w-[80%] rounded-2xl p-4 text-sm ${
@@ -335,8 +442,8 @@ export default function CallAnalytics() {
                <div className="px-6 py-4 border-t border-[var(--k-border)] bg-[var(--k-surface-elevated)] flex items-center justify-between">
                   <div className="flex items-center gap-4">
                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] text-muted-foreground uppercase font-bold">Call Score</span>
-                        <span className="text-sm font-bold text-[var(--k-green)]">{selectedCall.sentiment_score || 85}</span>
+                        <span className="text-[10px] text-muted-foreground uppercase font-bold">Lead Score</span>
+                        <span className="text-sm font-bold text-[var(--k-green)]">{selectedCall.lead_score != null ? `${selectedCall.lead_score}/10` : '—'}</span>
                      </div>
                      <div className="w-px h-4 bg-[var(--k-border)]" />
                      <div className="flex items-center gap-1.5">

@@ -247,9 +247,16 @@ def api_agent_logs(agent_id):
         logs = []
         for l in logs_ref:
             d = l.to_dict()
-            if 'created_at' in d and hasattr(d['created_at'], 'timestamp'):
-                d['created_timestamp'] = d['created_at'].timestamp()
-                del d['created_at']
+            # Firestore Timestamp isn't JSON-serialisable. Expose BOTH a numeric
+            # `created_timestamp` and an ISO `created_at` string — the dashboard
+            # reads `created_at` for display/sorting, so we must not drop it.
+            ca = d.get('created_at')
+            if ca is not None and hasattr(ca, 'timestamp'):
+                d['created_timestamp'] = ca.timestamp()
+                try:
+                    d['created_at'] = ca.isoformat()
+                except Exception:
+                    d['created_at'] = None
             d['id'] = l.id
             logs.append(d)
         return jsonify({"logs": logs})

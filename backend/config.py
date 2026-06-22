@@ -198,10 +198,38 @@ if not PUBLIC_BASE_URL:
         print(f"[CONFIG] Auto-detected HF Space URL: {PUBLIC_BASE_URL}")
 
 # ============== Vobiz Master (for Studio Test Calls) ==============
-# Test calls from the Studio always use these master credentials
-VOBIZ_MASTER_USER = os.environ.get("VOBIZ_MASTER_USER", "")
-VOBIZ_MASTER_PASS = os.environ.get("VOBIZ_MASTER_PASS", "")
-VOBIZ_MASTER_NUMBER = os.environ.get("VOBIZ_MASTER_NUMBER", "")
+# Test calls from the Studio always use these master credentials.
+#
+# These are read from the first env var that is actually set, across every
+# name we've used in deployments. The canonical names are VOBIZ_MASTER_USER /
+# _PASS / _NUMBER, but production Spaces have historically also used
+# VOBIZ_USERNAME/PASSWORD/NUMBER, VOBIZ_AUTH_ID/TOKEN, and MASTER_VOBIZ_*.
+# A name mismatch is exactly why a freshly-built test agent fell back to
+# "Master Vobiz not set" while older agents (with a user-saved provider)
+# still dialed — so we accept all of them instead of one rigid name.
+def _first_env(*names, default=""):
+    for n in names:
+        v = (os.environ.get(n) or "").strip()
+        if v:
+            return v
+    return default
+
+VOBIZ_MASTER_USER = _first_env(
+    "VOBIZ_MASTER_USER", "VOBIZ_MASTER_USERNAME", "VOBIZ_MASTER_AUTH_ID",
+    "MASTER_VOBIZ_USER", "VOBIZ_USERNAME", "VOBIZ_USER", "VOBIZ_AUTH_ID",
+)
+VOBIZ_MASTER_PASS = _first_env(
+    "VOBIZ_MASTER_PASS", "VOBIZ_MASTER_PASSWORD", "VOBIZ_MASTER_AUTH_TOKEN",
+    "MASTER_VOBIZ_PASS", "VOBIZ_PASSWORD", "VOBIZ_PASS", "VOBIZ_AUTH_TOKEN",
+)
+VOBIZ_MASTER_NUMBER = _first_env(
+    "VOBIZ_MASTER_NUMBER", "MASTER_VOBIZ_NUMBER", "VOBIZ_NUMBER",
+    "VOBIZ_CALLER_ID", "VOBIZ_FROM",
+)
+if VOBIZ_MASTER_USER and VOBIZ_MASTER_PASS:
+    print(f"[CONFIG] Vobiz master creds loaded (caller_id={'set' if VOBIZ_MASTER_NUMBER else 'MISSING'})")
+else:
+    print("[CONFIG] Vobiz master creds NOT set — Studio test calls will require a user-saved provider")
 
 # ============== CSP Header ==============
 # NOTE: the active Content-Security-Policy is built inline in app.py's

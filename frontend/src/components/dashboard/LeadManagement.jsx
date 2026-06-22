@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { MagnifyingGlass, FunnelSimple, Export, Phone, EnvelopeSimple, ArrowUp, ArrowDown, Trash } from "@phosphor-icons/react";
-import { leadsAPI } from "../../lib/api";
+import { leadsAPI, telephonyAPI } from "../../lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -59,6 +59,42 @@ export default function LeadManagement() {
     } catch (error) {
       console.error('Failed to update lead:', error);
     }
+  };
+
+  const [callingId, setCallingId] = useState(null);
+  const handleCallLead = async (lead) => {
+    const number = lead.phone;
+    if (!number || number === 'N/A') {
+      return alert('This lead has no phone number to call.');
+    }
+    if (!lead.agent_id) {
+      return alert('No agent is linked to this lead, so it can\'t be auto-dialed. Open Agent Studio to call manually.');
+    }
+    try {
+      setCallingId(lead.id);
+      const res = await telephonyAPI.outbound({ agent_id: lead.agent_id, to_number: number });
+      alert(`📞 Calling ${number}…\nCall ID: ${res?.call_id || 'pending'}`);
+    } catch (error) {
+      const data = error.response?.data || {};
+      if (error.response?.status === 402 || data.code === 'upgrade_required') {
+        if (window.confirm(`${data.message || 'Free call limit reached.'}\n\nGo to Billing to upgrade?`)) {
+          window.location.href = '/dashboard/billing';
+        }
+        return;
+      }
+      alert(`Call failed: ${data.error || error.message || 'Unknown error'}`);
+    } finally {
+      setCallingId(null);
+    }
+  };
+
+  const handleEmailLead = (lead) => {
+    if (!lead.email) return alert('This lead has no email address.');
+    const subject = encodeURIComponent('Following up on our call');
+    const body = encodeURIComponent(
+      `Hi ${lead.name || 'there'},\n\n${lead.message || 'Thanks for your time on the call.'}\n\n`
+    );
+    window.location.href = `mailto:${lead.email}?subject=${subject}&body=${body}`;
   };
 
   const filteredLeads = leads
@@ -170,10 +206,10 @@ export default function LeadManagement() {
                         <td className="px-4 py-3 text-sm text-foreground">{lead.phone || 'N/A'}</td>
                         <td className="px-4 py-3">
                           <div className="flex items-center justify-end gap-1">
-                            <button data-testid={`call-lead-${lead.id}`} className="p-1.5 rounded-md hover:bg-[var(--k-green)]/10 text-muted-foreground hover:text-[var(--k-green)] transition-colors" title="Call">
-                              <Phone className="w-3.5 h-3.5" />
+                            <button data-testid={`call-lead-${lead.id}`} onClick={() => handleCallLead(lead)} disabled={callingId === lead.id} className="p-1.5 rounded-md hover:bg-[var(--k-green)]/10 text-muted-foreground hover:text-[var(--k-green)] transition-colors disabled:opacity-40" title="Call">
+                              <Phone className={`w-3.5 h-3.5 ${callingId === lead.id ? 'animate-pulse' : ''}`} />
                             </button>
-                            <button data-testid={`email-lead-${lead.id}`} className="p-1.5 rounded-md hover:bg-[var(--k-brand)]/10 text-muted-foreground hover:text-[var(--k-brand)] transition-colors" title="Email">
+                            <button data-testid={`email-lead-${lead.id}`} onClick={() => handleEmailLead(lead)} className="p-1.5 rounded-md hover:bg-[var(--k-brand)]/10 text-muted-foreground hover:text-[var(--k-brand)] transition-colors" title="Email">
                               <EnvelopeSimple className="w-3.5 h-3.5" />
                             </button>
                             <button data-testid={`delete-lead-${lead.id}`} onClick={() => handleDeleteLead(lead.id)} className="p-1.5 rounded-md hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-colors" title="Delete">

@@ -171,26 +171,42 @@ def api_agent_call_outbound():
             return jsonify({"error": "Agent not found"}), 404
         agent = agent_doc.to_dict()
 
-        # TEST CALLS: User wants test calls to go through THEIR/MASTER Vobiz config
-        # instead of the user's saved one (unless it's a campaign).
-        # We'll use the master config if available.
+        # TEST CALLS: Studio "Instant Telephony" calls always prefer the MASTER
+        # Vobiz creds from ENV so a brand-new agent can be dialed without the
+        # user first configuring their own provider. The creds are resolved in
+        # config.py across every env-var name we've ever shipped, so a name
+        # mismatch no longer silently disables this path.
         from config import VOBIZ_MASTER_USER, VOBIZ_MASTER_PASS, VOBIZ_MASTER_NUMBER
-        
+
+        config = None
         if VOBIZ_MASTER_USER and VOBIZ_MASTER_PASS:
             provider_type = 'vobiz'
             config = {
                 "username": VOBIZ_MASTER_USER,
                 "password": VOBIZ_MASTER_PASS,
                 "caller_id": VOBIZ_MASTER_NUMBER,
-                "type": "vobiz"
+                "type": "vobiz",
             }
+            print(f"[Outbound] Using MASTER Vobiz creds for test call to {to_number}")
         else:
-            # Fallback to user's own config if master isn't set
-            provider_type = (agent.get('telephony_provider') or 'exotel').lower()
-            config = load_provider_config(db, uid, provider_type)
+            # Master not set → fall back to whichever provider the user saved.
+            # Try the agent's preferred provider first, then the other one, so a
+            # user who only saved Vobiz (or only Exotel) still gets dialed.
+            preferred = (agent.get('telephony_provider') or 'exotel').lower()
+            for provider_type in (preferred, 'vobiz' if preferred == 'exotel' else 'exotel'):
+                config = load_provider_config(db, uid, provider_type)
+                if config:
+                    print(f"[Outbound] Master not set — using user '{provider_type}' provider")
+                    break
 
         if not config:
-            return jsonify({"error": f"Master Vobiz not set and user provider {provider_type} not configured"}), 400
+            return jsonify({
+                "error": ("Master Vobiz creds are not set on the server and you "
+                          "have not saved any telephony provider. Set VOBIZ_MASTER_USER / "
+                          "VOBIZ_MASTER_PASS / VOBIZ_MASTER_NUMBER in the deployment env, "
+                          "or add Exotel/Vobiz credentials under Settings → Telephony."),
+                "code": "telephony_not_configured",
+            }), 400
 
         # Pre-call CRM lookup: enrich the agent's system_prompt with whatever
         # the connected CRM knows about this number. Soft-fail: missing CRM

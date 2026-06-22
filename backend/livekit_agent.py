@@ -950,6 +950,7 @@ async def entrypoint(ctx: JobContext):
     summary = ""
     sentiment = "neutral"
     key_topics = []
+    lead_fields = {}
     outcome_label = "completed" if transcript_text else "no_audio"
 
     print(f"[Agent] Analyzing transcript ({msg_count} turns, {len(transcript_text)} chars)...", flush=True)
@@ -959,7 +960,8 @@ async def entrypoint(ctx: JobContext):
             analysis_prompt = (
                 "You are a call analyst. Extract JSON only:\n"
                 '{"summary": "...", "sentiment": "positive|neutral|negative", "outcome": "...", "topics": [...], '
-                '"lead": {"name": "...", "email": "...", "phone": "...", "intent": "...", "score": 0-10}}\n\n'
+                '"lead": {"name": "...", "email": "...", "company": "...", "phone": "...", "intent": "...", "score": 0-10}}\n'
+                "Use \"\" for anything not mentioned; never invent emails/phone digits.\n\n"
                 f"TRANSCRIPT:\n{transcript_text[:6000]}"
             )
             # Offload blocking LLM call to thread to prevent health-check timeout
@@ -988,11 +990,13 @@ async def entrypoint(ctx: JobContext):
                 if m:
                     parsed = json.loads(m.group(0))
                     summary = parsed.get('summary', '')
-                    sentiment = parsed.get('sentiment', 'neutral')
+                    sentiment = str(parsed.get('sentiment', 'neutral')).strip().lower()
+                    if sentiment not in ('positive', 'neutral', 'negative'):
+                        sentiment = 'neutral'
                     outcome_label = parsed.get('outcome', outcome_label)
                     key_topics = (parsed.get('topics') or [])[:5]
                     print(f"[Agent] Analysis parsed: sentiment={sentiment}, outcome={outcome_label}", flush=True)
-                    
+
                     lead_data = parsed.get('lead') or {}
                     if owner_uid:
                         # We ALWAYS know the customer's number for a phone call —
@@ -1005,25 +1009,54 @@ async def entrypoint(ctx: JobContext):
                         contact_phone = known_phone or extracted_phone
                         # Save when there's anything useful — and a known phone
                         # number alone is enough, since it's a real reachable lead.
+                        # Stash the parsed lead fields so the agent_log written
+                        # below can surface name/email/company per call.
+                        lead_score = int(lead_data.get('score') or 0) if str(lead_data.get('score') or '0').isdigit() else 0
+                        lead_fields = {
+                            "name": str(lead_data.get('name') or '')[:120],
+                            "email": str(lead_data.get('email') or '')[:200],
+                            "company": str(lead_data.get('company') or '')[:160],
+                            "phone": contact_phone[:40],
+                            "intent": str(lead_data.get('intent') or '')[:400],
+                            "score": lead_score,
+                        }
                         if contact_phone or any(lead_data.get(k) for k in ['name', 'email']):
-                            lead_id = 'lead_' + uuid.uuid4().hex[:20]
+                            # Dedupe by phone so repeat callers update one lead.
+                            # Soft-fail the query (missing index / transient) so a
+                            # lookup error never blocks the actual lead capture.
+                            existing = []
+                            if contact_phone:
+                                try:
+                                    existing = await asyncio.to_thread(
+                                        lambda: list(db.collection('leads')
+                                                     .where(filter=firestore.FieldFilter('uid', '==', owner_uid))
+                                                     .where(filter=firestore.FieldFilter('phone', '==', contact_phone[:40]))
+                                                     .limit(1).stream()))
+                                except Exception as qe:
+                                    print(f"[Agent] lead dedup query failed ({qe}) — creating new", flush=True)
+                                    existing = []
+                            lead_status = 'hot' if lead_score >= 7 else ('warm' if lead_score >= 4 else 'new')
                             lead_doc = {
-                                "id": lead_id,
                                 "uid": owner_uid,
                                 "agent_id": agent_id,
-                                "name": str(lead_data.get('name') or '')[:120],
-                                "email": str(lead_data.get('email') or '')[:200],
-                                "phone": contact_phone[:40],
+                                **lead_fields,
                                 "message": summary,
                                 "source": 'voice_sip' if is_sip else 'voice_web',
-                                "status": "new",
+                                "status": lead_status,
                                 "sentiment": sentiment,
-                                "intent": str(lead_data.get('intent') or '')[:400],
-                                "score": int(lead_data.get('score') or 0),
-                                "created_at": firestore.SERVER_TIMESTAMP,
+                                "updated_at": firestore.SERVER_TIMESTAMP,
                             }
-                            await asyncio.to_thread(db.collection('leads').document(lead_id).set, lead_doc)
-                            print(f"[Agent] 🏆 Lead captured: {lead_id}", flush=True)
+                            if existing:
+                                _eid = existing[0].id
+                                await asyncio.to_thread(
+                                    lambda: db.collection('leads').document(_eid).set(lead_doc, merge=True))
+                                print(f"[Agent] 🔄 Lead updated: {_eid}", flush=True)
+                            else:
+                                lead_id = 'lead_' + uuid.uuid4().hex[:20]
+                                lead_doc["id"] = lead_id
+                                lead_doc["created_at"] = firestore.SERVER_TIMESTAMP
+                                await asyncio.to_thread(db.collection('leads').document(lead_id).set, lead_doc)
+                                print(f"[Agent] 🏆 Lead captured: {lead_id}", flush=True)
                 else:
                     print(f"[Agent] No JSON found in LLM response: {result[:200]}...", flush=True)
             else:
@@ -1038,12 +1071,27 @@ async def entrypoint(ctx: JobContext):
 
     try:
         if FIREBASE_AVAILABLE and db and agent_id:
+            # Customer number we actually know (dialed for outbound, caller id
+            # for inbound) so Call Analytics shows the right "to_number".
+            known_number = (dialed_number or caller_phone or lead_fields.get('phone') or '').strip()
             log_payload = {
                 'agent_id': agent_id, 'call_id': call_id or ctx.room.name,
                 'channel': 'voice_sip' if is_sip else 'voice_web',
                 'duration': duration_seconds, 'status': outcome_label,
                 'messages': msg_count, 'transcript': transcript_text,
+                'transcript_json': [
+                    {"role": "agent" if t.get('role') == 'assistant' else "customer",
+                     "text": t.get('content', '')}
+                    for t in convo_turns if t.get('content')
+                ],
                 'summary': summary, 'sentiment': sentiment, 'topics': key_topics,
+                'to_number': known_number, 'from_number': caller_phone or '',
+                'intent': lead_fields.get('intent', ''),
+                'lead_name': lead_fields.get('name', ''),
+                'lead_email': lead_fields.get('email', ''),
+                'lead_company': lead_fields.get('company', ''),
+                'lead_phone': (known_number or '').lstrip('+'),
+                'lead_score': lead_fields.get('score', 0),
                 'model': selected_model, 'language': agent_language,
                 'created_at': firestore.SERVER_TIMESTAMP, 'timestamp': int(_time.time()),
             }

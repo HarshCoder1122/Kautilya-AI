@@ -60,11 +60,16 @@ def analyze_call_transcript(transcript: str) -> dict:
     {transcript}
 
     Extract the following information and return ONLY a valid JSON object:
-    - "sentiment": A string representing the overall sentiment of the user (e.g., "Positive", "Neutral", "Negative", "Frustrated").
+    - "sentiment": one of exactly "positive", "neutral", or "negative" (lowercase).
     - "intent": The primary reason the user was calling or what they wanted to achieve.
     - "outcome": The final resolution of the call (e.g., "Resolved", "Follow-up required", "Hung up early").
     - "summary": A brief 1-2 sentence summary of the conversation.
-    - "lead_status": Based on the call, is this a "Hot Lead", "Warm Lead", or "Not a Lead"?
+    - "lead_status": Based on the call, one of "hot", "warm", "cold", or "not_a_lead".
+    - "topics": array of up to 5 short topic strings discussed.
+    - "lead": an object with the contact details the caller revealed:
+        {{"name": "...", "email": "...", "company": "...", "phone": "...", "score": 0-10}}
+      Use "" for anything not mentioned. Never invent values. Phone/email must be
+      taken verbatim from what the caller said (do not guess digits).
 
     Return EXACTLY valid JSON and nothing else.
     """
@@ -82,7 +87,7 @@ def analyze_call_transcript(transcript: str) -> dict:
                 response_format={"type": "json_object"}
             )
             result_text = response.choices[0].message.content
-            return json.loads(result_text)
+            return _normalize(json.loads(result_text))
         except Exception as e:
             last_err = e
             print(f"[NIM Error] {label} analytics failed: {e} — trying next provider")
@@ -90,11 +95,44 @@ def analyze_call_transcript(transcript: str) -> dict:
     traceback.print_exc()
     return _fallback_analytics(reason=str(last_err) if last_err else "Analysis failed")
 
+
+def _normalize(data: dict) -> dict:
+    """Coerce the model's output into the shape the dashboard + lead pipeline
+    expect: lowercase 3-class sentiment, a guaranteed `lead` object, and a
+    list `topics`."""
+    if not isinstance(data, dict):
+        return _fallback_analytics()
+    s = str(data.get("sentiment") or "neutral").strip().lower()
+    if s in ("frustrated", "angry", "negative"):
+        s = "negative"
+    elif s in ("positive", "happy", "satisfied"):
+        s = "positive"
+    elif s not in ("positive", "neutral", "negative"):
+        s = "neutral"
+    data["sentiment"] = s
+    lead = data.get("lead")
+    if not isinstance(lead, dict):
+        lead = {}
+    data["lead"] = {
+        "name": str(lead.get("name") or "")[:120],
+        "email": str(lead.get("email") or "")[:200],
+        "company": str(lead.get("company") or "")[:160],
+        "phone": str(lead.get("phone") or "")[:40],
+        "score": int(lead.get("score") or 0) if str(lead.get("score") or "0").isdigit() else 0,
+    }
+    if not isinstance(data.get("topics"), list):
+        data["topics"] = []
+    data["topics"] = [str(t)[:60] for t in data["topics"][:5]]
+    return data
+
+
 def _fallback_analytics(reason="Analysis failed") -> dict:
     return {
-        "sentiment": "Unknown",
+        "sentiment": "neutral",
         "intent": "Unknown",
         "outcome": reason,
         "summary": "Analytics could not be generated for this call.",
-        "lead_status": "Unknown"
+        "lead_status": "Unknown",
+        "topics": [],
+        "lead": {"name": "", "email": "", "company": "", "phone": "", "score": 0},
     }

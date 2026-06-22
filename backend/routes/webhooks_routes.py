@@ -320,9 +320,19 @@ def _process_post_call(agent_id, payload, call_uuid):
         else:
             print("[NIM] No transcript found in Firestore.")
             
-        # Analyze with NIM
+        # Analyze with NIM (now also returns lead.name/email/company/phone/score)
         analytics = nim_service.analyze_call_transcript(transcript_text)
-        
+        lead_info = analytics.get('lead') or {}
+
+        # We ALWAYS know the customer's number on a telephony call — it's the
+        # To/From on the provider payload. Prefer that verified number over
+        # anything the LLM mined from the transcript (STT garbles digits).
+        from_number = _clean_phone(payload.get('From', '')) or 'Unknown'
+        to_number = _clean_phone(payload.get('To', '')) or 'Unknown'
+        known_phone = next((p for p in (to_number, from_number)
+                            if p and p != 'Unknown'), '')
+        lead_phone = (known_phone or _clean_phone(lead_info.get('phone', ''))).lstrip('+')
+
         # Build the final log document for the dashboard
         log_data = {
             "call_id": call_uuid,
@@ -330,64 +340,173 @@ def _process_post_call(agent_id, payload, call_uuid):
             "created_at": firestore.SERVER_TIMESTAMP,
             "timestamp": int(time.time()),
             "duration": payload.get('Duration', 0),
-            "from_number": payload.get('From', 'Unknown'),
-            "to_number": payload.get('To', 'Unknown'),
+            "from_number": from_number,
+            "to_number": to_number,
             "status": analytics.get('outcome', payload.get('CallStatus', 'completed')),
             "transcript": transcript_text,
+            "transcript_json": _structure_transcript(transcript_text),
             "summary": analytics.get('summary', ''),
             "sentiment": analytics.get('sentiment', 'neutral'),
+            "intent": analytics.get('intent', ''),
             "topics": analytics.get('topics', []),
+            # Surface the extracted lead fields directly on the log so the Call
+            # Analytics dashboard can show name / email / company per call.
+            "lead_name": lead_info.get('name', ''),
+            "lead_email": lead_info.get('email', ''),
+            "lead_company": lead_info.get('company', ''),
+            "lead_phone": lead_phone,
+            "lead_score": lead_info.get('score', 0),
+            "lead_status": analytics.get('lead_status', ''),
+            "actions": [],
             "channel": "voice_sip",
         }
-        
-        # Save to agents/{agent_id}/agent_logs
-        # We use call_uuid as doc ID to prevent duplicates if livekit_agent already saved it
-        db.collection('agents').document(agent_id).collection('agent_logs').document(call_uuid).set(log_data, merge=True)
-        db.collection('agents').document(agent_id).update({"call_count": firestore.Increment(1)})
-        print(f"[NIM] ✅ Saved structured call log for {call_uuid} to agent_logs")
 
         # ---- Post-call integration dispatch ----
-        # Extract action items from transcript and fire them through the
-        # owner's connected integrations (CRM note, Slack summary, calendar
-        # follow-ups). Soft-fail — analytics save above must remain authoritative.
+        # Fire CRM note / Slack summary / calendar follow-ups / follow-up email
+        # through the owner's connected integrations, and record each action on
+        # the log so the dashboard can show "what happened after the call".
+        actions = []
+        owner_uid = None
         try:
             agent_doc = db.collection('agents').document(agent_id).get()
             owner_uid = (agent_doc.to_dict() or {}).get('uid') if agent_doc.exists else None
             if owner_uid and transcript_text:
-                _dispatch_post_call_integrations(owner_uid, agent_id, log_data, transcript_text)
+                actions = _dispatch_post_call_integrations(
+                    owner_uid, agent_id, log_data, transcript_text) or []
         except Exception as e:
             print(f"[Integrations] post-call dispatch soft-failed: {e}")
+        log_data["actions"] = actions
+
+        # Save to agents/{agent_id}/agent_logs (call_uuid as doc id → no dupes
+        # even if livekit_agent already wrote a stub for this call).
+        db.collection('agents').document(agent_id).collection('agent_logs').document(call_uuid).set(log_data, merge=True)
+        db.collection('agents').document(agent_id).update({"call_count": firestore.Increment(1)})
+        print(f"[NIM] ✅ Saved structured call log for {call_uuid} to agent_logs")
+
+        # ---- Lead capture ----
+        # Every answered call with a known number becomes a lead so the Leads
+        # page is never empty and the dialed/calling number is always extracted.
+        if owner_uid and (lead_phone or lead_info.get('name') or lead_info.get('email')):
+            _upsert_lead_from_call(owner_uid, agent_id, log_data)
 
     except Exception as e:
+        import traceback
         print(f"[NIM] ❌ Error in post-call processing: {e}")
+        traceback.print_exc()
+
+
+def _structure_transcript(transcript_text):
+    """Turn the flat "ROLE: text" transcript into a list of {role, text} turns
+    the dashboard renders as chat bubbles. Roles are normalised to
+    'agent' / 'customer' (what CallAnalytics expects). Unknown shapes → []."""
+    if not transcript_text or not isinstance(transcript_text, str):
+        return []
+    turns = []
+    for line in transcript_text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r'^([A-Za-z_]+)\s*:\s*(.*)$', line)
+        if not m:
+            # continuation of the previous speaker's line
+            if turns:
+                turns[-1]["text"] += " " + line
+            continue
+        role_raw, text = m.group(1).lower(), m.group(2).strip()
+        if role_raw in ('assistant', 'agent', 'ai', 'bot'):
+            role = 'agent'
+        elif role_raw in ('user', 'customer', 'caller', 'human'):
+            role = 'customer'
+        else:
+            role = 'agent'
+        if text:
+            turns.append({"role": role, "text": text})
+    return turns
+
+
+def _upsert_lead_from_call(uid, agent_id, log_data):
+    """Create (or refresh) a lead from a finished call. Keyed by phone so
+    repeated calls from the same number update one lead instead of spamming."""
+    try:
+        phone = (log_data.get('lead_phone') or '').strip()
+        score = int(log_data.get('lead_score') or 0)
+        status = 'hot' if score >= 7 else ('warm' if score >= 4 else 'new')
+        lead = {
+            "uid": uid,
+            "agent_id": agent_id,
+            "name": log_data.get('lead_name', ''),
+            "email": log_data.get('lead_email', ''),
+            "company": log_data.get('lead_company', ''),
+            "phone": phone,
+            "message": log_data.get('summary', ''),
+            "intent": log_data.get('intent', ''),
+            "source": "voice_sip",
+            "status": status,
+            "sentiment": log_data.get('sentiment', 'neutral'),
+            "score": score,
+            "last_call_id": log_data.get('call_id', ''),
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        }
+        existing = None
+        if phone:
+            try:
+                existing = list(db.collection('leads')
+                                .where(filter=firestore.FieldFilter('uid', '==', uid))
+                                .where(filter=firestore.FieldFilter('phone', '==', phone))
+                                .limit(1).stream())
+            except Exception as qe:
+                # Missing index / transient error → just create a fresh lead
+                # rather than dropping the capture entirely.
+                print(f"[Lead] dedup query failed ({qe}) — creating new lead")
+                existing = None
+        if existing:
+            db.collection('leads').document(existing[0].id).set(lead, merge=True)
+            print(f"[Lead] 🔄 Updated lead for {phone}")
+        else:
+            lead_id = 'lead_' + uuid.uuid4().hex[:20]
+            lead["id"] = lead_id
+            lead["created_at"] = firestore.SERVER_TIMESTAMP
+            db.collection('leads').document(lead_id).set(lead)
+            print(f"[Lead] 🏆 Captured lead {lead_id} for {phone or '(no phone)'}")
+    except Exception as e:
+        print(f"[Lead] upsert failed: {e}")
 
 
 def _dispatch_post_call_integrations(uid, agent_id, log_data, transcript_text):
-    """Fan call summary + action items into the owner's connected integrations.
+    """Fan call summary + action items into the owner's connected integrations
+    and RETURN a list of recorded actions so the dashboard can show what
+    happened after the call. Each action: {type, label, status, detail}.
     - Slack: post a brief outcome summary to the configured channel.
-    - CRM: log a note on the matched contact (looked up by from_number).
+    - CRM: log a note on the matched contact (looked up by phone).
     - Calendar: any extracted action item with a due date becomes an event.
+    - Email: a follow-up email to the lead (if we captured an address).
     """
     from services.integration_tools import execute_tool, _is_connected, _lookup_crm_contact
     from services.llm_service import call_groq
 
+    actions = []
     summary = log_data.get('summary') or '(no summary)'
     sentiment = log_data.get('sentiment', 'neutral')
-    from_number = log_data.get('from_number') or log_data.get('to_number') or ''
+    phone = log_data.get('lead_phone') or log_data.get('from_number') or log_data.get('to_number') or ''
 
     # 1. Slack summary
     if _is_connected(uid, 'slack'):
-        msg = f"*Call wrapped* — Agent `{agent_id}` | {from_number} | sentiment: {sentiment}\n>{summary[:500]}"
-        execute_tool(uid, "post_slack", {"message": msg})
+        msg = f"*Call wrapped* — Agent `{agent_id}` | {phone} | sentiment: {sentiment}\n>{summary[:500]}"
+        res = execute_tool(uid, "post_slack", {"message": msg})
+        actions.append({"type": "slack", "label": "Posted call summary to Slack",
+                        "status": "ok" if (res or {}).get("ok", True) else "failed",
+                        "detail": summary[:140]})
 
     # 2. CRM note (lookup by phone, then attach activity note)
-    crm = _lookup_crm_contact(uid, {"phone": from_number}) if from_number else {"ok": False}
+    crm = _lookup_crm_contact(uid, {"phone": phone}) if phone else {"ok": False}
     if crm.get("ok"):
         contact = crm["contact"]
         cid = contact.get("vid") or contact.get("id") or contact.get("Contact_Id") or contact.get("contact_id")
         if cid:
             note = f"Kautilya call summary ({sentiment}):\n{summary}\n\nTopics: {', '.join(log_data.get('topics', []))}"
             execute_tool(uid, "log_crm_activity", {"contact_id": str(cid), "note": note, "source": crm["source"]})
+            actions.append({"type": "crm", "label": f"Logged note in {crm['source']} CRM",
+                            "status": "ok", "detail": f"Contact {cid}"})
 
     # 3. Calendar follow-ups — extract action items with a due date
     try:
@@ -405,19 +524,123 @@ def _dispatch_post_call_integrations(uid, agent_id, log_data, transcript_text):
         items = json.loads(m.group(0)) if m else []
         if _is_connected(uid, 'google_calendar'):
             from datetime import datetime, timedelta
+            lead_email = (log_data.get('lead_email') or '').strip()
             for it in items[:5]:
                 due = it.get("due")
                 if not due: continue
                 try:
                     start = datetime.fromisoformat(due.replace('Z', '+00:00'))
-                    end = start + timedelta(minutes=int(it.get("duration_minutes", 30)))
-                    execute_tool(uid, "create_calendar_event", {
+                    dur = int(it.get("duration_minutes", 30))
+                    # Time-aware: shift the slot forward until it no longer
+                    # clashes with anything already on the calendar, so two
+                    # different leads never get booked into the same slot.
+                    start, end, shifted = _find_clash_free_slot(uid, start, dur)
+                    invite = {
                         "title": it.get("title", "Kautilya follow-up"),
                         "start": start.isoformat(),
                         "end": end.isoformat(),
-                        "description": f"Auto-created from call {log_data.get('call_id')}.",
-                    })
+                        "description": f"Auto-created from call {log_data.get('call_id')}.\n\n{summary}",
+                        "create_meet_link": True,
+                    }
+                    if lead_email and '@' in lead_email:
+                        invite["attendees"] = [lead_email]  # sends the invite
+                    res = execute_tool(uid, "create_calendar_event", invite)
+                    ok = bool((res or {}).get("ok", True))
+                    detail = f"{it.get('title', 'Follow-up')} @ {start.strftime('%d %b %H:%M')}"
+                    if shifted:
+                        detail += " (auto-shifted to avoid a clash)"
+                    actions.append({"type": "calendar",
+                                    "label": "Scheduled follow-up meeting",
+                                    "status": "ok" if ok else "failed", "detail": detail})
                 except Exception as e:
                     print(f"[Integrations] calendar item skipped: {e}")
     except Exception as e:
         print(f"[Integrations] action-item extraction failed: {e}")
+
+    # 4. Follow-up email to the lead (Resend transactional — no Gmail connect
+    #    needed). Best-effort: only fires when we captured an email address.
+    lead_email = (log_data.get('lead_email') or '').strip()
+    if lead_email and '@' in lead_email:
+        try:
+            sent = _send_followup_email(lead_email, log_data)
+            actions.append({"type": "email",
+                            "label": f"Follow-up email to {lead_email}",
+                            "status": "ok" if sent else "failed",
+                            "detail": summary[:140]})
+        except Exception as e:
+            print(f"[Integrations] follow-up email failed: {e}")
+
+    return actions
+
+
+def _send_followup_email(to_email, log_data):
+    """Send a short post-call follow-up email via the existing Resend service."""
+    from services.email_service import _send_raw, _shell
+    name = (log_data.get('lead_name') or '').split(' ')[0] or 'there'
+    summary = log_data.get('lead_company') and \
+        f"{log_data.get('summary', '')}" or log_data.get('summary', '')
+    inner = f"""
+    <div class="header">
+      <span class="brand">Kautilya AI</span>
+      <h1>Thanks for your time, {name} 👋</h1>
+      <p class="sub">Here's a quick recap of our call.</p>
+    </div>
+    <div class="body">
+      <p>{summary or 'It was great speaking with you.'}</p>
+      <p style="font-size:13px;color:#8b949e;">If anything's unclear or you'd like to take
+      the next step, just reply to this email — we're here to help.</p>
+    </div>"""
+    html = _shell("Following up on our call", "A quick recap of our conversation.", inner)
+    return _send_raw(to_email, "Following up on our call — Kautilya AI", html)
+
+
+def _find_clash_free_slot(uid, start, duration_minutes, tz="Asia/Kolkata"):
+    """Return (start, end, shifted) for a follow-up that doesn't overlap any
+    existing calendar event. Queries Google's freeBusy API and, if the desired
+    slot is busy, advances by the slot length (keeping it inside 09:00–19:00
+    local working hours) until a free window is found. This is what stops the
+    agent from booking the same time with many different people.
+
+    Soft-fail: on any error it returns the original slot so we still book
+    something rather than dropping the follow-up."""
+    from datetime import timedelta
+    import requests
+    end = start + timedelta(minutes=duration_minutes)
+    try:
+        from services.integration_tools import _get_valid_google_token
+        token = _get_valid_google_token(uid, 'google_calendar')
+    except Exception:
+        return start, end, False
+
+    def _busy(s, e):
+        try:
+            r = requests.post(
+                "https://www.googleapis.com/calendar/v3/freeBusy",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"timeMin": s.isoformat(), "timeMax": e.isoformat(),
+                      "timeZone": tz, "items": [{"id": "primary"}]},
+                timeout=12)
+            if not r.ok:
+                return False  # can't tell → treat as free
+            cals = (r.json() or {}).get("calendars", {})
+            return bool(cals.get("primary", {}).get("busy"))
+        except Exception:
+            return False
+
+    shifted = False
+    for _ in range(12):  # cap the search
+        # Keep follow-ups inside working hours; otherwise jump to 09:00 next day.
+        if start.hour < 9:
+            start = start.replace(hour=9, minute=0, second=0, microsecond=0)
+            end = start + timedelta(minutes=duration_minutes)
+            shifted = True
+        if end.hour >= 19 or (end.hour == 19 and end.minute > 0):
+            start = (start + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+            end = start + timedelta(minutes=duration_minutes)
+            shifted = True
+        if not _busy(start, end):
+            return start, end, shifted
+        start = end
+        end = start + timedelta(minutes=duration_minutes)
+        shifted = True
+    return start, end, shifted
