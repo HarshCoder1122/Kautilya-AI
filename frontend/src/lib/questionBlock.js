@@ -7,7 +7,32 @@
  * message text ourselves, brace-match the JSON object, and strip it out. The
  * card is rendered docked above the composer (Claude-style), not inline. */
 
-/** Tolerant parse of the question JSON → normalized shape, or null if invalid. */
+/** Normalize one question object → {question, options, allowCustom, multiSelect}
+ * or null if it has no question text or no options. */
+function _normalizeQuestion(item) {
+  if (!item || typeof item !== "object") return null;
+  const question = String(item.question || item.prompt || item.title || item.label || "").trim();
+  const rawOpts = Array.isArray(item.options) ? item.options
+    : Array.isArray(item.choices) ? item.choices : [];
+  const options = rawOpts
+    .map((o) => (typeof o === "string"
+      ? { label: o.trim(), description: "" }
+      : { label: String(o.label ?? o.text ?? o.value ?? "").trim(),
+          description: String(o.description ?? o.detail ?? "").trim() }))
+    .filter((o) => o.label);
+  if (!question || options.length === 0) return null;
+  return {
+    question,
+    options,
+    allowCustom: item.allowCustom !== false, // default on
+    multiSelect: Boolean(item.multiSelect || item.multi),
+  };
+}
+
+/** Tolerant parse of the question JSON. Returns { questions: [...], skipLabel }
+ * (a list of 1+ normalized questions — the model may ask several per task), or
+ * null if nothing valid. Accepts both the single-question shape
+ * `{question, options}` and the multi shape `{questions: [ {question,options}, … ]}`. */
 export function parseQuestion(raw) {
   const src = (raw || "").trim();
   if (!src) return null;
@@ -21,21 +46,13 @@ export function parseQuestion(raw) {
     try { data = JSON.parse(src.slice(a, b + 1)); } catch { return null; }
   }
   if (!data || typeof data !== "object") return null;
-  const question = String(data.question || data.prompt || data.title || "").trim();
-  const rawOpts = Array.isArray(data.options) ? data.options
-    : Array.isArray(data.choices) ? data.choices : [];
-  const options = rawOpts
-    .map((o) => (typeof o === "string"
-      ? { label: o.trim(), description: "" }
-      : { label: String(o.label ?? o.text ?? o.value ?? "").trim(),
-          description: String(o.description ?? o.detail ?? "").trim() }))
-    .filter((o) => o.label);
-  if (!question || options.length === 0) return null;
+  const list = Array.isArray(data.questions) ? data.questions
+    : Array.isArray(data.fields) ? data.fields : [data];
+  const questions = list.map(_normalizeQuestion).filter(Boolean).slice(0, 6);
+  if (questions.length === 0) return null;
   return {
-    question,
-    options,
-    allowCustom: data.allowCustom !== false, // default on
-    multiSelect: Boolean(data.multiSelect || data.multi),
+    questions,
+    intro: String(data.intro || data.title || "").trim(),
     skipLabel: typeof data.skipLabel === "string" ? data.skipLabel : "Skip",
   };
 }

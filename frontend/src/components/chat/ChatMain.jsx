@@ -537,8 +537,14 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     setIsThinking(false);
   };
 
-  const handleSend = async () => {
-    if (!inputValue.trim() && selectedFiles.length === 0) return;
+  const handleSend = async (overrideText) => {
+    // Accept a direct text argument (interactive-question answers call
+    // handleSend(text)) so we don't rely on setInputValue + a stale-closure
+    // read of inputValue — that was leaving the answer sitting in the box
+    // unsent until the user pressed Enter. onClick/Enter pass no string, so
+    // they keep using the typed inputValue.
+    const text = typeof overrideText === 'string' ? overrideText : inputValue;
+    if (!text.trim() && selectedFiles.length === 0) return;
     if (isStreaming) return;
 
     // Materialize image previews so they survive in the message bubble after send
@@ -560,7 +566,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     const userMsg = {
       id: `msg-${Date.now()}`,
       role: 'user',
-      content: inputValue,
+      content: text,
       files: fileMetas,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
@@ -572,7 +578,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     requestAnimationFrame(() => scrollToBottom('auto'));
 
     const currentFiles = [...selectedFiles];
-    const currentInput = inputValue;
+    const currentInput = text;
     setInputValue('');
     setSelectedFiles([]);
     setIsThinking(true);
@@ -1258,8 +1264,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                 interactive
                 onAnswer={(text) => {
                   if (!text || isStreaming) return;
-                  setInputValue(text);
-                  setTimeout(() => handleSend(), 60);
+                  handleSend(text);   // send immediately — no Enter needed
                 }}
               />
             );

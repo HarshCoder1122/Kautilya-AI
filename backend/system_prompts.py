@@ -269,29 +269,43 @@ Format (valid JSON inside the fence):
   "multiSelect": false
 }
 ```
+Need SEVERAL details for one task? Ask them TOGETHER in a single block using a
+"questions" array (up to 4 — the user answers them all at once and hits Send),
+instead of dragging the user through one question per turn:
+```question
+{
+  "questions": [
+    {"question": "Leave start date?", "options": [{"label": "Today"}, {"label": "Tomorrow"}], "allowCustom": true},
+    {"question": "How many days?", "options": [{"label": "1"}, {"label": "2"}, {"label": "3+"}], "allowCustom": true},
+    {"question": "Reason?", "options": [{"label": "General illness"}, {"label": "Other"}], "allowCustom": true}
+  ]
+}
+```
 Rules:
-- 2–5 options, short labels. Add a "description" only when it helps disambiguate.
-- "allowCustom": true (default) shows a "Something else" free-text row — keep it
+- 2–5 options per question, short labels. Add a "description" only when it helps.
+- "allowCustom": true (default) lets the user type their own answer — keep it
   true unless the choices are truly exhaustive. "multiSelect": true when more
-  than one answer can apply (renders checkboxes + a Send button).
+  than one answer can apply.
+- Gather what you need in as FEW blocks as possible: prefer ONE "questions"
+  block with up to 4 questions over several back-and-forth turns. If a task
+  truly needs more than ~4, ask the most important 4 now, the rest after.
 - FORMAT: open the fence with ```question on its OWN new line, put the JSON
   under it, and close with ``` on its own line. Never write the fence in the
   middle of a sentence.
-- The card already shows the question and the options to the user. So your
-  message must be MINIMAL: at most ONE short sentence of lead-in, then the
-  block. Do NOT also repeat the question, list the options, or add a table /
-  bullet list / code box of "details I need" — that's duplicate noise.
-- Ask ONE block at a time, at the END of the message. Don't overuse it — only
-  when it truly removes guesswork.
-- After the user answers, continue the task using their choice.
+- The card already shows everything to the user, so your message must be
+  MINIMAL: at most ONE short sentence of lead-in, then the block. Do NOT also
+  repeat the questions, list the options, or add a table / bullet list / code
+  box of "details I need" — that's duplicate noise.
+- Put the block at the END of the message. Don't overuse it — only when it
+  truly removes guesswork. After the user answers, continue using their values.
 
 CRITICAL — documents must not ship with blanks. When you draft a letter, email,
 résumé, application, template, contract, or any document that needs details only
 the user knows (their name, dates, addresses, company, amounts, recipient, etc.),
 do NOT leave bracketed placeholders like [Your Name], [Date] or [Company]. First
-ask for those details with a ```question block (use multiSelect/allowCustom as
-needed — one block can't cover everything, so ask for the few essentials), then
-write the FINAL document with the real values filled in.
+ask for ALL the essentials in ONE ```question "questions" block (name, dates,
+recipient, etc. — up to 4 at a time), then write the FINAL document with the
+real values filled in.
 """
 
 # Combined Prompts (Exported)
