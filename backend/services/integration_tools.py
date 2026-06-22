@@ -274,6 +274,43 @@ def _create_calendar_event(uid, args):
     }
 
 
+def _send_gmail(uid, args):
+    """Send an email FROM the user's connected Gmail account (gmail.send scope).
+    The From address is the authenticated Gmail user — we never set it. Accepts
+    `to`/`to_email`, `subject`, and `body`/`html` (HTML auto-detected)."""
+    try:
+        token = _get_valid_google_token(uid, 'gmail')
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    import base64
+    from email.mime.text import MIMEText
+
+    to_email = (args.get("to") or args.get("to_email") or "").strip()
+    subject = args.get("subject") or ""
+    body = args.get("html") or args.get("body") or ""
+    if not to_email or '@' not in to_email:
+        return {"ok": False, "error": "A valid 'to' email is required"}
+
+    is_html = bool(args.get("html")) or '<' in body
+    msg = MIMEText(body, "html" if is_html else "plain", "utf-8")
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    if args.get("cc"):
+        msg["Cc"] = args["cc"]
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+
+    r = requests.post(
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"raw": raw},
+        timeout=15,
+    )
+    if not r.ok:
+        return _google_api_error(r) or {"ok": False, "status": r.status_code, "error": r.text[:300]}
+    return {"ok": True, "status": r.status_code, "message_id": r.json().get("id")}
+
+
 def _append_sheet_row(uid, args):
     try:
         token = _get_valid_google_token(uid, 'google_sheets')
@@ -842,6 +879,18 @@ REGISTRY: Dict[str, Dict[str, Any]] = {
                 "attendees": {"type": "array", "items": {"type": "string", "description": "email"}},
                 "create_meet_link": {"type": "boolean", "description": "Set to true to generate an automatic Google Meet video conference link for this event"},
                 "tz": {"type": "string", "description": "IANA timezone, defaults to Asia/Kolkata"}}}}},
+    },
+    "send_gmail": {
+        "provider": "gmail",
+        "handler": _send_gmail,
+        "spec": {"type": "function", "function": {
+            "name": "send_gmail",
+            "description": "Send an email from the user's connected Gmail account. Use this to email a caller a follow-up, recap, or any info they asked for. HTML is allowed in the body.",
+            "parameters": {"type": "object", "required": ["to", "subject", "body"], "properties": {
+                "to": {"type": "string", "description": "Recipient email address"},
+                "subject": {"type": "string"},
+                "body": {"type": "string", "description": "Email body — HTML allowed"},
+                "cc": {"type": "string", "description": "Optional CC email address"}}}}},
     },
     "append_sheet_row": {
         "provider": "google_sheets",

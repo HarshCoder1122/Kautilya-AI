@@ -557,41 +557,60 @@ def _dispatch_post_call_integrations(uid, agent_id, log_data, transcript_text):
     except Exception as e:
         print(f"[Integrations] action-item extraction failed: {e}")
 
-    # 4. Follow-up email to the lead (Resend transactional — no Gmail connect
-    #    needed). Best-effort: only fires when we captured an email address.
+    # 4. Follow-up email to the lead — sent FROM the owner's OWN connected Gmail
+    #    account. This dashboard is multi-tenant, so we never send from the shared
+    #    Kautilya/Resend address (that would misrepresent the user). If the owner
+    #    hasn't connected Gmail, we skip and surface a "connect Gmail" hint.
     lead_email = (log_data.get('lead_email') or '').strip()
     if lead_email and '@' in lead_email:
         try:
-            sent = _send_followup_email(lead_email, log_data)
-            actions.append({"type": "email",
-                            "label": f"Follow-up email to {lead_email}",
-                            "status": "ok" if sent else "failed",
-                            "detail": summary[:140]})
+            via, sent = _send_followup_email(uid, lead_email, log_data)
+            if via == "none":
+                actions.append({"type": "email", "status": "failed",
+                                "label": "Follow-up email not sent — connect Gmail",
+                                "detail": "Connect your Gmail under Integrations to auto-email leads from your own address."})
+            else:
+                actions.append({"type": "email",
+                                "label": f"Follow-up email to {lead_email} (from your Gmail)",
+                                "status": "ok" if sent else "failed",
+                                "detail": summary[:140]})
         except Exception as e:
             print(f"[Integrations] follow-up email failed: {e}")
 
     return actions
 
 
-def _send_followup_email(to_email, log_data):
-    """Send a short post-call follow-up email via the existing Resend service."""
-    from services.email_service import _send_raw, _shell
+def _followup_email_html(log_data):
+    """Clean, UN-branded follow-up email body. It's sent from the dashboard
+    user's own Gmail to their lead, so it must NOT carry Kautilya/RevealIQ
+    branding or footers — it should read like the user wrote it."""
     name = (log_data.get('lead_name') or '').split(' ')[0] or 'there'
-    summary = log_data.get('lead_company') and \
-        f"{log_data.get('summary', '')}" or log_data.get('summary', '')
-    inner = f"""
-    <div class="header">
-      <span class="brand">Kautilya AI</span>
-      <h1>Thanks for your time, {name} 👋</h1>
-      <p class="sub">Here's a quick recap of our call.</p>
-    </div>
-    <div class="body">
-      <p>{summary or 'It was great speaking with you.'}</p>
-      <p style="font-size:13px;color:#8b949e;">If anything's unclear or you'd like to take
-      the next step, just reply to this email — we're here to help.</p>
-    </div>"""
-    html = _shell("Following up on our call", "A quick recap of our conversation.", inner)
-    return _send_raw(to_email, "Following up on our call — Kautilya AI", html)
+    summary = (log_data.get('summary') or 'It was great speaking with you.')
+    return f"""<!doctype html><html><body style="margin:0;background:#f6f7f9;">
+<div style="max-width:560px;margin:24px auto;padding:24px;background:#fff;border:1px solid #e6e8eb;border-radius:12px;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#1a1a1a;">
+  <p style="font-size:16px;margin:0 0 14px;">Hi {name},</p>
+  <p style="font-size:15px;line-height:1.6;margin:0 0 14px;">Thanks for your time on the call today. Here's a quick recap:</p>
+  <p style="font-size:15px;line-height:1.6;margin:0 0 18px;color:#333;">{summary}</p>
+  <p style="font-size:15px;line-height:1.6;margin:0;">If anything's unclear or you'd like to take the next step, just reply to this email — happy to help.</p>
+</div></body></html>"""
+
+
+def _send_followup_email(uid, to_email, log_data):
+    """Send the post-call follow-up FROM the owner's own connected Gmail account.
+    No Resend/Kautilya fallback — multi-tenant users must email from their own
+    address. Returns (channel, ok): 'Gmail' if connected, else 'none'."""
+    from services.integration_tools import execute_tool, _is_connected
+    if not _is_connected(uid, 'gmail'):
+        return "none", False
+    res = execute_tool(uid, "send_gmail", {
+        "to": to_email,
+        "subject": "Following up on our call",
+        "body": _followup_email_html(log_data),
+    })
+    if (res or {}).get("ok"):
+        return "Gmail", True
+    print(f"[Integrations] Gmail send failed ({(res or {}).get('error')})")
+    return "Gmail", False
 
 
 def _find_clash_free_slot(uid, start, duration_minutes, tz="Asia/Kolkata"):
