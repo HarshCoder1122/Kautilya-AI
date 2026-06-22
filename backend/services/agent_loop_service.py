@@ -1023,6 +1023,21 @@ def _looks_like_orphan_preamble(text):
     if re.search(r'\[(INTEGRATION|SEARCH|CALCULATE|RUN_PYTHON|FETCH_URL|CALENDAR_|GMAIL_|WHATSAPP_SEND|SLACK_POST|HUBSPOT_CREATE_CONTACT)', t):
         return False
     tl = t.lower()
+    # If the model is ASKING THE USER for info (a question anywhere in the
+    # text, or an interactive ```question/```ask card), it's waiting on the
+    # user — NOT dangling a tool call. Re-firing a turn here just makes it ask
+    # again → the "asking for details twice" duplication bug. A "…and I'll
+    # draft it" promise alongside a real question is fine; don't treat it as an
+    # orphan preamble.
+    if '?' in t or '```question' in tl or '```ask' in tl:
+        return False
+    if any(p in tl for p in (
+        'could you', 'can you share', 'can you tell', 'please share',
+        'please provide', 'let me know', 'i need a few', 'i still need',
+        'share whatever', "what's your", 'what is your', 'do you want',
+        'would you like', 'batao', 'bata do', 'chahiye',
+    )):
+        return False
     # Verb phrases that promise imminent action.
     promise_patterns = [
         r'\b(let me|i(?:\'ll| will)|i am going to|i\'m going to)\b',
