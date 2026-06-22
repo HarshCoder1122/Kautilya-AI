@@ -964,25 +964,43 @@ async def entrypoint(ctx: JobContext):
                 "Use \"\" for anything not mentioned; never invent emails/phone digits.\n\n"
                 f"TRANSCRIPT:\n{transcript_text[:6000]}"
             )
-            # Offload blocking LLM call to thread to prevent health-check timeout
-            result = await asyncio.to_thread(
-                call_nvidia,
-                [{"role": "user", "content": analysis_prompt}],
-                stream=False,
-                max_tokens=600,
-                model='meta/llama-3.3-70b-instruct'
-            )
-            # Fallback to Groq if NVIDIA API key is not configured or fails
-            if not result:
-                print(f"[Agent] NVIDIA NIM not available or returned empty, falling back to Groq for analysis", flush=True)
-                from services.llm_service import call_groq
-                result = await asyncio.to_thread(
-                    call_groq,
-                    [{"role": "user", "content": analysis_prompt}],
-                    stream=False,
-                    max_tokens=600,
-                    model='llama-3.3-70b-versatile'
+            # Post-call analysis uses NVIDIA NIM GLM 5.1 (Kautilya Pro). Crucially
+            # we call it with thinking OFF (max_thinking=False → enable_thinking
+            # False) and a hard timeout: this block runs after the room
+            # disconnects while LiveKit waits for the entrypoint to exit, so a
+            # slow/hanging model gets the worker SIGKILLed ("entrypoint did not
+            # exit in time") BEFORE the call log / lead is written. GLM with
+            # thinking off returns a final JSON quickly; Groq llama-3.3-70b is the
+            # fast fallback if GLM is empty/unavailable.
+            from services.llm_service import call_groq
+            result = None
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        call_nvidia,
+                        [{"role": "user", "content": analysis_prompt}],
+                        stream=False, max_tokens=500, model='z-ai/glm-5.1',
+                        max_thinking=False, expose_thinking=False, is_pro=True),
+                    timeout=15,
                 )
+            except (asyncio.TimeoutError, Exception) as _e:
+                print(f"[Agent] GLM-5.1 analysis timed out/failed: {_e}", flush=True)
+                result = None
+            # Fallback to Groq only if GLM was empty/slow/unavailable
+            if not result:
+                print(f"[Agent] GLM-5.1 empty — falling back to Groq", flush=True)
+                try:
+                    result = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            call_groq,
+                            [{"role": "user", "content": analysis_prompt}],
+                            stream=False, max_tokens=500,
+                            model='llama-3.3-70b-versatile'),
+                        timeout=10,
+                    )
+                except (asyncio.TimeoutError, Exception) as _e:
+                    print(f"[Agent] Groq analysis timed out/failed: {_e}", flush=True)
+                    result = None
             print(f"[Agent] Analysis result received from LLM: {bool(result)}", flush=True)
             if result:
                 cleaned = re.sub(r"<thinking>.*?</thinking>", "", result, flags=re.DOTALL).strip()

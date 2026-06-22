@@ -6,11 +6,11 @@ from openai import OpenAI
 from config import KAUTILYA_API_KEY, NVIDIA_API_KEY, NVIDIA_API_KEYS
 import traceback
 
-# Post-call analytics model. The old default (meta/llama-3.1-405b-instruct)
-# was retired from NVIDIA's catalog and started returning "404 page not found",
-# silently killing every call's sentiment/summary. Default to the same Mistral
-# model the live chat path uses (known-good on NVIDIA NIM); override via env.
-NIM_ANALYTICS_MODEL = os.environ.get("NIM_ANALYTICS_MODEL", "mistralai/mistral-medium-3.5-128b")
+# Post-call analytics model: NVIDIA NIM GLM 5.1 (Kautilya Pro). We call it with
+# thinking OFF (see extra_body below) so it returns the final JSON fast instead
+# of spending seconds on a reasoning trace. Groq llama-3.3-70b is the fast
+# fallback. Both overridable via env.
+NIM_ANALYTICS_MODEL = os.environ.get("NIM_ANALYTICS_MODEL", "z-ai/glm-5.1")
 GROQ_ANALYTICS_MODEL = os.environ.get("GROQ_ANALYTICS_MODEL", "llama-3.3-70b-versatile")
 
 
@@ -78,14 +78,21 @@ def analyze_call_transcript(transcript: str) -> dict:
     for label, client, model_name in providers:
         try:
             print(f"[NIM] Analyzing transcript via {label} ({model_name})")
-            response = client.chat.completions.create(
+            create_kwargs = dict(
                 model=model_name,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
                 top_p=0.7,
                 max_tokens=1024,
-                response_format={"type": "json_object"}
+                response_format={"type": "json_object"},
             )
+            # GLM (z-ai/glm-*) on NVIDIA NIM: turn thinking OFF so we get the
+            # final JSON immediately instead of a slow reasoning trace.
+            if model_name.startswith("z-ai/glm"):
+                create_kwargs["extra_body"] = {
+                    "chat_template_kwargs": {"enable_thinking": False, "clear_thinking": False}
+                }
+            response = client.chat.completions.create(**create_kwargs)
             result_text = response.choices[0].message.content
             return _normalize(json.loads(result_text))
         except Exception as e:
