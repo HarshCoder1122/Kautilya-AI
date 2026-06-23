@@ -69,6 +69,48 @@ function classifyArtifact(declaredType, filename, code) {
  *   }
  * For plain text it returns { hasArtifact:false, cleanContent: <input> }.
  */
+function _msgText(m) {
+  const c = m && (m.artifactCode || m.content);
+  return typeof c === 'string' ? c : '';
+}
+
+/**
+ * Merge a <file> project across the contiguous run of recent assistant turns,
+ * so a "continue"/edit turn that only re-sends SOME files still shows the
+ * COMPLETE project. We concatenate NEWEST-first (current turn, then the prior
+ * project turns walking backwards, stopping at the first assistant message that
+ * has no <file> blocks = a topic boundary). Because the canvas parser keeps the
+ * FIRST occurrence of each filename, this yields each file's LATEST version
+ * plus every earlier file that wasn't re-sent.
+ *
+ * @param messages  the full message list (chat order, oldest→newest)
+ * @param targetId  id of the message whose canvas we're building (null when live)
+ * @param liveCode  raw text of the in-flight streaming turn (null when re-opening)
+ */
+export function mergeProjectCode(messages, targetId, liveCode) {
+  const list = Array.isArray(messages) ? messages : [];
+  const parts = [];
+  let startIdx;
+  if (liveCode != null) {
+    parts.push(liveCode);
+    startIdx = list.length - 1;           // walk all prior history
+  } else {
+    const idx = list.findIndex(m => m && m.id === targetId);
+    if (idx < 0) return liveCode || '';
+    parts.push(_msgText(list[idx]));
+    startIdx = idx - 1;
+  }
+  for (let i = startIdx; i >= 0; i--) {
+    const m = list[i];
+    if (!m) continue;
+    if (m.role === 'user') continue;        // skip user turns, keep walking back
+    const txt = _msgText(m);
+    if (/<file[\s>]/i.test(txt)) parts.push(txt);
+    else break;                             // assistant non-project turn = boundary
+  }
+  return parts.join('\n\n');
+}
+
 export function extractArtifact(fullContent) {
   if (!fullContent || typeof fullContent !== 'string') {
     return { hasArtifact: false, cleanContent: fullContent || '' };

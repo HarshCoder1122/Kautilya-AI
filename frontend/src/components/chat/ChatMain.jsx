@@ -6,7 +6,7 @@ import { extractQuestionBlock, parseQuestion } from "../../lib/questionBlock";
 import { ThinkingTokens } from "@/components/chat/ThinkingTokens";
 import { LiveKitVoice } from "@/components/chat/LiveKitVoice";
 import { chatAPI, getAuthHeaders, integrationsAPI } from "../../lib/api";
-import { extractArtifact } from "../../lib/artifacts";
+import { extractArtifact, mergeProjectCode } from "../../lib/artifacts";
 import { hydrateHistoryMessage } from "../../lib/hydrateMessage";
 // ReActSteps is rendered inside ChatMessage — no need to import here
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -641,7 +641,9 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
             canvasOpened = true;
             // auto:true → push live content but DON'T force-reopen the canvas
             // if the user has already closed it for this message.
-            onOpenCanvas({ type: 'multifile', code: fullContent, title: 'Project Files', messageId: aiMsg.id }, { auto: true });
+            // Merge files across the recent project turns so a "continue"/edit
+            // turn that only re-sends some files still shows the WHOLE project.
+            onOpenCanvas({ type: 'multifile', code: mergeProjectCode(messages, null, fullContent), title: 'Project Files', messageId: aiMsg.id }, { auto: true });
           }
           return;
         }
@@ -1197,7 +1199,9 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
               }}
               onOpenArtifact={(artifactOverride) => onOpenCanvas(artifactOverride || {
                 type: msg.artifactType,
-                code: msg.artifactCode || "",
+                code: msg.artifactType === 'multifile'
+                  ? mergeProjectCode(messages, msg.id, null)
+                  : (msg.artifactCode || ""),
                 title: msg.artifactTitle || 'AI Analysis',
                 filename: msg.artifactFilename || "",
                 subtype: msg.artifactSubtype || "",
