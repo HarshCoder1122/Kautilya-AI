@@ -14,6 +14,18 @@ from services.memory_service import process_uploaded_file, generate_semantic_chu
 
 agents_bp = Blueprint('agents', __name__)
 
+# Integrations an agent can be allowed to use post-call. Stored on the agent as
+# a {key: bool} map; missing/None = enabled (default-on, backward compatible).
+INTEGRATION_KEYS = ('crm', 'google_calendar', 'gmail', 'whatsapp', 'slack')
+
+
+def _sanitize_integrations(val):
+    """Coerce a client-sent integrations map to {known_key: bool}. Unknown keys
+    are dropped; only explicit booleans are kept so the default-on rule holds."""
+    if not isinstance(val, dict):
+        return {}
+    return {k: bool(val[k]) for k in INTEGRATION_KEYS if k in val}
+
 
 @agents_bp.route('/agents/create', methods=['POST'])
 def api_agent_create():
@@ -66,6 +78,7 @@ def api_agent_create():
         'vobiz_number': data.get('vobiz_number', '')[:20],
         'conversational_flow': data.get('conversational_flow', []),
         'knowledge_base': data.get('knowledge_base', []),
+        'integrations': _sanitize_integrations(data.get('integrations')),
         'status': 'active',
         'created_at': firestore.SERVER_TIMESTAMP,
         'updated_at': firestore.SERVER_TIMESTAMP,
@@ -169,8 +182,9 @@ def api_agent_detail(agent_id):
             'name', 'system_prompt', 'welcome_message', 'fallback_message', 'model', 'voice', 'language', 'temperature', 
             'max_tokens', 'agent_type', 'stt_provider', 'tts_provider', 'interruption_mode', 'silence_timeout', 'max_call_duration', 
             'end_on_silence', 'exotel_sid', 'exotel_api_key', 'exotel_token', 'exotel_number', 'exotel_subdomain', 'telephony_provider', 
-            'vobiz_auth_id', 'vobiz_auth_token', 'vobiz_number', 'conversational_flow', 'knowledge_base', 'status', 'linked_numbers', 
-            'call_objective', 'post_call_webhook', 'handoff_enabled', 'handoff_number', 'handoff_callback_message', 'lead_webhook_url'
+            'vobiz_auth_id', 'vobiz_auth_token', 'vobiz_number', 'conversational_flow', 'knowledge_base', 'status', 'linked_numbers',
+            'call_objective', 'post_call_webhook', 'handoff_enabled', 'handoff_number', 'handoff_callback_message', 'lead_webhook_url',
+            'integrations'
         ]
         for field in allowed:
             if field in data:
@@ -183,6 +197,7 @@ def api_agent_detail(agent_id):
                 elif field == 'silence_timeout': val = min(max(float(val), 0.5), 10.0)
                 elif field == 'max_call_duration': val = int(val)
                 elif field == 'end_on_silence': val = bool(val)
+                elif field == 'integrations': val = _sanitize_integrations(val)
                 update_fields[field] = val
         
         linked_numbers = []

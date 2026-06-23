@@ -489,8 +489,20 @@ def _dispatch_post_call_integrations(uid, agent_id, log_data, transcript_text):
     sentiment = log_data.get('sentiment', 'neutral')
     phone = log_data.get('lead_phone') or log_data.get('from_number') or log_data.get('to_number') or ''
 
+    # Per-agent integration allow-list. Default ON for backward-compat: an
+    # integration is only skipped when the agent explicitly toggles it to False.
+    agent_integrations = {}
+    try:
+        _ad = db.collection('agents').document(agent_id).get()
+        if _ad.exists:
+            agent_integrations = (_ad.to_dict() or {}).get('integrations') or {}
+    except Exception:
+        agent_integrations = {}
+    def _allows(key):
+        return agent_integrations.get(key) is not False
+
     # 1. Slack summary
-    if _is_connected(uid, 'slack'):
+    if _allows('slack') and _is_connected(uid, 'slack'):
         msg = f"*Call wrapped* — Agent `{agent_id}` | {phone} | sentiment: {sentiment}\n>{summary[:500]}"
         res = execute_tool(uid, "post_slack", {"message": msg})
         actions.append({"type": "slack", "label": "Posted call summary to Slack",
@@ -498,7 +510,7 @@ def _dispatch_post_call_integrations(uid, agent_id, log_data, transcript_text):
                         "detail": summary[:140]})
 
     # 2. CRM note (lookup by phone, then attach activity note)
-    crm = _lookup_crm_contact(uid, {"phone": phone}) if phone else {"ok": False}
+    crm = _lookup_crm_contact(uid, {"phone": phone}) if (phone and _allows('crm')) else {"ok": False}
     if crm.get("ok"):
         contact = crm["contact"]
         cid = contact.get("vid") or contact.get("id") or contact.get("Contact_Id") or contact.get("contact_id")
@@ -522,7 +534,7 @@ def _dispatch_post_call_integrations(uid, agent_id, log_data, transcript_text):
         import re as _re
         m = _re.search(r'\[.*\]', out or "", _re.S)
         items = json.loads(m.group(0)) if m else []
-        if _is_connected(uid, 'google_calendar'):
+        if _allows('google_calendar') and _is_connected(uid, 'google_calendar'):
             from datetime import datetime, timedelta
             lead_email = (log_data.get('lead_email') or '').strip()
             for it in items[:5]:
@@ -549,6 +561,9 @@ def _dispatch_post_call_integrations(uid, agent_id, log_data, transcript_text):
                     detail = f"{it.get('title', 'Follow-up')} @ {start.strftime('%d %b %H:%M')}"
                     if shifted:
                         detail += " (auto-shifted to avoid a clash)"
+                    if not ok:
+                        detail = (res or {}).get("error") or detail
+                        print(f"[Integrations] calendar create failed: {res}")
                     actions.append({"type": "calendar",
                                     "label": "Scheduled follow-up meeting",
                                     "status": "ok" if ok else "failed", "detail": detail})
@@ -562,7 +577,7 @@ def _dispatch_post_call_integrations(uid, agent_id, log_data, transcript_text):
     #    Kautilya/Resend address (that would misrepresent the user). If the owner
     #    hasn't connected Gmail, we skip and surface a "connect Gmail" hint.
     lead_email = (log_data.get('lead_email') or '').strip()
-    if lead_email and '@' in lead_email:
+    if lead_email and '@' in lead_email and _allows('gmail'):
         try:
             via, sent = _send_followup_email(uid, lead_email, log_data)
             if via == "none":

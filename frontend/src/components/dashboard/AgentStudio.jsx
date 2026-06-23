@@ -308,8 +308,17 @@ function AgentDetail({ agent, onClose, onUpdate }) {
     hubspot: false,
     zoho: false,
     google_calendar: false,
+    gmail: false,
     whatsapp: false,
     slack: false
+  });
+
+  // Per-agent integration allow-list. Undefined = enabled (default-on), so
+  // existing agents keep working; toggling a switch off opts that agent out.
+  const integrationOn = (key) => editedAgent.integrations?.[key] !== false;
+  const toggleIntegration = (key, val) => setEditedAgent({
+    ...editedAgent,
+    integrations: { ...(editedAgent.integrations || {}), [key]: val },
   });
 
 	  useEffect(() => {
@@ -327,6 +336,7 @@ function AgentDetail({ agent, onClose, onUpdate }) {
         hubspot: false,
         zoho: false,
         google_calendar: false,
+        gmail: false,
         whatsapp: false,
         slack: false
       };
@@ -922,7 +932,8 @@ function AgentDetail({ agent, onClose, onUpdate }) {
             <div className="p-4 rounded-xl border border-[var(--k-border)] bg-accent/5">
               <h4 className="text-sm font-semibold text-foreground mb-1">Integration Capabilities</h4>
               <p className="text-xs text-muted-foreground">
-                Your agent can automatically perform tasks using your connected tools. Hook them up under settings to enable them.
+                Toggle which connected tools <span className="font-semibold text-foreground">this agent</span> is allowed to use after a call.
+                Switch one off and this agent will skip it (other agents are unaffected). Tools you haven't connected won't run regardless.
               </p>
             </div>
             
@@ -938,93 +949,52 @@ function AgentDetail({ agent, onClose, onUpdate }) {
               </div>
               
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {/* CRM Leads sync */}
-                <div className="p-4 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] flex flex-col justify-between h-36">
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-bold text-foreground">CRM Leads Sync</span>
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        (integrationsStatus.hubspot || integrationsStatus.zoho) 
-                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
-                          : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
-                      }`}>
-                        {(integrationsStatus.hubspot || integrationsStatus.zoho) ? 'Active' : 'Inactive'}
-                      </span>
+                {[
+                  { key: 'crm', title: 'CRM Leads Sync', connected: integrationsStatus.hubspot || integrationsStatus.zoho,
+                    desc: 'Queries client details in HubSpot or Zoho during the call and logs an interaction note afterwards.',
+                    connect: 'Connect HubSpot/Zoho CRM' },
+                  { key: 'google_calendar', title: 'Google Calendar', connected: integrationsStatus.google_calendar,
+                    desc: 'Books follow-up meetings and sends clash-free calendar invites directly to callers.',
+                    connect: 'Connect Google Calendar' },
+                  { key: 'gmail', title: 'Email Follow-ups', connected: integrationsStatus.gmail,
+                    desc: 'Auto-sends a follow-up email to the lead from your own connected Gmail after the call.',
+                    connect: 'Connect Gmail' },
+                  { key: 'whatsapp', title: 'WhatsApp Reporting', connected: integrationsStatus.whatsapp,
+                    desc: 'Sends post-call summaries and booking confirmations using WhatsApp Business templates.',
+                    connect: 'Connect WhatsApp API' },
+                  { key: 'slack', title: 'Slack Alerts', connected: integrationsStatus.slack,
+                    desc: 'Posts call outcomes to your Slack channel for urgent human handoffs and alerts.',
+                    connect: 'Connect Slack webhook' },
+                ].map((it) => {
+                  const on = integrationOn(it.key);
+                  return (
+                    <div key={it.key} className={`p-4 rounded-xl border bg-[var(--k-surface)] flex flex-col justify-between h-40 transition-opacity ${on ? 'border-[var(--k-border)]' : 'border-[var(--k-border)] opacity-60'}`}>
+                      <div>
+                        <div className="flex items-center justify-between mb-2 gap-2">
+                          <span className="text-xs font-bold text-foreground">{it.title}</span>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              it.connected
+                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
+                            }`}>
+                              {it.connected ? 'Connected' : 'Not connected'}
+                            </span>
+                            <Switch checked={on} onCheckedChange={(v) => toggleIntegration(it.key, v)} />
+                          </div>
+                        </div>
+                        <p className="text-[11px] text-muted-foreground leading-relaxed">{it.desc}</p>
+                      </div>
+                      {!it.connected ? (
+                        <button onClick={() => navigate('/dashboard/integrations')} className="text-[10px] font-bold text-[var(--k-brand)] hover:underline text-left">{it.connect}</button>
+                      ) : (
+                        <span className={`text-[10px] font-medium ${on ? 'text-emerald-400' : 'text-muted-foreground'}`}>
+                          {on ? 'This agent will use it' : 'Disabled for this agent'}
+                        </span>
+                      )}
                     </div>
-                    <p className="text-[11px] text-muted-foreground leading-relaxed">
-                      Automatically queries client details in HubSpot or Zoho CRM during a call/chat, creates new contacts, and updates interaction notes.
-                    </p>
-                  </div>
-                  {!((integrationsStatus.hubspot || integrationsStatus.zoho)) && (
-                    <button onClick={() => navigate('/dashboard/integrations')} className="text-[10px] font-bold text-[var(--k-brand)] hover:underline text-left">Connect HubSpot/Zoho CRM</button>
-                  )}
-                </div>
-
-                {/* Google Calendar */}
-                <div className="p-4 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] flex flex-col justify-between h-36">
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-bold text-foreground">Google Calendar</span>
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        integrationsStatus.google_calendar 
-                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
-                          : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
-                      }`}>
-                        {integrationsStatus.google_calendar ? 'Active' : 'Inactive'}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-muted-foreground leading-relaxed">
-                      Allows the voice/chat agent to book calendar events, check schedule slots, and send calendar invites directly to callers.
-                    </p>
-                  </div>
-                  {!integrationsStatus.google_calendar && (
-                    <button onClick={() => navigate('/dashboard/integrations')} className="text-[10px] font-bold text-[var(--k-brand)] hover:underline text-left">Connect Google Calendar</button>
-                  )}
-                </div>
-
-                {/* WhatsApp Follow-ups */}
-                <div className="p-4 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] flex flex-col justify-between h-36">
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-bold text-foreground">WhatsApp Reporting</span>
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        integrationsStatus.whatsapp 
-                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
-                          : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
-                      }`}>
-                        {integrationsStatus.whatsapp ? 'Active' : 'Inactive'}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-muted-foreground leading-relaxed">
-                      Sends post-call summaries, booking confirmations, or automated customer support follow-up messages using WhatsApp Business templates.
-                    </p>
-                  </div>
-                  {!integrationsStatus.whatsapp && (
-                    <button onClick={() => navigate('/dashboard/integrations')} className="text-[10px] font-bold text-[var(--k-brand)] hover:underline text-left">Connect WhatsApp API</button>
-                  )}
-                </div>
-
-                {/* Slack Notifications */}
-                <div className="p-4 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] flex flex-col justify-between h-36">
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-bold text-foreground">Slack Alerts</span>
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        integrationsStatus.slack 
-                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
-                          : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
-                      }`}>
-                        {integrationsStatus.slack ? 'Active' : 'Inactive'}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-muted-foreground leading-relaxed">
-                      Enables the agent to post internal notifications to Slack channels for urgent human handoffs or important call outcome alerts.
-                    </p>
-                  </div>
-                  {!integrationsStatus.slack && (
-                    <button onClick={() => navigate('/dashboard/integrations')} className="text-[10px] font-bold text-[var(--k-brand)] hover:underline text-left">Connect Slack webhook</button>
-                  )}
-                </div>
+                  );
+                })}
               </div>
             </div>
           </TabsContent>

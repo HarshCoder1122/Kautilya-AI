@@ -235,7 +235,7 @@ def _create_calendar_event(uid, args):
     except Exception as e:
         return {"ok": False, "error": str(e)}
     
-    body = {
+    base_body = {
         "summary": args["title"],
         "description": args.get("description", ""),
         "start": {"dateTime": args["start"], "timeZone": args.get("tz", "Asia/Kolkata")},
@@ -244,24 +244,36 @@ def _create_calendar_event(uid, args):
     }
 
     url = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
-    params = {}
-    
-    if args.get("create_meet_link"):
+
+    def _post(body, params):
+        return requests.post(
+            url,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            params=params, json=body, timeout=15,
+        )
+
+    # sendUpdates=all so the lead actually receives the invite email.
+    params = {"sendUpdates": "all"}
+    body = dict(base_body)
+    want_meet = bool(args.get("create_meet_link"))
+    if want_meet:
         params["conferenceDataVersion"] = 1
         body["conferenceData"] = {
             "createRequest": {
                 "requestId": f"meet_{int(time.time())}",
-                "conferenceSolutionKey": {"type": "eventHangout"}
+                # hangoutsMeet = Google Meet. ("eventHangout" is the dead classic-
+                # Hangouts type and Google rejects it with a 400 on modern accounts.)
+                "conferenceSolutionKey": {"type": "hangoutsMeet"},
             }
         }
 
-    r = requests.post(
-        url,
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        params=params,
-        json=body,
-        timeout=15,
-    )
+    r = _post(body, params)
+
+    # If the Meet conference is what broke it, retry once WITHOUT it so the
+    # follow-up event still lands on the calendar (the video link is optional).
+    if not r.ok and want_meet:
+        r = _post(base_body, {"sendUpdates": "all"})
+
     if not r.ok:
         return _google_api_error(r) or {"ok": False, "status": r.status_code, "error": r.text[:300]}
 
@@ -270,7 +282,8 @@ def _create_calendar_event(uid, args):
         "ok": True,
         "status": r.status_code,
         "event_id": res.get("id"),
-        "meet_link": res.get("hangoutLink")
+        "meet_link": res.get("hangoutLink"),
+        "html_link": res.get("htmlLink"),
     }
 
 
