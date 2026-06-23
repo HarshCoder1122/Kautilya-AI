@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import JSZip from 'jszip';
 import { X, Code, ChartBar, FileText, Copy, Download, ArrowsOutSimple, Check, FolderOpen, Eye, File, ArrowSquareOut, Archive, CaretUp, CaretDown, MagnifyingGlass, Table } from "@phosphor-icons/react";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Area, AreaChart } from "recharts";
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -151,6 +151,63 @@ function inferLang(filename) {
   return map[ext] || 'text';
 }
 
+/** Wrap a single code-snippet artifact into a one-element files array so it can
+ *  flow through MultiFileWorkspace — which gives it the live preview toggle,
+ *  fullscreen, open-in-new-tab, copy and download controls for free. The name
+ *  is chosen so the preview builders detect an entrypoint (index.html for HTML,
+ *  App.jsx/App.tsx for React) and render it instead of showing "no preview". */
+function syntheticFilesFromCode(content) {
+  const code = content?.code || '';
+  const lang = (content?.language || '').toLowerCase();
+  const looksHtml = /<!doctype html>|<html[\s>]/i.test(code);
+  const looksJsx = /<[A-Za-z][^>]*>/.test(code) &&
+                   /\b(import|export|function|const)\b/.test(code) &&
+                   /return\s*\(?\s*</.test(code);
+  let name;
+  if (looksHtml || lang === 'html') name = 'index.html';
+  else if (lang === 'tsx') name = 'App.tsx';
+  else if (lang === 'jsx' || ((lang === 'javascript' || lang === 'js' || !lang) && looksJsx)) name = 'App.jsx';
+  else if (lang === 'css') name = 'styles.css';
+  else if (lang === 'json') name = 'data.json';
+  else if (lang === 'python' || lang === 'py') name = 'main.py';
+  else if (lang === 'typescript' || lang === 'ts') name = 'index.ts';
+  else if (lang === 'javascript' || lang === 'js') name = 'index.js';
+  else name = 'snippet.' + (lang ? lang.replace(/[^a-z0-9]/g, '') : 'txt');
+  return [{ name, language: lang || inferLang(name), content: code }];
+}
+
+// Google-Fonts link the previews share (Inter + Plus Jakarta Sans).
+const PREVIEW_FONTS_LINK =
+  '<link rel="preconnect" href="https://fonts.googleapis.com">' +
+  '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>' +
+  '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">';
+
+/** Make an HTML document preview render the way the model intended: ensure
+ *  Tailwind + web fonts are present. We only inject Tailwind when the markup
+ *  clearly uses utility classes but forgot the CDN (so we never double-load a
+ *  framework the author already included). Fonts are added when absent. */
+function injectPreviewAssets(src) {
+  if (!src) return src;
+  const hasTailwind = /cdn\.tailwindcss\.com|tailwindcss/i.test(src);
+  const hasFonts = /fonts\.googleapis\.com/i.test(src);
+  const usesTwClasses = /class=["'][^"']*\b(flex|grid|hidden|rounded|shadow|gap-\d|p-\d|px-\d|py-\d|m-\d|mx-|my-|text-(?:xs|sm|base|lg|xl|\d)|bg-[a-z]|border|w-\d|h-\d|items-|justify-)/i.test(src);
+
+  let head = '';
+  if (!hasTailwind && usesTwClasses) head += '<script src="https://cdn.tailwindcss.com"></script>';
+  if (!hasFonts) {
+    head += PREVIEW_FONTS_LINK;
+    // Only set a default font when the author didn't pick one themselves.
+    if (!/font-family/i.test(src)) {
+      head += "<style>:root{font-family:Inter,'Plus Jakarta Sans',system-ui,-apple-system,sans-serif}</style>";
+    }
+  }
+  if (!head) return src;
+
+  if (/<head[^>]*>/i.test(src)) return src.replace(/<head[^>]*>/i, (m) => m + head);
+  if (/<html[^>]*>/i.test(src)) return src.replace(/<html[^>]*>/i, (m) => m + '<head>' + head + '</head>');
+  return head + src;
+}
+
 function buildHtmlPreview(files) {
   // Prefer index.html; fall back to any .html file.
   const html = files.find(f => f.name === 'index.html')
@@ -180,7 +237,7 @@ function buildHtmlPreview(files) {
   if (!/<html[\s>]/i.test(src)) {
     src = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Preview</title></head><body>${src}</body></html>`;
   }
-  return src;
+  return injectPreviewAssets(src);
 }
 
 /** Build a self-contained HTML page that mounts a React/JSX/TSX project in
@@ -237,11 +294,14 @@ function buildReactPreview(files) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>React Preview</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>window.tailwind=window.tailwind||{};window.tailwind.config={theme:{extend:{fontFamily:{sans:['Inter','Plus Jakarta Sans','ui-sans-serif','system-ui','sans-serif'],display:['Plus Jakarta Sans','Inter','sans-serif']}}}};</script>
+${PREVIEW_FONTS_LINK}
 <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
 <style>
-  html,body,#root{margin:0;padding:0;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
+  html,body,#root{margin:0;padding:0;min-height:100vh;font-family:Inter,'Plus Jakarta Sans',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
   #__preview_error{position:fixed;inset:0;background:#1e1e22;color:#ff8a8a;padding:24px;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow:auto;display:none;z-index:9999;}
 ${cssCombined}
 </style>
@@ -742,6 +802,16 @@ function MultiFileWorkspace({ files, title }) {
   const previewSrc = htmlPreview || reactPreview;
   const previewKind = htmlPreview ? 'html' : (reactPreview ? 'react' : null);
 
+  // Default to the live preview the first time one becomes available — the
+  // whole point of the canvas is to SHOW the built UI, not its source.
+  const autoPreviewed = useRef(false);
+  useEffect(() => {
+    if (previewSrc && !autoPreviewed.current) {
+      autoPreviewed.current = true;
+      setViewMode('preview');
+    }
+  }, [previewSrc]);
+
   const handleCopy = () => {
     if (currentFile) {
       navigator.clipboard.writeText(currentFile.content).catch(() => {});
@@ -827,7 +897,8 @@ function MultiFileWorkspace({ files, title }) {
       </div>
 
       <div className="flex flex-1 min-h-0">
-        {/* File tree */}
+        {/* File tree — only when there's more than one file. */}
+        {files.length > 1 && (
         <div className="w-44 border-r border-[var(--k-border)] bg-[var(--k-surface)] flex-shrink-0 overflow-y-auto">
           {files.map(f => (
             <button
@@ -844,6 +915,7 @@ function MultiFileWorkspace({ files, title }) {
             </button>
           ))}
         </div>
+        )}
 
         {/* Editor / Preview */}
         <div className="flex-1 min-w-0 overflow-hidden">
@@ -929,6 +1001,14 @@ export function CanvasPane({ content, onClose, activeMode }) {
     return parsedBlocks;
   }, [parsedBlocks, restoredFiles]);
   const isMultiFile = fileBlocks.length > 0;
+
+  // A single code snippet (type === 'code', no <file> blocks) is wrapped into a
+  // one-file workspace so it gets the SAME live preview + fullscreen + new-tab +
+  // copy + download controls as a full project — and nothing else clutters it.
+  const singleCodeFiles = useMemo(() => {
+    if (isMultiFile || content?.type !== 'code' || !content?.code) return null;
+    return syntheticFilesFromCode(content);
+  }, [isMultiFile, content?.type, content?.code, content?.language]);
 
   // Auto-save coder projects to Firestore (keyed by message_id) so files
   // survive across page reloads even if the underlying message text is
@@ -1073,20 +1153,27 @@ export function CanvasPane({ content, onClose, activeMode }) {
   const salesByRegion = dynamicData?.salesByRegion || [];
   const funnelData = dynamicData?.conversionFunnel || [];
 
+  // Canvas shows ONLY the view that matches what was actually made — no empty
+  // "document / dashboard / preview" tabs hanging around to confuse the user.
+  // (code artifacts are handled separately via singleCodeFiles → workspace.)
+  const docView = (content?.type === 'excel' || content?.type === 'spreadsheet' || content?.type === 'csv')
+    ? 'spreadsheet'
+    : content?.type === 'dashboard' ? 'dashboard' : 'document';
+
   return (
     <div className="canvas-pane flex flex-col bg-[var(--k-bg)]" data-testid="canvas-pane">
       {/* Header */}
       <div className="h-14 min-h-[56px] flex items-center justify-between px-4 border-b border-[var(--k-border)] bg-[var(--k-surface)]">
         <div className="flex items-center gap-3 overflow-hidden">
           <div className="w-8 h-8 rounded-lg bg-[var(--k-brand)]/10 flex items-center justify-center text-[var(--k-brand)] flex-shrink-0">
-            {isMultiFile ? <FolderOpen className="w-4 h-4" /> : activeTab === 'code' ? <Code className="w-4 h-4" /> : activeTab === 'dashboard' ? <ChartBar className="w-4 h-4" /> : activeTab === 'spreadsheet' ? <Table className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
+            {isMultiFile ? <FolderOpen className="w-4 h-4" /> : singleCodeFiles ? <Code className="w-4 h-4" /> : docView === 'dashboard' ? <ChartBar className="w-4 h-4" /> : docView === 'spreadsheet' ? <Table className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
           </div>
           <div className="flex flex-col overflow-hidden">
             <span className="text-sm font-semibold truncate text-foreground leading-tight">
               {content?.title || 'Canvas'}
             </span>
             <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">
-              {isMultiFile ? `${fileBlocks.length} Files` : `${activeTab} View`}
+              {isMultiFile ? `${fileBlocks.length} Files` : singleCodeFiles ? `${content?.language || 'Code'} · Code` : `${docView} View`}
             </span>
           </div>
         </div>
@@ -1116,29 +1203,12 @@ export function CanvasPane({ content, onClose, activeMode }) {
         <div className="flex-1 min-h-0">
           <MultiFileWorkspace files={fileBlocks} title={content?.title || 'Project'} />
         </div>
-      ) : (
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
-        <div className="px-4 bg-[var(--k-surface)] border-b border-[var(--k-border)]">
-          <TabsList className="bg-transparent h-10 p-0 gap-6">
-            {['document', 'spreadsheet', 'code', 'dashboard', 'preview']
-              .filter((tab) => {
-                if (tab === 'spreadsheet') {
-                  return content?.type === 'excel' || content?.type === 'spreadsheet' || content?.type === 'csv';
-                }
-                return true;
-              })
-              .map((tab) => (
-                <TabsTrigger
-                  key={tab}
-                  value={tab}
-                  className="bg-transparent data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:text-[var(--k-brand)] text-muted-foreground px-0 pb-3 rounded-none border-b-2 border-transparent data-[state=active]:border-[var(--k-brand)] text-[11px] font-bold uppercase tracking-wider transition-all"
-                >
-                  {tab}
-                </TabsTrigger>
-              ))}
-          </TabsList>
+      ) : singleCodeFiles ? (
+        <div className="flex-1 min-h-0">
+          <MultiFileWorkspace files={singleCodeFiles} title={content?.title || 'Code'} />
         </div>
-
+      ) : (
+      <Tabs value={docView} className="flex-1 flex flex-col overflow-hidden">
         <TabsContent value="spreadsheet" className="flex-1 overflow-hidden m-0">
           <SpreadsheetView code={content?.code} />
         </TabsContent>
@@ -1217,25 +1287,6 @@ export function CanvasPane({ content, onClose, activeMode }) {
               </div>
             </div>
           </ScrollArea>
-        </TabsContent>
-
-        <TabsContent value="code" className="flex-1 overflow-hidden m-0">
-          <div className="h-full bg-[#1e1e1e]">
-            <SyntaxHighlighter
-              language={content?.language || 'javascript'}
-              style={vscDarkPlus}
-              customStyle={{
-                margin: 0,
-                padding: '1.5rem',
-                fontSize: '0.85rem',
-                height: '100%',
-                background: 'transparent',
-              }}
-              showLineNumbers
-            >
-              {content?.code || "// No code available"}
-            </SyntaxHighlighter>
-          </div>
         </TabsContent>
 
         <TabsContent value="dashboard" className="flex-1 overflow-hidden m-0">
@@ -1319,23 +1370,6 @@ export function CanvasPane({ content, onClose, activeMode }) {
               )}
             </div>
           </ScrollArea>
-        </TabsContent>
-
-        <TabsContent value="preview" className="flex-1 overflow-hidden m-0 bg-white">
-          {content?.code?.includes('<!DOCTYPE html>') || content?.code?.includes('<html') ? (
-            <iframe
-              srcDoc={content.code}
-              title="Preview"
-              className="w-full h-full border-none"
-              sandbox="allow-scripts"
-            />
-          ) : (
-            <div className="flex flex-col items-center justify-center h-full text-center p-10 bg-[var(--k-bg)]">
-              <ArrowsOutSimple className="w-16 h-16 text-muted-foreground/10 mb-6" />
-              <h3 className="text-lg font-semibold mb-2">No Preview Available</h3>
-              <p className="text-sm text-muted-foreground max-w-[280px]">Standard code snippets cannot be previewed. Generate HTML/CSS to enable the live preview.</p>
-            </div>
-          )}
         </TabsContent>
       </Tabs>
       )}
