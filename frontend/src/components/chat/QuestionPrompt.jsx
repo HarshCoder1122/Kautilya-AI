@@ -26,7 +26,7 @@ function Placeholder() {
 }
 
 /* ── Single question: click-to-send (snappy) ──────────────────────────────── */
-function SingleQuestion({ q, skipLabel, onSend }) {
+function SingleQuestion({ q, skipLabel, onSend, onSkip }) {
   const { question, options, allowCustom, multiSelect } = q;
   const [selected, setSelected] = useState([]);
   const [custom, setCustom] = useState("");
@@ -35,10 +35,13 @@ function SingleQuestion({ q, skipLabel, onSend }) {
   const customRef = useRef(null);
   useEffect(() => { if (showCustom) customRef.current?.focus(); }, [showCustom]);
 
-  const pickSingle = (i) => onSend(options[i].label);
+  // Send the QUESTION followed by the chosen answer, so the conversation reads
+  // coherently (what was asked + what the user picked) instead of a bare label.
+  const fmt = (ans) => `${question}\n${ans}`;
+  const pickSingle = (i) => onSend(fmt(options[i].label));
   const toggleMulti = (i) => setSelected((p) => p.includes(i) ? p.filter((x) => x !== i) : [...p, i]);
-  const submitMulti = () => selected.length && onSend(selected.sort((a, b) => a - b).map((i) => options[i].label).join(", "));
-  const submitCustom = () => custom.trim() && onSend(custom.trim());
+  const submitMulti = () => selected.length && onSend(fmt(selected.sort((a, b) => a - b).map((i) => options[i].label).join(", ")));
+  const submitCustom = () => custom.trim() && onSend(fmt(custom.trim()));
 
   const onKeyDown = (e) => {
     if (/^[1-9]$/.test(e.key)) {
@@ -122,7 +125,7 @@ function SingleQuestion({ q, skipLabel, onSend }) {
           {multiSelect ? "Pick one or more" : "Press 1–9 or click"}
         </span>
         <div className="flex items-center gap-2 ml-auto">
-          <button type="button" onClick={() => onSend(skipLabel)}
+          <button type="button" onClick={onSkip}
             className="px-3 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
             {skipLabel}
           </button>
@@ -139,7 +142,7 @@ function SingleQuestion({ q, skipLabel, onSend }) {
 }
 
 /* ── Multiple questions: answer each, then one Send ───────────────────────── */
-function MultiQuestion({ questions, intro, skipLabel, onSend }) {
+function MultiQuestion({ questions, intro, skipLabel, onSend, onSkip }) {
   // picks[i] = array of selected option labels for question i; customs[i] = text.
   const [picks, setPicks] = useState(() => questions.map(() => []));
   const [customs, setCustoms] = useState(() => questions.map(() => ""));
@@ -216,7 +219,7 @@ function MultiQuestion({ questions, intro, skipLabel, onSend }) {
       </div>
 
       <div className="flex items-center justify-between px-4 py-2.5 border-t border-[var(--k-border)]/60 bg-black/10">
-        <button type="button" onClick={() => onSend(skipLabel)}
+        <button type="button" onClick={onSkip}
           className="px-3 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
           {skipLabel}
         </button>
@@ -229,7 +232,7 @@ function MultiQuestion({ questions, intro, skipLabel, onSend }) {
   );
 }
 
-export function QuestionPrompt({ code, interactive = true, onAnswer }) {
+export function QuestionPrompt({ code, interactive = true, onAnswer, onSkip }) {
   const data = useMemo(() => parseQuestion(code), [code]);
   const [answered, setAnswered] = useState(null);
 
@@ -242,6 +245,9 @@ export function QuestionPrompt({ code, interactive = true, onAnswer }) {
     setAnswered(t);
     onAnswer?.(t);
   };
+  // Skip = the user chose not to answer. Dismiss the card WITHOUT sending any
+  // message (no "skip" text); the parent hides it so the chat just moves on.
+  const skip = () => { if (!locked) onSkip?.(); };
 
   // Once answered, the dock unmounts (a new message becomes the latest) — but
   // show a compact confirmation for the brief overlap / non-interactive case.
@@ -255,8 +261,8 @@ export function QuestionPrompt({ code, interactive = true, onAnswer }) {
   }
 
   return data.questions.length === 1
-    ? <SingleQuestion q={data.questions[0]} skipLabel={data.skipLabel} onSend={send} />
-    : <MultiQuestion questions={data.questions} intro={data.intro} skipLabel={data.skipLabel} onSend={send} />;
+    ? <SingleQuestion q={data.questions[0]} skipLabel={data.skipLabel} onSend={send} onSkip={skip} />
+    : <MultiQuestion questions={data.questions} intro={data.intro} skipLabel={data.skipLabel} onSend={send} onSkip={skip} />;
 }
 
 export default QuestionPrompt;

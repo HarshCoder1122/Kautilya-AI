@@ -7,6 +7,7 @@ import { ThinkingTokens } from "@/components/chat/ThinkingTokens";
 import { LiveKitVoice } from "@/components/chat/LiveKitVoice";
 import { chatAPI, getAuthHeaders, integrationsAPI } from "../../lib/api";
 import { extractArtifact } from "../../lib/artifacts";
+import { hydrateHistoryMessage } from "../../lib/hydrateMessage";
 // ReActSteps is rendered inside ChatMessage — no need to import here
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -88,6 +89,9 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   const [mcpSearch, setMcpSearch] = useState("");
   const [mcpStatus, setMcpStatus] = useState(null);
   const [loadingMcp, setLoadingMcp] = useState(false);
+  // Question card the user dismissed via Skip (keyed by the asking message id),
+  // so the dock stays hidden without sending any "skip" message.
+  const [dismissedQuestionId, setDismissedQuestionId] = useState(null);
   // Public share-link dialog: holds { url, shareId } once a link is created.
   const [shareInfo, setShareInfo] = useState(null);
   const [sharing, setSharing] = useState(false);
@@ -266,65 +270,9 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     return () => clearTimeout(staleTimerRef.current);
   }, [isThinking, isStreaming]);
 
-  // Hydrate a Firestore-saved message back into the live message shape used
-  // by ChatMessage. Tool-result cards / ReAct steps / citations are stored
-  // as JSON strings on the backend so they survive serialization — we
-  // re-parse them here so they render exactly like they did during streaming.
-  const hydrateHistoryMessage = (m) => {
-    const safeParse = (v) => {
-      if (v == null) return v;
-      if (typeof v !== 'string') return v;
-      try { return JSON.parse(v); } catch (e) { return v; }
-    };
-    const toolResults = safeParse(m.tool_results);
-    const reactStepsRaw = safeParse(m.react_steps);
-    const citations = safeParse(m.citations);
-    const artifact = safeParse(m.artifact);
-
-    // Reconstruct the artifact from the saved message text so the canvas
-    // re-opens with its real content after a reload. Without this the
-    // "Open in Canvas" button restored an EMPTY canvas and coder/multi-file
-    // projects lost their artifact button entirely (artifactCode was only
-    // ever set during live streaming). One parser (extractArtifact) is shared
-    // with the streaming path so the two can never drift.
-    const rawContent = typeof m.content === 'string' ? m.content : '';
-    let art = extractArtifact(rawContent);
-    // Research-style documents stream raw markdown with NO inline <artifact>
-    // tag — the body IS the whole message. Fall back to the persisted
-    // {type,title} side-data and treat the full text as the artifact code.
-    if (!art.hasArtifact && artifact) {
-      art = {
-        hasArtifact: true,
-        artifactType: artifact.type || 'document',
-        artifactTitle: artifact.title || 'Document',
-        artifactCode: rawContent,
-        cleanContent: rawContent,
-      };
-    }
-
-    return {
-      ...m,
-      id: m.id || `msg-${Math.random()}`,
-      // Use the cleaned body (artifact/file payload stripped) so the chat
-      // bubble doesn't show raw <artifact>/<file> tags or a wall of code.
-      content: (typeof m.content === 'string' && art.hasArtifact) ? art.cleanContent : m.content,
-      timestamp: m.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      toolResults: Array.isArray(toolResults) ? toolResults : undefined,
-      reactSteps: Array.isArray(reactStepsRaw) ? reactStepsRaw : undefined,
-      citations: Array.isArray(citations) ? citations : undefined,
-      agentType: m.agent_type || m.agentType,
-      hasArtifact: art.hasArtifact,
-      artifactType: art.artifactType,
-      artifactTitle: art.artifactTitle,
-      artifactCode: art.artifactCode,
-      artifactFilename: art.artifactFilename,
-      artifactSubtype: art.artifactSubtype,
-      // Restore thinking/reasoning from Firestore so the collapsed
-      // "Process Analysis" block re-appears when reloading old chats.
-      thinking: m.thinking || undefined,
-      thinkingDone: !!m.thinking,
-    };
-  };
+  // Hydrate a Firestore-saved message back into the live message shape used by
+  // ChatMessage. Shared with the public SharedChatPage (see lib/hydrateMessage)
+  // so reloaded history and shared chats render identically.
 
   // Adopt a server snapshot only if it's at least as "rich" as what's already
   // on screen — i.e. it has no fewer messages and no less total text. This is
@@ -1353,6 +1301,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
           {(() => {
             const last = messages[messages.length - 1];
             if (!last || last.role !== 'assistant' || last.streaming || isStreaming) return null;
+            if (dismissedQuestionId === last.id) return null;   // user pressed Skip
             const content = last.responseText || (typeof last.content === 'string' ? last.content : '');
             const { code } = extractQuestionBlock(content);
             if (!code || !parseQuestion(code)) return null;
@@ -1364,6 +1313,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                   if (!text || isStreaming) return;
                   handleSend(text);   // send immediately — no Enter needed
                 }}
+                onSkip={() => setDismissedQuestionId(last.id)}
               />
             );
           })()}

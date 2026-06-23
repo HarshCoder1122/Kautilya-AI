@@ -1048,6 +1048,18 @@ def create_share(session_id):
         conv_doc = conv_ref.get()
         conv_data = conv_doc.to_dict() if conv_doc.exists else {}
 
+        def _pj(v):
+            """Parse a JSON-string side-field back into its object, else passthrough."""
+            if not isinstance(v, str):
+                return v
+            s = v.strip()
+            if s[:1] in ('[', '{'):
+                try:
+                    return json.loads(s)
+                except Exception:
+                    return v
+            return v
+
         snapshot = []
         docs = conv_ref.collection('messages').order_by('timestamp').stream()
         for d in docs:
@@ -1057,15 +1069,48 @@ def create_share(session_id):
                 continue
             if data.get('streaming'):
                 continue
-            text = _share_text(data.get('content'))
-            if not text:
+            # Keep content in its ORIGINAL shape (markdown string with mermaid/code,
+            # or a list of blocks incl. images) so the shared viewer renders it
+            # exactly like the in-app chat — not a flattened text bubble.
+            content = _pj(data.get('content'))
+            if content in (None, '', []):
                 continue
-            snapshot.append({"role": role, "content": text[:20000]})
+            msg = {"id": d.id, "role": role, "content": content}
+            # Carry the same rich side-data the live message had so tool cards,
+            # citations, reasoning and artifacts all re-render in the viewer.
+            for k in ('tool_results', 'react_steps', 'citations', 'artifact'):
+                val = data.get(k)
+                if val is not None:
+                    msg[k] = _pj(val)
+            if data.get('agent_type'):
+                msg['agent_type'] = data.get('agent_type')
+            if data.get('thinking'):
+                msg['thinking'] = data.get('thinking')
+            snapshot.append(msg)
             if len(snapshot) >= 400:
                 break
 
         if not snapshot:
             return jsonify({"error": "Nothing to share yet — send a message first."}), 400
+
+        # Firestore caps a document at ~1MB. If the rich snapshot is too large,
+        # shed the heaviest fields first (tool/react), then citations/artifacts,
+        # then trim oldest messages — so the share always saves.
+        def _too_big(obj):
+            try:
+                return len(json.dumps(obj, default=str)) > 900000
+            except Exception:
+                return False
+        if _too_big(snapshot):
+            for m in snapshot:
+                m.pop('tool_results', None)
+                m.pop('react_steps', None)
+        if _too_big(snapshot):
+            for m in snapshot:
+                m.pop('citations', None)
+                m.pop('artifact', None)
+        while len(snapshot) > 1 and _too_big(snapshot):
+            snapshot.pop(0)
 
         # Owner display name (best-effort) for the "shared by" byline.
         owner_name = ""
