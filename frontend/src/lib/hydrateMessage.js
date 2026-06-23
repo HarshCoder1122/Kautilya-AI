@@ -43,6 +43,7 @@ export function hydrateHistoryMessage(m) {
     artifactCode: art.artifactCode,
     artifactFilename: art.artifactFilename,
     artifactSubtype: art.artifactSubtype,
+    artifactLanguage: art.artifactLanguage,
     thinking: m.thinking || undefined,
     thinkingDone: !!m.thinking,
   };

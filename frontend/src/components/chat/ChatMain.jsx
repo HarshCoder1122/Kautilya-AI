@@ -654,6 +654,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
           artifactTitle: art.artifactTitle,
           artifactFilename: art.artifactFilename,
           artifactSubtype: art.artifactSubtype,
+          artifactLanguage: art.artifactLanguage,
           artifactCode: art.artifactCode,
           hasArtifact: art.hasArtifact,
         });
@@ -666,6 +667,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
             title: art.artifactTitle,
             filename: art.artifactFilename,
             subtype: art.artifactSubtype,
+            language: art.artifactLanguage,
             messageId: aiMsg.id,
           }, { auto: true });
           canvasOpened = true;
@@ -1199,6 +1201,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                 title: msg.artifactTitle || 'AI Analysis',
                 filename: msg.artifactFilename || "",
                 subtype: msg.artifactSubtype || "",
+                language: msg.artifactLanguage || "",
                 messageId: msg.id,
               })}
             />

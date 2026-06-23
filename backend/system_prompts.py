@@ -161,6 +161,13 @@ file contents here
 
 Rules:
 - Use ONE <file> block per file. Include ALL files needed to run the project.
+- CRITICAL — code is NEVER a "document". A web page, component, script or app
+  must be emitted as <file> blocks (or, for a lone snippet, a fenced ```code
+  block) — NEVER inside <artifact type="document">. A SINGLE self-contained HTML
+  page is still a file: emit it as <file name="index.html" language="html">…</file>.
+  Reserve <artifact type="document"> for PROSE reports/whitepapers in markdown
+  ONLY — never for HTML / CSS / JS / JSX / TSX / Python source. (Mislabeling code
+  as a document makes the canvas show raw source text instead of a live preview.)
 - For web projects: include index.html, style.css, script.js (or App.jsx etc).
 - For Python projects: include main.py, requirements.txt.
 - For React/TSX projects: include App.tsx (or App.jsx) PLUS any component files.
