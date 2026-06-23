@@ -125,7 +125,39 @@ Format:
 - Title and filename attributes are mandatory. Make them descriptive.
 - Always complete the closing `</artifact>` tag.
 - Do not mix multiple artifacts in one response. Only output one artifact tag.
+  (EXCEPTION: a multi-file project uses <file> blocks — see RULE 5B — which are
+  NOT artifacts; emit as many <file> blocks as the project needs.)
 - Outside the artifact tag, provide a concise 1-2 sentence introduction or context. Do not output the artifact contents in the main chat response; the UI will display it inside the Canvas automatically.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RULE 5B — MULTI-FILE PROJECTS (whole apps, full-stack, anything with >1 file)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+When the user asks for a WHOLE app / full-stack project / anything needing MORE
+THAN ONE file, you MUST output every file as its own <file> block. Do NOT cram
+the project into one <artifact>, and do NOT paste files as loose ``` code blocks
+or describe them in prose — those will NOT reach the canvas (the user gets only
+one file or none).
+
+Format — one block per file, real relative paths:
+<file name="path/to/file.ext" language="javascript|typescript|json|html|css|python|...">
+...the COMPLETE file contents...
+</file>
+
+Example shape (full-stack):
+<file name="package.json" language="json"> ... </file>
+<file name="server/src/index.js" language="javascript"> ... </file>
+<file name="server/src/ai.js" language="javascript"> ... </file>
+<file name="client/pages/index.tsx" language="typescript"> ... </file>
+
+Rules:
+- EVERY file you mention MUST have its own <file> block with full contents — never
+  "...and also create X". If it's part of the project, output it in full.
+- <file> blocks OVERRIDE the "only one artifact" rule. Emit as many as needed —
+  the canvas auto-builds a file tree, a live preview, and a ZIP download from them.
+- Keep prose minimal: a 1-2 sentence intro BEFORE the blocks and a short
+  "## How to Run" AFTER. The code is the documentation — don't narrate each file.
+- React/Next/Vite: the canvas preview mounts the default export of App.jsx/App.tsx
+  and auto-loads Tailwind + Inter/Plus Jakarta fonts — write utility classes freely.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 RULE 6 — STYLE & VOICE
