@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning, Columns, CaretDown, X, Microphone, MicrophoneSlash, Phone, StopCircle, File, Image, Camera, HardDrive, Cpu, Brain, Diamond, Lock } from "@phosphor-icons/react";
+import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning, Columns, CaretDown, X, Microphone, MicrophoneSlash, Phone, StopCircle, File, Image, Camera, HardDrive, Cpu, Brain, Diamond, Lock, ShareNetwork, Copy, Check } from "@phosphor-icons/react";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { QuestionPrompt } from "@/components/chat/QuestionPrompt";
 import { extractQuestionBlock, parseQuestion } from "../../lib/questionBlock";
@@ -88,6 +88,10 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   const [mcpSearch, setMcpSearch] = useState("");
   const [mcpStatus, setMcpStatus] = useState(null);
   const [loadingMcp, setLoadingMcp] = useState(false);
+  // Public share-link dialog: holds { url, shareId } once a link is created.
+  const [shareInfo, setShareInfo] = useState(null);
+  const [sharing, setSharing] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
   const { toast } = useToast();
   const messagesEndRef = useRef(null);
   const mediaRecorderRef = useRef(null);
@@ -973,6 +977,50 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     }
   };
 
+  // Create (or refresh) a public, login-free share link for this conversation
+  // and copy it to the clipboard. Anyone with the link can read it — no account.
+  const handleShare = async () => {
+    if (!sessionId || messages.length === 0) {
+      toast({ title: "Nothing to share yet", description: "Send a message first, then share the chat." });
+      return;
+    }
+    setSharing(true);
+    try {
+      const res = await chatAPI.share(sessionId);
+      const url = `${window.location.origin}${res.url || `/share/${res.share_id}`}`;
+      setShareInfo({ url, shareId: res.share_id });
+      try {
+        await navigator.clipboard.writeText(url);
+        setShareCopied(true);
+        setTimeout(() => setShareCopied(false), 2000);
+      } catch { /* clipboard blocked — the dialog still shows the link */ }
+    } catch (e) {
+      toast({ title: "Couldn't create share link", description: e?.response?.data?.error || "Please try again.", variant: "destructive" });
+    } finally {
+      setSharing(false);
+    }
+  };
+
+  const copyShareUrl = async () => {
+    if (!shareInfo?.url) return;
+    try {
+      await navigator.clipboard.writeText(shareInfo.url);
+      setShareCopied(true);
+      setTimeout(() => setShareCopied(false), 2000);
+    } catch { /* ignore */ }
+  };
+
+  const revokeShare = async () => {
+    if (!shareInfo?.shareId) return;
+    try {
+      await chatAPI.revokeShare(shareInfo.shareId);
+      setShareInfo(null);
+      toast({ title: "Share link disabled", description: "The link no longer opens this chat." });
+    } catch {
+      toast({ title: "Couldn't disable the link", variant: "destructive" });
+    }
+  };
+
   const currentMode = modes.find(m => m.id === activeMode);
   // Lock the model for the lifetime of a chat: once a session has any messages
   // (or is mid-generation), the mode selector is frozen. The model only
@@ -1072,6 +1120,18 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
             <span className="hidden sm:inline">Live</span>
           </button>
 
+          {/* Share — generates a public, login-free read-only link to this chat */}
+          <button
+            data-testid="share-chat-btn"
+            onClick={handleShare}
+            disabled={sharing || messages.length === 0}
+            title={messages.length === 0 ? "Send a message first to share" : "Share this chat (public link, no login needed)"}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium hover:bg-accent text-muted-foreground transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <ShareNetwork className={`w-3.5 h-3.5 ${sharing ? 'animate-pulse' : ''}`} weight="duotone" />
+            <span className="hidden sm:inline">{sharing ? '…' : 'Share'}</span>
+          </button>
+
           <button
             data-testid="toggle-canvas-btn"
             onClick={onToggleCanvas}
@@ -1085,6 +1145,44 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
           </button>
         </div>
       </div>
+
+      {/* Share-link dialog */}
+      <Dialog open={!!shareInfo} onOpenChange={(o) => { if (!o) setShareInfo(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ShareNetwork className="w-5 h-5 text-[var(--k-brand)]" weight="duotone" />
+              Share this chat
+            </DialogTitle>
+            <DialogDescription>
+              Anyone with this link can view this conversation — <strong>no login or account needed</strong>. It's a read-only snapshot; new messages won't appear unless you share again.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              readOnly
+              value={shareInfo?.url || ''}
+              onFocus={(e) => e.target.select()}
+              className="flex-1 px-3 py-2 rounded-lg bg-muted border border-[var(--k-border)] text-xs text-foreground font-mono truncate"
+            />
+            <button
+              onClick={copyShareUrl}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[var(--k-brand)] text-white text-xs font-bold whitespace-nowrap"
+            >
+              {shareCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+              {shareCopied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+          <div className="flex items-center justify-between mt-3">
+            <button onClick={revokeShare} className="text-xs text-red-400 hover:text-red-300 font-medium">
+              Disable link
+            </button>
+            <a href={shareInfo?.url} target="_blank" rel="noopener noreferrer" className="text-xs text-muted-foreground hover:text-foreground font-medium">
+              Open preview ↗
+            </a>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* LiveKit full-duplex voice overlay */}
       {isLiveVoice && (

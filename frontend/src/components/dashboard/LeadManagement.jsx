@@ -18,6 +18,18 @@ const statusColors = {
   new: { bg: 'bg-green-500/10', text: 'text-green-400', dot: 'bg-green-400' },
 };
 
+// How the lead reached us: a dialed/received phone call (SIP) vs an in-browser
+// web call vs anything else. Reads call_type first, then the source channel.
+function callChannel(lead) {
+  const t = String(lead.call_type || '').toLowerCase();
+  const src = String(lead.source || '').toLowerCase();
+  if (t === 'phone' || src.includes('sip') || src.includes('phone') || src.includes('telephon'))
+    return { label: 'Phone', icon: '📞', cls: 'bg-[var(--k-brand)]/10 text-[var(--k-brand)]' };
+  if (t === 'web' || src.includes('web'))
+    return { label: 'Web', icon: '🌐', cls: 'bg-[var(--k-green)]/10 text-[var(--k-green)]' };
+  return { label: lead.source || 'Direct', icon: '•', cls: 'bg-muted text-muted-foreground' };
+}
+
 export default function LeadManagement() {
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
@@ -184,6 +196,7 @@ export default function LeadManagement() {
                 <thead>
                   <tr className="border-b border-[var(--k-border)] bg-muted/30">
                     <th className="text-left px-4 py-3 text-[10px] tracking-[0.15em] uppercase font-semibold text-muted-foreground">Contact</th>
+                    <th className="text-left px-4 py-3 text-[10px] tracking-[0.15em] uppercase font-semibold text-muted-foreground">Type</th>
                     <th className="text-left px-4 py-3 text-[10px] tracking-[0.15em] uppercase font-semibold text-muted-foreground">Company</th>
                     <th className="text-left px-4 py-3 text-[10px] tracking-[0.15em] uppercase font-semibold text-muted-foreground">
                       <button onClick={() => { setSortField('created_at'); setSortDir(d => d === 'asc' ? 'desc' : 'asc'); }} className="flex items-center gap-1 hover:text-foreground transition-colors">
@@ -191,7 +204,6 @@ export default function LeadManagement() {
                       </button>
                     </th>
                     <th className="text-left px-4 py-3 text-[10px] tracking-[0.15em] uppercase font-semibold text-muted-foreground">Status</th>
-                    <th className="text-left px-4 py-3 text-[10px] tracking-[0.15em] uppercase font-semibold text-muted-foreground">Source</th>
                     <th className="text-left px-4 py-3 text-[10px] tracking-[0.15em] uppercase font-semibold text-muted-foreground">Phone</th>
                     <th className="text-right px-4 py-3 text-[10px] tracking-[0.15em] uppercase font-semibold text-muted-foreground">Actions</th>
                   </tr>
@@ -206,6 +218,13 @@ export default function LeadManagement() {
                           <div className="text-sm font-medium text-foreground">{lead.name || 'Unknown'}</div>
                           <div className="text-xs text-muted-foreground">{lead.email || 'No email'}</div>
                         </td>
+                        <td className="px-4 py-3">
+                          {(() => { const c = callChannel(lead); return (
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${c.cls}`}>
+                              <span>{c.icon}</span>{c.label}
+                            </span>
+                          ); })()}
+                        </td>
                         <td className="px-4 py-3 text-sm text-foreground">{lead.company || 'N/A'}</td>
                         <td className="px-4 py-3 text-xs text-muted-foreground">{createdAt}</td>
                         <td className="px-4 py-3">
@@ -214,7 +233,6 @@ export default function LeadManagement() {
                             {lead.status || 'new'}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-xs text-muted-foreground">{lead.source || 'Direct'}</td>
                         <td className="px-4 py-3 text-sm text-foreground">{lead.phone || 'N/A'}</td>
                         <td className="px-4 py-3">
                           <div className="flex items-center justify-end gap-1">

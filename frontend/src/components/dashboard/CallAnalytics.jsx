@@ -57,6 +57,18 @@ const sentKey = (s) => {
   return 'neutral';
 };
 
+// Phone (dialed/received SIP) vs Web (in-browser) call, from the log's
+// call_type / channel fields.
+const callType = (log) => {
+  const t = String(log?.call_type || '').toLowerCase();
+  const ch = String(log?.channel || '').toLowerCase();
+  if (t === 'phone' || ch.includes('sip') || ch.includes('phone'))
+    return { label: 'Phone', icon: '📞', cls: 'border-[var(--k-brand)]/40 text-[var(--k-brand)]' };
+  if (t === 'web' || ch.includes('web'))
+    return { label: 'Web', icon: '🌐', cls: 'border-[var(--k-green)]/40 text-[var(--k-green)]' };
+  return { label: 'Call', icon: '•', cls: 'border-muted-foreground/30 text-muted-foreground' };
+};
+
 // Icon per integration action type shown in the "Actions taken" panel.
 const actionMeta = {
   email: { label: 'Email', emoji: '✉️', Icon: EnvelopeSimple, color: 'text-[var(--k-brand)]' },
@@ -208,6 +220,11 @@ export default function CallAnalytics() {
               <Badge className={`bg-transparent border ${sent.color.replace('text-', 'border-')}/30 ${sent.color} text-[9px] px-1.5 py-0 uppercase font-bold flex items-center gap-1`}>
                 <SentIcon className="w-3 h-3" weight="fill" /> {sk}
               </Badge>
+              {(() => { const ct = callType(call); return (
+                <Badge className={`bg-transparent border ${ct.cls} text-[9px] px-1.5 py-0 font-bold`}>
+                  {ct.icon} {ct.label}
+                </Badge>
+              ); })()}
             </div>
             <div className="flex items-center gap-2 mt-0.5">
               <span className="text-[11px] text-muted-foreground">{when}</span>
@@ -494,6 +511,11 @@ export default function CallAnalytics() {
                                <Badge className={`bg-transparent border ${sent.color.replace('text-', 'border-')}/30 ${sent.color} text-[9px] px-1.5 py-0 uppercase font-bold`}>
                                   {sk}
                                </Badge>
+                               {(() => { const ct = callType(log); return (
+                                 <Badge className={`bg-transparent border ${ct.cls} text-[9px] px-1.5 py-0 font-bold`}>
+                                   {ct.icon} {ct.label}
+                                 </Badge>
+                               ); })()}
                                {(log.actions?.length > 0) && (
                                  <span className="text-[9px] text-muted-foreground font-medium" title="Automated follow-ups">
                                    {log.actions.map(a => actionMeta[a.type]?.emoji || '•').join(' ')}

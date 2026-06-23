@@ -19,7 +19,7 @@ const agentColors = {
   daily: 'text-purple-400',
 };
 
-export function ChatSidebar({ selectedConversation, onSelectConversation, onCollapse, theme, toggleTheme, user, isOpen, onClose, conversations = [], loading = false, onRefresh }) {
+export function ChatSidebar({ selectedConversation, onSelectConversation, onCollapse, theme, toggleTheme, user, isOpen, onClose, conversations = [], loading = false, onRefresh, onLoadMore, hasMore = false, loadingMore = false }) {
   const [searchQuery, setSearchQuery] = useState('');
   const navigate = useNavigate();
 
@@ -123,6 +123,19 @@ export function ChatSidebar({ selectedConversation, onSelectConversation, onColl
                   </button>
                 );
               })
+            )}
+
+            {/* Load older chats — pages back through the full history so chats
+                beyond the first page aren't lost. Hidden while searching. */}
+            {!loading && hasMore && !searchQuery && (
+              <button
+                data-testid="load-older-chats-btn"
+                onClick={onLoadMore}
+                disabled={loadingMore}
+                className="w-full mt-1 px-3 py-2 rounded-md text-xs font-medium text-muted-foreground hover:bg-accent/50 transition-colors disabled:opacity-50"
+              >
+                {loadingMore ? 'Loading…' : 'Load older chats'}
+              </button>
             )}
           </div>
         </ScrollArea>

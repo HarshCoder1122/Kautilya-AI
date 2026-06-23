@@ -60,7 +60,12 @@ def analyze_call_transcript(transcript: str) -> dict:
     {transcript}
 
     Extract the following information and return ONLY a valid JSON object:
-    - "sentiment": one of exactly "positive", "neutral", or "negative" (lowercase).
+    - "sentiment": the CUSTOMER's attitude, one of exactly "positive", "neutral", or "negative" (lowercase).
+        * positive = clearly interested/happy/agreed/thanked/booked.
+        * negative = clearly angry/complained/frustrated/firmly refused or abused.
+        * neutral = everything else: short calls, polite info-gathering, no clear emotion,
+          wrong number, voicemail, or the customer barely spoke.
+        When unsure, ALWAYS choose "neutral" — never default to "negative".
     - "intent": The primary reason the user was calling or what they wanted to achieve.
     - "outcome": The final resolution of the call (e.g., "Resolved", "Follow-up required", "Hung up early").
     - "summary": A brief 1-2 sentence summary of the conversation.

@@ -5,15 +5,37 @@ import { CanvasPane } from "@/components/chat/CanvasPane";
 import { OnboardingModal } from "@/components/shared/OnboardingModal";
 import { chatAPI } from "../lib/api";
 
+// Local mirror of the first page of chat history so the sidebar paints
+// instantly on open (no spinner), while the DB load refreshes it to the latest
+// in the background. Keyed per user; capped so we never blow the quota.
+const _histKey = (uid) => `kchat:history:${uid || 'anon'}`;
+const _readHistoryCache = (uid) => {
+  try {
+    const raw = localStorage.getItem(_histKey(uid));
+    if (!raw) return null;
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) && arr.length ? arr : null;
+  } catch { return null; }
+};
+const _writeHistoryCache = (uid, chats) => {
+  try { localStorage.setItem(_histKey(uid), JSON.stringify((chats || []).slice(0, 100))); }
+  catch { /* quota / private mode — soft-fail */ }
+};
+
 export default function ChatPage({ theme, toggleTheme, user }) {
+  const _cachedHistory = _readHistoryCache(user?.uid);
   const [selectedConversation, setSelectedConversation] = useState(null);
   const [canvasOpen, setCanvasOpen] = useState(false);
   const [canvasContent, setCanvasContent] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [activeMode, setActiveMode] = useState('pro'); // Pro selected by default on open
-  const [conversations, setConversations] = useState([]);
-  const [convoLoading, setConvoLoading] = useState(true);
+  const [conversations, setConversations] = useState(_cachedHistory || []);
+  // Skip the spinner if we already have a cached list to show instantly.
+  const [convoLoading, setConvoLoading] = useState(!_cachedHistory);
+  // Pagination cursor for "load older chats". null once there are no more.
+  const [historyCursor, setHistoryCursor] = useState(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   // Track artifacts the user explicitly closed so the live stream doesn't keep
   // re-opening the canvas on every chunk. Keyed by messageId.
   const closedArtifactsRef = useRef(new Set());
@@ -46,12 +68,33 @@ export default function ChatPage({ theme, toggleTheme, user }) {
     try {
       const data = await chatAPI.getHistory();
       setConversations(data.chats || []);
+      setHistoryCursor(data.next_before || null);
+      _writeHistoryCache(user?.uid, data.chats || []); // refresh the local mirror
     } catch (e) {
       console.error('Failed to load conversations:', e);
     } finally {
       setConvoLoading(false);
     }
-  }, []);
+  }, [user?.uid]);
+
+  // Append the next page of older chats (dedup by session id).
+  const loadMoreSessions = useCallback(async () => {
+    if (!historyCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const data = await chatAPI.getHistory({ before: historyCursor });
+      setConversations(prev => {
+        const seen = new Set(prev.map(c => c.session_id || c.id));
+        const older = (data.chats || []).filter(c => !seen.has(c.session_id || c.id));
+        return [...prev, ...older];
+      });
+      setHistoryCursor(data.next_before || null);
+    } catch (e) {
+      console.error('Failed to load older conversations:', e);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [historyCursor, loadingMore]);
 
   useEffect(() => { refreshSessions(); }, [refreshSessions]);
 
@@ -84,6 +127,9 @@ export default function ChatPage({ theme, toggleTheme, user }) {
         conversations={conversations}
         loading={convoLoading}
         onRefresh={refreshSessions}
+        onLoadMore={loadMoreSessions}
+        hasMore={!!historyCursor}
+        loadingMore={loadingMore}
       />
       <ChatMain
         sidebarCollapsed={sidebarCollapsed}

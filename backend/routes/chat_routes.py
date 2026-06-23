@@ -868,18 +868,47 @@ def get_all_history():
     if not db:
         return jsonify({"chats": []})
     try:
-        docs = db.collection('users').document(uid).collection('conversations') \
-                .order_by('last_updated', direction=firestore.Query.DESCENDING).limit(50).stream()
+        # Paginated history. Default page is generous (100) so users with many
+        # chats keep seeing well beyond the old 50-row cap; the sidebar can
+        # fetch older pages with ?before=<ISO last_updated cursor>.
+        try:
+            limit = min(max(int(request.args.get('limit', 100)), 1), 300)
+        except Exception:
+            limit = 100
+        before = request.args.get('before')
+
+        q = db.collection('users').document(uid).collection('conversations') \
+              .order_by('last_updated', direction=firestore.Query.DESCENDING)
+        if before:
+            try:
+                from datetime import datetime
+                dt = datetime.fromisoformat(before.replace('Z', '+00:00'))
+                q = q.start_after({'last_updated': dt})
+            except Exception as ce:
+                print(f"[History] bad before-cursor '{before}': {ce}")
+        docs = q.limit(limit).stream()
+
         chats = []
+        fetched = 0
+        next_before = None
         for doc in docs:
+            fetched += 1
+            data = doc.to_dict()
+            lu = data.get('last_updated')
+            if lu:
+                try:
+                    lu = lu.isoformat()
+                except Exception:
+                    lu = None
+            data['session_id'] = doc.id
+            if lu:
+                data['last_updated'] = lu
+                next_before = lu  # cursor = the oldest row we returned
             if doc.id.startswith('cli-'):
                 continue
-            data = doc.to_dict()
-            data['session_id'] = doc.id
-            if 'last_updated' in data and data['last_updated']:
-                data['last_updated'] = data['last_updated'].isoformat()
             chats.append(data)
-        return jsonify({"chats": chats})
+        # Only advertise another page when this one came back full.
+        return jsonify({"chats": chats, "next_before": next_before if fetched >= limit else None})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -966,6 +995,157 @@ def delete_chat_history(session_id):
         if user_id in conversations and session_id in conversations[user_id]:
             del conversations[user_id][session_id]
         return jsonify({"status": "ok", "session_id": session_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def _share_text(content):
+    """Coerce a stored message body (string, JSON-string of blocks, or a list of
+    content blocks) down to plain display text for a public share snapshot.
+    Keeps the shared doc small and the read-only viewer simple."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        s = content.strip()
+        if s[:1] in ('[', '{'):
+            try:
+                content = json.loads(s)
+            except Exception:
+                return content
+        else:
+            return content
+    if isinstance(content, list):
+        parts = []
+        for blk in content:
+            if isinstance(blk, str):
+                parts.append(blk)
+            elif isinstance(blk, dict):
+                if blk.get('type') in (None, 'text') and blk.get('text'):
+                    parts.append(str(blk['text']))
+        return "\n".join(p for p in parts if p).strip()
+    if isinstance(content, dict):
+        return str(content.get('text') or content.get('content') or '')
+    return str(content)
+
+
+@chat_bp.route('/jarvis/share/<session_id>', methods=['POST'])
+def create_share(session_id):
+    """Snapshot a conversation into a PUBLIC read-only share doc and return its
+    link. We copy the messages (user/assistant text only — no system prompt, no
+    tool internals) so the link keeps working even if the user later edits or
+    deletes the original chat, and so the viewer never needs access to the
+    owner's private data. Re-sharing the same session reuses the same link."""
+    from extensions import db
+    from firebase_admin import firestore
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
+    if not db:
+        return jsonify({"error": "Database unavailable"}), 503
+    try:
+        conv_ref = db.collection('users').document(uid).collection('conversations').document(session_id)
+        conv_doc = conv_ref.get()
+        conv_data = conv_doc.to_dict() if conv_doc.exists else {}
+
+        snapshot = []
+        docs = conv_ref.collection('messages').order_by('timestamp').stream()
+        for d in docs:
+            data = d.to_dict()
+            role = data.get('role')
+            if role not in ('user', 'assistant'):
+                continue
+            if data.get('streaming'):
+                continue
+            text = _share_text(data.get('content'))
+            if not text:
+                continue
+            snapshot.append({"role": role, "content": text[:20000]})
+            if len(snapshot) >= 400:
+                break
+
+        if not snapshot:
+            return jsonify({"error": "Nothing to share yet — send a message first."}), 400
+
+        # Owner display name (best-effort) for the "shared by" byline.
+        owner_name = ""
+        try:
+            sdoc = db.collection('users').document(uid).collection('settings').document('profile').get()
+            if sdoc.exists:
+                owner_name = (sdoc.to_dict() or {}).get('name') or ""
+        except Exception:
+            owner_name = ""
+
+        share_id = conv_data.get('share_id') or ('s_' + uuid.uuid4().hex[:16])
+        db.collection('shared_chats').document(share_id).set({
+            "share_id": share_id,
+            "uid": uid,
+            "session_id": session_id,
+            "title": (conv_data.get('title') or "Shared chat")[:200],
+            "messages": snapshot,
+            "message_count": len(snapshot),
+            "shared_by": owner_name[:80],
+            "revoked": False,
+            "created_at": firestore.SERVER_TIMESTAMP,
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        })
+        conv_ref.set({"share_id": share_id, "shared": True}, merge=True)
+        return jsonify({"share_id": share_id, "url": f"/share/{share_id}", "ok": True})
+    except Exception as e:
+        print(f"[Share] create failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@chat_bp.route('/jarvis/share/<share_id>', methods=['DELETE'])
+def revoke_share(share_id):
+    """Revoke a share link. Only the owner can revoke; the public page then 410s."""
+    from extensions import db
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
+    if not db:
+        return jsonify({"error": "Database unavailable"}), 503
+    try:
+        ref = db.collection('shared_chats').document(share_id)
+        doc = ref.get()
+        if doc.exists and (doc.to_dict() or {}).get('uid') == uid:
+            ref.set({"revoked": True}, merge=True)
+            sid = (doc.to_dict() or {}).get('session_id')
+            if sid:
+                db.collection('users').document(uid).collection('conversations').document(sid) \
+                  .set({"shared": False}, merge=True)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@chat_bp.route('/shared/<share_id>', methods=['GET'])
+def get_shared_chat(share_id):
+    """PUBLIC (no auth): return a shared conversation snapshot for the read-only
+    /share/<id> viewer. 404 if missing, 410 if the owner revoked it."""
+    from extensions import db
+    if not db:
+        return jsonify({"error": "unavailable"}), 503
+    try:
+        doc = db.collection('shared_chats').document(share_id).get()
+        if not doc.exists:
+            return jsonify({"error": "not_found"}), 404
+        data = doc.to_dict() or {}
+        if data.get('revoked'):
+            return jsonify({"error": "revoked"}), 410
+        created = data.get('created_at')
+        try:
+            created = created.isoformat() if created else None
+        except Exception:
+            created = None
+        return jsonify({
+            "title": data.get('title') or "Shared chat",
+            "messages": data.get('messages') or [],
+            "message_count": data.get('message_count') or len(data.get('messages') or []),
+            "shared_by": data.get('shared_by') or "",
+            "created_at": created,
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

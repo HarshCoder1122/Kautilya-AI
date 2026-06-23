@@ -359,6 +359,7 @@ def _process_post_call(agent_id, payload, call_uuid):
             "lead_status": analytics.get('lead_status', ''),
             "actions": [],
             "channel": "voice_sip",
+            "call_type": "phone",
         }
 
         # ---- Post-call integration dispatch ----
@@ -441,6 +442,7 @@ def _upsert_lead_from_call(uid, agent_id, log_data):
             "message": log_data.get('summary', ''),
             "intent": log_data.get('intent', ''),
             "source": "voice_sip",
+            "call_type": "phone",
             "status": status,
             "sentiment": log_data.get('sentiment', 'neutral'),
             "score": score,

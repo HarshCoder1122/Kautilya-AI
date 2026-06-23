@@ -11,6 +11,7 @@ import { getAuthHeaders } from "./lib/api";
 const ChatPage = lazy(() => import("./pages/ChatPage"));
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
+const SharedChatPage = lazy(() => import("./pages/SharedChatPage"));
 
 /* ── Age Gate + Consent Modal (first login, DPDP Act 2023) ─────────────── */
 function ConsentModal({ user, onDone }) {
@@ -342,6 +343,8 @@ function App() {
       <PrivacyBanner />
       <Suspense fallback={<LoadingScreen />}>
         <Routes>
+          {/* Public, login-free shared chat viewer */}
+          <Route path="/share/:shareId" element={<SharedChatPage />} />
           <Route path="/login" element={!user ? <LoginPage /> : <Navigate to="/" />} />
           <Route path="/" element={user ? <ChatPage theme={theme} toggleTheme={toggleTheme} user={user} /> : <Navigate to="/login" />} />
           <Route path="/dashboard/*" element={user ? <DashboardPage theme={theme} toggleTheme={toggleTheme} user={user} /> : <Navigate to="/login" />} />
