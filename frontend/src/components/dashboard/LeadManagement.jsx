@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { MagnifyingGlass, FunnelSimple, Export, Phone, EnvelopeSimple, ArrowUp, ArrowDown, Trash } from "@phosphor-icons/react";
+import { useNavigate } from "react-router-dom";
+import { MagnifyingGlass, FunnelSimple, Export, Phone, EnvelopeSimple, ArrowUp, ArrowDown, Trash, ChartBar } from "@phosphor-icons/react";
 import { leadsAPI, telephonyAPI } from "../../lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +19,7 @@ const statusColors = {
 };
 
 export default function LeadManagement() {
+  const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [sortField, setSortField] = useState('created_at');
@@ -86,6 +88,16 @@ export default function LeadManagement() {
     } finally {
       setCallingId(null);
     }
+  };
+
+  // Open this person's call in Call Analytics. Prefer a saved call-log id, else
+  // deep-link by phone (CallAnalytics matches on the last 10 digits).
+  const handleViewAnalytics = (lead) => {
+    const callId = lead.call_log_id || lead.log_id;
+    if (callId) return navigate(`/dashboard/calls?call=${encodeURIComponent(callId)}`);
+    const phone = lead.phone && lead.phone !== 'N/A' ? lead.phone : null;
+    if (!phone) return alert('This lead has no call recording to view yet.');
+    navigate(`/dashboard/calls?phone=${encodeURIComponent(phone)}`);
   };
 
   const handleEmailLead = (lead) => {
@@ -206,6 +218,9 @@ export default function LeadManagement() {
                         <td className="px-4 py-3 text-sm text-foreground">{lead.phone || 'N/A'}</td>
                         <td className="px-4 py-3">
                           <div className="flex items-center justify-end gap-1">
+                            <button data-testid={`view-lead-${lead.id}`} onClick={() => handleViewAnalytics(lead)} className="p-1.5 rounded-md hover:bg-[var(--k-brand)]/10 text-muted-foreground hover:text-[var(--k-brand)] transition-colors" title="View call analytics">
+                              <ChartBar className="w-3.5 h-3.5" />
+                            </button>
                             <button data-testid={`call-lead-${lead.id}`} onClick={() => handleCallLead(lead)} disabled={callingId === lead.id} className="p-1.5 rounded-md hover:bg-[var(--k-green)]/10 text-muted-foreground hover:text-[var(--k-green)] transition-colors disabled:opacity-40" title="Call">
                               <Phone className={`w-3.5 h-3.5 ${callingId === lead.id ? 'animate-pulse' : ''}`} />
                             </button>
