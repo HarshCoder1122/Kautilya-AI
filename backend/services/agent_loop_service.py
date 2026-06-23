@@ -592,6 +592,15 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     # turn each, so the wall-clock cost of a higher cap is small in the
     # common case, and the cap only bites on sequential chains.
     MAX_TURNS = 25 if model_choice == 'coder' else 12
+    # MAX_TURNS caps TOOL-CHAINING (read→grep→edit→run…) to stop runaway tool
+    # loops. But pure OUTPUT continuation — a big multi-file <file> project or a
+    # long document that keeps hitting the token cap — is benign and must be
+    # allowed to FINISH instead of clipping mid-project. So output continuations
+    # get a much higher ceiling. (Filesystem tools are disabled in cloud chat,
+    # so a coder emitting <file> blocks only ever consumes continuation turns —
+    # this is exactly the "project stopped at turn 12" case.)
+    CONTINUATION_MAX_TURNS = max(MAX_TURNS, 40)
+    tool_turns = 0  # counts only turns that actually executed tools
     # Track whether the previous turn was a synthesis turn (i.e. it
     # consumed a tool-result OBSERVATION). Synthesis turns need MORE
     # headroom than the initial turn because the model has to read N
@@ -604,8 +613,8 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     # that ceiling.
     coder_budget = 24576
     CODER_MAX_BUDGET = 32768
-    for turn in range(MAX_TURNS):
-        print(f"[Agent] Turn {turn+1}/{MAX_TURNS} (mode={model_choice}, synthesis={was_synthesis})")
+    for turn in range(CONTINUATION_MAX_TURNS):
+        print(f"[Agent] Turn {turn+1}/{CONTINUATION_MAX_TURNS} (mode={model_choice}, synthesis={was_synthesis}, tool_turns={tool_turns}/{MAX_TURNS})")
 
         # Per-turn budget. For coder mode we DON'T use the chat-size
         # classifier — it's tuned for prose answers and consistently
@@ -863,7 +872,22 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 accumulated_response = sanitized_response
         planned_actions = _plan_actions(accumulated_response, uid, start_id=action_counter + 1)
 
+        # Tool-step budget exhausted: stop chaining tools and force ONE clean
+        # final answer (no more tool tags) rather than looping forever.
+        if planned_actions and tool_turns >= MAX_TURNS:
+            current_messages.append({"role": "assistant", "content": accumulated_response})
+            current_messages.append({"role": "user", "content": (
+                "[SYSTEM] You've reached the maximum number of tool steps. Do NOT emit any "
+                "more tool tags. Write your best final answer now using the information you "
+                "already have."
+            )})
+            if tool_turns < MAX_TURNS + 2:
+                tool_turns += 1
+                continue
+            return
+
         if planned_actions:
+            tool_turns += 1
             # Announce every action up-front so the timeline renders immediately.
             for act in planned_actions:
                 yield json.dumps({
@@ -937,7 +961,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         # (1) Truncation just occurred — we already bumped the budget above;
         #     fire another turn so the bigger budget is actually used.
         # (2) Orphan preamble — model promised action without emitting a tag.
-        if truncation_detected and turn < MAX_TURNS - 1:
+        if truncation_detected and turn < CONTINUATION_MAX_TURNS - 1:
             current_messages.append({"role": "assistant", "content": accumulated_response})
             if tag_truncation_detected:
                 nudge = (
