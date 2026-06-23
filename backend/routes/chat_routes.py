@@ -36,6 +36,19 @@ CONVERSATION_TTL = 3600
 MAX_HISTORY = 20
 MAX_INMEM_CONVERSATIONS_PER_USER = 20
 
+# Active generations registry: maps "uid:session_id" -> threading.Event. The
+# Stop button hits /jarvis/stop, which SETS the event; the LLM worker thread
+# checks it every chunk and halts (closing the upstream connection) so we stop
+# burning tokens. This is DISTINCT from a plain client disconnect (tab close /
+# navigate), which deliberately keeps generating so "you can leave, we'll save
+# it" still works — only an explicit Stop cancels.
+import threading as _threading
+_active_stop_events = {}
+_active_stop_lock = _threading.Lock()
+
+def _gen_key(uid, session_id):
+    return f"{uid or 'guest'}:{session_id}"
+
 # Shared thread pool for parallel Firestore reads + fire-and-forget writes.
 # Sized for I/O-bound work — most threads spend their time waiting on Firestore.
 from concurrent.futures import ThreadPoolExecutor as _ChatTPE
@@ -569,6 +582,15 @@ def jarvis_stream():
         """
         chunk_queue = queue.Queue()
         full_response_holder = [""]  # list so the thread can mutate via closure
+        # Cancellation: the Stop button (POST /jarvis/stop) sets this event; the
+        # worker loop below checks it each chunk and halts generation.
+        stop_event = _threading.Event()
+        _stop_key = _gen_key(uid, session_id)
+        with _active_stop_lock:
+            _prev = _active_stop_events.get(_stop_key)
+            if _prev:
+                _prev.set()  # cancel any stale generation for this same session
+            _active_stop_events[_stop_key] = stop_event
         # Collected structured side-data — persisted alongside the text so
         # tool-result cards / ReAct steps / citations don't vanish on reload.
         side_data = {
@@ -684,6 +706,16 @@ def jarvis_stream():
                         side_data['agent_type'] = parsed.get('agent') or side_data['agent_type']
 
                 for item in gen:
+                    # Stop pressed → halt: close the upstream generator (stops the
+                    # LLM HTTP stream so no more tokens are billed) and bail. The
+                    # finally block still saves whatever was produced so far.
+                    if stop_event.is_set():
+                        print(f"[LLM Thread] Stop requested — halting generation for {session_id[:8]}")
+                        try:
+                            gen.close()
+                        except Exception:
+                            pass
+                        break
                     if isinstance(item, str):
                         try:
                             parsed = json.loads(item)
@@ -701,6 +733,10 @@ def jarvis_stream():
                 chunk_queue.put(json.dumps({'chunk': '\n\n[Sorry — something went wrong. Please try again.]'}))
             finally:
                 chunk_queue.put(None)  # sentinel: stream finished
+                # Deregister our cancel event so the map doesn't leak.
+                with _active_stop_lock:
+                    if _active_stop_events.get(_stop_key) is stop_event:
+                        del _active_stop_events[_stop_key]
 
                 # ---- Persist to Firestore (runs even if client disconnected) ----
                 full_response = full_response_holder[0]
@@ -804,6 +840,27 @@ def jarvis_stream():
     return Response(stream(), mimetype='text/event-stream', headers={
         'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'
     })
+
+
+@chat_bp.route('/jarvis/stop', methods=['POST'])
+def jarvis_stop():
+    """Hard-stop the in-flight generation for a session so the LLM thread halts
+    and stops billing tokens. Called by the Stop button (which also aborts the
+    SSE fetch). Idempotent: returns stopped=false if nothing was running."""
+    data = request.get_json(silent=True) or {}
+    session_id = data.get('session_id') or data.get('sessionId') or ''
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not session_id:
+        return jsonify({"ok": False, "error": "session_id required"}), 400
+    with _active_stop_lock:
+        ev = _active_stop_events.get(_gen_key(uid, session_id))
+    if ev:
+        ev.set()
+        print(f"[Stop] Cancel requested for session {session_id[:8]} (uid={uid or 'guest'})")
+        return jsonify({"ok": True, "stopped": True})
+    return jsonify({"ok": True, "stopped": False})
+
 
 @chat_bp.route('/jarvis/command', methods=['POST'])
 def jarvis_command():

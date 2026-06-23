@@ -110,6 +110,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   const leftMidStreamRef = useRef(false);
   const staleTimerRef = useRef(null);
   const abortControllerRef = useRef(null);
+  const streamSessionRef = useRef(null); // session id of the in-flight generation (for Stop)
 
   // ── Auto-scroll: only follow the stream while the user is AT the bottom ──
   // The real scroll element is the Radix ScrollArea viewport (an ancestor of
@@ -481,10 +482,14 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   };
 
   const handleStopGeneration = () => {
+    // Tell the backend to halt the LLM thread (stops burning tokens) BEFORE we
+    // drop the connection — a bare fetch-abort leaves the worker thread running.
+    chatAPI.stopGeneration(streamSessionRef.current);
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
+    leftMidStreamRef.current = false; // explicit stop ≠ "left mid-stream"; don't auto-reload
     setIsStreaming(false);
     setIsThinking(false);
   };
@@ -537,6 +542,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
 
     // Create new session if needed — mark it as pending so useEffect won't reload empty history
     const currentSessionId = sessionId || `session-${Date.now()}`;
+    streamSessionRef.current = currentSessionId; // so Stop can cancel this exact run
     const isNewSession = !sessionId;
     if (isNewSession && onSessionChange) {
       pendingSessionRef.current = currentSessionId;

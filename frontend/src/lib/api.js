@@ -246,6 +246,22 @@ export const chatAPI = {
     return _postStreamWithAuth(`${API_BASE_URL}/api/research/stream`, buildBody, options);
   },
 
+  // Hard-stop the in-flight generation for a session so the backend LLM thread
+  // halts and stops billing tokens. Best-effort, fire-and-forget.
+  stopGeneration: async (sessionId) => {
+    if (!sessionId) return;
+    try {
+      await fetch(`${API_BASE_URL}/api/jarvis/stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ session_id: sessionId }),
+        keepalive: true,
+      });
+    } catch (e) {
+      /* best-effort — the fetch abort already cut the client side */
+    }
+  },
+
   // Get chat history (paginated). Pass { before } (ISO cursor from a previous
   // response's next_before) to fetch older chats. Returns { chats, next_before }.
   getHistory: async ({ before = null, limit = 100 } = {}) => {
