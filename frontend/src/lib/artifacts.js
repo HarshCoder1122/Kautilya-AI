@@ -34,22 +34,27 @@ const _EXT_LANG = { html: 'html', htm: 'html', jsx: 'javascript', tsx: 'typescri
  *  the filename extension and the payload. Returns { type, language } or null to
  *  keep the model's stated type. */
 function classifyArtifact(declaredType, filename, code) {
+  const t = (declaredType || '').toLowerCase().trim();
+  // Never touch real structured-data artifacts — they have dedicated viewers.
+  if (['excel', 'spreadsheet', 'csv', 'dashboard'].includes(t)) return null;
+
   const fname = (filename || '').toLowerCase();
   const ext = (fname.match(/\.([a-z0-9]+)$/) || [])[1] || '';
   const body = (code || '').trim();
   const looksHtml = /^<!doctype html|^<html[\s>]/i.test(body);
   const looksReact = /\b(import|export)\b/.test(body) && /<[A-Za-z][^>]*>/.test(body) && /\breturn\s*\(?\s*</.test(body);
   const codeExt = ['html', 'htm', 'jsx', 'tsx', 'js', 'mjs', 'ts', 'css', 'json', 'py', 'vue', 'svelte'].includes(ext);
+  // The master prompt defines type="preview" for self-contained HTML pages/
+  // widgets/landing pages — those (and other code-page intents) must ALWAYS
+  // render as a live code preview, never as a prose document.
+  const codeIntentType = ['preview', 'code', 'html', 'web', 'webpage', 'website',
+    'site', 'component', 'app', 'widget', 'ui'].includes(t);
 
-  // Only override when the model said nothing, said "document", or said "code"
-  // — never reclassify an explicit spreadsheet/excel/csv/dashboard artifact.
-  const overridable = !declaredType || declaredType === 'document' || declaredType === 'code';
-  if (!overridable) return null;
-  if (codeExt || looksHtml || looksReact) {
-    const lang = _EXT_LANG[ext] || (looksHtml ? 'html' : (looksReact ? 'javascript' : 'text'));
+  if (codeExt || looksHtml || looksReact || codeIntentType) {
+    const lang = _EXT_LANG[ext] || (looksReact ? 'javascript' : 'html');
     return { type: 'code', language: lang };
   }
-  return null;
+  return null; // genuine prose document → leave as-is
 }
 
 /**
