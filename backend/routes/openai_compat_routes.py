@@ -12,8 +12,8 @@ Under the hood requests are forwarded to NVIDIA NIM with the appropriate
 Kautilya model mapping and thinking-toggle logic:
 
     kautilya-coder  → moonshotai/kimi-k2.6
-    kautilya-pro    → nvidia/nemotron-3-super-120b-a12b
-    kautilya-daily  → (falls back to Groq llama-3.3-70b-versatile)
+    kautilya-pro    → z-ai/glm-5.1
+    kautilya-daily  → mistralai/mistral-medium-3.5-128b
 
 Requests may also pass the raw NVIDIA model id directly.
 The `max_thinking` toggle can be requested via:
@@ -193,7 +193,7 @@ openai_compat_bp = Blueprint('openai_compat', __name__)
 KAUTILYA_MODEL_MAP = {
     "kautilya-fast":    "llama-3.3-70b-versatile",            # Groq direct — sub-500ms TTFT
     "kautilya-coder":   "moonshotai/kimi-k2.6",
-    "kautilya-pro":     "nvidia/nemotron-3-super-120b-a12b",
+    "kautilya-pro":     "z-ai/glm-5.1",                       # GLM-5.1 on NVIDIA NIM (nemotron retired)
     "kautilya-daily":   "mistralai/mistral-medium-3.5-128b",
 }
 
@@ -208,6 +208,21 @@ KAUTILYA_MODEL_CONTEXT = {
     "kautilya-pro":     {"free":  64_000, "pro": 128_000},
     "kautilya-daily":   {"free":  32_000, "pro":  64_000},
 }
+
+# Hard per-model output cap (keep in sync with PUBLIC_MODELS.max_output_tokens).
+# We RESERVE this slice of the context window for the reply before trimming the
+# input, so a long Cline/Cursor history can never push input + output past the
+# model's real limit — which is what made the upstream start erroring once the
+# conversation grew ("requested more tokens than the model can handle").
+KAUTILYA_MODEL_MAX_OUTPUT = {
+    "kautilya-fast":   4_096,
+    "kautilya-coder": 32_768,
+    "kautilya-pro":   16_384,
+    "kautilya-daily":  8_192,
+}
+# Headroom for char//4 token-estimate drift and the tool/JSON schema overhead
+# that isn't counted in the message char estimate.
+CONTEXT_SAFETY_MARGIN = 2_000
 
 # Non-standard capability flags that LiteLLM / OpenRouter-style clients
 # (and Cline's "openai-compatible" provider when set to auto-detect) read
@@ -320,8 +335,29 @@ def chat_completions():
     # The Pro/Coder windows now match the underlying model's real native
     # context — Cline/Cursor users were losing context to a hard 64k cap.
     tier_key = "pro" if is_pro else "free"
-    max_context_tokens = KAUTILYA_MODEL_CONTEXT.get(requested_model, {}).get(tier_key, 32_000)
-    messages = _trim_to_context_window(messages, max_tokens=max_context_tokens)
+    context_window = KAUTILYA_MODEL_CONTEXT.get(requested_model, {}).get(tier_key, 32_000)
+
+    # Resolve how many OUTPUT tokens this turn wants (clamped to what the model
+    # can actually emit), and reserve that slice BEFORE trimming the input so
+    # input + output always fits the model's hard limit.
+    model_max_output = KAUTILYA_MODEL_MAX_OUTPUT.get(requested_model, 4_096)
+    _requested_output = body.get('max_completion_tokens') or body.get('max_tokens') or (
+        16384 if requested_model == "kautilya-coder" else 4096
+    )
+    try:
+        _requested_output = int(_requested_output)
+    except (TypeError, ValueError):
+        _requested_output = model_max_output
+    output_budget = max(512, min(_requested_output, model_max_output))
+
+    # Leave room for the reserved output + safety margin when trimming history.
+    input_budget = max(4_000, context_window - output_budget - CONTEXT_SAFETY_MARGIN)
+    messages = _trim_to_context_window(messages, max_tokens=input_budget)
+
+    # Final output cap = whatever room actually remains after the trimmed input.
+    # This is the max_tokens we send upstream (used further below).
+    _actual_input_tokens = _estimate_tokens_from_messages(messages)
+    max_tokens = max(512, min(output_budget, context_window - _actual_input_tokens - CONTEXT_SAFETY_MARGIN))
 
     stream = bool(body.get('stream', False))
     # OpenAI stream_options: when the client asks for include_usage (Cline,
@@ -348,7 +384,17 @@ def chat_completions():
                     if isinstance(p, dict) and p.get("type") == "text"
                 )
             break
-    _guard = block_sensitive_query(_last_user_text, uid=uid)
+    # Coding agents (Cline, Cursor, Continue) ALWAYS send a big system prompt
+    # and usually a `tools` array, and their user turns routinely contain code
+    # or phrases like "system prompt" / "your instructions" that trip the
+    # consumer-grade jailbreak heuristics. Firing the guard there returns the
+    # canned refusal AS the model's answer and corrupts the IDE session. So we
+    # only run the identity/extraction guard for bare, probe-shaped calls
+    # (no system message, no tools) — real tool agents are trusted to pass.
+    _is_tool_agent = bool(body.get('tools')) or any(
+        isinstance(m, dict) and m.get("role") == "system" for m in messages
+    )
+    _guard = None if _is_tool_agent else block_sensitive_query(_last_user_text, uid=uid)
     if _guard:
         if stream:
             def _refuse_sse():
@@ -367,12 +413,10 @@ def chat_completions():
     # falsy as missing.
     temperature = body['temperature'] if 'temperature' in body else 0.7
     top_p = body['top_p'] if 'top_p' in body else 0.95
-    # OpenAI spec: prefer max_completion_tokens (newer field), fall back to
-    # max_tokens. If neither is provided, the coder model is asked for a
-    # generous default — Cline expects long code blocks back.
-    max_tokens = body.get('max_completion_tokens') or body.get('max_tokens') or (
-        16384 if requested_model == "kautilya-coder" else 4096
-    )
+    # NOTE: `max_tokens` was already resolved AND clamped against the context
+    # window above (reserving output room so input + output never exceeds the
+    # model's hard limit). Don't recompute it here or we'd reintroduce the
+    # overflow that made long Cline sessions start erroring.
     tools = body.get('tools')
     tool_choice = body.get('tool_choice')
     # Validate the tool envelope so upstream doesn't reject the whole call.
@@ -517,12 +561,12 @@ def chat_completions():
         return Response(sse(), mimetype='text/event-stream',
                         headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
-    # ---- NVIDIA path (kimi-coder / nemotron / mistral-daily) ----
+    # ---- NVIDIA path (kimi-coder / glm-pro / mistral-daily) ----
     if not NVIDIA_API_KEYS:
         return jsonify({"error": {"message": "Model backend temporarily unavailable", "type": "upstream_error"}}), 503
 
     # Same path the dashboard chat uses — call_nvidia handles streaming with
-    # proper thinking/content separation for nemotron/qwen, and reasoning_effort
+    # proper thinking/content separation for glm/qwen, and reasoning_effort
     # for Mistral (kautilya-daily). Daily tier always uses lowest effort so
     # Cline/Cursor stay snappy.
     is_daily = 'mistral' in upstream_model.lower()
@@ -553,7 +597,7 @@ def chat_completions():
         # thinking panel — otherwise the 'high' effort is invisible.
         expose_thinking_flag = bool(max_thinking)
     else:
-        # For nemotron / glm we use max_thinking to decide; pass effort hint
+        # For the GLM (pro) reasoning path we use max_thinking to decide; pass effort hint
         # through only when explicitly low/medium so the model can dial it down.
         if max_thinking:
             upstream_effort = None  # default high path via reasoning_budget

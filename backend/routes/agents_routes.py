@@ -12,13 +12,32 @@ from config import MAX_AGENTS_FREE, MAX_AGENTS_PRO
 from services.auth_service import verify_firebase_token, record_usage, hash_api_key
 from services.memory_service import process_uploaded_file, generate_semantic_chunks, read_website
 from services.embedding_service import (
-    process_document_for_embedding, 
-    search_similar_chunks, 
+    process_document_for_embedding,
+    search_similar_chunks,
     embed_text,
-    chunk_text
+    chunk_text,
+    EMBED_MODEL,
 )
 
 agents_bp = Blueprint('agents', __name__)
+
+
+def _embed_kb_fields(content, source_name, source_type="text"):
+    """Build the embedding-related fields for a KB entry. Used by the upload,
+    URL and crawl paths so web-indexed content gets embedded too (not just file
+    uploads). Returns {} of safe defaults if embedding fails — never raises."""
+    try:
+        embedded_chunks = process_document_for_embedding(
+            text=content, source_name=source_name, source_type=source_type
+        )
+    except Exception as embed_err:
+        print(f"[KB] Embedding failed for {source_name}: {embed_err}", flush=True)
+        embedded_chunks = []
+    return {
+        "embedded_chunks": embedded_chunks,
+        "embedding_model": EMBED_MODEL if embedded_chunks else "none",
+        "embedding_count": len(embedded_chunks),
+    }
 
 # Integrations an agent can be allowed to use post-call. Stored on the agent as
 # a {key: bool} map; missing/None = enabled (default-on, backward compatible).
@@ -399,28 +418,15 @@ def api_agent_kb(agent_id):
                         continue
                     content = processed.get('text', '')
                 
-                # Generate semantic chunks with embeddings
+                # Generate semantic chunks (keyword retrieval) + vector embeddings (RAG)
                 chunks = generate_semantic_chunks(content)
-                
-                # Generate embeddings for chunks using NVIDIA NIM
-                try:
-                    from services.embedding_service import process_document_for_embedding
-                    embedded_chunks = process_document_for_embedding(
-                        text=content,
-                        source_name=file.filename,
-                        source_type="pdf" if file.filename.lower().endswith('.pdf') else "docx" if file.filename.lower().endswith('.docx') else "text"
-                    )
-                except Exception as embed_err:
-                    print(f"[KB] Embedding failed for {file.filename}: {embed_err}")
-                    embedded_chunks = []
-                
+                src_type = ("pdf" if file.filename.lower().endswith('.pdf')
+                            else "docx" if file.filename.lower().endswith('.docx') else "text")
                 new_files.append({
                     "id": str(uuid.uuid4())[:8], "name": file.filename, "type": file.mimetype,
                     "size": len(content), "created_at": int(time.time()),
                     "chunks": chunks, "content": content,
-                    "embedded_chunks": embedded_chunks,  # Store embeddings
-                    "embedding_model": "nvidia/llama-nemotron-embed-1b-v2",
-                    "embedding_count": len(embedded_chunks)
+                    **_embed_kb_fields(content, file.filename, src_type),
                 })
             if not new_files: return jsonify({"error": "No valid documents"}), 400
             kb.extend(new_files)
@@ -471,7 +477,8 @@ def api_agent_kb_url(agent_id):
         file_id = str(uuid.uuid4())[:8]
         kb.append({
             "id": file_id, "name": f"Web: {url[:30]}...", "type": "text/html",
-            "size": len(text), "created_at": int(time.time()), "chunks": chunks, "content": text, "url": url
+            "size": len(text), "created_at": int(time.time()), "chunks": chunks, "content": text, "url": url,
+            **_embed_kb_fields(text, f"Web: {url[:30]}", "website"),
         })
         agent_ref.update({"knowledge_base": kb, "updated_at": firestore.SERVER_TIMESTAMP})
         return jsonify({"status": "ok", "message": "Website indexed", "file_id": file_id})
@@ -523,15 +530,17 @@ def api_agent_kb_crawl(agent_id):
                 if not text or len(text) < 200:
                     continue
                 chunks = generate_semantic_chunks(text)
+                page_name = f"Web: {urlparse(url).path[:40] or '/'}"
                 kb.append({
                     "id": str(uuid.uuid4())[:8],
-                    "name": f"Web: {urlparse(url).path[:40] or '/'}",
+                    "name": page_name,
                     "type": "text/html",
                     "size": len(text),
                     "created_at": int(time.time()),
                     "chunks": chunks,
                     "content": text,
                     "url": url,
+                    **_embed_kb_fields(text, page_name, "website"),
                 })
                 added += 1
                 # Enqueue same-origin links
@@ -702,7 +711,7 @@ def api_agent_chat(agent_id):
     model_choice = normalize_model_choice(model_name, default="daily")
     upstream_model = "llama-3.3-70b-versatile"
     if model_choice == "pro":
-        upstream_model = "nvidia/nemotron-3-super-120b-a12b"
+        upstream_model = "z-ai/glm-5.1"   # GLM-5.1 on NVIDIA NIM (nemotron retired)
     elif model_choice == "coder":
         upstream_model = "moonshotai/kimi-k2.6"
     # Gemini Live is voice-only — fall through to Groq for chat.

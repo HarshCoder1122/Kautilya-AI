@@ -145,8 +145,8 @@ def public_agent_chat(agent_id):
     if 'kautilya-coder' in model or 'deepseek' in model or 'kimi' in model:
         gen = call_nvidia(messages, stream=True, model='moonshotai/kimi-k2.6',
                           temperature=temperature, max_tokens=max_tokens, expose_thinking=False)
-    elif 'kautilya-pro' in model or 'nemotron' in model:
-        gen = call_nvidia(messages, stream=True, model='nvidia/nemotron-3-super-120b-a12b',
+    elif 'kautilya-pro' in model or 'nemotron' in model or 'glm' in model:
+        gen = call_nvidia(messages, stream=True, model='z-ai/glm-5.1',
                           temperature=temperature, max_tokens=max_tokens, expose_thinking=False)
     else:
         gen = call_groq(messages, stream=True, model='llama-3.3-70b-versatile',

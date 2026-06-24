@@ -578,7 +578,7 @@ def llm_health_snapshot():
 
 
 def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
-                model="nvidia/nemotron-3-super-120b-a12b", tools=None, tool_choice=None,
+                model="z-ai/glm-5.1", tools=None, tool_choice=None,
                 expose_thinking=True, max_thinking=False, top_p=0.9,
                 reasoning_budget=None, reasoning_effort=None, is_pro=None):
     """Call NVIDIA NIM API with tool support.
