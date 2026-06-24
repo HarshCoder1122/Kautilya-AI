@@ -278,10 +278,23 @@ export function MermaidDiagram({ code, streaming = false, title = "Diagram" }) {
   const [status, setStatus] = useState("loading"); // loading | ok | error
   const [copied, setCopied] = useState(false);
   const [zoom, setZoom] = useState(false);
+  const [isVisible, setIsVisible] = useState(false);
   const lastGoodRef = useRef("");
   const paletteKeyRef = useRef(readPalette().key);
+  const containerRef = useRef(null);
 
   const source = (code || "").trim();
+
+  // Smooth fade-in animation when diagram renders
+  useEffect(() => {
+    if (status === "ok" && (svg || lastGoodRef.current)) {
+      // Small delay to ensure DOM is ready before animating
+      const timer = setTimeout(() => setIsVisible(true), 50);
+      return () => clearTimeout(timer);
+    } else {
+      setIsVisible(false);
+    }
+  }, [status, svg]);
 
   useEffect(() => {
     let cancelled = false;
@@ -376,7 +389,10 @@ export function MermaidDiagram({ code, streaming = false, title = "Diagram" }) {
       <div className="p-4 overflow-x-auto flex justify-center bg-[var(--k-bg)]/40">
         {showSvg ? (
           <div
-            className="k-mermaid w-full flex justify-center [&_svg]:max-w-full [&_svg]:h-auto cursor-zoom-in"
+            ref={containerRef}
+            className={`k-mermaid w-full flex justify-center [&_svg]:max-w-full [&_svg]:h-auto cursor-zoom-in transition-all duration-500 ease-out ${
+              isVisible ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-4 scale-95'
+            }`}
             onClick={() => setZoom(true)}
             // eslint-disable-next-line react/no-danger
             dangerouslySetInnerHTML={{ __html: lastGoodRef.current || svg }}
@@ -423,6 +439,7 @@ export function MermaidDiagram({ code, streaming = false, title = "Diagram" }) {
 export function SvgBlock({ code, title = "Vector graphic", streaming = false }) {
   const [copied, setCopied] = useState(false);
   const [zoom, setZoom] = useState(false);
+  const [isVisible, setIsVisible] = useState(false);
   const source = (code || "").trim();
 
   // Anti-flicker: while the SVG is still streaming/typing in, `source` grows on
@@ -438,6 +455,16 @@ export function SvgBlock({ code, title = "Vector graphic", streaming = false }) 
   // unlike the old sandboxed iframe, isn't gated by the page's frame-src CSP.
   const repaired = useMemo(() => (ready ? repairSvg(source) : ""), [source, ready]);
   const safeSvg = useMemo(() => (ready ? sanitizeSvg(repaired) : ""), [repaired, ready]);
+
+  // Smooth fade-in animation when SVG is ready
+  useEffect(() => {
+    if (ready && safeSvg) {
+      const timer = setTimeout(() => setIsVisible(true), 50);
+      return () => clearTimeout(timer);
+    } else {
+      setIsVisible(false);
+    }
+  }, [ready, safeSvg]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(source).catch(() => {});
@@ -500,11 +527,15 @@ export function SvgBlock({ code, title = "Vector graphic", streaming = false }) 
         </div>
       </div>
       <div className="bg-[var(--k-bg)]/40 p-4 flex justify-center overflow-x-auto">
-        <ShadowSvg
-          html={safeSvg}
-          className="k-svg w-full cursor-zoom-in"
-          onClick={() => setZoom(true)}
-        />
+        <div className={`w-full transition-all duration-500 ease-out ${
+          isVisible ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-4 scale-95'
+        }`}>
+          <ShadowSvg
+            html={safeSvg}
+            className="k-svg w-full cursor-zoom-in"
+            onClick={() => setZoom(true)}
+          />
+        </div>
       </div>
 
       {zoom && (

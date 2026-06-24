@@ -404,6 +404,12 @@ export const agentsAPI = {
     return response.data;
   },
 
+  // Get KB file content (eye view)
+  getKBContent: async (agentId, fileId) => {
+    const response = await api.get(`/api/agents/${agentId}/kb/${fileId}/content`);
+    return response.data;
+  },
+
   // Preview voice for an agent
   previewVoice: async ({ voice = 'shubh', provider = 'sarvam', text }) => {
     const response = await api.post('/api/voice/preview', {

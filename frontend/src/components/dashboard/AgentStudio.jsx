@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Plus, PencilSimple, Trash, SpeakerHigh, Brain, Lightning, CheckCircle, Phone, X, UploadSimple, LinkSimple, FileText, ChatCircleText, Clock, Globe, CaretLeft, Microphone } from "@phosphor-icons/react";
+import { Plus, PencilSimple, Trash, SpeakerHigh, Brain, Lightning, CheckCircle, Phone, X, UploadSimple, LinkSimple, FileText, ChatCircleText, Clock, Globe, CaretLeft, Microphone, Eye, BookOpen } from "@phosphor-icons/react";
 import { LiveKitVoice } from "@/components/chat/LiveKitVoice";
 import { agentsAPI, telephonyAPI, ttsAPI, integrationsAPI } from "../../lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -298,6 +298,9 @@ function AgentDetail({ agent, onClose, onUpdate }) {
   const [kbUrl, setKbUrl] = useState("");
   const [kbLoading, setKbLoading] = useState(false);
   const [crawlMaxPages, setCrawlMaxPages] = useState(50);
+  const [eyeViewOpen, setEyeViewOpen] = useState(false);
+  const [eyeViewData, setEyeViewData] = useState(null);
+  const [eyeViewLoading, setEyeViewLoading] = useState(false);
   const [logs, setLogs] = useState([]);
   const [logsLoading, setLogsLoading] = useState(false);
   const [testMessages, setTestMessages] = useState([]);
@@ -497,6 +500,20 @@ function AgentDetail({ agent, onClose, onUpdate }) {
       setKbFiles(prev => prev.filter(file => file.id !== fileId));
     } catch (error) {
       alert(error.response?.data?.error || 'Delete failed');
+    }
+  };
+
+  const handleEyeView = async (fileId) => {
+    try {
+      setEyeViewLoading(true);
+      setEyeViewOpen(true);
+      const data = await agentsAPI.getKBContent(agent.agent_id, fileId);
+      setEyeViewData(data);
+    } catch (error) {
+      console.error('Failed to load eye view:', error);
+      alert('Failed to load content view');
+    } finally {
+      setEyeViewLoading(false);
     }
   };
 
@@ -800,29 +817,123 @@ function AgentDetail({ agent, onClose, onUpdate }) {
             </div>
 
             <div className="space-y-3">
-              <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Current Knowledge</div>
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Current Knowledge</div>
+                <div className="text-[10px] text-muted-foreground">
+                  {kbFiles.length} file{kbFiles.length !== 1 ? 's' : ''}
+                </div>
+              </div>
               {kbFiles.length === 0 ? (
                 <div className="p-8 rounded-xl border border-dashed border-[var(--k-border)] text-center text-sm text-muted-foreground">
                   No knowledge files added yet.
                 </div>
               ) : (
                 kbFiles.map(file => (
-                  <div key={file.id} className="flex items-center gap-3 p-3 rounded-xl border border-[var(--k-border)] bg-accent/10">
+                  <div key={file.id} className="flex items-center gap-3 p-3 rounded-xl border border-[var(--k-border)] bg-accent/10 hover:bg-accent/20 transition-colors">
                     <FileText className="w-5 h-5 text-[var(--k-brand)]" />
                     <div className="flex-1 min-w-0">
                       <div className="text-sm text-foreground truncate">{file.name}</div>
-                      <div className="text-[10px] text-muted-foreground">{Math.round((file.size || 0) / 1024)} KB</div>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-[10px] text-muted-foreground">{Math.round((file.size || 0) / 1024)} KB</span>
+                        {file.has_embeddings && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                            {file.embedding_count} embeddings
+                          </span>
+                        )}
+                        {file.embedding_model && file.embedding_model !== "none" && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--k-brand)]/10 text-[var(--k-brand)] border border-[var(--k-brand)]/20">
+                            NVIDIA NIM
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <button
-                      onClick={() => handleDeleteKb(file.id)}
-                      className="p-2 rounded-md hover:bg-rose-500/10 text-muted-foreground hover:text-rose-400"
-                    >
-                      <Trash className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => handleEyeView(file.id)}
+                        className="p-2 rounded-md hover:bg-[var(--k-brand)]/10 text-muted-foreground hover:text-[var(--k-brand)] transition-all"
+                        title="View indexed content"
+                      >
+                        <Eye className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteKb(file.id)}
+                        className="p-2 rounded-md hover:bg-rose-500/10 text-muted-foreground hover:text-rose-400 transition-all"
+                        title="Delete knowledge file"
+                      >
+                        <Trash className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                 ))
               )}
             </div>
+
+            {/* Eye View Modal */}
+            {eyeViewOpen && (
+              <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => setEyeViewOpen(false)}>
+                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-2xl max-h-[80vh] bg-[var(--k-surface)] rounded-xl border border-[var(--k-border)] overflow-hidden flex flex-col">
+                  <div className="flex items-center justify-between p-4 border-b border-[var(--k-border)]">
+                    <div className="flex items-center gap-2">
+                      <Eye className="w-5 h-5 text-[var(--k-brand)]" />
+                      <h3 className="text-sm font-bold text-foreground">Indexed Content View</h3>
+                    </div>
+                    <button onClick={() => setEyeViewOpen(false)} className="p-1.5 rounded-full hover:bg-accent text-muted-foreground transition-colors">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-4">
+                    {eyeViewLoading ? (
+                      <div className="flex items-center justify-center py-8">
+                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[var(--k-brand)]"></div>
+                      </div>
+                    ) : eyeViewData ? (
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <span className="font-medium">{eyeViewData.name}</span>
+                          {eyeViewData.embedding_model && eyeViewData.embedding_model !== "none" && (
+                            <span className="px-1.5 py-0.5 rounded-full bg-[var(--k-brand)]/10 text-[var(--k-brand)] border border-[var(--k-brand)]/20">
+                              {eyeViewData.embedding_model}
+                            </span>
+                          )}
+                          {eyeViewData.has_embeddings && (
+                            <span className="px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                              {eyeViewData.embedding_count} chunks
+                            </span>
+                          )}
+                        </div>
+                        
+                        {eyeViewData.embedded_chunks && eyeViewData.embedded_chunks.length > 0 ? (
+                          <div className="space-y-3">
+                            <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Embedded Chunks</div>
+                            {eyeViewData.embedded_chunks.map((chunk, index) => (
+                              <div key={chunk.id || index} className="p-3 rounded-lg border border-[var(--k-border)] bg-accent/10">
+                                <div className="text-[10px] text-muted-foreground mb-1">Chunk {chunk.chunk_index !== undefined ? chunk.chunk_index + 1 : index + 1}</div>
+                                <div className="text-xs text-foreground leading-relaxed">{chunk.text_preview}</div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="p-4 rounded-lg border border-dashed border-[var(--k-border)] text-center text-sm text-muted-foreground">
+                            No embedded chunks available for this file.
+                          </div>
+                        )}
+
+                        {eyeViewData.content && (
+                          <div className="space-y-2">
+                            <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Full Content</div>
+                            <div className="p-3 rounded-lg border border-[var(--k-border)] bg-accent/10 max-h-48 overflow-y-auto">
+                              <pre className="text-xs text-foreground whitespace-pre-wrap break-words">{eyeViewData.content}</pre>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-center text-sm text-muted-foreground py-8">Failed to load content</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </TabsContent>
 
           <TabsContent value="test" className="space-y-6 animate-fade-up">

@@ -195,6 +195,38 @@ def _clean_placeholders(text: str) -> str:
     return re.sub(r'\{[a-zA-Z0-9_ \-]+\}', '', text).strip()
 
 
+def _build_kb_context(kb_files, max_chars: int = 6000) -> str:
+    """Condense an agent's knowledge base into a bounded text block for the system
+    prompt. Realtime voice models (incl. Gemini Live) set their instructions ONCE
+    at session start and can't do per-turn RAG, so we hand them the KB up-front.
+    We use the stored semantic `chunks` (falling back to raw `content`) and cap the
+    total size so instructions stay manageable."""
+    if not kb_files:
+        return ""
+    parts, total = [], 0
+    for f in kb_files[:10]:
+        if total >= max_chars:
+            break
+        name = (f.get('name') or 'document').strip()
+        chunks = [c for c in (f.get('chunks') or []) if isinstance(c, str) and c.strip()]
+        body = "\n".join(chunks) if chunks else (f.get('content') or '')
+        body = body.strip()
+        if not body:
+            continue
+        remaining = max_chars - total
+        if len(body) > remaining:
+            body = body[:remaining]
+        parts.append(f"### {name}\n{body}")
+        total += len(body)
+    if not parts:
+        return ""
+    return (
+        "\n\nKNOWLEDGE BASE — authoritative reference for this agent. Use these "
+        "facts to answer questions when relevant; never contradict or invent "
+        "details beyond them:\n\n" + "\n\n".join(parts)
+    )
+
+
 def _resolve_agent_id(room_name: str):
     """Best-effort parser for LiveKit room names.
 
@@ -725,6 +757,24 @@ async def entrypoint(ctx: JobContext):
     
     system_prompt = _clean_placeholders(system_prompt)
     welcome_message = _clean_placeholders(welcome_message)
+
+    # Knowledge base injection — make the agent's uploaded KB available to EVERY
+    # voice model, including Gemini Live. The metadata fast-path doesn't carry the
+    # KB (it's large), so we fetch it from Firestore by agent_id off the event loop.
+    if db and agent_id:
+        try:
+            def _load_kb():
+                kb_doc = db.collection('agents').document(agent_id).get()
+                if kb_doc and getattr(kb_doc, 'exists', False):
+                    return (kb_doc.to_dict() or {}).get('knowledge_base') or []
+                return []
+            kb_files = await asyncio.to_thread(_load_kb)
+            kb_ctx = _build_kb_context(kb_files)
+            if kb_ctx:
+                system_prompt += kb_ctx
+                print(f"[KB] Injected {len(kb_files)} knowledge file(s) into voice agent instructions", flush=True)
+        except Exception as _ke:
+            print(f"[KB] voice injection warning: {_ke}", flush=True)
 
     if handoff_enabled:
         system_prompt += f"\n\nHANDOFF: If user wants human, say: \"{handoff_callback_message}\""

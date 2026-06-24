@@ -11,6 +11,12 @@ from flask import Blueprint, request, jsonify, Response
 from config import MAX_AGENTS_FREE, MAX_AGENTS_PRO
 from services.auth_service import verify_firebase_token, record_usage, hash_api_key
 from services.memory_service import process_uploaded_file, generate_semantic_chunks, read_website
+from services.embedding_service import (
+    process_document_for_embedding, 
+    search_similar_chunks, 
+    embed_text,
+    chunk_text
+)
 
 agents_bp = Blueprint('agents', __name__)
 
@@ -392,19 +398,55 @@ def api_agent_kb(agent_id):
                     if processed.get('type') != 'text':
                         continue
                     content = processed.get('text', '')
+                
+                # Generate semantic chunks with embeddings
                 chunks = generate_semantic_chunks(content)
+                
+                # Generate embeddings for chunks using NVIDIA NIM
+                try:
+                    from services.embedding_service import process_document_for_embedding
+                    embedded_chunks = process_document_for_embedding(
+                        text=content,
+                        source_name=file.filename,
+                        source_type="pdf" if file.filename.lower().endswith('.pdf') else "docx" if file.filename.lower().endswith('.docx') else "text"
+                    )
+                except Exception as embed_err:
+                    print(f"[KB] Embedding failed for {file.filename}: {embed_err}")
+                    embedded_chunks = []
+                
                 new_files.append({
                     "id": str(uuid.uuid4())[:8], "name": file.filename, "type": file.mimetype,
                     "size": len(content), "created_at": int(time.time()),
-                    "chunks": chunks, "content": content
+                    "chunks": chunks, "content": content,
+                    "embedded_chunks": embedded_chunks,  # Store embeddings
+                    "embedding_model": "nvidia/llama-nemotron-embed-1b-v2",
+                    "embedding_count": len(embedded_chunks)
                 })
             if not new_files: return jsonify({"error": "No valid documents"}), 400
             kb.extend(new_files)
             agent_ref.update({"knowledge_base": kb, "updated_at": firestore.SERVER_TIMESTAMP})
             return jsonify({"status": "ok", "message": f"{len(new_files)} files uploaded", "files": new_files})
             
-        kb_meta = [{"id": f["id"], "name": f["name"], "type": f.get("type", "text/plain"), "size": f.get("size", 0), "created_at": f.get("created_at")} for f in kb]
-        return jsonify({"knowledge_base": kb_meta})
+        # Return KB metadata with embedding info
+        kb_meta = []
+        for f in kb:
+            meta = {
+                "id": f["id"], 
+                "name": f["name"], 
+                "type": f.get("type", "text/plain"), 
+                "size": f.get("size", 0), 
+                "created_at": f.get("created_at"),
+                "embedding_model": f.get("embedding_model", "none"),
+                "embedding_count": f.get("embedding_count", 0),
+                "has_embeddings": len(f.get("embedded_chunks", [])) > 0
+            }
+            kb_meta.append(meta)
+        
+        return jsonify({
+            "knowledge_base": kb_meta,
+            "total_files": len(kb),
+            "total_embeddings": sum(f.get("embedding_count", 0) for f in kb)
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -517,7 +559,64 @@ def api_agent_kb_content(agent_id, file_id):
         if not doc.exists or doc.to_dict().get('uid') != uid: return jsonify({"error": "Agent not found"}), 404
         target_file = next((f for f in doc.to_dict().get('knowledge_base', []) if f['id'] == file_id), None)
         if not target_file: return jsonify({"error": "File not found"}), 404
-        return jsonify({"name": target_file.get("name"), "content": target_file.get("content", ""), "chunks": target_file.get("chunks", []), "url": target_file.get("url")})
+        
+        # Return full content with embedded chunks for eye view
+        embedded_chunks = target_file.get("embedded_chunks", [])
+        chunks_preview = []
+        for chunk in embedded_chunks[:10]:  # Limit to first 10 chunks for preview
+            chunks_preview.append({
+                "id": chunk.get("id"),
+                "text_preview": chunk.get("text", "")[:200] + "..." if len(chunk.get("text", "")) > 200 else chunk.get("text", ""),
+                "source": chunk.get("source"),
+                "chunk_index": chunk.get("chunk_index")
+            })
+        
+        return jsonify({
+            "name": target_file.get("name"), 
+            "content": target_file.get("content", ""), 
+            "chunks": target_file.get("chunks", []), 
+            "url": target_file.get("url"),
+            "embedding_model": target_file.get("embedding_model", "none"),
+            "embedding_count": target_file.get("embedding_count", 0),
+            "embedded_chunks": chunks_preview,
+            "has_embeddings": len(embedded_chunks) > 0
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@agents_bp.route('/agents/<agent_id>/kb/<file_id>/embeddings', methods=['GET'])
+def api_agent_kb_embeddings(agent_id, file_id):
+    """Get all embeddings for a specific KB file (eye view)."""
+    from extensions import db
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid: return jsonify({"error": "Authentication required"}), 401
+    try:
+        doc = db.collection('agents').document(agent_id).get()
+        if not doc.exists or doc.to_dict().get('uid') != uid: return jsonify({"error": "Agent not found"}), 404
+        target_file = next((f for f in doc.to_dict().get('knowledge_base', []) if f['id'] == file_id), None)
+        if not target_file: return jsonify({"error": "File not found"}), 404
+        
+        # Return all embedded chunks with their text and metadata
+        embedded_chunks = target_file.get("embedded_chunks", [])
+        return jsonify({
+            "file_id": file_id,
+            "file_name": target_file.get("name"),
+            "embedding_model": target_file.get("embedding_model", "none"),
+            "total_chunks": len(embedded_chunks),
+            "chunks": [
+                {
+                    "id": chunk.get("id"),
+                    "text": chunk.get("text", ""),
+                    "source": chunk.get("source"),
+                    "source_type": chunk.get("source_type"),
+                    "chunk_index": chunk.get("chunk_index"),
+                    "created_at": chunk.get("created_at")
+                }
+                for chunk in embedded_chunks
+            ]
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
