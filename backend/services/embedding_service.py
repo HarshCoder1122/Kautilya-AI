@@ -22,12 +22,22 @@ except Exception:
 NVIDIA_NIM_API_KEY = os.environ.get("NVIDIA_NIM_API_KEY", "")
 NVIDIA_NIM_BASE_URL = os.environ.get("NVIDIA_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")
 
-# Model is env-overridable. `llama-3.2-nv-embedqa-1b-v2` is the reliably-hosted
-# NeMo Retriever model on integrate.api.nvidia.com; set EMBED_MODEL to swap it
-# (e.g. nvidia/llama-nemotron-embed-1b-v2) without code changes.
-EMBED_MODEL = os.environ.get("EMBED_MODEL", "nvidia/llama-3.2-nv-embedqa-1b-v2")
+# Model is env-overridable. `baai/bge-m3` is a live, multilingual (100+ langs),
+# single-mode embedding NIM on integrate.api.nvidia.com — it replaced the retired
+# `llama-3.2-nv-embedqa-1b-v2` (EOL 2026-05-18). Set EMBED_MODEL to swap it
+# without code changes; the input_type field is auto-added only for the models
+# that need it (see _model_uses_input_type).
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "baai/bge-m3")
 EMBED_BATCH_SIZE = 24       # max batch the embedding endpoint accepts
-EMBED_DIMENSION = 2048      # native output dim for the embedqa-1b models
+EMBED_DIMENSION = 1024      # native output dim for bge-m3
+
+
+def _model_uses_input_type(model: str) -> bool:
+    """NeMo Retriever dual-mode models (embedqa / e5 / nemotron-embed / nv-embed)
+    REQUIRE an input_type ("query"/"passage"). Single-mode models (BGE / GTE /
+    GTR) don't accept it and can 400 if it's sent, so we omit it for those."""
+    m = (model or "").lower()
+    return not any(tag in m for tag in ("bge", "gte", "gtr"))
 
 
 def _embedding_api_keys() -> List[str]:
@@ -71,9 +81,12 @@ def embed_texts(texts: List[str], model: str = EMBED_MODEL,
             "input": batch,
             "model": model,
             "encoding_format": "float",
-            "input_type": input_type,   # required by NeMo Retriever models
             "truncate": "END",          # safety net if a chunk exceeds context
         }
+        # Dual-mode NeMo Retriever models require input_type; single-mode models
+        # (bge/gte/gtr) reject it — so only send it when the model uses it.
+        if _model_uses_input_type(model):
+            payload["input_type"] = input_type
 
         batch_vectors = None
         last_err = None
