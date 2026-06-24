@@ -10,7 +10,7 @@ from flask import Blueprint, request, jsonify, Response
 
 from config import MAX_AGENTS_FREE, MAX_AGENTS_PRO
 from services.auth_service import verify_firebase_token, record_usage, hash_api_key
-from services.memory_service import process_uploaded_file, generate_semantic_chunks, read_website
+from services.memory_service import process_uploaded_file, read_website
 from services.embedding_service import (
     process_document_for_embedding,
     search_similar_chunks,
@@ -472,8 +472,10 @@ def api_agent_kb(agent_id):
                         continue
                     content = processed.get('text', '')
                 
-                # Generate semantic chunks (keyword retrieval) + vector embeddings (RAG)
-                chunks = generate_semantic_chunks(content)
+                # Local fixed-size chunks (keyword retrieval) + vector embeddings (RAG).
+                # No LLM here — semantic chunking made one Groq call PER file/page,
+                # which rate-limited Groq during multi-file uploads / site crawls.
+                chunks = chunk_text(content)
                 src_type = ("pdf" if file.filename.lower().endswith('.pdf')
                             else "docx" if file.filename.lower().endswith('.docx') else "text")
                 new_files.append({
@@ -528,7 +530,7 @@ def api_agent_kb_url(agent_id):
         if not url: return jsonify({"error": "URL is required"}), 400
         text = read_website(url)
         if not text: return jsonify({"error": "Could not extract content"}), 400
-        chunks = generate_semantic_chunks(text)
+        chunks = chunk_text(text)
         kb = doc.to_dict().get('knowledge_base', [])
         file_id = str(uuid.uuid4())[:8]
         kb.append({
@@ -585,7 +587,7 @@ def api_agent_kb_crawl(agent_id):
                 text = read_website(url)
                 if not text or len(text) < 200:
                     continue
-                chunks = generate_semantic_chunks(text)
+                chunks = chunk_text(text)
                 page_name = f"Web: {urlparse(url).path[:40] or '/'}"
                 kb.append({
                     "id": str(uuid.uuid4())[:8],
