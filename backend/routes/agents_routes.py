@@ -37,7 +37,61 @@ def _embed_kb_fields(content, source_name, source_type="text"):
         "embedded_chunks": embedded_chunks,
         "embedding_model": EMBED_MODEL if embedded_chunks else "none",
         "embedding_count": len(embedded_chunks),
+        "has_embeddings": bool(embedded_chunks),
     }
+
+
+# Firestore caps a single document at 1 MiB. Embedding vectors (1024 floats ≈
+# 8 KB each) plus full document text blow past that fast, so the heavy per-file
+# payload lives in a `kb_files` subcollection (one doc per file) and only slim
+# metadata + semantic text chunks stay on the agent document. These caps keep a
+# single file's subcollection doc safely under 1 MiB too.
+KB_MAX_STORED_EMBED_CHUNKS = 60
+KB_MAX_STORED_CONTENT_CHARS = 250_000
+
+
+def _persist_kb(agent_ref, kb_list):
+    """Save a knowledge_base list while keeping the agent doc under 1 MiB.
+
+    For every entry: the heavy fields (`content`, `embedded_chunks`) are written
+    to `agents/<id>/kb_files/<file_id>` and stripped from the array stored on the
+    agent document. This also migrates older inline entries — on the next write
+    an already-bloated array slims down automatically. Returns the slim list.
+    """
+    from firebase_admin import firestore
+    slim = []
+    for f in kb_list:
+        fid = f.get("id")
+        content = f.get("content")
+        embedded = f.get("embedded_chunks")
+        if fid is not None and (content is not None or embedded is not None):
+            heavy = {}
+            if content is not None:
+                heavy["content"] = (content or "")[:KB_MAX_STORED_CONTENT_CHARS]
+            if embedded is not None:
+                if len(embedded) > KB_MAX_STORED_EMBED_CHUNKS:
+                    print(f"[KB] {fid}: storing first {KB_MAX_STORED_EMBED_CHUNKS}/{len(embedded)} "
+                          f"embedded chunks (1 MiB doc cap)", flush=True)
+                heavy["embedded_chunks"] = embedded[:KB_MAX_STORED_EMBED_CHUNKS]
+            try:
+                agent_ref.collection("kb_files").document(fid).set(heavy, merge=True)
+            except Exception as e:
+                print(f"[KB] subcollection write failed for {fid}: {e}", flush=True)
+        slim.append({k: v for k, v in f.items() if k not in ("content", "embedded_chunks")})
+    agent_ref.update({"knowledge_base": slim, "updated_at": firestore.SERVER_TIMESTAMP})
+    return slim
+
+
+def _load_kb_heavy(agent_ref, file_id):
+    """Fetch a file's heavy payload (content + embedded_chunks) from the
+    kb_files subcollection. Returns {} if absent."""
+    try:
+        snap = agent_ref.collection("kb_files").document(file_id).get()
+        if snap.exists:
+            return snap.to_dict() or {}
+    except Exception as e:
+        print(f"[KB] subcollection read failed for {file_id}: {e}", flush=True)
+    return {}
 
 # Integrations an agent can be allowed to use post-call. Stored on the agent as
 # a {key: bool} map; missing/None = enabled (default-on, backward compatible).
@@ -430,8 +484,10 @@ def api_agent_kb(agent_id):
                 })
             if not new_files: return jsonify({"error": "No valid documents"}), 400
             kb.extend(new_files)
-            agent_ref.update({"knowledge_base": kb, "updated_at": firestore.SERVER_TIMESTAMP})
-            return jsonify({"status": "ok", "message": f"{len(new_files)} files uploaded", "files": new_files})
+            _persist_kb(agent_ref, kb)
+            # Don't echo full content / vectors back to the client.
+            resp_files = [{k: v for k, v in f.items() if k not in ("content", "embedded_chunks")} for f in new_files]
+            return jsonify({"status": "ok", "message": f"{len(new_files)} files uploaded", "files": resp_files})
             
         # Return KB metadata with embedding info
         kb_meta = []
@@ -444,7 +500,7 @@ def api_agent_kb(agent_id):
                 "created_at": f.get("created_at"),
                 "embedding_model": f.get("embedding_model", "none"),
                 "embedding_count": f.get("embedding_count", 0),
-                "has_embeddings": len(f.get("embedded_chunks", [])) > 0
+                "has_embeddings": f.get("has_embeddings", f.get("embedding_count", 0) > 0)
             }
             kb_meta.append(meta)
         
@@ -480,7 +536,7 @@ def api_agent_kb_url(agent_id):
             "size": len(text), "created_at": int(time.time()), "chunks": chunks, "content": text, "url": url,
             **_embed_kb_fields(text, f"Web: {url[:30]}", "website"),
         })
-        agent_ref.update({"knowledge_base": kb, "updated_at": firestore.SERVER_TIMESTAMP})
+        _persist_kb(agent_ref, kb)
         return jsonify({"status": "ok", "message": "Website indexed", "file_id": file_id})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -551,7 +607,7 @@ def api_agent_kb_crawl(agent_id):
             except Exception as e:
                 errors += 1
                 print(f"[KB-Crawl] {url}: {e}")
-        agent_ref.update({"knowledge_base": kb, "updated_at": firestore.SERVER_TIMESTAMP})
+        _persist_kb(agent_ref, kb)
         return jsonify({"status": "ok", "pages_added": added, "pages_attempted": len(seen), "errors": errors})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -564,13 +620,18 @@ def api_agent_kb_content(agent_id, file_id):
     uid = token_data.get('uid') if token_data else None
     if not uid: return jsonify({"error": "Authentication required"}), 401
     try:
-        doc = db.collection('agents').document(agent_id).get()
+        agent_ref = db.collection('agents').document(agent_id)
+        doc = agent_ref.get()
         if not doc.exists or doc.to_dict().get('uid') != uid: return jsonify({"error": "Agent not found"}), 404
         target_file = next((f for f in doc.to_dict().get('knowledge_base', []) if f['id'] == file_id), None)
         if not target_file: return jsonify({"error": "File not found"}), 404
-        
-        # Return full content with embedded chunks for eye view
-        embedded_chunks = target_file.get("embedded_chunks", [])
+
+        # Heavy payload (full content + vectors) lives in the kb_files subcollection;
+        # fall back to inline fields for any not-yet-migrated legacy entry.
+        heavy = _load_kb_heavy(agent_ref, file_id)
+        embedded_chunks = heavy.get("embedded_chunks", target_file.get("embedded_chunks", []))
+        content = heavy.get("content", target_file.get("content", ""))
+
         chunks_preview = []
         for chunk in embedded_chunks[:10]:  # Limit to first 10 chunks for preview
             chunks_preview.append({
@@ -579,14 +640,14 @@ def api_agent_kb_content(agent_id, file_id):
                 "source": chunk.get("source"),
                 "chunk_index": chunk.get("chunk_index")
             })
-        
+
         return jsonify({
-            "name": target_file.get("name"), 
-            "content": target_file.get("content", ""), 
-            "chunks": target_file.get("chunks", []), 
+            "name": target_file.get("name"),
+            "content": content,
+            "chunks": target_file.get("chunks", []),
             "url": target_file.get("url"),
             "embedding_model": target_file.get("embedding_model", "none"),
-            "embedding_count": target_file.get("embedding_count", 0),
+            "embedding_count": target_file.get("embedding_count", len(embedded_chunks)),
             "embedded_chunks": chunks_preview,
             "has_embeddings": len(embedded_chunks) > 0
         })
@@ -602,13 +663,15 @@ def api_agent_kb_embeddings(agent_id, file_id):
     uid = token_data.get('uid') if token_data else None
     if not uid: return jsonify({"error": "Authentication required"}), 401
     try:
-        doc = db.collection('agents').document(agent_id).get()
+        agent_ref = db.collection('agents').document(agent_id)
+        doc = agent_ref.get()
         if not doc.exists or doc.to_dict().get('uid') != uid: return jsonify({"error": "Agent not found"}), 404
         target_file = next((f for f in doc.to_dict().get('knowledge_base', []) if f['id'] == file_id), None)
         if not target_file: return jsonify({"error": "File not found"}), 404
-        
-        # Return all embedded chunks with their text and metadata
-        embedded_chunks = target_file.get("embedded_chunks", [])
+
+        # Embeddings live in the kb_files subcollection (fall back to inline legacy).
+        embedded_chunks = _load_kb_heavy(agent_ref, file_id).get(
+            "embedded_chunks", target_file.get("embedded_chunks", []))
         return jsonify({
             "file_id": file_id,
             "file_name": target_file.get("name"),
@@ -812,6 +875,10 @@ def api_agent_kb_delete(agent_id, file_id):
         if not doc.exists or doc.to_dict().get('uid') != uid: return jsonify({"error": "Agent not found"}), 404
         kb = [f for f in doc.to_dict().get('knowledge_base', []) if f['id'] != file_id]
         agent_ref.update({"knowledge_base": kb, "updated_at": firestore.SERVER_TIMESTAMP})
+        try:
+            agent_ref.collection('kb_files').document(file_id).delete()
+        except Exception as _e:
+            print(f"[KB] subcollection delete warning for {file_id}: {_e}", flush=True)
         return jsonify({"status": "ok", "message": "File deleted"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
