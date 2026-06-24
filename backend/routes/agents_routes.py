@@ -93,6 +93,52 @@ def _load_kb_heavy(agent_ref, file_id):
         print(f"[KB] subcollection read failed for {file_id}: {e}", flush=True)
     return {}
 
+
+def _load_all_embedded_chunks(agent_ref):
+    """Gather every embedded chunk ({text, embedding, ...}) across all of an
+    agent's KB files (from the kb_files subcollection) for semantic search."""
+    out = []
+    try:
+        for snap in agent_ref.collection("kb_files").stream():
+            for ch in (snap.to_dict() or {}).get("embedded_chunks", []):
+                if isinstance(ch, dict) and ch.get("embedding") and ch.get("text"):
+                    out.append(ch)
+    except Exception as e:
+        print(f"[KB] embedded-chunk load failed: {e}", flush=True)
+    return out
+
+
+def _retrieve_kb_context(agent_ref, agent, query_text, top_k=5):
+    """Build a KB context block for `query_text`. Prefers semantic search over
+    the bge-m3 embeddings (across ALL files); falls back to keyword matching on
+    the agent doc's `chunks` (also across ALL files, not just the first 10)."""
+    if not query_text:
+        return ""
+    snippets = []
+    # 1) Semantic retrieval via embeddings.
+    try:
+        embedded = _load_all_embedded_chunks(agent_ref)
+        if embedded:
+            hits = search_similar_chunks(query_text, embedded, top_k=top_k)
+            snippets = [h["text"] for h in hits
+                        if h.get("text") and h.get("similarity", 0) >= 0.2]
+    except Exception as e:
+        print(f"[KB] semantic retrieval warning: {e}", flush=True)
+    # 2) Keyword fallback across every file's chunks.
+    if not snippets:
+        needle = [w for w in query_text.lower().split() if len(w) > 3]
+        for f in (agent.get("knowledge_base") or []):
+            for ch in (f.get("chunks") or []):
+                if isinstance(ch, str) and any(w in ch.lower() for w in needle):
+                    snippets.append(ch)
+                    break
+            if len(snippets) >= top_k:
+                break
+    if not snippets:
+        return ""
+    return "\n\nKNOWLEDGE BASE (use when relevant; answer from this, don't guess):\n" + \
+           "\n---\n".join(snippets[:top_k])
+
 # Integrations an agent can be allowed to use post-call. Stored on the agent as
 # a {key: bool} map; missing/None = enabled (default-on, backward compatible).
 INTEGRATION_KEYS = ('crm', 'google_calendar', 'gmail', 'whatsapp', 'slack')
@@ -574,18 +620,42 @@ def api_agent_kb_crawl(agent_id):
         kb = doc.to_dict().get('knowledge_base', [])
         added, errors = 0, 0
         link_pat = _re.compile(r'href=["\']([^"\']+)["\']', _re.I)
+        import requests as _rq
+
+        # Seed from sitemap.xml — the most reliable way to enumerate a site and
+        # essential for SPA/JS sites whose internal links aren't in server HTML.
+        try:
+            sm = _rq.get(f"https://{origin}/sitemap.xml", timeout=10,
+                         headers={"User-Agent": "KautilyaKBCrawler/1.0"})
+            if sm.status_code == 200 and '<loc>' in sm.text:
+                locs = _re.findall(r'<loc>\s*([^<\s]+)\s*</loc>', sm.text)
+                page_locs = []
+                for loc in locs:
+                    if loc.endswith('.xml'):  # sitemap index → expand one level
+                        try:
+                            sub = _rq.get(loc, timeout=10, headers={"User-Agent": "KautilyaKBCrawler/1.0"})
+                            if sub.status_code == 200:
+                                page_locs += _re.findall(r'<loc>\s*([^<\s]+)\s*</loc>', sub.text)
+                        except Exception:
+                            pass
+                    else:
+                        page_locs.append(loc)
+                for loc in page_locs:
+                    loc = loc.split('#')[0]
+                    if urlparse(loc).netloc == origin and not loc.endswith('.xml'):
+                        queue.append(loc)
+                print(f"[KB-Crawl] sitemap seeded {len(page_locs)} urls", flush=True)
+        except Exception as _e:
+            print(f"[KB-Crawl] sitemap: {_e}", flush=True)
 
         while queue and len(seen) < max_pages:
             url = queue.popleft()
             if url in seen: continue
             seen.add(url)
             try:
-                import requests as _rq
-                resp = _rq.get(url, timeout=10, headers={"User-Agent": "KautilyaKBCrawler/1.0"})
-                if resp.status_code != 200 or 'text/html' not in resp.headers.get('content-type', ''):
-                    continue
+                # Content via Jina (renders JS / SPAs); don't gate on a raw GET.
                 text = read_website(url)
-                if not text or len(text) < 200:
+                if not text or text.startswith("Error:") or len(text) < 200:
                     continue
                 chunks = chunk_text(text)
                 page_name = f"Web: {urlparse(url).path[:40] or '/'}"
@@ -601,10 +671,19 @@ def api_agent_kb_crawl(agent_id):
                     **_embed_kb_fields(text, page_name, "website"),
                 })
                 added += 1
-                # Enqueue same-origin links
-                for href in link_pat.findall(resp.text)[:30]:
-                    nxt = urljoin(url, href).split('#')[0]
-                    if urlparse(nxt).netloc == origin and nxt not in seen:
+                # Discover same-origin links from the rendered markdown AND (best
+                # effort) the raw HTML — SPA links only show up in the former.
+                links = _re.findall(r'\]\((https?://[^)\s]+)\)', text)
+                try:
+                    raw = _rq.get(url, timeout=8, headers={"User-Agent": "KautilyaKBCrawler/1.0"})
+                    if raw.status_code == 200 and 'html' in raw.headers.get('content-type', ''):
+                        links += [urljoin(url, h) for h in link_pat.findall(raw.text)]
+                except Exception:
+                    pass
+                for nxt in links[:80]:
+                    nxt = urljoin(url, nxt).split('#')[0]
+                    if (urlparse(nxt).netloc == origin and nxt not in seen
+                            and len(queue) < max_pages * 4):
                         queue.append(nxt)
             except Exception as e:
                 errors += 1
@@ -721,7 +800,8 @@ def api_agent_chat(agent_id):
         return jsonify({"error": "messages array required"}), 400
 
     try:
-        doc = db.collection('agents').document(agent_id).get()
+        agent_ref = db.collection('agents').document(agent_id)
+        doc = agent_ref.get()
         if not doc.exists:
             return jsonify({"error": "Agent not found"}), 404
         agent = doc.to_dict() or {}
@@ -739,32 +819,18 @@ def api_agent_chat(agent_id):
     temperature = float(agent.get('temperature') or 0.7)
     max_tokens = int(agent.get('max_tokens') or 4096)
 
-    # Lightweight KB injection: take the user's last message and pull the top
-    # matching chunks from the agent's stored knowledge base (if any).
+    # KB injection: embed the user's last message and pull the most relevant
+    # chunks (semantic search over bge-m3 embeddings across ALL files, keyword
+    # fallback). Previously this keyword-scanned only the first 10 files and
+    # never used the embeddings — so content on later pages was invisible.
     kb_context = ""
     try:
-        kb = agent.get('knowledge_base') or []
-        if kb and incoming:
+        if (agent.get('knowledge_base') or []) and incoming:
             last_user = next((m for m in reversed(incoming) if (m.get('role') == 'user')), None)
-            if last_user:
-                last_text = last_user.get('content') or ''
-                if isinstance(last_text, list):
-                    last_text = " ".join(p.get('text', '') for p in last_text if isinstance(p, dict))
-                if last_text:
-                    needle = last_text.lower()
-                    snippets = []
-                    for f in kb[:10]:
-                        for ch in (f.get('chunks') or [])[:50]:
-                            if not isinstance(ch, str):
-                                continue
-                            if any(w for w in needle.split() if len(w) > 3 and w in ch.lower()):
-                                snippets.append(ch)
-                                if len(snippets) >= 4:
-                                    break
-                        if len(snippets) >= 4:
-                            break
-                    if snippets:
-                        kb_context = "\n\nKNOWLEDGE BASE (use when relevant):\n" + "\n---\n".join(snippets[:4])
+            last_text = (last_user or {}).get('content') or ''
+            if isinstance(last_text, list):
+                last_text = " ".join(p.get('text', '') for p in last_text if isinstance(p, dict))
+            kb_context = _retrieve_kb_context(agent_ref, agent, last_text, top_k=5)
     except Exception as e:
         print(f"[Agent Chat] KB lookup warning: {e}")
 
