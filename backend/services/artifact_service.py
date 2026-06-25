@@ -886,15 +886,17 @@ def generate_markdown(content: str, filename: str = "kautilya_artifact.md") -> T
 # downloaded PowerPoint / PDF matches the on-screen preview. Theme ids are kept
 # in sync with skills_spec.DECK_THEME_IDS and frontend/src/lib/deck.js THEMES.
 
-# theme id → (bg, surface, accent, accent2, text, muted, is_dark)
+# theme id → palette dict (hex w/o #). `mesh` = (top-left glow, bottom-right glow)
+# used to paint the gradient background in BOTH exporters so a downloaded deck
+# matches the on-screen preview. Kept in sync with frontend/src/lib/deck.js THEMES.
 _DECK_THEMES = {
-    "midnight": ("0B1020", "141A2E", "6366F1", "22D3EE", "F8FAFC", "94A3B8", True),
-    "aurora":   ("160F2E", "211641", "EC4899", "8B5CF6", "FDF4FF", "C4B5FD", True),
-    "noir":     ("0A0A0A", "171717", "FAFAFA", "A3A3A3", "FAFAFA", "A3A3A3", True),
-    "sunset":   ("1A1110", "2A1A17", "FB7185", "FBBF24", "FFF7ED", "FDBA74", True),
-    "emerald":  ("052E2B", "0A3F3A", "10B981", "34D399", "ECFDF5", "6EE7B7", True),
-    "ivory":    ("FAF9F6", "FFFFFF", "111111", "B45309", "1C1917", "78716C", False),
-    "royal":    ("1E1B4B", "2A2563", "C4B5FD", "FCD34D", "F5F3FF", "A5B4FC", True),
+    "midnight": {"bg": "0B1020", "surface": "141A2E", "accent": "7C83FF", "accent2": "22D3EE", "text": "F8FAFC", "muted": "9AA6C4", "dark": True,  "mesh": ("1E2A6B", "0A3550")},
+    "aurora":   {"bg": "150F2C", "surface": "221645", "accent": "F472B6", "accent2": "A78BFA", "text": "FDF4FF", "muted": "CABDF0", "dark": True,  "mesh": ("5B21B6", "9D174D")},
+    "noir":     {"bg": "0B0B0C", "surface": "191919", "accent": "F5F5F5", "accent2": "9CA3AF", "text": "F7F7F7", "muted": "A3A3A3", "dark": True,  "mesh": ("2A2A2C", "1A1A1C")},
+    "sunset":   {"bg": "1A100F", "surface": "2C1A16", "accent": "FB7185", "accent2": "FBBF24", "text": "FFF7ED", "muted": "FCC89B", "dark": True,  "mesh": ("9A3412", "9F1239")},
+    "emerald":  {"bg": "04302C", "surface": "0A443E", "accent": "34D399", "accent2": "5EEAD4", "text": "ECFDF5", "muted": "86EFC5", "dark": True,  "mesh": ("065F46", "0F766E")},
+    "ivory":    {"bg": "F7F5F0", "surface": "FFFFFF", "accent": "1A1A1A", "accent2": "B45309", "text": "1C1917", "muted": "6B6256", "dark": False, "mesh": ("EFE9DC", "FDEBC8")},
+    "royal":    {"bg": "1C1840", "surface": "2A235E", "accent": "C4B5FD", "accent2": "FCD34D", "text": "F5F3FF", "muted": "B3A8E6", "dark": True,  "mesh": ("3730A3", "4F46E5")},
 }
 _DECK_DEFAULT_THEME = "midnight"
 DECK_MAX_SLIDES = 20  # user-configurable count, capped here (matches deck.js)
@@ -948,7 +950,10 @@ def generate_pptx(content: str, filename: str = "kautilya_deck.pptx",
         raise RuntimeError("python-pptx not installed")
 
     data = _parse_deck(content)
-    bg, surface, accent, accent2, text, muted, is_dark = _deck_theme(data)
+    th = _deck_theme(data)
+    bg, surface, accent, accent2, text, muted, is_dark = (
+        th['bg'], th['surface'], th['accent'], th['accent2'], th['text'], th['muted'], th['dark'])
+    mesh0, mesh1 = th['mesh']
     rgb = lambda h: RGBColor.from_string(h)
 
     prs = Presentation()
@@ -961,8 +966,20 @@ def generate_pptx(content: str, filename: str = "kautilya_deck.pptx",
 
     def add_slide():
         s = prs.slides.add_slide(blank)
-        r = s.shapes.add_shape(1, 0, 0, SW, SH)  # 1 = rectangle
-        r.fill.solid(); r.fill.fore_color.rgb = rgb(bg)
+        r = s.shapes.add_shape(1, 0, 0, SW, SH)  # 1 = rectangle, full-bleed bg
+        # Premium gradient background (matches the live preview's mesh). Falls
+        # back to a solid fill if this python-pptx build lacks gradient support.
+        try:
+            r.fill.gradient()
+            try:
+                r.fill.gradient_angle = 55.0
+            except Exception:
+                pass
+            stops = r.fill.gradient_stops
+            stops[0].position = 0.0; stops[0].color.rgb = rgb(mesh0)
+            stops[1].position = 1.0; stops[1].color.rgb = rgb(bg)
+        except Exception:
+            r.fill.solid(); r.fill.fore_color.rgb = rgb(bg)
         r.line.fill.background()
         r.shadow.inherit = False
         return s
@@ -1011,18 +1028,17 @@ def generate_pptx(content: str, filename: str = "kautilya_deck.pptx",
         s = add_slide()
 
         if layout in ('cover', 'closing', 'section'):
-            # Accent block + centered hero text
-            bar(s, 0, SH - Emu(int(SH * 0.16)), SW, Emu(int(SH * 0.16)), surface)
-            bar(s, MX, Inches(2.3), Inches(0.9), Pt(6), accent)
+            # Accent bar + centered hero text over the gradient
+            bar(s, MX, Inches(2.55), Inches(1.0), Pt(7), accent)
             runs = []
             eyebrow = slide.get('eyebrow') or slide.get('index') or ''
             if eyebrow:
-                runs.append((str(eyebrow).upper(), 13, accent2, True))
-            runs.append((str(slide.get('title', title)), 44 if layout != 'section' else 38, text, True))
+                runs.append((str(eyebrow).upper(), 14, accent2, True))
+            runs.append((str(slide.get('title', title)), 42 if layout != 'section' else 36, text, True))
             if slide.get('subtitle'):
                 runs.append((str(slide['subtitle']), 20, muted, False))
-            textbox(s, MX, Inches(2.5), CW, Inches(3.0), runs,
-                    anchor=MSO_ANCHOR.TOP, line_spacing=1.05, space_after=12)
+            textbox(s, MX, Inches(2.75), CW, Inches(3.2), runs,
+                    anchor=MSO_ANCHOR.TOP, line_spacing=1.08, space_after=14)
             if slide.get('footer'):
                 textbox(s, MX, SH - Inches(0.95), CW, Inches(0.5),
                         [(str(slide['footer']), 12, muted, False)])
@@ -1109,6 +1125,46 @@ def generate_pptx(content: str, filename: str = "kautilya_deck.pptx",
                 textbox(s, MX, SH - Inches(0.6), CW, Inches(0.4),
                         [(str(slide['caption']), 11, muted, False)])
 
+        elif layout in ('process', 'steps'):
+            steps = slide.get('steps', [])[:5]
+            n = max(1, len(steps))
+            gap = Inches(0.3)
+            cardw = (CW - gap * (n - 1)) / n
+            num_clr = '0B0B12' if is_dark else 'FFFFFF'
+            for i, st in enumerate(steps):
+                cx = MX + i * (cardw + gap)
+                card = bar(s, cx, body_top, cardw, Inches(3.1), surface)
+                card.line.color.rgb = rgb(accent); card.line.width = Pt(1)
+                badge = bar(s, cx + Inches(0.28), body_top + Inches(0.3), Inches(0.55), Inches(0.55), accent)
+                textbox(s, cx + Inches(0.28), body_top + Inches(0.3), Inches(0.55), Inches(0.55),
+                        [(str(i + 1), 20, num_clr, True)], align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+                textbox(s, cx + Inches(0.28), body_top + Inches(1.15), cardw - Inches(0.56), Inches(1.7), [
+                    (str(st.get('title', '')), 16, text, True),
+                    (str(st.get('text', '')), 12, muted, False),
+                ], line_spacing=1.1, space_after=6)
+                if i < n - 1:
+                    textbox(s, cx + cardw - Inches(0.02), body_top + Inches(1.25), gap + Inches(0.04), Inches(0.6),
+                            [("→", 24, accent, True)], align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+
+        elif layout in ('chart', 'bar', 'bars'):
+            ch = slide.get('chart') or slide
+            rows = (ch.get('data') or ch.get('bars') or [])[:7]
+            mx = max([float(r.get('value', 0) or 0) for r in rows] + [1.0])
+            n = max(1, len(rows))
+            gap = Inches(0.35)
+            colw = (CW - gap * (n - 1)) / n
+            base_y = body_top + body_h - Inches(0.5)   # baseline (room for labels)
+            max_h = body_h - Inches(1.3)
+            for i, r in enumerate(rows):
+                cx = MX + i * (colw + gap)
+                v = float(r.get('value', 0) or 0)
+                bh = Emu(int(max_h * (v / mx) * 0.88)) + Inches(0.12)
+                b = bar(s, cx + Emu(int(colw * 0.15)), base_y - bh, Emu(int(colw * 0.7)), bh, accent)
+                textbox(s, cx, base_y - bh - Inches(0.42), colw, Inches(0.36),
+                        [(str(r.get('value', '')), 14, accent2, True)], align=PP_ALIGN.CENTER)
+                textbox(s, cx, base_y + Inches(0.06), colw, Inches(0.4),
+                        [(str(r.get('label', '')), 11, muted, False)], align=PP_ALIGN.CENTER)
+
         else:  # bullets (default)
             runs = [("•  " + str(b), 18, text, False) for b in (slide.get('bullets') or [])[:7]]
             if not runs and slide.get('note'):
@@ -1132,9 +1188,11 @@ def generate_deck_pdf(content: str, filename: str = "kautilya_deck.pdf",
         raise RuntimeError("fpdf2 not installed")
 
     data = _parse_deck(content)
-    bg, surface, accent, accent2, text, muted, is_dark = _deck_theme(data)
+    th = _deck_theme(data)
     hx = lambda h: tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
-    BG, SURF, ACC, ACC2, TXT, MUT = hx(bg), hx(surface), hx(accent), hx(accent2), hx(text), hx(muted)
+    BG, SURF, ACC, ACC2, TXT, MUT = (hx(th['bg']), hx(th['surface']), hx(th['accent']),
+                                     hx(th['accent2']), hx(th['text']), hx(th['muted']))
+    MESH0, MESH1 = hx(th['mesh'][0]), hx(th['mesh'][1])
 
     is_43 = str(data.get('aspect', '16:9')) == '4:3'
     W, H = (254, 190.5) if is_43 else (338.7, 190.5)  # mm, 16:9 landscape
@@ -1151,9 +1209,19 @@ def generate_deck_pdf(content: str, filename: str = "kautilya_deck.pdf",
     def fill(c):
         pdf.set_fill_color(*c)
 
+    def _mix(a, b, f):
+        return tuple(int(a[i] + (b[i] - a[i]) * f) for i in range(3))
+
     def page_bg():
         pdf.add_page()
-        fill(BG); pdf.rect(0, 0, W, H, style='F')
+        # Diagonal-ish gradient wash (mesh0 → bg → mesh1 hint) via horizontal
+        # slices, so the PDF matches the live preview's premium background.
+        steps = 60
+        for i in range(steps):
+            f = i / (steps - 1)
+            top = _mix(MESH0, BG, min(1.0, f * 1.6))           # fade mesh0 out near top
+            c = _mix(top, MESH1, max(0.0, (f - 0.55)) * 0.5)    # hint of mesh1 toward bottom
+            fill(c); pdf.rect(0, H * i / steps, W + 1, H / steps + 1, style='F')
 
     def wrapped(txt, x, y, w, size, color, bold=False, lh=1.3, max_lines=None):
         pdf.set_xy(x, y)
@@ -1244,6 +1312,43 @@ def generate_deck_pdf(content: str, filename: str = "kautilya_deck.pdf",
             if slide.get('caption'):
                 pdf.set_xy(MX, H - 16); pdf.set_font(BASE, '', 9); pdf.set_text_color(*MUT)
                 pdf.cell(0, 5, sf(str(slide['caption'])))
+        elif layout in ('process', 'steps'):
+            steps = slide.get('steps', [])[:5]
+            n = max(1, len(steps)); gap = 8
+            cardw = (W - 2 * MX - gap * (n - 1)) / n
+            cardh = H - by - 16
+            num_clr = (11, 11, 18) if th['dark'] else (255, 255, 255)
+            arrow = '→' if uni else '>'
+            for i, st in enumerate(steps):
+                cx = MX + i * (cardw + gap)
+                fill(SURF); pdf.rect(cx, by, cardw, cardh, style='F')
+                fill(ACC); pdf.rect(cx, by, cardw, 2, style='F')
+                fill(ACC); pdf.rect(cx + 8, by + 10, 13, 13, style='F')
+                pdf.set_xy(cx + 8, by + 11.5); pdf.set_font(BASE, 'B', 13); pdf.set_text_color(*num_clr)
+                pdf.cell(13, 10, sf(str(i + 1)), align='C')
+                yy = wrapped(str(st.get('title', '')), cx + 8, by + 32, cardw - 16, 14, TXT, bold=True)
+                wrapped(str(st.get('text', '')), cx + 8, yy + 1, cardw - 16, 11, MUT)
+                if i < n - 1:
+                    pdf.set_xy(cx + cardw - 1, by + cardh / 2 - 5); pdf.set_font(BASE, 'B', 18)
+                    pdf.set_text_color(*ACC); pdf.cell(gap + 2, 10, sf(arrow), align='C')
+
+        elif layout in ('chart', 'bar', 'bars'):
+            ch = slide.get('chart') or slide
+            rows = (ch.get('data') or ch.get('bars') or [])[:7]
+            mx = max([float(r.get('value', 0) or 0) for r in rows] + [1.0])
+            n = max(1, len(rows)); gap = 10
+            colw = (W - 2 * MX - gap * (n - 1)) / n
+            base = H - 28; maxh = base - by - 16
+            for i, r in enumerate(rows):
+                cx = MX + i * (colw + gap)
+                v = float(r.get('value', 0) or 0)
+                bh = max(4.0, maxh * (v / mx) * 0.9)
+                fill(ACC); pdf.rect(cx + colw * 0.12, base - bh, colw * 0.76, bh, style='F')
+                pdf.set_xy(cx, base - bh - 8); pdf.set_font(BASE, 'B', 12); pdf.set_text_color(*ACC2)
+                pdf.cell(colw, 6, sf(str(r.get('value', ''))), align='C')
+                pdf.set_xy(cx, base + 3); pdf.set_font(BASE, '', 10); pdf.set_text_color(*MUT)
+                pdf.multi_cell(colw, 5, sf(str(r.get('label', ''))), align='C')
+
         else:  # bullets
             yy = by
             blts = slide.get('bullets') or ([slide['note']] if slide.get('note') else [])

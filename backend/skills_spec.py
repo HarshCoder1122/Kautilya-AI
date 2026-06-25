@@ -50,6 +50,8 @@ Emit the WHOLE deck as ONE artifact. Nothing else outside it except a one-line l
     { "layout": "two-column", "title": "Compare", "columns": [ { "heading": "Before", "bullets": ["…","…"] }, { "heading": "After", "bullets": ["…","…"] } ] },
     { "layout": "stats", "title": "By the numbers", "stats": [ { "value": "92%", "label": "retention" }, { "value": "3.4x", "label": "faster" }, { "value": "$1.2M", "label": "saved" } ] },
     { "layout": "timeline", "title": "Roadmap", "items": [ { "time": "Q1", "text": "Discovery" }, { "time": "Q2", "text": "Build" }, { "time": "Q3", "text": "Launch" } ] },
+    { "layout": "process", "title": "How it works", "steps": [ { "title": "Capture", "text": "Ingest the call" }, { "title": "Extract", "text": "Pull entities" }, { "title": "Act", "text": "Auto follow-up" } ] },
+    { "layout": "chart", "title": "Growth", "chart": { "data": [ { "label": "Q1", "value": 120 }, { "label": "Q2", "value": 180 }, { "label": "Q3", "value": 260 }, { "label": "Q4", "value": 410 } ] } },
     { "layout": "quote", "quote": "A sharp, quotable line.", "author": "Name, Role" },
     { "layout": "image", "title": "Visual", "image": "https://images.unsplash.com/...", "caption": "credit / caption", "bullets": ["optional supporting point"] },
     { "layout": "closing", "title": "Thank You", "subtitle": "Call to action / contact", "footer": "email · site" }
@@ -61,7 +63,8 @@ DECK RULES (non-negotiable for a beautiful result):
 - SLIDE COUNT: build exactly the number the user asked for. Hard ceiling is 20 slides — never exceed it (the canvas + exporters cap at 20 anyway). If they didn't say, use ~10. Count cover + closing within the total.
 - 3–6 bullets max per slide, each ONE line. Never paragraphs on a slide — the deck is a visual aid, not a document.
 - Lead with a strong `cover`, use `section` dividers between themes, end with `closing`.
-- VARY layouts — alternate bullets / stats / two-column / quote / timeline / image so it never feels monotonous. A 10-slide deck should use 4+ distinct layouts.
+- DESIGN, don't just type. A real deck has diagrams, charts and visual structure — not slide after slide of bullets. VARY layouts aggressively: alternate bullets / stats / two-column / quote / timeline / image AND use the DIAGRAM layouts where they fit — `process` for any how-it-works / workflow / methodology / steps, `chart` for any numbers-over-categories (growth, comparison, breakdown). A 10-slide deck should use 5+ distinct layouts and include at least one `process` or `chart` whenever the content has a flow or data. Bullets are the fallback, not the default.
+- `process`: 3–5 steps, each a SHORT title + one-line text. `chart`: 3–7 bars, `value` must be a raw number (not "120k") so bars scale correctly — put units in the label or title.
 - Write REAL, specific content (real numbers, real product names, real takeaways). Never "Point 1 / Lorem ipsum / [placeholder]".
 - For `image`, use a real, topical Unsplash/Picsum URL (e.g. https://images.unsplash.com/photo-... or https://picsum.photos/seed/<topic>/1280/720). Only use images when they add meaning.
 - Titles are punchy (≤ 7 words). Subtitles add the "so what".
