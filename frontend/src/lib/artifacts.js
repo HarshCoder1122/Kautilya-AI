@@ -36,7 +36,7 @@ const _EXT_LANG = { html: 'html', htm: 'html', jsx: 'javascript', tsx: 'typescri
 function classifyArtifact(declaredType, filename, code) {
   const t = (declaredType || '').toLowerCase().trim();
   // Never touch real structured-data artifacts — they have dedicated viewers.
-  if (['excel', 'spreadsheet', 'csv', 'dashboard'].includes(t)) return null;
+  if (['excel', 'spreadsheet', 'csv', 'dashboard', 'deck', 'presentation', 'slides'].includes(t)) return null;
 
   const fname = (filename || '').toLowerCase();
   const ext = (fname.match(/\.([a-z0-9]+)$/) || [])[1] || '';

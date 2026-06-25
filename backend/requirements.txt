@@ -21,6 +21,7 @@ wikipedia
 google-search-results
 fpdf2
 python-docx
+python-pptx
 openpyxl
 curl-cffi
 livekit>=1.1.0

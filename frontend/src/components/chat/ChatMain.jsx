@@ -1,11 +1,11 @@
 import { useState, useRef, useEffect } from "react";
-import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning, Columns, CaretDown, X, Microphone, MicrophoneSlash, Phone, StopCircle, File, Image, Camera, HardDrive, Cpu, Brain, Diamond, Lock, ShareNetwork, Copy, Check } from "@phosphor-icons/react";
+import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning, Columns, CaretDown, X, Microphone, MicrophoneSlash, Phone, StopCircle, File, Image, Camera, HardDrive, Cpu, Brain, Diamond, Lock, ShareNetwork, Copy, Check, Sparkle, Presentation, Layout, FileMagnifyingGlass, GitBranch, ChartBar } from "@phosphor-icons/react";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { QuestionPrompt } from "@/components/chat/QuestionPrompt";
 import { extractQuestionBlock, parseQuestion } from "../../lib/questionBlock";
 import { ThinkingTokens } from "@/components/chat/ThinkingTokens";
 import { LiveKitVoice } from "@/components/chat/LiveKitVoice";
-import { chatAPI, getAuthHeaders, integrationsAPI } from "../../lib/api";
+import { chatAPI, getAuthHeaders, integrationsAPI, skillsAPI } from "../../lib/api";
 import { extractArtifact, mergeProjectCode } from "../../lib/artifacts";
 import { hydrateHistoryMessage } from "../../lib/hydrateMessage";
 // ReActSteps is rendered inside ChatMessage — no need to import here
@@ -41,6 +41,12 @@ const modes = [
   { id: 'research', label: 'Deep Research',icon: MagnifyingGlass, desc: 'Web search & citations' },
   { id: 'code',     label: 'Code',         icon: Code,            desc: 'Frontier code generation' },
 ];
+
+// Map a skill's catalog `icon` string (from skills_spec.py) → a phosphor icon.
+const SKILL_ICONS = {
+  Presentation, Layout, FileSearch: FileMagnifyingGlass, GitBranch, BarChart3: ChartBar,
+};
+const skillIcon = (name) => SKILL_ICONS[name] || Sparkle;
 
 // Cache key for the per-session message mirror. We keep one slot per session
 // in sessionStorage so unmounting (route change, tab close) doesn't blank the
@@ -89,6 +95,15 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   const [mcpSearch, setMcpSearch] = useState("");
   const [mcpStatus, setMcpStatus] = useState(null);
   const [loadingMcp, setLoadingMcp] = useState(false);
+  // Skills: catalog dialog + the currently-active skill (persisted per browser).
+  const [showSkillsDialog, setShowSkillsDialog] = useState(false);
+  const [skillsCatalog, setSkillsCatalog] = useState(null);
+  const [loadingSkills, setLoadingSkills] = useState(false);
+  const [skillsSearch, setSkillsSearch] = useState("");
+  const [activeSkill, setActiveSkill] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('kautilya_active_skill') || 'null'); }
+    catch { return null; }
+  });
   // Question card the user dismissed via Skip (keyed by the asking message id),
   // so the dock stays hidden without sending any "skip" message.
   const [dismissedQuestionId, setDismissedQuestionId] = useState(null);
@@ -219,6 +234,37 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
 
     fetchMcpStatus();
   }, [showMcpDialog, toast]);
+
+  // Load the Skills catalog when the dialog opens (cached 5 min in api.js).
+  useEffect(() => {
+    if (!showSkillsDialog || skillsCatalog) return;
+    let cancelled = false;
+    setLoadingSkills(true);
+    skillsAPI.list()
+      .then((data) => { if (!cancelled) setSkillsCatalog(data); })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error("Failed to load skills:", err);
+        toast({ variant: "destructive", title: "Couldn't load Skills", description: err.message || "Try again." });
+      })
+      .finally(() => { if (!cancelled) setLoadingSkills(false); });
+    return () => { cancelled = true; };
+  }, [showSkillsDialog, skillsCatalog, toast]);
+
+  // Persist the active skill so it survives reloads.
+  useEffect(() => {
+    try {
+      if (activeSkill) localStorage.setItem('kautilya_active_skill', JSON.stringify(activeSkill));
+      else localStorage.removeItem('kautilya_active_skill');
+    } catch { /* ignore quota / private-mode errors */ }
+  }, [activeSkill]);
+
+  // Toggle a skill on/off from a catalog card.
+  const toggleSkill = (skill) => {
+    setActiveSkill((cur) => (cur && cur.id === skill.id) ? null : {
+      id: skill.id, name: skill.name, icon: skill.icon, accent: skill.accent,
+    });
+  };
 
   // Load history when sessionId changes
   useEffect(() => {
@@ -571,6 +617,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
           // use and that NVIDIA deducted from output. Net effect: 12k
           // fewer tokens for actual code → mid-file cutoffs.
           maxThinking: maxThinking,
+          skill: activeSkill?.id || '',
           signal: abortControllerRef.current.signal,
         });
 
@@ -1331,6 +1378,29 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
             );
           })()}
 
+          {/* Active Skill chip — shows which expertise pack is engaged; click ✕ to turn off. */}
+          {activeSkill && (
+            <div className="flex items-center gap-2 mb-2">
+              <button
+                onClick={() => setShowSkillsDialog(true)}
+                className="group inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 rounded-full border border-fuchsia-400/30 bg-fuchsia-400/10 text-xs font-semibold text-fuchsia-200 hover:bg-fuchsia-400/15 transition-colors"
+                title="Manage Skills"
+              >
+                {(() => { const I = skillIcon(activeSkill.icon); return <I className="w-3.5 h-3.5" weight="duotone" />; })()}
+                <span className="truncate max-w-[160px]">{activeSkill.name}</span>
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={(e) => { e.stopPropagation(); setActiveSkill(null); }}
+                  className="ml-0.5 p-0.5 rounded-full hover:bg-fuchsia-400/25"
+                  title="Turn off skill"
+                >
+                  <X className="w-3 h-3" />
+                </span>
+              </button>
+            </div>
+          )}
+
           <div className="relative flex items-end border border-[var(--k-border)] rounded-lg bg-[var(--k-surface)] focus-within:ring-1 focus-within:ring-[var(--k-brand)] transition-all duration-200">
             <input
               type="file"
@@ -1406,6 +1476,22 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                 <DropdownMenuLabel className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground/70 px-2.5 py-1">
                   Tools & Capabilities
                 </DropdownMenuLabel>
+                <DropdownMenuItem
+                  onSelect={() => setShowSkillsDialog(true)}
+                  className="flex items-center justify-between gap-2.5 px-2.5 py-2 text-sm rounded-lg cursor-pointer hover:bg-accent text-foreground transition-colors duration-150"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Sparkle className="w-4 h-4 text-fuchsia-400" weight="duotone" />
+                    <span>Skills</span>
+                  </div>
+                  {activeSkill ? (
+                    <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-fuchsia-400/15 text-fuchsia-300 truncate max-w-[90px]">
+                      {activeSkill.name?.split(' ')[0] || 'On'}
+                    </span>
+                  ) : (
+                    <span className="text-[9px] text-muted-foreground/60">Browse</span>
+                  )}
+                </DropdownMenuItem>
                 <DropdownMenuItem
                   onSelect={() => setShowMcpDialog(true)}
                   className="flex items-center gap-2.5 px-2.5 py-2 text-sm rounded-lg cursor-pointer hover:bg-accent text-foreground transition-colors duration-150"
@@ -1747,6 +1833,145 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
           })()}
         </DialogContent>
       </Dialog>
+
+      {/* ───────────────────────── Skills dialog ───────────────────────── */}
+      <Dialog open={showSkillsDialog} onOpenChange={setShowSkillsDialog}>
+        <DialogContent className="sm:max-w-[760px] max-h-[86vh] flex flex-col p-6 overflow-hidden bg-[var(--k-surface-elevated)] border-[var(--k-border)] rounded-xl shadow-2xl">
+          <DialogHeader className="pb-4 border-b border-[var(--k-border)]">
+            <DialogTitle className="text-xl font-semibold tracking-tight text-foreground flex items-center gap-2">
+              <Sparkle className="w-5 h-5 text-fuchsia-400" weight="duotone" />
+              Skills
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground mt-1">
+              Turn on an expertise pack and Kautilya becomes a specialist for it — themed presentations, design-grade UIs, cited research and more. One skill at a time; toggle it off any time.
+            </DialogDescription>
+          </DialogHeader>
+
+          {loadingSkills && !skillsCatalog ? (
+            <div className="flex-1 flex flex-col items-center justify-center py-12 gap-3">
+              <div className="w-8 h-8 rounded-full border-2 border-[var(--k-brand)] border-t-transparent animate-spin" />
+              <span className="text-xs text-muted-foreground">Loading Skills…</span>
+            </div>
+          ) : !skillsCatalog ? (
+            <div className="flex-1 flex flex-col items-center justify-center py-12 gap-3">
+              <span className="text-xs text-rose-400">Couldn't load the Skills catalog.</span>
+              <button
+                onClick={() => { setSkillsCatalog(null); skillsAPI.list({ force: true }).then(setSkillsCatalog).catch(() => {}); }}
+                className="px-3 py-1.5 rounded-lg bg-[var(--k-brand)] hover:bg-[var(--k-brand-hover)] text-xs text-white transition-colors"
+              >
+                Retry
+              </button>
+            </div>
+          ) : (() => {
+            const q = skillsSearch.trim().toLowerCase();
+            const match = (s) => !q ||
+              s.name.toLowerCase().includes(q) ||
+              (s.tagline || '').toLowerCase().includes(q) ||
+              (s.blurb || '').toLowerCase().includes(q) ||
+              (s.examples || []).some((e) => e.toLowerCase().includes(q));
+            const groups = (skillsCatalog.categories || [])
+              .map((c) => ({ ...c, skills: c.skills.filter(match) }))
+              .filter((c) => c.skills.length > 0);
+            const totalMatch = groups.reduce((n, c) => n + c.skills.length, 0);
+
+            return (
+              <>
+                <div className="px-1 pb-3 flex items-center gap-3 border-b border-[var(--k-border)]/50">
+                  <input
+                    type="text"
+                    value={skillsSearch}
+                    onChange={(e) => setSkillsSearch(e.target.value)}
+                    placeholder="Search skills — presentations, design, research…"
+                    className="flex-1 pl-3 pr-3 py-2 text-xs bg-[var(--k-surface)] border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-[var(--k-brand)] placeholder:text-muted-foreground"
+                  />
+                  <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                    {q ? `${totalMatch} match` : `${skillsCatalog.total} skills`}
+                  </span>
+                </div>
+
+                <div className="flex-1 mt-3 pr-2 overflow-y-auto min-h-0 max-h-[60vh] scrollbar-thin scrollbar-thumb-muted-foreground/30">
+                  <div className="space-y-6">
+                    {groups.length === 0 && (
+                      <div className="text-center py-12 text-xs text-muted-foreground">No skills found for "{skillsSearch}".</div>
+                    )}
+                    {groups.map((cat) => (
+                      <div key={cat.category}>
+                        <div className="text-[10px] uppercase font-bold tracking-[0.18em] text-muted-foreground/70 mb-3 px-1">
+                          {cat.category} <span className="text-muted-foreground/40 normal-case font-medium">· {cat.skills.length}</span>
+                        </div>
+                        <div className="space-y-3">
+                          {cat.skills.map((s) => {
+                            const Icon = skillIcon(s.icon);
+                            const on = activeSkill && activeSkill.id === s.id;
+                            return (
+                              <div
+                                key={s.id}
+                                className={`p-4 rounded-xl border transition-all duration-200 ${on
+                                  ? 'border-fuchsia-400/40 bg-fuchsia-400/[0.06] shadow-[0_0_0_1px_rgba(232,121,249,0.15)]'
+                                  : 'border-[var(--k-border)] bg-[var(--k-surface)] hover:bg-[var(--k-surface-elevated)]'}`}
+                              >
+                                <div className="flex items-start gap-3.5">
+                                  <div
+                                    className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+                                    style={{ background: `${s.accent}1a`, color: s.accent }}
+                                  >
+                                    <Icon className="w-5 h-5" weight="duotone" />
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className="text-sm font-semibold text-foreground">{s.name}</span>
+                                      {(s.badges || []).map((b) => (
+                                        <span key={b} className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-[var(--k-brand)]/15 text-[var(--k-brand)]">{b}</span>
+                                      ))}
+                                      {on && <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-emerald-400/15 text-emerald-400 flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />Active</span>}
+                                    </div>
+                                    <p className="text-xs text-fuchsia-300/80 mt-0.5">{s.tagline}</p>
+                                    <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">{s.blurb}</p>
+                                    {(s.examples || []).length > 0 && (
+                                      <div className="flex flex-wrap gap-1.5 mt-2.5">
+                                        {s.examples.slice(0, 3).map((ex) => (
+                                          <span key={ex} className="text-[10px] px-2 py-0.5 rounded-md bg-[var(--k-surface-elevated)] border border-[var(--k-border)] text-muted-foreground">“{ex}”</span>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <button
+                                    onClick={() => toggleSkill(s)}
+                                    className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${on
+                                      ? 'bg-[var(--k-surface-elevated)] border border-[var(--k-border)] text-muted-foreground hover:text-foreground'
+                                      : 'bg-[var(--k-brand)] text-white hover:bg-[var(--k-brand-hover)]'}`}
+                                  >
+                                    {on ? 'Turn off' : 'Activate'}
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {activeSkill && (
+                  <div className="pt-3 mt-1 border-t border-[var(--k-border)] flex items-center justify-between">
+                    <span className="text-[11px] text-muted-foreground">
+                      <span className="text-fuchsia-300 font-semibold">{activeSkill.name}</span> is active — your next messages use it.
+                    </span>
+                    <button
+                      onClick={() => setShowSkillsDialog(false)}
+                      className="px-3 py-1.5 rounded-lg bg-[var(--k-brand)] hover:bg-[var(--k-brand-hover)] text-xs text-white font-semibold transition-colors"
+                    >
+                      Done
+                    </button>
+                  </div>
+                )}
+              </>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
+
       <Toaster />
     </div>
   );

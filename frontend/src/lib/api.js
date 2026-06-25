@@ -219,6 +219,7 @@ export const chatAPI = {
         if (sessionId) fd.append('session_id', sessionId);
         fd.append('model', model);
         if (options.maxThinking) fd.append('max_thinking', 'true');
+        if (options.skill) fd.append('skill', options.skill);
         files.forEach(file => fd.append('files', file));
         // Browser sets multipart boundary automatically; don't set Content-Type.
         return { body: fd, contentType: undefined };
@@ -229,6 +230,7 @@ export const chatAPI = {
           session_id: sessionId,
           model,
           max_thinking: !!options.maxThinking,
+          skill: options.skill || '',
         }),
         contentType: 'application/json',
       };
@@ -531,6 +533,24 @@ export const artifactsAPI = {
     const response = await api.get('/api/artifact/types');
     return response.data;
   }
+};
+
+// Deck (Presentation skill) exports — the canvas sends the live deck JSON and
+// gets back a PowerPoint (.pptx) or PDF blob rendered with the same theme.
+export const deckAPI = {
+  export: async ({ deck, format = 'pptx', title }) => {
+    const response = await api.post('/api/export/deck', { deck, format, title }, {
+      responseType: 'blob',
+    });
+    return response.data;
+  },
+};
+
+// Activatable Skills catalog (composer → Tools & Capabilities → Skills).
+export const skillsAPI = {
+  list: async ({ force = false } = {}) => {
+    return cachedGet('skills', async () => (await api.get('/api/skills')).data, { ttl: 300000, force });
+  },
 };
 
 // Coder Projects — multi-file workspaces persisted to Firestore so coder

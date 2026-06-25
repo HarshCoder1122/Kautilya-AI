@@ -879,6 +879,387 @@ def generate_markdown(content: str, filename: str = "kautilya_artifact.md") -> T
 
 
 # ============================================================
+# DECK Generators (PowerPoint .pptx + landscape PDF)
+# ============================================================
+# A "deck" artifact is the JSON the Presentation skill emits and the canvas
+# renders live. Both exporters below consume the SAME JSON + theme palette so a
+# downloaded PowerPoint / PDF matches the on-screen preview. Theme ids are kept
+# in sync with skills_spec.DECK_THEME_IDS and frontend/src/lib/deck.js THEMES.
+
+# theme id → (bg, surface, accent, accent2, text, muted, is_dark)
+_DECK_THEMES = {
+    "midnight": ("0B1020", "141A2E", "6366F1", "22D3EE", "F8FAFC", "94A3B8", True),
+    "aurora":   ("160F2E", "211641", "EC4899", "8B5CF6", "FDF4FF", "C4B5FD", True),
+    "noir":     ("0A0A0A", "171717", "FAFAFA", "A3A3A3", "FAFAFA", "A3A3A3", True),
+    "sunset":   ("1A1110", "2A1A17", "FB7185", "FBBF24", "FFF7ED", "FDBA74", True),
+    "emerald":  ("052E2B", "0A3F3A", "10B981", "34D399", "ECFDF5", "6EE7B7", True),
+    "ivory":    ("FAF9F6", "FFFFFF", "111111", "B45309", "1C1917", "78716C", False),
+    "royal":    ("1E1B4B", "2A2563", "C4B5FD", "FCD34D", "F5F3FF", "A5B4FC", True),
+}
+_DECK_DEFAULT_THEME = "midnight"
+DECK_MAX_SLIDES = 20  # user-configurable count, capped here (matches deck.js)
+
+
+def _parse_deck(content):
+    """Tolerant parse of a deck artifact body → dict. Accepts a raw JSON string
+    (optionally wrapped in prose/fences) or an already-parsed dict."""
+    if isinstance(content, dict):
+        data = content
+    else:
+        s = (content or "").strip()
+        # strip a leading ```json / ``` fence if present
+        s = re.sub(r'^```[a-zA-Z]*\s*', '', s).strip()
+        s = re.sub(r'\s*```$', '', s).strip()
+        try:
+            data = json.loads(s)
+        except (json.JSONDecodeError, TypeError):
+            a, b = s.find('{'), s.rfind('}')
+            if a < 0 or b <= a:
+                raise ValueError("deck content is not valid JSON")
+            data = json.loads(s[a:b + 1])
+    if not isinstance(data, dict):
+        raise ValueError("deck content must be a JSON object")
+    slides = data.get('slides')
+    if not isinstance(slides, list) or not slides:
+        raise ValueError("deck has no slides")
+    # Hard ceiling of 20 slides — the user configures the count, but a deck is a
+    # visual aid, not a document, so we never render past 20 (matches deck.js).
+    if len(slides) > DECK_MAX_SLIDES:
+        data['slides'] = slides[:DECK_MAX_SLIDES]
+    return data
+
+
+def _deck_theme(data):
+    tid = str(data.get('theme', '') or '').lower().strip()
+    return _DECK_THEMES.get(tid, _DECK_THEMES[_DECK_DEFAULT_THEME])
+
+
+def generate_pptx(content: str, filename: str = "kautilya_deck.pptx",
+                  title: str = "Kautilya Deck") -> Tuple[io.BytesIO, str]:
+    """Build a real PowerPoint (.pptx) from a deck JSON spec, themed to match the
+    live canvas preview. Supports cover/section/bullets/two-column/stats/
+    timeline/quote/image/closing layouts."""
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches, Pt, Emu
+        from pptx.dml.color import RGBColor
+        from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+    except ImportError:
+        raise RuntimeError("python-pptx not installed")
+
+    data = _parse_deck(content)
+    bg, surface, accent, accent2, text, muted, is_dark = _deck_theme(data)
+    rgb = lambda h: RGBColor.from_string(h)
+
+    prs = Presentation()
+    if str(data.get('aspect', '16:9')) == '4:3':
+        prs.slide_width, prs.slide_height = Inches(10), Inches(7.5)
+    else:
+        prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
+    SW, SH = prs.slide_width, prs.slide_height
+    blank = prs.slide_layouts[6]
+
+    def add_slide():
+        s = prs.slides.add_slide(blank)
+        r = s.shapes.add_shape(1, 0, 0, SW, SH)  # 1 = rectangle
+        r.fill.solid(); r.fill.fore_color.rgb = rgb(bg)
+        r.line.fill.background()
+        r.shadow.inherit = False
+        return s
+
+    def bar(s, x, y, w, h, color):
+        r = s.shapes.add_shape(1, x, y, w, h)
+        r.fill.solid(); r.fill.fore_color.rgb = rgb(color)
+        r.line.fill.background(); r.shadow.inherit = False
+        return r
+
+    def textbox(s, x, y, w, h, runs, align=PP_ALIGN.LEFT, anchor=MSO_ANCHOR.TOP,
+                line_spacing=1.0, space_after=6):
+        """runs: list of (text, size, color_hex, bold) — each its own paragraph."""
+        tb = s.shapes.add_textbox(x, y, w, h)
+        tf = tb.text_frame
+        tf.word_wrap = True
+        tf.vertical_anchor = anchor
+        for i, (t, size, color, bold) in enumerate(runs):
+            p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+            p.alignment = align
+            p.space_after = Pt(space_after)
+            p.line_spacing = line_spacing
+            run = p.add_run(); run.text = t
+            run.font.size = Pt(size); run.font.bold = bold
+            run.font.color.rgb = rgb(color)
+            run.font.name = "Calibri"
+        return tb
+
+    MX = Inches(0.9)   # content left margin
+    CW = SW - MX * 2   # content width
+
+    def _img_stream(url):
+        try:
+            import requests
+            resp = requests.get(url, timeout=6)
+            if resp.ok and resp.content:
+                return io.BytesIO(resp.content)
+        except Exception:
+            pass
+        return None
+
+    for slide in data['slides']:
+        if not isinstance(slide, dict):
+            continue
+        layout = str(slide.get('layout', 'bullets')).lower().strip()
+        s = add_slide()
+
+        if layout in ('cover', 'closing', 'section'):
+            # Accent block + centered hero text
+            bar(s, 0, SH - Emu(int(SH * 0.16)), SW, Emu(int(SH * 0.16)), surface)
+            bar(s, MX, Inches(2.3), Inches(0.9), Pt(6), accent)
+            runs = []
+            eyebrow = slide.get('eyebrow') or slide.get('index') or ''
+            if eyebrow:
+                runs.append((str(eyebrow).upper(), 13, accent2, True))
+            runs.append((str(slide.get('title', title)), 44 if layout != 'section' else 38, text, True))
+            if slide.get('subtitle'):
+                runs.append((str(slide['subtitle']), 20, muted, False))
+            textbox(s, MX, Inches(2.5), CW, Inches(3.0), runs,
+                    anchor=MSO_ANCHOR.TOP, line_spacing=1.05, space_after=12)
+            if slide.get('footer'):
+                textbox(s, MX, SH - Inches(0.95), CW, Inches(0.5),
+                        [(str(slide['footer']), 12, muted, False)])
+            continue
+
+        # ── Header (title + optional kicker) for content slides ──
+        top = Inches(0.85)
+        bar(s, MX, top + Inches(0.02), Inches(0.55), Pt(5), accent)
+        head_runs = []
+        if slide.get('subtitle'):
+            head_runs.append((str(slide['subtitle']).upper(), 12, accent2, True))
+        head_runs.append((str(slide.get('title', '')), 30, text, True))
+        textbox(s, MX + Inches(0.75), top - Inches(0.15), CW - Inches(0.75), Inches(1.2),
+                head_runs, line_spacing=1.0, space_after=4)
+        body_top = Inches(2.25)
+        body_h = SH - body_top - Inches(0.7)
+
+        if layout == 'two-column':
+            cols = slide.get('columns', [])[:2]
+            colw = (CW - Inches(0.5)) / 2
+            for ci, col in enumerate(cols):
+                cx = MX + ci * (colw + Inches(0.5))
+                runs = [(str(col.get('heading', '')), 18, accent2, True)]
+                for b in (col.get('bullets') or [])[:6]:
+                    runs.append(("•  " + str(b), 15, text, False))
+                textbox(s, cx, body_top, colw, body_h, runs, line_spacing=1.1, space_after=8)
+
+        elif layout == 'stats':
+            stats = slide.get('stats', [])[:4]
+            n = max(1, len(stats))
+            gap = Inches(0.4)
+            cardw = (CW - gap * (n - 1)) / n
+            for i, st in enumerate(stats):
+                cx = MX + i * (cardw + gap)
+                card = bar(s, cx, body_top, cardw, Inches(2.6), surface)
+                card.line.color.rgb = rgb(accent); card.line.width = Pt(1)
+                textbox(s, cx, body_top + Inches(0.45), cardw, Inches(1.7), [
+                    (str(st.get('value', '')), 40, accent, True),
+                    (str(st.get('label', '')), 14, muted, False),
+                ], align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE, space_after=6)
+
+        elif layout == 'timeline':
+            items = slide.get('items', [])[:6]
+            n = max(1, len(items))
+            rowh = body_h / n
+            for i, it in enumerate(items):
+                iy = body_top + rowh * i
+                bar(s, MX, iy + Pt(4), Inches(0.14), rowh - Pt(10), accent)
+                textbox(s, MX + Inches(0.4), iy, CW - Inches(0.4), rowh, [
+                    (str(it.get('time', '')), 15, accent2, True),
+                    (str(it.get('text', '')), 16, text, False),
+                ], anchor=MSO_ANCHOR.MIDDLE, space_after=2)
+
+        elif layout == 'quote':
+            textbox(s, MX, body_top, CW, body_h, [
+                ("“" + str(slide.get('quote', '')) + "”", 30, text, True),
+                ("— " + str(slide.get('author', '')), 16, accent2, False),
+            ], anchor=MSO_ANCHOR.MIDDLE, line_spacing=1.15, space_after=18)
+
+        elif layout == 'image':
+            img = _img_stream(slide.get('image', ''))
+            bullets = slide.get('bullets') or []
+            if bullets:
+                imgw = CW * 0.52
+                if img:
+                    try:
+                        s.shapes.add_picture(img, MX, body_top, width=imgw, height=body_h)
+                    except Exception:
+                        bar(s, MX, body_top, imgw, body_h, surface)
+                else:
+                    bar(s, MX, body_top, imgw, body_h, surface)
+                runs = [("•  " + str(b), 16, text, False) for b in bullets[:6]]
+                textbox(s, MX + imgw + Inches(0.5), body_top, CW - imgw - Inches(0.5),
+                        body_h, runs, line_spacing=1.15, space_after=8)
+            else:
+                if img:
+                    try:
+                        s.shapes.add_picture(img, MX, body_top, width=CW, height=body_h)
+                    except Exception:
+                        bar(s, MX, body_top, CW, body_h, surface)
+                else:
+                    bar(s, MX, body_top, CW, body_h, surface)
+            if slide.get('caption'):
+                textbox(s, MX, SH - Inches(0.6), CW, Inches(0.4),
+                        [(str(slide['caption']), 11, muted, False)])
+
+        else:  # bullets (default)
+            runs = [("•  " + str(b), 18, text, False) for b in (slide.get('bullets') or [])[:7]]
+            if not runs and slide.get('note'):
+                runs = [(str(slide['note']), 18, text, False)]
+            textbox(s, MX, body_top, CW, body_h, runs, line_spacing=1.25, space_after=12)
+
+    buf = io.BytesIO()
+    prs.save(buf)
+    buf.seek(0)
+    return buf, filename
+
+
+def generate_deck_pdf(content: str, filename: str = "kautilya_deck.pdf",
+                      title: str = "Kautilya Deck") -> Tuple[io.BytesIO, str]:
+    """Landscape PDF of a deck (one slide per page), themed to match the preview.
+    A lightweight, dependency-free export so a deck is downloadable as PDF even
+    where PowerPoint isn't wanted."""
+    try:
+        from fpdf import FPDF
+    except ImportError:
+        raise RuntimeError("fpdf2 not installed")
+
+    data = _parse_deck(content)
+    bg, surface, accent, accent2, text, muted, is_dark = _deck_theme(data)
+    hx = lambda h: tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+    BG, SURF, ACC, ACC2, TXT, MUT = hx(bg), hx(surface), hx(accent), hx(accent2), hx(text), hx(muted)
+
+    is_43 = str(data.get('aspect', '16:9')) == '4:3'
+    W, H = (254, 190.5) if is_43 else (338.7, 190.5)  # mm, 16:9 landscape
+    pdf = FPDF(orientation='L', unit='mm', format=(H, W))
+    pdf.set_auto_page_break(auto=False)
+    uni_family = _register_unicode_font(pdf)
+    BASE = uni_family or "Helvetica"
+    uni = uni_family is not None
+    MX = 18
+
+    def sf(t):
+        return _safe(t, uni)
+
+    def fill(c):
+        pdf.set_fill_color(*c)
+
+    def page_bg():
+        pdf.add_page()
+        fill(BG); pdf.rect(0, 0, W, H, style='F')
+
+    def wrapped(txt, x, y, w, size, color, bold=False, lh=1.3, max_lines=None):
+        pdf.set_xy(x, y)
+        pdf.set_font(BASE, 'B' if bold else '', size)
+        pdf.set_text_color(*color)
+        pdf.multi_cell(w, size * 0.46 * lh, sf(txt), align='L')
+        return pdf.get_y()
+
+    for slide in data['slides']:
+        if not isinstance(slide, dict):
+            continue
+        layout = str(slide.get('layout', 'bullets')).lower().strip()
+        page_bg()
+
+        if layout in ('cover', 'closing', 'section'):
+            fill(SURF); pdf.rect(0, H * 0.82, W, H * 0.18, style='F')
+            fill(ACC); pdf.rect(MX, H * 0.33, 22, 2.2, style='F')
+            eyebrow = slide.get('eyebrow') or slide.get('index') or ''
+            y = H * 0.37
+            if eyebrow:
+                pdf.set_xy(MX, y); pdf.set_font(BASE, 'B', 12); pdf.set_text_color(*ACC2)
+                pdf.cell(0, 6, sf(str(eyebrow).upper())); y += 9
+            y = wrapped(str(slide.get('title', title)), MX, y, W - 2 * MX,
+                        34 if layout != 'section' else 28, TXT, bold=True)
+            if slide.get('subtitle'):
+                wrapped(str(slide['subtitle']), MX, y + 2, W - 2 * MX, 16, MUT)
+            if slide.get('footer'):
+                pdf.set_xy(MX, H - 14); pdf.set_font(BASE, '', 10); pdf.set_text_color(*MUT)
+                pdf.cell(0, 6, sf(str(slide['footer'])))
+            continue
+
+        # content header
+        fill(ACC); pdf.rect(MX, 18, 10, 2, style='F')
+        if slide.get('subtitle'):
+            pdf.set_xy(MX, 22); pdf.set_font(BASE, 'B', 10); pdf.set_text_color(*ACC2)
+            pdf.cell(0, 5, sf(str(slide['subtitle']).upper()))
+        wrapped(str(slide.get('title', '')), MX, 27, W - 2 * MX, 24, TXT, bold=True)
+        by = 52
+
+        if layout == 'two-column':
+            cols = slide.get('columns', [])[:2]
+            colw = (W - 2 * MX - 12) / 2
+            for ci, col in enumerate(cols):
+                cx = MX + ci * (colw + 12)
+                yy = wrapped(str(col.get('heading', '')), cx, by, colw, 15, ACC2, bold=True)
+                for b in (col.get('bullets') or [])[:6]:
+                    yy = wrapped("•  " + str(b), cx, yy + 1, colw, 12.5, TXT)
+        elif layout == 'stats':
+            stats = slide.get('stats', [])[:4]
+            n = max(1, len(stats)); gap = 10
+            cw = (W - 2 * MX - gap * (n - 1)) / n
+            for i, st in enumerate(stats):
+                cx = MX + i * (cw + gap)
+                fill(SURF); pdf.rect(cx, by, cw, 62, style='F')
+                fill(ACC); pdf.rect(cx, by, cw, 2.2, style='F')
+                pdf.set_xy(cx, by + 16); pdf.set_font(BASE, 'B', 30); pdf.set_text_color(*ACC)
+                pdf.cell(cw, 14, sf(str(st.get('value', ''))), align='C')
+                pdf.set_xy(cx, by + 38); pdf.set_font(BASE, '', 11); pdf.set_text_color(*MUT)
+                pdf.multi_cell(cw, 5, sf(str(st.get('label', ''))), align='C')
+        elif layout == 'timeline':
+            items = slide.get('items', [])[:6]
+            yy = by
+            for it in items:
+                fill(ACC); pdf.rect(MX, yy + 1, 3, 12, style='F')
+                pdf.set_xy(MX + 7, yy); pdf.set_font(BASE, 'B', 12); pdf.set_text_color(*ACC2)
+                pdf.cell(40, 6, sf(str(it.get('time', ''))))
+                pdf.set_xy(MX + 7, yy + 6); pdf.set_font(BASE, '', 13); pdf.set_text_color(*TXT)
+                yy = pdf.get_y()
+                pdf.multi_cell(W - 2 * MX - 7, 6, sf(str(it.get('text', ''))))
+                yy = pdf.get_y() + 4
+        elif layout == 'quote':
+            wrapped("“" + str(slide.get('quote', '')) + "”", MX, by + 10,
+                    W - 2 * MX, 26, TXT, bold=True, lh=1.3)
+            pdf.set_xy(MX, H - 26); pdf.set_font(BASE, '', 13); pdf.set_text_color(*ACC2)
+            pdf.cell(0, 6, sf("— " + str(slide.get('author', ''))))
+        elif layout == 'image':
+            img = slide.get('image', '')
+            iw = (W - 2 * MX) * (0.5 if slide.get('bullets') else 1.0)
+            ih = H - by - 24
+            try:
+                pdf.image(img, MX, by, w=iw, h=ih)
+            except Exception:
+                fill(SURF); pdf.rect(MX, by, iw, ih, style='F')
+            if slide.get('bullets'):
+                tx = MX + iw + 10; yy = by
+                for b in slide['bullets'][:6]:
+                    yy = wrapped("•  " + str(b), tx, yy + 1, W - 2 * MX - iw - 10, 13, TXT)
+            if slide.get('caption'):
+                pdf.set_xy(MX, H - 16); pdf.set_font(BASE, '', 9); pdf.set_text_color(*MUT)
+                pdf.cell(0, 5, sf(str(slide['caption'])))
+        else:  # bullets
+            yy = by
+            blts = slide.get('bullets') or ([slide['note']] if slide.get('note') else [])
+            for b in blts[:7]:
+                yy = wrapped("•  " + str(b), MX, yy + 2, W - 2 * MX, 15, TXT, lh=1.25)
+
+    buf = io.BytesIO()
+    out = pdf.output()
+    if isinstance(out, str):
+        out = out.encode('latin-1')
+    buf.write(bytes(out))
+    buf.seek(0)
+    return buf, filename
+
+
+# ============================================================
 # Dispatcher
 # ============================================================
 
@@ -891,6 +1272,10 @@ ARTIFACT_GENERATORS = {
     'csv':      generate_csv,
     'markdown': generate_markdown,
     'md':       generate_markdown,
+    'pptx':     generate_pptx,
+    'ppt':      generate_pptx,
+    'deck':     generate_pptx,      # default deck export = PowerPoint
+    'deck_pdf': generate_deck_pdf,  # deck → landscape PDF
 }
 
 MIME_TYPES = {
@@ -902,6 +1287,10 @@ MIME_TYPES = {
     'csv':      'text/csv',
     'markdown': 'text/markdown',
     'md':       'text/markdown',
+    'pptx':     'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'ppt':      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'deck':     'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'deck_pdf': 'application/pdf',
 }
 
 DEFAULT_EXTENSIONS = {
@@ -910,6 +1299,7 @@ DEFAULT_EXTENSIONS = {
     'docx': 'docx', 'word': 'docx',
     'csv': 'csv',
     'markdown': 'md', 'md': 'md',
+    'pptx': 'pptx', 'ppt': 'pptx', 'deck': 'pptx', 'deck_pdf': 'pdf',
 }
 
 

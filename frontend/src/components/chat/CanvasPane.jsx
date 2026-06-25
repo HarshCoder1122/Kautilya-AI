@@ -2,13 +2,14 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import JSZip from 'jszip';
-import { X, Code, ChartBar, FileText, Copy, Download, ArrowsOutSimple, Check, FolderOpen, Eye, File, ArrowSquareOut, Archive, CaretUp, CaretDown, MagnifyingGlass, Table } from "@phosphor-icons/react";
+import { X, Code, ChartBar, FileText, Copy, Download, ArrowsOutSimple, Check, FolderOpen, Eye, File, ArrowSquareOut, Archive, CaretUp, CaretDown, CaretLeft, CaretRight, MagnifyingGlass, Table, Presentation } from "@phosphor-icons/react";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Area, AreaChart } from "recharts";
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { coderProjectsAPI, artifactsAPI } from '@/lib/api';
+import { coderProjectsAPI, artifactsAPI, deckAPI } from '@/lib/api';
+import { renderDeckHTML, parseDeck, THEMES, THEME_IDS } from '@/lib/deck';
 
 /** Parse `<file ...>...</file>` blocks from model output.
  *
@@ -979,6 +980,126 @@ function MultiFileWorkspace({ files, title }) {
   );
 }
 
+/** Live, themeable presentation workspace. Renders the deck spec to a
+ *  self-contained HTML slideshow in an iframe (same renderer used for the
+ *  Present window + standalone download), with a theme switcher, depth toggle,
+ *  in-canvas navigation, and PowerPoint / PDF / HTML export. */
+function DeckWorkspace({ content }) {
+  const spec = useMemo(() => parseDeck(content?.code), [content?.code]);
+  const [theme, setTheme] = useState(() => (spec?.theme && THEMES[spec.theme]) ? spec.theme : 'midnight');
+  const [depth, setDepth] = useState(() => (spec?.depth === 'flat' ? 'flat' : '3d'));
+  const [exporting, setExporting] = useState(null);
+  const iframeRef = useRef(null);
+
+  // Adopt the model's chosen theme/depth when a new deck arrives.
+  useEffect(() => {
+    if (spec?.theme && THEMES[spec.theme]) setTheme(spec.theme);
+    if (spec?.depth) setDepth(spec.depth === 'flat' ? 'flat' : '3d');
+  }, [content?.code]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const html = useMemo(() => (spec ? renderDeckHTML(spec, { theme, depth }) : ''), [spec, theme, depth]);
+  const post = (deckCmd, extra = {}) =>
+    iframeRef.current?.contentWindow?.postMessage({ deckCmd, ...extra }, '*');
+
+  const safeName = (content?.title || spec?.title || 'presentation').replace(/[^\w-]+/g, '_').slice(0, 48) || 'presentation';
+
+  const triggerDownload = (blob, ext) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `${safeName}.${ext}`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const doExport = async (format) => {
+    if (!spec || exporting) return;
+    setExporting(format);
+    try {
+      // Send the spec with the user's current theme/depth so the export matches
+      // exactly what's on screen (not just what the model originally picked).
+      const blob = await deckAPI.export({
+        deck: { ...spec, theme, depth },
+        format,
+        title: content?.title || spec.title || 'Presentation',
+      });
+      triggerDownload(blob, format === 'pdf' ? 'pdf' : 'pptx');
+    } catch (e) {
+      console.error('[Deck] export failed:', e?.message || e);
+    } finally {
+      setExporting(null);
+    }
+  };
+
+  const downloadHTML = () => triggerDownload(new Blob([html], { type: 'text/html' }), 'html');
+
+  const present = () => {
+    const el = iframeRef.current;
+    if (el?.requestFullscreen) el.requestFullscreen().catch(() => {});
+    setTimeout(() => post('fullscreen'), 60);
+  };
+
+  if (!spec) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center p-8">
+        <Presentation className="w-8 h-8 text-muted-foreground" />
+        <p className="text-sm text-muted-foreground">This deck couldn't be parsed yet — it may still be generating.</p>
+      </div>
+    );
+  }
+
+  const btn = "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-[var(--k-border)] bg-[var(--k-surface)] hover:bg-accent text-xs font-semibold text-muted-foreground hover:text-foreground transition-all disabled:opacity-50";
+
+  return (
+    <div className="flex flex-col h-full min-h-0">
+      {/* Toolbar */}
+      <div className="flex items-center gap-2 flex-wrap px-3 py-2 border-b border-[var(--k-border)] bg-[var(--k-surface)]">
+        <div className="flex items-center gap-1.5">
+          {THEME_IDS.map((id) => (
+            <button
+              key={id}
+              onClick={() => setTheme(id)}
+              title={THEMES[id].name}
+              className={`w-5 h-5 rounded-full border transition-all ${theme === id ? 'ring-2 ring-offset-1 ring-offset-[var(--k-surface)] ring-[var(--k-brand)] scale-110' : 'border-[var(--k-border)] hover:scale-105'}`}
+              style={{ background: `linear-gradient(135deg, ${THEMES[id].accent}, ${THEMES[id].accent2})` }}
+            />
+          ))}
+        </div>
+        <div className="w-px h-4 bg-[var(--k-border)]" />
+        <button onClick={() => setDepth((d) => (d === '3d' ? 'flat' : '3d'))} className={btn} title="Toggle visual depth">
+          {depth === '3d' ? '3D' : 'Flat'}
+        </button>
+
+        <div className="flex-1 min-w-[8px]" />
+
+        <button onClick={() => post('prev')} className={btn} title="Previous slide"><CaretLeft className="w-3.5 h-3.5" /></button>
+        <button onClick={() => post('next')} className={btn} title="Next slide"><CaretRight className="w-3.5 h-3.5" /></button>
+        <button onClick={present} className={btn} title="Present (fullscreen)"><ArrowsOutSimple className="w-3.5 h-3.5" /><span className="hidden sm:inline">Present</span></button>
+        <button onClick={() => doExport('pptx')} disabled={!!exporting} className={btn} title="Download PowerPoint">
+          <Presentation className="w-3.5 h-3.5 text-orange-500" /><span>{exporting === 'pptx' ? '…' : 'PPTX'}</span>
+        </button>
+        <button onClick={() => doExport('pdf')} disabled={!!exporting} className={btn} title="Download PDF">
+          <FileText className="w-3.5 h-3.5 text-rose-500" /><span>{exporting === 'pdf' ? '…' : 'PDF'}</span>
+        </button>
+        <button onClick={downloadHTML} className={btn} title="Download standalone HTML">
+          <Download className="w-3.5 h-3.5" /><span className="hidden sm:inline">HTML</span>
+        </button>
+      </div>
+
+      {/* Stage */}
+      <div className="flex-1 min-h-0 bg-[#0a0a0c] flex items-center justify-center p-3">
+        <iframe
+          ref={iframeRef}
+          srcDoc={html}
+          title="Presentation"
+          allow="fullscreen"
+          sandbox="allow-scripts allow-popups allow-modals"
+          className="w-full h-full border-none rounded-lg shadow-2xl bg-black"
+        />
+      </div>
+    </div>
+  );
+}
+
 export function CanvasPane({ content, onClose, activeMode }) {
   const getInitialTab = (c) => {
     if (c?.type === 'excel' || c?.type === 'spreadsheet' || c?.type === 'csv') return 'spreadsheet';
@@ -1001,6 +1122,7 @@ export function CanvasPane({ content, onClose, activeMode }) {
     return parsedBlocks;
   }, [parsedBlocks, restoredFiles]);
   const isMultiFile = fileBlocks.length > 0;
+  const isDeck = content?.type === 'deck';
 
   // A single code snippet (type === 'code', no <file> blocks) is wrapped into a
   // one-file workspace so it gets the SAME live preview + fullscreen + new-tab +
@@ -1166,32 +1288,36 @@ export function CanvasPane({ content, onClose, activeMode }) {
       <div className="h-14 min-h-[56px] flex items-center justify-between px-4 border-b border-[var(--k-border)] bg-[var(--k-surface)]">
         <div className="flex items-center gap-3 overflow-hidden">
           <div className="w-8 h-8 rounded-lg bg-[var(--k-brand)]/10 flex items-center justify-center text-[var(--k-brand)] flex-shrink-0">
-            {isMultiFile ? <FolderOpen className="w-4 h-4" /> : singleCodeFiles ? <Code className="w-4 h-4" /> : docView === 'dashboard' ? <ChartBar className="w-4 h-4" /> : docView === 'spreadsheet' ? <Table className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
+            {isDeck ? <Presentation className="w-4 h-4" /> : isMultiFile ? <FolderOpen className="w-4 h-4" /> : singleCodeFiles ? <Code className="w-4 h-4" /> : docView === 'dashboard' ? <ChartBar className="w-4 h-4" /> : docView === 'spreadsheet' ? <Table className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
           </div>
           <div className="flex flex-col overflow-hidden">
             <span className="text-sm font-semibold truncate text-foreground leading-tight">
               {content?.title || 'Canvas'}
             </span>
             <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">
-              {isMultiFile ? `${fileBlocks.length} Files` : singleCodeFiles ? `${content?.language || 'Code'} · Code` : `${docView} View`}
+              {isDeck ? 'Presentation' : isMultiFile ? `${fileBlocks.length} Files` : singleCodeFiles ? `${content?.language || 'Code'} · Code` : `${docView} View`}
             </span>
           </div>
         </div>
         <div className="flex items-center gap-1">
-          <button
-            onClick={handleCopy}
-            className="p-2 rounded-md hover:bg-accent transition-all duration-200"
-            title="Copy content"
-          >
-            {copied ? <Check className="w-4 h-4 text-[var(--k-green)]" /> : <Copy className="w-4 h-4 text-muted-foreground" />}
-          </button>
-          <button
-            onClick={handleDownload}
-            className="p-2 rounded-md hover:bg-accent transition-all duration-200"
-            title="Download"
-          >
-            <Download className="w-4 h-4 text-muted-foreground" />
-          </button>
+          {!isDeck && (
+            <>
+              <button
+                onClick={handleCopy}
+                className="p-2 rounded-md hover:bg-accent transition-all duration-200"
+                title="Copy content"
+              >
+                {copied ? <Check className="w-4 h-4 text-[var(--k-green)]" /> : <Copy className="w-4 h-4 text-muted-foreground" />}
+              </button>
+              <button
+                onClick={handleDownload}
+                className="p-2 rounded-md hover:bg-accent transition-all duration-200"
+                title="Download"
+              >
+                <Download className="w-4 h-4 text-muted-foreground" />
+              </button>
+            </>
+          )}
           <div className="w-px h-4 bg-[var(--k-border)] mx-1" />
           <button onClick={onClose} className="p-2 rounded-md hover:bg-accent transition-all duration-200 group">
             <X className="w-5 h-5 text-muted-foreground group-hover:text-foreground" />
@@ -1199,7 +1325,11 @@ export function CanvasPane({ content, onClose, activeMode }) {
         </div>
       </div>
 
-      {isMultiFile ? (
+      {isDeck ? (
+        <div className="flex-1 min-h-0">
+          <DeckWorkspace content={content} />
+        </div>
+      ) : isMultiFile ? (
         <div className="flex-1 min-h-0">
           <MultiFileWorkspace files={fileBlocks} title={content?.title || 'Project'} />
         </div>

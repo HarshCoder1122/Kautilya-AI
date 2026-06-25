@@ -13,6 +13,7 @@ import threading
 from flask import Blueprint, request, jsonify, Response
 
 from config import SYSTEM_PROMPT, CODER_SYSTEM_PROMPT, PRO_SYSTEM_PROMPT, RESEARCH_SYSTEM_PROMPT
+from skills_spec import render_skill_overlay, is_valid_skill
 from services.auth_service import verify_firebase_token, record_usage
 from services.memory_service import (
     get_user_chat_dir, get_user_memory, save_user_memory, get_user_settings,
@@ -29,6 +30,46 @@ from middleware.rate_limiter import check_message_rate_limit
 from middleware.security import block_sensitive_query, get_real_client_ip
 
 chat_bp = Blueprint('chat', __name__)
+
+# ── Active-Skill overlay plumbing ──────────────────────────────────────────
+# When the user turns a Skill ON in the composer, the request carries `skill`.
+# We splice that skill's overlay into the system message (messages[0]) for the
+# turn, wrapped in markers so it's idempotent: re-syncing strips any prior
+# overlay first, so toggling skills mid-session never accumulates or leaks.
+_SKILL_OVERLAY_START = "\n\n<<<KAUTILYA_SKILL_OVERLAY>>>"
+_SKILL_OVERLAY_END = "<<<END_KAUTILYA_SKILL_OVERLAY>>>"
+
+
+def _strip_skill_overlay(text):
+    """Remove any previously-spliced skill overlay from a system prompt."""
+    if not text or _SKILL_OVERLAY_START not in text:
+        return text
+    s = text.find(_SKILL_OVERLAY_START)
+    e = text.find(_SKILL_OVERLAY_END)
+    if e != -1:
+        return (text[:s] + text[e + len(_SKILL_OVERLAY_END):]).rstrip()
+    return text[:s].rstrip()
+
+
+def _sync_skill_overlay(conv, skill_id, model):
+    """Make messages[0] reflect the CURRENT active skill (or none).
+
+    Works for both freshly-built and Firestore-restored conversations, and for a
+    skill switched on/off mid-session. Always strips the old overlay before
+    (maybe) adding the new one, so it can't stack.
+    """
+    msgs = conv.get('messages') or []
+    if not msgs or msgs[0].get('role') != 'system':
+        return
+    base = _strip_skill_overlay(msgs[0].get('content') or '')
+    if skill_id and is_valid_skill(skill_id):
+        tier = 'full' if model in ('pro', 'coder') else 'daily'
+        overlay = render_skill_overlay(skill_id, tier)
+        if overlay:
+            base = f"{base}{_SKILL_OVERLAY_START}\n{overlay}\n{_SKILL_OVERLAY_END}"
+    msgs[0]['content'] = base
+    conv['active_skill'] = skill_id if (skill_id and is_valid_skill(skill_id)) else None
+
 
 # In-memory conversation store — user-scoped dict: conversations[uid][session_id] = conv
 conversations = {}
@@ -273,7 +314,9 @@ def jarvis_stream():
     # Max Thinking toggle — enables reasoning_content streaming on pro/coder models.
     _mt_raw = data.get('max_thinking', form.get('max_thinking', args.get('max_thinking', False)))
     max_thinking = str(_mt_raw).lower() in ('1', 'true', 'yes', 'on')
-    
+    # Active Skill (composer → Skills). Empty string / unknown id = no skill.
+    active_skill = (data.get('skill') or form.get('skill') or args.get('skill') or '').strip()
+
     # Correctly handle files list
     files = []
     if request.files:
@@ -346,6 +389,7 @@ def jarvis_stream():
     fast_eligible = (
         message
         and not files
+        and not active_skill   # an active Skill must always reach the model
         and model in ('auto', 'daily')
     )
     fast_reply = None
@@ -557,6 +601,13 @@ def jarvis_stream():
                 _chat_executor.submit(merge_identity_facts_into_memory, uid, id_facts)
         except Exception as _e:
             print(f"[Memory] inline identity capture failed: {_e}")
+
+    # Reflect the user's active Skill into the system prompt for THIS turn
+    # (idempotent: strips any prior overlay, then adds the current one or none).
+    try:
+        _sync_skill_overlay(conv, active_skill, model)
+    except Exception as _skill_err:
+        print(f"[Skills] overlay sync failed (non-fatal): {_skill_err}")
 
     conv['messages'].append({"role": "user", "content": user_message})
     # Fire-and-forget — saving the user message used to add 200-500ms before
