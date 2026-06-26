@@ -133,6 +133,20 @@ function iconSvg(name) {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[k] || ICONS.spark}</svg>`;
 }
 
+// Resolve a slide's `image` into a real, reliable URL. A full http(s) URL is
+// used as-is; ANYTHING ELSE is treated as a visual description and rendered to
+// an AI-GENERATED image (Gamma-style) — so the model never has to know real
+// photo IDs (which it hallucinates → broken images). Deterministic seed keeps
+// the same description → same image across preview + export.
+function imageUrl(v) {
+  const s = String(v || '').trim();
+  if (!s) return '';
+  if (/^https?:\/\//i.test(s)) return s;
+  let seed = 0;
+  for (let i = 0; i < s.length; i++) seed = ((seed << 5) - seed + s.charCodeAt(i)) | 0;
+  return `https://image.pollinations.ai/prompt/${encodeURIComponent(s)}?width=1280&height=768&nologo=true&seed=${Math.abs(seed)}`;
+}
+
 // ── Per-layout slide markup ────────────────────────────────────────────────
 function renderSlide(slide, i) {
   const L = String(slide.layout || "bullets").toLowerCase();
@@ -164,7 +178,7 @@ function renderSlide(slide, i) {
     if (slide.image) {
       return `<div class="cover-grid">
         <div class="hero on-grid">${heroText}</div>
-        <div class="cover-img" style="--d:.12s"><img loading="lazy" src="${esc(slide.image)}" alt=""/></div>
+        <div class="cover-img" style="--d:.12s"><img loading="lazy" src="${esc(imageUrl(slide.image))}" alt=""/></div>
       </div>`;
     }
     // No image → richer decorative hero (rings + glow already in the deck bg).
@@ -216,7 +230,7 @@ function renderSlide(slide, i) {
   }
   if (L === "image") {
     const img = slide.image
-      ? `<div class="img-frame glass" style="--d:.15s"><img loading="lazy" src="${esc(slide.image)}" alt="${title}"/></div>`
+      ? `<div class="img-frame glass" style="--d:.15s"><img loading="lazy" src="${esc(imageUrl(slide.image))}" alt="${title}"/></div>`
       : `<div class="img-frame glass placeholder" style="--d:.15s"></div>`;
     const side = (slide.bullets && slide.bullets.length)
       ? `<div class="img-side"><ul class="blist">${bullets(slide.bullets, 6)}</ul></div>` : "";
@@ -357,7 +371,8 @@ export function renderDeckHTML(spec, opts = {}) {
   /* Hero image split (editorial cover) */
   .cover-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:50px;height:100%;align-items:center}
   .cover-grid .hero{max-width:none}
-  .cover-img{position:relative;height:calc(100% + 112px);margin:-56px -72px -56px 0;overflow:hidden}
+  .cover-img{position:relative;height:calc(100% + 112px);margin:-56px -72px -56px 0;overflow:hidden;
+    background:linear-gradient(135deg, ${t.surface}, ${t.mesh[0]})}
   .cover-img img{width:100%;height:100%;object-fit:cover}
   .cover-img::before{content:"";position:absolute;inset:0;z-index:1;
     background:linear-gradient(90deg, ${t.bg} 0%, ${t.bg}cc 14%, transparent 40%)}

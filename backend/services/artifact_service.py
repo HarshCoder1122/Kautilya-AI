@@ -936,6 +936,70 @@ def _deck_theme(data):
     return _DECK_THEMES.get(tid, _DECK_THEMES[_DECK_DEFAULT_THEME])
 
 
+def _deck_image_url(v):
+    """A slide `image` is either a full URL (used as-is) or a visual DESCRIPTION
+    that we render to an AI-generated image (Gamma-style). This mirrors
+    deck.js imageUrl() so preview and export resolve to the SAME picture."""
+    import urllib.parse
+    s = str(v or '').strip()
+    if not s:
+        return ''
+    if s.lower().startswith(('http://', 'https://')):
+        return s
+    seed = abs(hash(s)) % 100000
+    return (f"https://image.pollinations.ai/prompt/{urllib.parse.quote(s)}"
+            f"?width=1280&height=768&nologo=true&seed={seed}")
+
+
+def _fetch_image_bytes(v, timeout=18):
+    """Fetch a slide image as BytesIO. AI generation can take a few seconds, so
+    the timeout is generous; on any failure we fall back to an always-available
+    image so an export never shows a blank panel."""
+    try:
+        import requests
+    except Exception:
+        return None
+    url = _deck_image_url(v)
+    if not url:
+        return None
+    try:
+        r = requests.get(url, timeout=timeout)
+        if r.ok and r.content and len(r.content) > 500:
+            return io.BytesIO(r.content)
+    except Exception:
+        pass
+    try:
+        seed = abs(hash(str(v))) % 100000
+        r = requests.get(f"https://picsum.photos/seed/{seed}/1280/768", timeout=8)
+        if r.ok and r.content:
+            return io.BytesIO(r.content)
+    except Exception:
+        pass
+    return None
+
+
+def _prefetch_deck_images(data):
+    """Fetch every slide image IN PARALLEL up-front → {image_value: BytesIO|None},
+    so a multi-image deck export doesn't serialize 10+ slow downloads."""
+    from concurrent.futures import ThreadPoolExecutor
+    vals = []
+    for sl in data.get('slides', []):
+        if isinstance(sl, dict) and sl.get('image'):
+            vals.append(sl['image'])
+    vals = list(dict.fromkeys(vals))  # unique, keep order
+    if not vals:
+        return {}
+    out = {}
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futs = {v: ex.submit(_fetch_image_bytes, v) for v in vals}
+    for v, fu in futs.items():
+        try:
+            out[v] = fu.result()
+        except Exception:
+            out[v] = None
+    return out
+
+
 def generate_pptx(content: str, filename: str = "kautilya_deck.pptx",
                   title: str = "Kautilya Deck") -> Tuple[io.BytesIO, str]:
     """Build a real PowerPoint (.pptx) from a deck JSON spec, themed to match the
@@ -1011,15 +1075,7 @@ def generate_pptx(content: str, filename: str = "kautilya_deck.pptx",
     MX = Inches(0.9)   # content left margin
     CW = SW - MX * 2   # content width
 
-    def _img_stream(url):
-        try:
-            import requests
-            resp = requests.get(url, timeout=6)
-            if resp.ok and resp.content:
-                return io.BytesIO(resp.content)
-        except Exception:
-            pass
-        return None
+    imgs = _prefetch_deck_images(data)   # {image_value: BytesIO|None}, fetched in parallel
 
     for slide in data['slides']:
         if not isinstance(slide, dict):
@@ -1030,8 +1086,9 @@ def generate_pptx(content: str, filename: str = "kautilya_deck.pptx",
         if layout in ('cover', 'closing', 'section'):
             # Editorial hero: text left over the gradient, full-bleed image right.
             text_w = CW
-            cover_img = _img_stream(slide.get('image', '')) if layout != 'section' else None
+            cover_img = imgs.get(slide.get('image')) if layout != 'section' else None
             if cover_img:
+                cover_img.seek(0)
                 iw = Emu(int(SW * 0.42))
                 ix = SW - iw
                 try:
@@ -1109,7 +1166,9 @@ def generate_pptx(content: str, filename: str = "kautilya_deck.pptx",
             ], anchor=MSO_ANCHOR.MIDDLE, line_spacing=1.15, space_after=18)
 
         elif layout == 'image':
-            img = _img_stream(slide.get('image', ''))
+            img = imgs.get(slide.get('image'))
+            if img:
+                img.seek(0)
             bullets = slide.get('bullets') or []
             if bullets:
                 imgw = CW * 0.52
@@ -1259,6 +1318,8 @@ def generate_deck_pdf(content: str, filename: str = "kautilya_deck.pdf",
         pdf.multi_cell(w, size * 0.46 * lh, sf(txt), align='L')
         return pdf.get_y()
 
+    imgs = _prefetch_deck_images(data)   # {image_value: BytesIO|None}, fetched in parallel
+
     for slide in data['slides']:
         if not isinstance(slide, dict):
             continue
@@ -1267,10 +1328,11 @@ def generate_deck_pdf(content: str, filename: str = "kautilya_deck.pdf",
 
         if layout in ('cover', 'closing', 'section'):
             text_w = W - 2 * MX
-            if layout != 'section' and slide.get('image'):
+            cimg = imgs.get(slide.get('image')) if layout != 'section' else None
+            if cimg:
                 iw = W * 0.42
                 try:
-                    pdf.image(slide['image'], W - iw, 0, w=iw, h=H)
+                    cimg.seek(0); pdf.image(cimg, W - iw, 0, w=iw, h=H)
                 except Exception:
                     fill(SURF); pdf.rect(W - iw, 0, iw, H, style='F')
                 text_w = (W - iw) - MX - 6
@@ -1336,12 +1398,15 @@ def generate_deck_pdf(content: str, filename: str = "kautilya_deck.pdf",
             pdf.set_xy(MX, H - 26); pdf.set_font(BASE, '', 13); pdf.set_text_color(*ACC2)
             pdf.cell(0, 6, sf("— " + str(slide.get('author', ''))))
         elif layout == 'image':
-            img = slide.get('image', '')
+            iimg = imgs.get(slide.get('image'))
             iw = (W - 2 * MX) * (0.5 if slide.get('bullets') else 1.0)
             ih = H - by - 24
-            try:
-                pdf.image(img, MX, by, w=iw, h=ih)
-            except Exception:
+            if iimg:
+                try:
+                    iimg.seek(0); pdf.image(iimg, MX, by, w=iw, h=ih)
+                except Exception:
+                    fill(SURF); pdf.rect(MX, by, iw, ih, style='F')
+            else:
                 fill(SURF); pdf.rect(MX, by, iw, ih, style='F')
             if slide.get('bullets'):
                 tx = MX + iw + 10; yy = by

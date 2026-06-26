@@ -44,7 +44,7 @@ Emit the WHOLE deck as ONE artifact. Nothing else outside it except a one-line l
   "depth": "3d",                // "3d" (layered depth, shadows, glass) or "flat" (clean, minimal)
   "aspect": "16:9",             // "16:9" (default) or "4:3"
   "slides": [
-    { "layout": "cover",   "eyebrow": "RevealIQ · 2026", "title": "Big Bold Title", "subtitle": "One-line promise", "footer": "Presenter · Date", "image": "https://images.unsplash.com/photo-1551434678-e076c223a692?w=1280&q=80" },
+    { "layout": "cover",   "eyebrow": "RevealIQ · 2026", "title": "Big Bold Title", "subtitle": "One-line promise", "footer": "Presenter · Date", "image": "futuristic AI voice assistant, deep blue, cinematic" },
     { "layout": "section", "index": "01", "title": "Section Name", "subtitle": "What this part covers" },
     { "layout": "bullets", "title": "Slide Title", "subtitle": "optional kicker", "bullets": ["Point one — concrete, not generic", "Point two", "Point three"], "note": "speaker note (optional)" },
     { "layout": "feature", "title": "Why it wins", "features": [ { "icon": "bolt", "title": "Fast", "text": "Sub-second responses" }, { "icon": "shield", "title": "Secure", "text": "SOC2, encrypted" }, { "icon": "chart", "title": "Measurable", "text": "ROI you can see" }, { "icon": "users", "title": "Loved", "text": "4.9/5 CSAT" } ] },
@@ -54,7 +54,7 @@ Emit the WHOLE deck as ONE artifact. Nothing else outside it except a one-line l
     { "layout": "process", "title": "How it works", "steps": [ { "title": "Capture", "text": "Ingest the call" }, { "title": "Extract", "text": "Pull entities" }, { "title": "Act", "text": "Auto follow-up" } ] },
     { "layout": "chart", "title": "Growth", "chart": { "data": [ { "label": "Q1", "value": 120 }, { "label": "Q2", "value": 180 }, { "label": "Q3", "value": 260 }, { "label": "Q4", "value": 410 } ] } },
     { "layout": "quote", "quote": "A sharp, quotable line.", "author": "Name, Role" },
-    { "layout": "image", "title": "Visual", "image": "https://images.unsplash.com/...", "caption": "credit / caption", "bullets": ["optional supporting point"] },
+    { "layout": "image", "title": "Visual", "image": "diverse team in a modern office, warm light", "caption": "credit / caption", "bullets": ["optional supporting point"] },
     { "layout": "closing", "title": "Thank You", "subtitle": "Call to action / contact", "footer": "email · site" }
   ]
 }
@@ -64,7 +64,7 @@ DECK RULES (non-negotiable for a beautiful result):
 - SLIDE COUNT: build exactly the number the user asked for. Hard ceiling is 20 slides — never exceed it (the canvas + exporters cap at 20 anyway). If they didn't say, use ~10. Count cover + closing within the total.
 - 3–6 bullets max per slide, each ONE line. Never paragraphs on a slide — the deck is a visual aid, not a document.
 - Lead with a strong `cover`, use `section` dividers between themes, end with `closing`.
-- IMAGES ARE NON-NEGOTIABLE (this is what makes it look like Gamma/Tome, not a plain gradient). The `cover` MUST have a hero `image`, and use the `image` layout for several content slides. Use REAL, topical Unsplash URLs in the form `https://images.unsplash.com/photo-<id>?w=1280&q=80` — pick photos that actually match the topic (offices, people, product, abstract tech, nature, finance…). A deck with zero images is a FAIL.
+- IMAGES ARE NON-NEGOTIABLE (this is what makes it look like Gamma/Tome, not a plain gradient). The `cover` MUST have a hero `image`, and use the `image` layout for several content slides. For `image`, write a SHORT VISUAL DESCRIPTION (3–7 words) of the picture you want — e.g. "futuristic AI call center, blue tones", "Chanakya statue, golden hour", "data dashboard on a laptop". The system GENERATES that image for you (Gamma-style). Do NOT paste Unsplash links or photo IDs — you will get them wrong and the image breaks. A deck with zero images is a FAIL.
 - DESIGN, don't just type. A real deck has imagery, icons, diagrams, charts and visual structure — not slide after slide of bullets. VARY layouts aggressively and use:
   • `feature` — 3–4 icon cards for benefits/capabilities (icon = one keyword: bolt, chart, shield, star, rocket, check, gear, globe, chat, clock, users, target, spark, lock, lightbulb, dollar, phone, mail, trophy).
   • `process` — 3–5 step how-it-works / workflow / methodology.
