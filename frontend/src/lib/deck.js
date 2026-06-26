@@ -95,6 +95,44 @@ const esc = (v) =>
 
 const slug = (v) => esc(v).replace(/&quot;/g, '"');
 
+// Inline SVG icon set (stroke, currentColor) so `feature` cards look designed
+// — no icon-font dependency, works in the standalone HTML download too.
+const ICONS = {
+  bolt: '<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>',
+  chart: '<path d="M3 3v18h18"/><path d="M7 14l3-3 3 3 4-5"/>',
+  shield: '<path d="M12 3l8 3v5c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6l8-3z"/>',
+  star: '<path d="M12 3l2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 18l-5.9 3 1.2-6.5L2.5 9.9 9.1 9 12 3z"/>',
+  rocket: '<path d="M5 16c-1.5 1.3-2 5-2 5s3.7-.5 5-2"/><path d="M12 15l-3-3c1-4 4-8 11-9 0 7-5 10-9 11z"/><circle cx="14.5" cy="9.5" r="1.4"/>',
+  check: '<path d="M4 12l5 5L20 6"/>',
+  gear: '<circle cx="12" cy="12" r="3.2"/><path d="M19 12a7 7 0 0 0-.1-1.4l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2.4-1.4L13.8 2h-3.6l-.4 2.3a7 7 0 0 0-2.4 1.4l-2.3-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .5 0 1 .1 1.4l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2.4 1.4l.4 2.3h3.6l.4-2.3a7 7 0 0 0 2.4-1.4l2.3 1 2-3.4-2-1.5z"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 3 2.5 15 0 18M12 3c-2.5 3-2.5 15 0 18"/>',
+  chat: '<path d="M21 12a8 8 0 0 1-11.5 7.2L3 21l1.8-6.5A8 8 0 1 1 21 12z"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  users: '<circle cx="9" cy="8" r="3.4"/><path d="M2 20c0-3.5 3-6 7-6s7 2.5 7 6"/><path d="M16 5a3.4 3.4 0 0 1 0 6.4M22 20c0-2.4-1.5-4.4-4-5.2"/>',
+  target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.4"/>',
+  spark: '<path d="M12 3v6M12 15v6M3 12h6M15 12h6"/><path d="M12 8.5l1.3 2.2 2.2 1.3-2.2 1.3L12 15.5l-1.3-2.2L8.5 12l2.2-1.3z"/>',
+  lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+  lightbulb: '<path d="M9 18h6M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1h6c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/>',
+  dollar: '<path d="M12 2v20"/><path d="M17 6c0-2-2-3-5-3s-5 1-5 3.5S9 10 12 10s5 1 5 3.5S15 17 12 17s-5-1-5-3"/>',
+  phone: '<path d="M5 3h3l2 5-2.5 1.5a12 12 0 0 0 6 6L17 13l5 2v3a2 2 0 0 1-2 2A17 17 0 0 1 3 5a2 2 0 0 1 2-2z"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>',
+  trophy: '<path d="M8 4h8v4a4 4 0 0 1-8 0V4z"/><path d="M8 6H5a2 2 0 0 0 0 4h1M16 6h3a2 2 0 0 1 0 4h-1M10 14h4v3h-4zM8 20h8"/>',
+};
+const ICON_ALIAS = {
+  zap: 'bolt', lightning: 'bolt', power: 'bolt', graph: 'chart', analytics: 'chart', data: 'chart',
+  security: 'shield', secure: 'shield', launch: 'rocket', growth: 'rocket', done: 'check', success: 'check',
+  settings: 'gear', config: 'gear', automation: 'gear', world: 'globe', global: 'globe', message: 'chat',
+  support: 'chat', voice: 'chat', time: 'clock', speed: 'clock', team: 'users', people: 'users',
+  customer: 'users', goal: 'target', precision: 'target', idea: 'lightbulb', innovation: 'lightbulb',
+  money: 'dollar', revenue: 'dollar', price: 'dollar', roi: 'dollar', call: 'phone', email: 'mail',
+  award: 'trophy', win: 'trophy', quality: 'trophy', ai: 'spark', magic: 'spark',
+};
+function iconSvg(name) {
+  let k = String(name || '').toLowerCase().trim();
+  k = ICONS[k] ? k : (ICON_ALIAS[k] || 'spark');
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[k] || ICONS.spark}</svg>`;
+}
+
 // ── Per-layout slide markup ────────────────────────────────────────────────
 function renderSlide(slide, i) {
   const L = String(slide.layout || "bullets").toLowerCase();
@@ -110,22 +148,28 @@ function renderSlide(slide, i) {
     (arr || []).slice(0, max).map((b, j) =>
       `<li style="--d:${0.1 + j * 0.06}s"><span class="dot"></span><span>${slug(b)}</span></li>`).join("");
 
-  if (L === "cover" || L === "closing") {
+  if (L === "cover" || L === "closing" || L === "section") {
+    const isSection = L === "section";
     const eyebrow = slug(slide.eyebrow || slide.index || "");
-    return `<div class="hero">
-      ${eyebrow ? `<div class="eyebrow" style="--d:.05s">${eyebrow}</div>` : ""}
-      <div class="accent-bar" style="--d:.1s"></div>
-      <h1 class="hero-title" style="--d:.18s">${title || "Untitled"}</h1>
-      ${sub ? `<p class="hero-sub" style="--d:.3s">${sub}</p>` : ""}
-      ${slide.footer ? `<div class="hero-foot" style="--d:.42s">${slug(slide.footer)}</div>` : ""}
-    </div>`;
-  }
-  if (L === "section") {
-    return `<div class="hero section">
-      <div class="sec-index" style="--d:.05s">${slug(slide.index || String(i).padStart(2, "0"))}</div>
-      <h1 class="hero-title" style="--d:.18s">${title}</h1>
-      ${sub ? `<p class="hero-sub" style="--d:.3s">${sub}</p>` : ""}
-    </div>`;
+    const heroText = isSection
+      ? `<div class="sec-index" style="--d:.05s">${slug(slide.index || String(i).padStart(2, "0"))}</div>
+         <h1 class="hero-title" style="--d:.18s">${title}</h1>
+         ${sub ? `<p class="hero-sub" style="--d:.3s">${sub}</p>` : ""}`
+      : `${eyebrow ? `<div class="eyebrow" style="--d:.05s">${eyebrow}</div>` : ""}
+         <div class="accent-bar" style="--d:.1s"></div>
+         <h1 class="hero-title" style="--d:.18s">${title || "Untitled"}</h1>
+         ${sub ? `<p class="hero-sub" style="--d:.3s">${sub}</p>` : ""}
+         ${slide.footer ? `<div class="hero-foot" style="--d:.42s">${slug(slide.footer)}</div>` : ""}`;
+    // Hero IMAGE → editorial split (text left on gradient, full-bleed image right).
+    if (slide.image) {
+      return `<div class="cover-grid">
+        <div class="hero on-grid">${heroText}</div>
+        <div class="cover-img" style="--d:.12s"><img loading="lazy" src="${esc(slide.image)}" alt=""/></div>
+      </div>`;
+    }
+    // No image → richer decorative hero (rings + glow already in the deck bg).
+    return `<div class="hero-deco" aria-hidden="true"><span class="ring"></span><span class="ring r2"></span></div>
+      <div class="hero${isSection ? " section" : ""}">${heroText}</div>`;
   }
 
   const header = `<header class="s-head">
@@ -179,6 +223,16 @@ function renderSlide(slide, i) {
     return `${header}<div class="body image-layout ${side ? "split" : "full"}">
       ${img}${side}
     </div>${slide.caption ? `<div class="caption">${slug(slide.caption)}</div>` : ""}`;
+  }
+  if (L === "feature" || L === "features" || L === "icons" || L === "cards") {
+    const items = (slide.features || slide.items || slide.cards || []).slice(0, 4);
+    const cards = items.map((f, j) =>
+      `<div class="feat glass" style="--d:${0.14 + j * 0.09}s">
+        <div class="feat-ico">${iconSvg(f.icon)}</div>
+        <h4>${slug(f.title || "")}</h4>
+        ${f.text ? `<p>${slug(f.text)}</p>` : ""}
+      </div>`).join("");
+    return `${header}<div class="body feats feats-${Math.max(Math.min(items.length, 4), 1)}">${cards}</div>`;
   }
   if (L === "process" || L === "steps") {
     const steps = (slide.steps || []).slice(0, 5);
@@ -300,6 +354,27 @@ export function renderDeckHTML(spec, opts = {}) {
   .section .hero-title{font-size:54px}
   .hero-sub{margin-top:18px;font-size:25px;color:var(--muted);max-width:24ch;line-height:1.45}
   .hero-foot{margin-top:42px;font-size:16px;color:var(--muted);letter-spacing:.04em}
+  /* Hero image split (editorial cover) */
+  .cover-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:50px;height:100%;align-items:center}
+  .cover-grid .hero{max-width:none}
+  .cover-img{position:relative;height:calc(100% + 112px);margin:-56px -72px -56px 0;overflow:hidden}
+  .cover-img img{width:100%;height:100%;object-fit:cover}
+  .cover-img::before{content:"";position:absolute;inset:0;z-index:1;
+    background:linear-gradient(90deg, ${t.bg} 0%, ${t.bg}cc 14%, transparent 40%)}
+  .cover-img::after{content:"";position:absolute;inset:0;z-index:1;box-shadow:inset 0 0 120px ${t.dark ? "rgba(0,0,0,.5)" : "rgba(0,0,0,.12)"}}
+  /* Decorative rings for image-less hero */
+  .hero-deco{position:absolute;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+  .hero-deco .ring{position:absolute;right:-130px;top:-150px;width:540px;height:540px;border-radius:50%;border:1.5px solid ${t.dark ? "rgba(255,255,255,.07)" : "rgba(28,25,23,.07)"}}
+  .hero-deco .ring.r2{right:-30px;top:-30px;width:360px;height:360px;border-color:${t.accent}33}
+  /* Feature / icon cards */
+  .feats{display:grid;gap:20px;align-content:center}
+  .feats-1{grid-template-columns:1fr}.feats-2{grid-template-columns:1fr 1fr}.feats-3{grid-template-columns:repeat(3,1fr)}.feats-4{grid-template-columns:1fr 1fr}
+  .feat{padding:26px 24px;display:flex;flex-direction:column;gap:13px}
+  .feat-ico{width:54px;height:54px;border-radius:15px;display:flex;align-items:center;justify-content:center;color:var(--accent);
+    background:${t.dark ? "rgba(255,255,255,.06)" : "rgba(28,25,23,.05)"};border:1px solid ${t.accent}40}
+  .feat-ico svg{width:28px;height:28px}
+  .feat h4{font-family:var(--head);font-weight:700;font-size:22px;line-height:1.2}
+  .feat p{font-size:16px;color:var(--muted);line-height:1.4}
 
   /* Content header + body region (body gets the leftover height, no overflow) */
   .s-head{display:flex;align-items:flex-start;gap:18px;flex:none;margin-bottom:30px}

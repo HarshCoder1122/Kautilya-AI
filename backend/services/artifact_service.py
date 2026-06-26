@@ -1028,7 +1028,17 @@ def generate_pptx(content: str, filename: str = "kautilya_deck.pptx",
         s = add_slide()
 
         if layout in ('cover', 'closing', 'section'):
-            # Accent bar + centered hero text over the gradient
+            # Editorial hero: text left over the gradient, full-bleed image right.
+            text_w = CW
+            cover_img = _img_stream(slide.get('image', '')) if layout != 'section' else None
+            if cover_img:
+                iw = Emu(int(SW * 0.42))
+                ix = SW - iw
+                try:
+                    s.shapes.add_picture(cover_img, ix, 0, width=iw, height=SH)
+                except Exception:
+                    pass
+                text_w = ix - MX - Inches(0.4)
             bar(s, MX, Inches(2.55), Inches(1.0), Pt(7), accent)
             runs = []
             eyebrow = slide.get('eyebrow') or slide.get('index') or ''
@@ -1037,10 +1047,10 @@ def generate_pptx(content: str, filename: str = "kautilya_deck.pptx",
             runs.append((str(slide.get('title', title)), 42 if layout != 'section' else 36, text, True))
             if slide.get('subtitle'):
                 runs.append((str(slide['subtitle']), 20, muted, False))
-            textbox(s, MX, Inches(2.75), CW, Inches(3.2), runs,
+            textbox(s, MX, Inches(2.75), text_w, Inches(3.2), runs,
                     anchor=MSO_ANCHOR.TOP, line_spacing=1.08, space_after=14)
             if slide.get('footer'):
-                textbox(s, MX, SH - Inches(0.95), CW, Inches(0.5),
+                textbox(s, MX, SH - Inches(0.95), text_w, Inches(0.5),
                         [(str(slide['footer']), 12, muted, False)])
             continue
 
@@ -1124,6 +1134,25 @@ def generate_pptx(content: str, filename: str = "kautilya_deck.pptx",
             if slide.get('caption'):
                 textbox(s, MX, SH - Inches(0.6), CW, Inches(0.4),
                         [(str(slide['caption']), 11, muted, False)])
+
+        elif layout in ('feature', 'features', 'icons', 'cards'):
+            items = (slide.get('features') or slide.get('items') or slide.get('cards') or [])[:4]
+            n = max(1, len(items))
+            cols = 2 if n >= 4 else n
+            rown = (n + cols - 1) // cols
+            gap = Inches(0.3)
+            cardw = (CW - gap * (cols - 1)) / cols
+            cardh = (body_h - gap * (rown - 1)) / rown
+            for i, f in enumerate(items):
+                cx = MX + (i % cols) * (cardw + gap)
+                cy = body_top + (i // cols) * (cardh + gap)
+                card = bar(s, cx, cy, cardw, cardh, surface)
+                card.line.color.rgb = rgb(accent); card.line.width = Pt(1)
+                bar(s, cx + Inches(0.3), cy + Inches(0.3), Inches(0.5), Inches(0.5), accent)
+                textbox(s, cx + Inches(0.3), cy + Inches(1.0), cardw - Inches(0.6), cardh - Inches(1.1), [
+                    (str(f.get('title', '')), 16, text, True),
+                    (str(f.get('text', '')), 12, muted, False),
+                ], line_spacing=1.1, space_after=5)
 
         elif layout in ('process', 'steps'):
             steps = slide.get('steps', [])[:5]
@@ -1237,17 +1266,26 @@ def generate_deck_pdf(content: str, filename: str = "kautilya_deck.pdf",
         page_bg()
 
         if layout in ('cover', 'closing', 'section'):
-            fill(SURF); pdf.rect(0, H * 0.82, W, H * 0.18, style='F')
+            text_w = W - 2 * MX
+            if layout != 'section' and slide.get('image'):
+                iw = W * 0.42
+                try:
+                    pdf.image(slide['image'], W - iw, 0, w=iw, h=H)
+                except Exception:
+                    fill(SURF); pdf.rect(W - iw, 0, iw, H, style='F')
+                text_w = (W - iw) - MX - 6
+            else:
+                fill(SURF); pdf.rect(0, H * 0.82, W, H * 0.18, style='F')
             fill(ACC); pdf.rect(MX, H * 0.33, 22, 2.2, style='F')
             eyebrow = slide.get('eyebrow') or slide.get('index') or ''
             y = H * 0.37
             if eyebrow:
                 pdf.set_xy(MX, y); pdf.set_font(BASE, 'B', 12); pdf.set_text_color(*ACC2)
                 pdf.cell(0, 6, sf(str(eyebrow).upper())); y += 9
-            y = wrapped(str(slide.get('title', title)), MX, y, W - 2 * MX,
+            y = wrapped(str(slide.get('title', title)), MX, y, text_w,
                         34 if layout != 'section' else 28, TXT, bold=True)
             if slide.get('subtitle'):
-                wrapped(str(slide['subtitle']), MX, y + 2, W - 2 * MX, 16, MUT)
+                wrapped(str(slide['subtitle']), MX, y + 2, text_w, 16, MUT)
             if slide.get('footer'):
                 pdf.set_xy(MX, H - 14); pdf.set_font(BASE, '', 10); pdf.set_text_color(*MUT)
                 pdf.cell(0, 6, sf(str(slide['footer'])))
@@ -1312,6 +1350,22 @@ def generate_deck_pdf(content: str, filename: str = "kautilya_deck.pdf",
             if slide.get('caption'):
                 pdf.set_xy(MX, H - 16); pdf.set_font(BASE, '', 9); pdf.set_text_color(*MUT)
                 pdf.cell(0, 5, sf(str(slide['caption'])))
+        elif layout in ('feature', 'features', 'icons', 'cards'):
+            items = (slide.get('features') or slide.get('items') or slide.get('cards') or [])[:4]
+            n = max(1, len(items)); gap = 8
+            cols = 2 if n >= 4 else n
+            rown = (n + cols - 1) // cols
+            cardw = (W - 2 * MX - gap * (cols - 1)) / cols
+            cardh = (H - by - 16 - gap * (rown - 1)) / rown
+            for i, f in enumerate(items):
+                cx = MX + (i % cols) * (cardw + gap)
+                cy = by + (i // cols) * (cardh + gap)
+                fill(SURF); pdf.rect(cx, cy, cardw, cardh, style='F')
+                fill(ACC); pdf.rect(cx + 9, cy + 9, 13, 13, style='F')
+                yy = wrapped(str(f.get('title', '')), cx + 9, cy + 28, cardw - 18, 14, TXT, bold=True)
+                if f.get('text'):
+                    wrapped(str(f.get('text', '')), cx + 9, yy + 1, cardw - 18, 11, MUT)
+
         elif layout in ('process', 'steps'):
             steps = slide.get('steps', [])[:5]
             n = max(1, len(steps)); gap = 8

@@ -44,9 +44,10 @@ Emit the WHOLE deck as ONE artifact. Nothing else outside it except a one-line l
   "depth": "3d",                // "3d" (layered depth, shadows, glass) or "flat" (clean, minimal)
   "aspect": "16:9",             // "16:9" (default) or "4:3"
   "slides": [
-    { "layout": "cover",   "eyebrow": "RevealIQ · 2026", "title": "Big Bold Title", "subtitle": "One-line promise", "footer": "Presenter · Date" },
+    { "layout": "cover",   "eyebrow": "RevealIQ · 2026", "title": "Big Bold Title", "subtitle": "One-line promise", "footer": "Presenter · Date", "image": "https://images.unsplash.com/photo-1551434678-e076c223a692?w=1280&q=80" },
     { "layout": "section", "index": "01", "title": "Section Name", "subtitle": "What this part covers" },
     { "layout": "bullets", "title": "Slide Title", "subtitle": "optional kicker", "bullets": ["Point one — concrete, not generic", "Point two", "Point three"], "note": "speaker note (optional)" },
+    { "layout": "feature", "title": "Why it wins", "features": [ { "icon": "bolt", "title": "Fast", "text": "Sub-second responses" }, { "icon": "shield", "title": "Secure", "text": "SOC2, encrypted" }, { "icon": "chart", "title": "Measurable", "text": "ROI you can see" }, { "icon": "users", "title": "Loved", "text": "4.9/5 CSAT" } ] },
     { "layout": "two-column", "title": "Compare", "columns": [ { "heading": "Before", "bullets": ["…","…"] }, { "heading": "After", "bullets": ["…","…"] } ] },
     { "layout": "stats", "title": "By the numbers", "stats": [ { "value": "92%", "label": "retention" }, { "value": "3.4x", "label": "faster" }, { "value": "$1.2M", "label": "saved" } ] },
     { "layout": "timeline", "title": "Roadmap", "items": [ { "time": "Q1", "text": "Discovery" }, { "time": "Q2", "text": "Build" }, { "time": "Q3", "text": "Launch" } ] },
@@ -63,8 +64,14 @@ DECK RULES (non-negotiable for a beautiful result):
 - SLIDE COUNT: build exactly the number the user asked for. Hard ceiling is 20 slides — never exceed it (the canvas + exporters cap at 20 anyway). If they didn't say, use ~10. Count cover + closing within the total.
 - 3–6 bullets max per slide, each ONE line. Never paragraphs on a slide — the deck is a visual aid, not a document.
 - Lead with a strong `cover`, use `section` dividers between themes, end with `closing`.
-- DESIGN, don't just type. A real deck has diagrams, charts and visual structure — not slide after slide of bullets. VARY layouts aggressively: alternate bullets / stats / two-column / quote / timeline / image AND use the DIAGRAM layouts where they fit — `process` for any how-it-works / workflow / methodology / steps, `chart` for any numbers-over-categories (growth, comparison, breakdown). A 10-slide deck should use 5+ distinct layouts and include at least one `process` or `chart` whenever the content has a flow or data. Bullets are the fallback, not the default.
-- `process`: 3–5 steps, each a SHORT title + one-line text. `chart`: 3–7 bars, `value` must be a raw number (not "120k") so bars scale correctly — put units in the label or title.
+- IMAGES ARE NON-NEGOTIABLE (this is what makes it look like Gamma/Tome, not a plain gradient). The `cover` MUST have a hero `image`, and use the `image` layout for several content slides. Use REAL, topical Unsplash URLs in the form `https://images.unsplash.com/photo-<id>?w=1280&q=80` — pick photos that actually match the topic (offices, people, product, abstract tech, nature, finance…). A deck with zero images is a FAIL.
+- DESIGN, don't just type. A real deck has imagery, icons, diagrams, charts and visual structure — not slide after slide of bullets. VARY layouts aggressively and use:
+  • `feature` — 3–4 icon cards for benefits/capabilities (icon = one keyword: bolt, chart, shield, star, rocket, check, gear, globe, chat, clock, users, target, spark, lock, lightbulb, dollar, phone, mail, trophy).
+  • `process` — 3–5 step how-it-works / workflow / methodology.
+  • `chart` — 3–7 bars for numbers-over-categories (growth, comparison, breakdown).
+  • `image`, `stats`, `two-column`, `timeline`, `quote` — for variety.
+  A 10-slide deck should use 6+ distinct layouts and include AT LEAST: a hero-image cover, one `feature` (icons), one `chart` or `process`, and 1–2 `image` slides. Bullets are the fallback, not the default.
+- `chart` `value` must be a raw number (not "120k") so bars scale — put units in the label/title. `feature` cards: SHORT title + one-line text.
 - Write REAL, specific content (real numbers, real product names, real takeaways). Never "Point 1 / Lorem ipsum / [placeholder]".
 - For `image`, use a real, topical Unsplash/Picsum URL (e.g. https://images.unsplash.com/photo-... or https://picsum.photos/seed/<topic>/1280/720). Only use images when they add meaning.
 - Titles are punchy (≤ 7 words). Subtitles add the "so what".
