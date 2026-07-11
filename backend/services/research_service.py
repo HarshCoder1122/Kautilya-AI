@@ -75,14 +75,14 @@ SYNTH_RETRY_BACKOFF = float(os.getenv("RESEARCH_SYNTH_RETRY_BACKOFF", "2.0"))  #
 # Second search pass (gap-fill round) — on by default; can be disabled via env.
 SEARCH_ROUNDS_ENABLED = os.getenv("RESEARCH_SECOND_PASS", "1") not in ("0", "false", "False")
 
-# Synthesis runs on GLM (z-ai/glm-5.1) — stronger long-form report writing than
-# Nemotron for this task. Routed through call_nvidia (NVIDIA NIM endpoint).
-SYNTH_MODEL = os.getenv("RESEARCH_SYNTH_MODEL", "z-ai/glm-5.1")
-# When GLM is saturated (429), synthesis falls back to Mistral on NVIDIA —
-# a DIFFERENT model = a different rate-limit bucket, so it's usually free even
-# while GLM is hammered. Still a strong long-form writer; far better than
-# dropping straight to the weaker Groq llama. Override/disable via env.
-SYNTH_FALLBACK_MODEL = os.getenv("RESEARCH_SYNTH_FALLBACK_MODEL", "mistralai/mistral-medium-3.5-128b")
+# Synthesis runs on GLM 5.2 (z-ai/glm-5.2) — strong long-form report writing.
+# Routed through call_nvidia (NVIDIA NIM endpoint).
+SYNTH_MODEL = os.getenv("RESEARCH_SYNTH_MODEL", "z-ai/glm-5.2")
+# When GLM is saturated (429), synthesis falls back to Nemotron 3 Ultra on
+# NVIDIA — a DIFFERENT model = a different rate-limit bucket, so it's usually
+# free even while GLM is hammered. Still a strong long-form writer; far better
+# than dropping straight to the weaker Groq llama. Override/disable via env.
+SYNTH_FALLBACK_MODEL = os.getenv("RESEARCH_SYNTH_FALLBACK_MODEL", "nvidia/nemotron-3-ultra-550b-a55b")
 PLANNER_MODEL = os.getenv("RESEARCH_PLANNER_MODEL", "llama-3.3-70b-versatile")
 
 
@@ -565,7 +565,7 @@ def deep_research_stream(question: str, depth: str = "standard",
     def _synthesize(model, allow_empty_retry):
         """Run ONE model's synthesis with auto-continue on truncation. GLM also
         gets a couple of empty-result retries (transient 429 while Pro is busy);
-        the Mistral fallback just falls through if it yields nothing. Streams via
+        the Nemotron fallback just falls through if it yields nothing. Streams via
         `yield`; updates full_report / streamed_anything through _run."""
         continuation = 0
         synth_attempt = 0
@@ -612,10 +612,10 @@ def deep_research_stream(question: str, depth: str = "standard",
     # Primary synthesis on GLM — the strongest long-form report writer.
     yield from _synthesize(SYNTH_MODEL, allow_empty_retry=True)
 
-    # ---- GLM dead → fall back to Mistral (Daily) BEFORE Groq --------------
-    # GLM and Mistral are DIFFERENT NVIDIA models = different rate-limit
+    # ---- GLM dead → fall back to Nemotron (Daily) BEFORE Groq -------------
+    # GLM and Nemotron are DIFFERENT NVIDIA models = different rate-limit
     # buckets. A research run's burst (huge context + 16k output, fired 3-5×
-    # back-to-back) blows GLM's per-minute token budget, but Mistral's bucket
+    # back-to-back) blows GLM's per-minute token budget, but Nemotron's bucket
     # is usually still free — so when GLM 429s we keep the report on a strong
     # NVIDIA model instead of dropping straight to the weaker Groq llama.
     if not streamed_anything and time_left() > 30:
@@ -627,7 +627,7 @@ def deep_research_stream(question: str, depth: str = "standard",
     # Groq's free tier is a tiny 12k TPM (it returned HTTP 413 on the full
     # sources context). So this last-ditch builds a COMPACT context — fewer
     # sources, shorter excerpts — so the request fits and still yields a cited
-    # report instead of nothing. NVIDIA (GLM/Mistral) gets the full context;
+    # report instead of nothing. NVIDIA (GLM/Nemotron) gets the full context;
     # only this fallback is squeezed.
     if not streamed_anything:
         gq_sources = sources[:8]

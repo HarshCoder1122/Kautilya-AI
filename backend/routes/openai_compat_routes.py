@@ -12,8 +12,8 @@ Under the hood requests are forwarded to NVIDIA NIM with the appropriate
 Kautilya model mapping and thinking-toggle logic:
 
     kautilya-coder  → moonshotai/kimi-k2.6
-    kautilya-pro    → z-ai/glm-5.1
-    kautilya-daily  → mistralai/mistral-medium-3.5-128b
+    kautilya-pro    → z-ai/glm-5.2
+    kautilya-daily  → nvidia/nemotron-3-ultra-550b-a55b
 
 Requests may also pass the raw NVIDIA model id directly.
 The `max_thinking` toggle can be requested via:
@@ -193,8 +193,8 @@ openai_compat_bp = Blueprint('openai_compat', __name__)
 KAUTILYA_MODEL_MAP = {
     "kautilya-fast":    "llama-3.3-70b-versatile",            # Groq direct — sub-500ms TTFT
     "kautilya-coder":   "moonshotai/kimi-k2.6",
-    "kautilya-pro":     "z-ai/glm-5.1",                       # GLM-5.1 on NVIDIA NIM (nemotron retired)
-    "kautilya-daily":   "mistralai/mistral-medium-3.5-128b",
+    "kautilya-pro":     "z-ai/glm-5.2",                        # GLM 5.2 on NVIDIA NIM (Nemotron 3 Ultra moved to Daily)
+    "kautilya-daily":   "nvidia/nemotron-3-ultra-550b-a55b",
 }
 
 # Per-model context windows. Match each upstream model's actual capability so
@@ -561,15 +561,15 @@ def chat_completions():
         return Response(sse(), mimetype='text/event-stream',
                         headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
-    # ---- NVIDIA path (kimi-coder / glm-pro / mistral-daily) ----
+    # ---- NVIDIA path (kimi-coder / glm-pro / nemotron-daily) ----
     if not NVIDIA_API_KEYS:
         return jsonify({"error": {"message": "Model backend temporarily unavailable", "type": "upstream_error"}}), 503
 
     # Same path the dashboard chat uses — call_nvidia handles streaming with
-    # proper thinking/content separation for glm/qwen, and reasoning_effort
-    # for Mistral (kautilya-daily). Daily tier always uses lowest effort so
-    # Cline/Cursor stay snappy.
-    is_daily = 'mistral' in upstream_model.lower()
+    # proper thinking/content separation for glm/nemotron via
+    # chat_template_kwargs.enable_thinking. Daily tier always uses lowest
+    # effort so Cline/Cursor stay snappy.
+    is_daily = requested_model == 'kautilya-daily'
     # The coder backend (Kimi K2.6) is driven as a plain chat model — no
     # reasoning_effort, no chat_template_kwargs.thinking. Sending thinking
     # params a hosted model doesn't accept makes NVIDIA reject the whole
@@ -589,12 +589,12 @@ def chat_completions():
         thinking_on = False
         expose_thinking_flag = False
     elif is_daily:
-        # Mistral only accepts 'none' or 'high'.
-        upstream_effort = 'high' if max_thinking else 'none'
-        thinking_on = False  # max_thinking on Mistral is handled via reasoning_effort
-        # When the caller asked for high reasoning we DO want to expose the
-        # reasoning_content deltas back to them so the UI can render a
-        # thinking panel — otherwise the 'high' effort is invisible.
+        # Nemotron (daily) uses chat_template_kwargs.enable_thinking, driven
+        # by max_thinking — not a Mistral-style reasoning_effort string.
+        upstream_effort = None
+        thinking_on = max_thinking
+        # Expose reasoning_content deltas only when the caller asked for it,
+        # otherwise the 'Thinking…' panel would show for a tier meant to be fast.
         expose_thinking_flag = bool(max_thinking)
     else:
         # For the GLM (pro) reasoning path we use max_thinking to decide; pass effort hint

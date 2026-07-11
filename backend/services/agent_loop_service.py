@@ -26,8 +26,12 @@ MODEL_ALIASES = {
     "llama": "daily",
     "llama-3.3-70b-versatile": "daily",
     "kautilya-pro": "pro",
-    "nemotron": "pro",
-    "nvidia/nemotron-3-super-120b-a12b": "pro",
+    "glm": "pro",
+    "z-ai/glm-5.1": "pro",
+    "z-ai/glm-5.2": "pro",
+    "nemotron": "daily",
+    "nvidia/nemotron-3-super-120b-a12b": "daily",
+    "nvidia/nemotron-3-ultra-550b-a55b": "daily",
     "kautilya-coder": "coder",
     "kimi": "coder",
     "kimi-k2.6": "coder",
@@ -455,13 +459,13 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     # NVIDIA NIM model IDs - verified available on https://build.nvidia.com
     _MODEL_LABELS = {
         'coder': ('Kautilya Coder', 'moonshotai/kimi-k2.6'),
-        'pro':   ('Kautilya Pro', 'z-ai/glm-5.1'),
-        'daily': ('Kautilya Daily', 'mistralai/mistral-medium-3.5-128b'),
+        'pro':   ('Kautilya Pro', 'z-ai/glm-5.2'),
+        'daily': ('Kautilya Daily', 'nvidia/nemotron-3-ultra-550b-a55b'),
     }
-    DAILY_MODEL = 'mistralai/mistral-medium-3.5-128b'
+    DAILY_MODEL = 'nvidia/nemotron-3-ultra-550b-a55b'
 
     def _wrap_with_placeholder_thinking(inner_gen):
-        """Show a 'thinking' placeholder while Mistral's TTFT is pending.
+        """Show a 'thinking' placeholder while the upstream model's TTFT is pending.
 
         The inner generator (an HTTP SSE stream from NVIDIA) blocks the calling
         thread during time-to-first-token.  Previously this meant the
@@ -542,25 +546,25 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             yield {"thinking_done": True}
 
     def _call_daily(msgs, **kw):
-        """Daily tier: NVIDIA Mistral Medium 3.5.
+        """Daily tier: NVIDIA Nemotron 3 Ultra.
 
         Honors the user's Max Thinking toggle:
-          • ON  → reasoning_effort='high', thinking deltas streamed back to
-            the UI as a collapsible "Thinking…" panel.
-          • OFF → reasoning_effort='none' (fastest TTFT — Mistral skips
+          • ON  → chat_template_kwargs.enable_thinking=True, thinking deltas
+            streamed back to the UI as a collapsible "Thinking…" panel.
+          • OFF → enable_thinking=False (fastest TTFT — Nemotron skips
             reasoning entirely).
-        Mistral only accepts 'none' or 'high' (no medium), so the toggle
-        maps cleanly to the binary the upstream understands.
+        call_nvidia already branches on the nvidia/nemotron* model prefix to
+        build the chat_template_kwargs payload, so we only need to pass
+        max_thinking through here — no Mistral-style reasoning_effort string.
 
         Groq Llama is still the last-resort fallback if NVIDIA is unreachable.
         Output is wrapped with a placeholder-thinking stream so the UI shows
-        the thinking bubble during Mistral's time-to-first-token wait.
+        the thinking bubble during Nemotron's time-to-first-token wait.
         """
         from config import NVIDIA_API_KEYS
         # Closure-captured toggle from the outer agent_loop call. The kwargs
         # form is the override path for explicit callers.
         mt = bool(kw.get('max_thinking', max_thinking))
-        effort = 'high' if mt else 'none'
         if NVIDIA_API_KEYS:
             r = call_nvidia(msgs, stream=True, model=DAILY_MODEL,
                             temperature=kw.get('temperature', 0.6),
@@ -568,7 +572,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                             max_tokens=kw.get('max_tokens', 16384),
                             tools=kw.get('tools'), tool_choice=kw.get('tool_choice'),
                             expose_thinking=mt,
-                            reasoning_effort=effort)
+                            max_thinking=mt)
             if r:
                 return _wrap_with_placeholder_thinking(r)
         groq_gen = call_groq(msgs, stream=True, model='llama-3.3-70b-versatile',
@@ -749,7 +753,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 if not response_gen:
                     response_gen = _call_daily(current_messages, max_tokens=max_tokens)
         else:
-            # Daily = NVIDIA Mistral Medium 3.5 (low reasoning), Groq llama as fallback
+            # Daily = NVIDIA Nemotron 3 Ultra (low reasoning), Groq llama as fallback
             response_gen = _call_daily(current_messages, max_tokens=max_tokens,
                                        tools=tools, tool_choice=tool_choice)
 
@@ -1965,9 +1969,9 @@ def _estimate_tokens(user_msg, mode):
     Tiered token budget estimator.
 
     Two reasons the cap matters:
-    1. Non-reasoning models (Mistral/Llama) just stop at EOS, so the cap is
+    1. Non-reasoning models (Llama/Kimi) just stop at EOS, so the cap is
        only a safety bound — bigger isn't slower for short answers.
-    2. Reasoning models (GLM, Qwen-thinking, NVIDIA reasoning variants) burn
+    2. Reasoning models (GLM, Nemotron, Qwen-thinking) burn
        thinking tokens up to a budget that `_estimate_reasoning_budget`
        derives FROM this number. So an over-generous 16k cap on a 5-word
        greeting can buy 8k tokens of unnecessary deliberation before the

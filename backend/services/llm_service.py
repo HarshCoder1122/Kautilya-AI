@@ -194,7 +194,7 @@ def _get_available_nvidia_key(is_pro=None, model=""):
 # ── NVIDIA keep-warm heartbeat — REMOVED ─────────────────────────────────
 # A background thread used to fire a real 1-token completion at every tier
 # model on a timer to keep them hot. Those pings competed with live traffic
-# for NVIDIA's per-model rate limit — the GLM (z-ai/glm-5.1) synthesis behind
+# for NVIDIA's per-model rate limit — the Pro (z-ai/glm-5.2) synthesis behind
 # Deep Research kept landing on 429s the heartbeat itself had just provoked.
 # We now lean purely on real traffic to keep models warm: a slightly slower
 # first token beats self-inflicted rate-limiting. Do NOT re-add a timed ping
@@ -578,9 +578,10 @@ def llm_health_snapshot():
 
 
 def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
-                model="z-ai/glm-5.1", tools=None, tool_choice=None,
+                model="nvidia/nemotron-3-ultra-550b-a55b", tools=None, tool_choice=None,
                 expose_thinking=True, max_thinking=False, top_p=0.9,
-                reasoning_budget=None, reasoning_effort=None, is_pro=None):
+                reasoning_budget=None, reasoning_effort=None, is_pro=None,
+                read_timeout=None):
     """Call NVIDIA NIM API with tool support.
 
     Streaming protocol:
@@ -675,19 +676,24 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
         if tool_choice:
             payload["tool_choice"] = tool_choice
         # Extended thinking — payload shape depends on model family.
-        # GLM (z-ai/glm-*) uses {enable_thinking, clear_thinking}; thinking
+        # GLM and Nemotron 3 Ultra use enable_thinking; thinking
         # can be explicitly turned OFF by passing enable_thinking=False so
         # the user's "Max Thinking" toggle is honored in both directions.
-        # Qwen3-thinking variants and Nemotron use {thinking: {type,
-        # budget_tokens}} and only enable when a budget is explicitly
-        # requested.
-        if model.startswith("z-ai/glm"):
+        # Qwen3-thinking variants use {thinking: {type, budget_tokens}}.
+        if model.startswith("z-ai/glm") or model.startswith("nvidia/nemotron"):
             # max_thinking ON  → enable_thinking True, stream reasoning back
             # max_thinking OFF → enable_thinking False, skip reasoning entirely
             payload["chat_template_kwargs"] = {
                 "enable_thinking": bool(max_thinking),
-                "clear_thinking": False,
             }
+            if model.startswith("z-ai/glm"):
+                payload["chat_template_kwargs"]["clear_thinking"] = False
+            if bool(max_thinking) or (expose_thinking and reasoning_budget and reasoning_budget > 0):
+                payload["chat_template_kwargs"]["enable_thinking"] = True
+                if reasoning_budget and reasoning_budget > 0:
+                    payload["reasoning_budget"] = reasoning_budget
+                elif model.startswith("nvidia/nemotron"):
+                    payload["reasoning_budget"] = 16384
         elif expose_thinking and reasoning_budget and reasoning_budget > 0:
             payload["chat_template_kwargs"] = {"thinking": {"type": "enabled", "budget_tokens": reasoning_budget}}
         # Mistral-style top-level reasoning toggle (low|medium|high)
@@ -731,11 +737,22 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
             else:
                 headers["Accept"] = "application/json"
             try:
+                # (connect, read). Fail fast on connect. For a STREAMING call the
+                # read gaps are between SSE tokens so we allow a very long read
+                # (3600s). For a NON-streaming call the whole JSON body must
+                # arrive in one read, so a 1-hour ceiling is dangerous: a slow/
+                # hung NVIDIA edge would block this (possibly executor) thread
+                # for an hour. That is exactly what SIGKILLed the LiveKit worker
+                # in post-call analysis — asyncio.wait_for gives up but the
+                # blocking thread lingers and stops the process from exiting.
+                # Bound non-stream reads (default 90s) and let callers on a tight
+                # deadline (e.g. the agent shutdown window) pass a smaller value.
+                _read_to = read_timeout if read_timeout else (3600 if stream else 90)
                 resp = _NVIDIA_SESSION.post(
                     "https://integrate.api.nvidia.com/v1/chat/completions",
                     headers=headers,
                     json=payload,
-                    timeout=(5, 3600),  # (connect, read) — fail fast on connect, no timeout on streaming reads
+                    timeout=(5, _read_to),
                     stream=stream,
                 )
             except Exception as _e:
@@ -880,7 +897,8 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
 
 
 def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False,
-              model="llama-3.3-70b-versatile", tools=None, tool_choice=None):
+              model="llama-3.3-70b-versatile", tools=None, tool_choice=None,
+              read_timeout=None):
     """Call Groq API with automatic multi-key rotation and 429 handling."""
     if not GROQ_API_KEYS:
         return None
@@ -990,10 +1008,15 @@ def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False,
             }
             if stream:
                 headers["Accept-Encoding"] = "identity"
+            # See call_nvidia: long read timeout is only safe for streaming
+            # (gaps between SSE tokens). A non-stream call must get the whole
+            # body in one read, so bound it (default 90s) to keep a blocking
+            # thread from lingering an hour after the caller has given up.
+            _read_to = read_timeout if read_timeout else (3600 if stream else 90)
             resp = _GROQ_SESSION.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers=headers,
-                json=payload, timeout=(5, 3600), stream=stream
+                json=payload, timeout=(5, _read_to), stream=stream
             )
             if resp.status_code == 200:
                 record_model_result(f"groq/{model}", True)
