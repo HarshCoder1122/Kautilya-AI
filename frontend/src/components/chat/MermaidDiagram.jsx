@@ -285,16 +285,21 @@ export function MermaidDiagram({ code, streaming = false, title = "Diagram" }) {
 
   const source = (code || "").trim();
 
-  // Smooth fade-in animation when diagram renders
+  // Smooth fade-in animation for the FIRST successful render only. While a
+  // diagram is streaming, `svg` gets replaced on every debounced re-render
+  // (new nodes/edges arriving) — re-running this on every `svg` change was
+  // re-triggering the fade-out/fade-in on each partial redraw, which is what
+  // showed up as flicker during streaming. Once visible, later re-renders
+  // just swap the SVG DOM in place without replaying the entrance animation.
   useEffect(() => {
-    if (status === "ok" && (svg || lastGoodRef.current)) {
+    if (status === "ok" && (svg || lastGoodRef.current) && !isVisible) {
       // Small delay to ensure DOM is ready before animating
       const timer = setTimeout(() => setIsVisible(true), 50);
       return () => clearTimeout(timer);
-    } else {
+    } else if (status !== "ok") {
       setIsVisible(false);
     }
-  }, [status, svg]);
+  }, [status, svg, isVisible]);
 
   useEffect(() => {
     let cancelled = false;
@@ -324,13 +329,20 @@ export function MermaidDiagram({ code, streaming = false, title = "Diagram" }) {
 
         const { svg: out } = await mermaid.render(`kmd-${++_renderSeq}`, source);
         if (cancelled) return;
+        // Skip the state update (and the DOM replace it triggers) when the
+        // newly-rendered SVG is byte-identical to what's already on screen —
+        // happens when a streaming chunk only added whitespace/a partial
+        // trailing line that mermaid still resolves to the same diagram.
+        // Avoiding the no-op setSvg is what actually kills most of the
+        // flicker, since dangerouslySetInnerHTML repaints on every change.
+        if (out === lastGoodRef.current) { setStatus("ok"); return; }
         lastGoodRef.current = out;
         setSvg(out);
         setStatus("ok");
       } catch {
         if (!cancelled) setStatus(lastGoodRef.current ? "ok" : "error");
       }
-    }, streaming ? 400 : 120);
+    }, streaming ? 550 : 120);
 
     return () => { cancelled = true; clearTimeout(timer); };
   }, [source, streaming]);

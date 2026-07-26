@@ -755,6 +755,29 @@ function AgentDetail({ agent, onClose, onUpdate }) {
                 </div>
               </div>
             </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Silence Timeout (sec)</label>
+                <input
+                  type="number" min="0" max="120"
+                  value={editedAgent.silence_nudge_seconds ?? 15}
+                  onChange={(e) => setEditedAgent({ ...editedAgent, silence_nudge_seconds: parseInt(e.target.value || '0', 10) })}
+                  className="w-full px-3 py-2.5 text-sm bg-[var(--k-surface-elevated)] border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none"
+                />
+                <p className="text-[10px] text-muted-foreground">Caller silent this long → agent checks in ("Are you there?"). 0 = off.</p>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Call Disconnect (sec)</label>
+                <input
+                  type="number" min="0" max="600"
+                  value={editedAgent.silence_disconnect_seconds ?? 30}
+                  onChange={(e) => setEditedAgent({ ...editedAgent, silence_disconnect_seconds: parseInt(e.target.value || '0', 10) })}
+                  className="w-full px-3 py-2.5 text-sm bg-[var(--k-surface-elevated)] border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none"
+                />
+                <p className="text-[10px] text-muted-foreground">Still silent after check-in → call auto-ends. 0 = off.</p>
+              </div>
+            </div>
           </TabsContent>
 
           <TabsContent value="knowledge" className="space-y-6 animate-fade-up">
@@ -1167,6 +1190,8 @@ function CreateAgentForm({ onClose, onSuccess }) {
     language: 'hi-IN',
     agent_type: 'inbound',
     temperature: 0.7,
+    silence_nudge_seconds: 15,
+    silence_disconnect_seconds: 30,
   });
 
   const handleSubmit = async (e) => {
@@ -1279,6 +1304,30 @@ function CreateAgentForm({ onClose, onSuccess }) {
               </>
             )}
           </select>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="space-y-1.5">
+          <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Silence Timeout (sec)</label>
+          <input
+            data-testid="new-agent-silence-nudge"
+            type="number" min="0" max="120"
+            value={formData.silence_nudge_seconds}
+            onChange={(e) => setFormData({ ...formData, silence_nudge_seconds: parseInt(e.target.value || '0', 10) })}
+            className="w-full px-4 py-3 text-sm bg-accent/20 border border-[var(--k-border)] rounded-xl text-foreground focus:ring-1 focus:ring-[var(--k-brand)]"
+          />
+          <p className="text-[10px] text-muted-foreground">Caller silent this long → agent checks in ("Are you there?"). 0 = off.</p>
+        </div>
+        <div className="space-y-1.5">
+          <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Call Disconnect (sec)</label>
+          <input
+            data-testid="new-agent-silence-disconnect"
+            type="number" min="0" max="600"
+            value={formData.silence_disconnect_seconds}
+            onChange={(e) => setFormData({ ...formData, silence_disconnect_seconds: parseInt(e.target.value || '0', 10) })}
+            className="w-full px-4 py-3 text-sm bg-accent/20 border border-[var(--k-border)] rounded-xl text-foreground focus:ring-1 focus:ring-[var(--k-brand)]"
+          />
+          <p className="text-[10px] text-muted-foreground">Still silent after check-in → call auto-ends. 0 = off.</p>
         </div>
       </div>
       <div className="flex justify-end gap-3 pt-6">

@@ -849,11 +849,16 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
               }
               if (parsed.thinking) {
                 markFirstChunk();
-                setMessages(prev => prev.map(msg => (
-                  msg.id === aiMsg.id
-                    ? { ...msg, thinking: `${msg.thinking || ''}${parsed.thinking}`, thinkingDone: false }
-                    : msg
-                )));
+                setMessages(prev => prev.map(msg => {
+                  if (msg.id !== aiMsg.id) return msg;
+                  // A prior thinking segment already closed (e.g. the fake
+                  // "Reading your question…" placeholder handed off to the
+                  // model's real reasoning trace) — start the new segment
+                  // fresh instead of appending, so the placeholder text
+                  // doesn't linger glued to real reasoning with no separator.
+                  const base = msg.thinkingDone ? '' : (msg.thinking || '');
+                  return { ...msg, thinking: `${base}${parsed.thinking}`, thinkingDone: false };
+                }));
                 continue;
               }
               if (parsed.thinking_done) {

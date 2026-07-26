@@ -360,7 +360,21 @@ def build_personalized_prompt(base_prompt, user_name=None, memories=None, user_e
         except Exception as e:
             print(f"[Prompt] integrations block failed: {e}")
 
-    return base_prompt + system_context + personalization + integrations_block
+    # ---- Persona overlay (Dashboard → Settings → Preferences) ----
+    # Voice only. personalities_spec appends its own hard floor so a persona can
+    # never override identity, the no-fabrication rule, or the output contracts.
+    persona_block = ""
+    try:
+        from personalities_spec import render_personality_overlay
+        persona_block = render_personality_overlay(
+            profile_data.get('personality'),
+            custom_text=profile_data.get('custom_personality'),
+            custom_name=profile_data.get('custom_personality_name'),
+        )
+    except Exception as e:
+        print(f"[Prompt] persona overlay failed: {e}")
+
+    return base_prompt + system_context + personalization + integrations_block + persona_block
 
 
 def build_cli_system_prompt(base_prompt, env_context=None):
@@ -422,6 +436,43 @@ MAX_UPLOAD_MB = 25
 MAX_TEXT_CHARS = 60_000  # ~15k tokens — leaves room for the actual chat
 
 
+# ─────────────────── Full-text capture (document study) ───────────────────
+# The blocks we hand the LLM are truncated at MAX_TEXT_CHARS so one upload
+# can't eat the whole context window. But document_service needs the WHOLE
+# text to chunk and embed, and that text is only available inside the parsers.
+#
+# A thread-local sink beats threading a `sink` argument through eight parser
+# functions (and the ZIP recursion): each Flask request runs on one thread, so
+# a capture opened at the top of the request collects everything the parsers
+# extract on the way down, including files nested inside archives.
+import threading as _threading
+
+_extract_capture = _threading.local()
+
+
+def begin_text_capture():
+    """Start collecting untruncated extracted text on this thread."""
+    _extract_capture.items = []
+
+
+def end_text_capture():
+    """Stop collecting and return [{filename, text, kind}, …]."""
+    items = getattr(_extract_capture, 'items', None) or []
+    _extract_capture.items = None
+    return items
+
+
+def _capture_full_text(fname, text, kind="document"):
+    """Hand the parser's full text to an open capture, if any. No-op otherwise."""
+    items = getattr(_extract_capture, 'items', None)
+    if items is None or not text:
+        return
+    text = text.strip()
+    if len(text) < 200:      # too small to be worth indexing
+        return
+    items.append({"filename": fname, "text": text, "kind": kind})
+
+
 # ─────────────────────────── PDF / DOCX helpers ───────────────────────────
 # Heuristic constants — tuned for chat context (favor recall over precision).
 _PDF_MAX_RASTERIZED_PAGES = 6        # cap image blocks so we don't blow tokens
@@ -470,6 +521,7 @@ def _text_block(fname, label, text, extra=""):
     text = (text or "").strip()
     if not text:
         return {"type": "text", "text": f"\n[{label}: {fname} — no extractable text]\n"}
+    _capture_full_text(fname, text, kind=label.lower())
     truncated = ""
     if len(text) > MAX_TEXT_CHARS:
         truncated = f"\n\n…[truncated — full text was {len(text)} chars]"
@@ -680,6 +732,9 @@ def _process_pdf(file, fname):
             # Build text block
             text_combined = "\n\n".join(text_pages).strip()
             if text_combined:
+                # Full text (with "--- Page N ---" anchors intact) goes to the
+                # document indexer BEFORE we truncate for the chat payload.
+                _capture_full_text(fname, text_combined, kind="pdf")
                 truncated = ""
                 if len(text_combined) > MAX_TEXT_CHARS:
                     truncated = f"\n\n…[truncated — full PDF text is {len(text_combined)} chars]"
@@ -728,6 +783,7 @@ def _process_pdf(file, fname):
             return {"type": "text",
                     "text": f"\n[PDF: {fname} — no extractable text and PyMuPDF unavailable for OCR rasterization. "
                             f"Install pymupdf on the backend to handle scanned PDFs.]\n"}
+        _capture_full_text(fname, text, kind="pdf")
         truncated = ""
         if len(text) > MAX_TEXT_CHARS:
             truncated = f"\n\n…[truncated — full PDF is {len(text)} chars]"
@@ -790,6 +846,7 @@ def _process_docx(file, fname):
     if not text and not embedded:
         return {"type": "text", "text": f"\n[Word Doc: {fname} — empty or unsupported content]\n"}
 
+    _capture_full_text(fname, text, kind="docx")
     truncated = ""
     if text and len(text) > MAX_TEXT_CHARS:
         truncated = f"\n\n…[truncated]"
@@ -867,6 +924,7 @@ def process_uploaded_file(file):
             text = raw.decode('utf-8', errors='ignore').strip()
             if not text:
                 return {"type": "text", "text": f"\n[File: {fname} is empty]\n"}
+            _capture_full_text(fname, text, kind="text")
             truncated = ""
             if len(text) > MAX_TEXT_CHARS:
                 truncated = f"\n\n…[truncated — original was {len(text)} chars, showing first {MAX_TEXT_CHARS}]"
@@ -904,6 +962,7 @@ def process_uploaded_file(file):
             text = "\n\n".join(sheets_out).strip()
             if not text:
                 return {"type": "text", "text": f"\n[Excel: {fname} — empty]\n"}
+            _capture_full_text(fname, text, kind="excel")
             return {"type": "text", "text": f"\n[Excel: {fname}]\n{text}\n"}
         except ImportError:
             return {"type": "text", "text": f"\n[Excel: {fname} — openpyxl not installed on backend]\n"}
@@ -952,6 +1011,7 @@ def process_uploaded_file(file):
             printable = sum(1 for c in decoded[:4096] if c.isprintable() or c in '\n\r\t')
             if nul == 0 and decoded and printable / max(1, len(decoded[:4096])) > 0.85:
                 text = decoded.strip()
+                _capture_full_text(fname, text, kind="text")
                 truncated = ""
                 if len(text) > MAX_TEXT_CHARS:
                     truncated = f"\n\n…[truncated — original was {len(text)} chars]"

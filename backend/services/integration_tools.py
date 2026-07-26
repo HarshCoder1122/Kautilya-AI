@@ -360,6 +360,179 @@ def _append_sheet_row(uid, args):
     return {"ok": True, "status": r.status_code, "response": r.json()}
 
 
+def _read_sheet_rows(uid, args):
+    """Read rows from a Google Sheet, with optional search by column value.
+    Used as a lightweight CRM lookup — find a contact by phone/email."""
+    try:
+        token = _get_valid_google_token(uid, 'google_sheets')
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    spreadsheet_id = (args.get("spreadsheet_id") or "").strip()
+    if not spreadsheet_id:
+        return {"ok": False, "error": "spreadsheet_id is required"}
+
+    sheet_name = (args.get("sheet_name") or "Sheet1").strip()
+    search_column = (args.get("search_column") or "").strip()  # e.g. "A" for phone
+    search_value = (args.get("search_value") or "").strip()
+
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{sheet_name}"
+    r = requests.get(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=15,
+    )
+    if not r.ok:
+        return _google_api_error(r) or {"ok": False, "status": r.status_code, "error": r.text[:300]}
+
+    rows = r.json().get("values", [])
+    if not rows:
+        return {"ok": True, "rows": [], "count": 0, "headers": []}
+
+    headers = rows[0] if rows else []
+    data_rows = rows[1:] if len(rows) > 1 else []
+
+    # Filter by search value if specified
+    if search_value and search_column:
+        col_idx = ord(search_column.upper()) - ord('A')
+        # Normalize phone lookups: strip +, spaces, dashes for loose matching
+        sv_clean = search_value.lstrip('+').replace('-', '').replace(' ', '')
+        matching = []
+        for row in data_rows:
+            if len(row) > col_idx:
+                cell_clean = row[col_idx].lstrip('+').replace('-', '').replace(' ', '')
+                if sv_clean in cell_clean or cell_clean in sv_clean:
+                    matching.append(row)
+        data_rows = matching
+
+    # Convert to dicts, limit to last 20 rows
+    results = []
+    for row in data_rows[-20:]:
+        entry = {}
+        for i, h in enumerate(headers):
+            entry[h] = row[i] if i < len(row) else ""
+        results.append(entry)
+
+    return {"ok": True, "rows": results, "count": len(results), "headers": headers}
+
+
+def _update_sheet_row(uid, args):
+    """Find a row by key column value and update it, or append if not found.
+    Used as CRM upsert — phone number as the lookup key."""
+    try:
+        token = _get_valid_google_token(uid, 'google_sheets')
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    spreadsheet_id = (args.get("spreadsheet_id") or "").strip()
+    if not spreadsheet_id:
+        return {"ok": False, "error": "spreadsheet_id is required"}
+
+    sheet_name = (args.get("sheet_name") or "Sheet1").strip()
+    key_column = (args.get("key_column") or "A").strip().upper()
+    key_value = (args.get("key_value") or "").strip()
+    values = args.get("values")
+    if not isinstance(values, list):
+        return {"ok": False, "error": "values must be a list of cell values"}
+    if not key_value:
+        return {"ok": False, "error": "key_value is required for lookup"}
+
+    # Read existing data to find matching row
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{sheet_name}"
+    r = requests.get(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=15,
+    )
+    existing_rows = r.json().get("values", []) if r.ok else []
+    col_idx = ord(key_column) - ord('A')
+
+    # Normalize for phone matching
+    kv_clean = key_value.lstrip('+').replace('-', '').replace(' ', '')
+    row_num = None
+    for i, row in enumerate(existing_rows):
+        if i == 0:
+            continue  # skip header row
+        if len(row) > col_idx:
+            cell_clean = row[col_idx].lstrip('+').replace('-', '').replace(' ', '')
+            if kv_clean and (kv_clean in cell_clean or cell_clean in kv_clean):
+                row_num = i + 1  # Sheets API is 1-indexed
+                break
+
+    headers_dict = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    if row_num:
+        # Update existing row in-place
+        range_str = f"{sheet_name}!A{row_num}"
+        r = requests.put(
+            f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{range_str}",
+            headers=headers_dict,
+            params={"valueInputOption": "USER_ENTERED"},
+            json={"values": [values]},
+            timeout=15,
+        )
+        action = "updated"
+    else:
+        # Append new row
+        r = requests.post(
+            f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{sheet_name}:append",
+            headers=headers_dict,
+            params={"valueInputOption": "USER_ENTERED", "insertDataOption": "INSERT_ROWS"},
+            json={"values": [values]},
+            timeout=15,
+        )
+        action = "appended"
+
+    if not r.ok:
+        return _google_api_error(r) or {"ok": False, "status": r.status_code, "error": r.text[:300]}
+    return {"ok": True, "action": action, "row": row_num}
+
+
+def _create_spreadsheet(uid, args):
+    """Create a new Google Spreadsheet with default headers.
+    Used to auto-create the CRM Google Sheet for the agent."""
+    try:
+        token = _get_valid_google_token(uid, 'google_sheets')
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    title = (args.get("title") or "Kautilya CRM").strip()
+    headers = args.get("headers") or ["Phone", "Email", "Name", "Company", "Intent", "Last Call Summary", "Last Call Date", "Call Count", "Status"]
+
+    body = {
+        "properties": {"title": title},
+        "sheets": [
+            {
+                "properties": {"title": "CRM"},
+                "data": [
+                    {
+                        "startRow": 0,
+                        "startColumn": 0,
+                        "rowData": [
+                            {
+                                "values": [{"userEnteredValue": {"stringValue": h}} for h in headers]
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+
+    url = "https://sheets.googleapis.com/v4/spreadsheets"
+    r = requests.post(
+        url,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=body,
+        timeout=15,
+    )
+    if not r.ok:
+        return _google_api_error(r) or {"ok": False, "status": r.status_code, "error": r.text[:300]}
+
+    res = r.json()
+    return {"ok": True, "spreadsheet_id": res.get("spreadsheetId"), "url": res.get("spreadsheetUrl")}
+
+
 def _create_google_task(uid, args):
     try:
         token = _get_valid_google_token(uid, 'google_tasks')
@@ -915,6 +1088,41 @@ REGISTRY: Dict[str, Dict[str, Any]] = {
                 "spreadsheet_id": {"type": "string", "description": "Google Sheet ID from the sheet URL"},
                 "values": {"type": "array", "items": {"type": "string"}, "description": "List of cell values to add to the new row (e.g. ['John Doe', 'john@example.com'])"},
                 "sheet_name": {"type": "string", "description": "Tab sheet name, defaults to Sheet1"}}}}},
+    },
+    "read_sheet_rows": {
+        "provider": "google_sheets",
+        "handler": _read_sheet_rows,
+        "spec": {"type": "function", "function": {
+            "name": "read_sheet_rows",
+            "description": "Read rows from a Google Sheet, optionally searching by a column value. Use to look up a contact's previous data (CRM lookup by phone/email). Returns rows as dicts with header keys.",
+            "parameters": {"type": "object", "required": ["spreadsheet_id"], "properties": {
+                "spreadsheet_id": {"type": "string", "description": "Google Sheet ID from the sheet URL"},
+                "search_column": {"type": "string", "description": "Column letter to search in (e.g. 'A' for phone, 'B' for email)"},
+                "search_value": {"type": "string", "description": "Value to find in the search column (phone number or email)"},
+                "sheet_name": {"type": "string", "description": "Tab sheet name, defaults to Sheet1"}}}}},
+    },
+    "update_sheet_row": {
+        "provider": "google_sheets",
+        "handler": _update_sheet_row,
+        "spec": {"type": "function", "function": {
+            "name": "update_sheet_row",
+            "description": "Find a row by key column value (e.g. phone number) and update it in-place, or append a new row if not found. Works as a CRM upsert — use phone as the lookup key.",
+            "parameters": {"type": "object", "required": ["spreadsheet_id", "key_column", "key_value", "values"], "properties": {
+                "spreadsheet_id": {"type": "string", "description": "Google Sheet ID from the sheet URL"},
+                "key_column": {"type": "string", "description": "Column letter used as lookup key (e.g. 'A' for phone)"},
+                "key_value": {"type": "string", "description": "Value to match in the key column (e.g. the phone number)"},
+                "values": {"type": "array", "items": {"type": "string"}, "description": "Full row values to write (must match sheet columns)"},
+                "sheet_name": {"type": "string", "description": "Tab sheet name, defaults to Sheet1"}}}}},
+    },
+    "create_spreadsheet": {
+        "provider": "google_sheets",
+        "handler": _create_spreadsheet,
+        "spec": {"type": "function", "function": {
+            "name": "create_spreadsheet",
+            "description": "Create a new Google Spreadsheet with default headers.",
+            "parameters": {"type": "object", "required": ["title"], "properties": {
+                "title": {"type": "string", "description": "Title of the new spreadsheet"},
+                "headers": {"type": "array", "items": {"type": "string"}, "description": "Optional list of headers (default: CRM fields)"}}}}},
     },
     "create_google_task": {
         "provider": "google_tasks",

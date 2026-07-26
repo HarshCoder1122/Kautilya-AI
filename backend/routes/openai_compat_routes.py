@@ -11,7 +11,7 @@ by /api/keys/create. The master KAUTILYA_API_KEY also works.
 Under the hood requests are forwarded to NVIDIA NIM with the appropriate
 Kautilya model mapping and thinking-toggle logic:
 
-    kautilya-coder  → moonshotai/kimi-k2.6
+    kautilya-coder  → deepseek-ai/deepseek-v4-flash
     kautilya-pro    → z-ai/glm-5.2
     kautilya-daily  → nvidia/nemotron-3-ultra-550b-a55b
 
@@ -192,7 +192,7 @@ openai_compat_bp = Blueprint('openai_compat', __name__)
 # These are the same backing models the dashboard chat uses (agent_loop_service.py).
 KAUTILYA_MODEL_MAP = {
     "kautilya-fast":    "llama-3.3-70b-versatile",            # Groq direct — sub-500ms TTFT
-    "kautilya-coder":   "moonshotai/kimi-k2.6",
+    "kautilya-coder":   "deepseek-ai/deepseek-v4-flash",
     "kautilya-pro":     "z-ai/glm-5.2",                        # GLM 5.2 on NVIDIA NIM (Nemotron 3 Ultra moved to Daily)
     "kautilya-daily":   "nvidia/nemotron-3-ultra-550b-a55b",
 }
@@ -241,7 +241,7 @@ PUBLIC_MODELS = [
      "supports_system_messages": True,
      "supports_prompt_cache": False},
     {"id": "kautilya-coder",  "object": "model", "owned_by": "kautilya",
-     "description": "Frontier code generation. Tool use supported.",
+     "description": "Frontier code generation. Tool use + extended thinking supported.",
      "context_window": 256_000,
      "max_output_tokens": 32_768,
      "supports_function_calling": True,
@@ -249,6 +249,7 @@ PUBLIC_MODELS = [
      "supports_parallel_function_calling": True,
      "supports_vision": False,
      "supports_system_messages": True,
+     "supports_reasoning": True,
      "supports_prompt_cache": False},
     {"id": "kautilya-pro",    "object": "model", "owned_by": "kautilya",
      "description": "Strategic reasoning + extended thinking.",
@@ -570,24 +571,27 @@ def chat_completions():
     # chat_template_kwargs.enable_thinking. Daily tier always uses lowest
     # effort so Cline/Cursor stay snappy.
     is_daily = requested_model == 'kautilya-daily'
-    # The coder backend (Kimi K2.6) is driven as a plain chat model — no
-    # reasoning_effort, no chat_template_kwargs.thinking. Sending thinking
-    # params a hosted model doesn't accept makes NVIDIA reject the whole
-    # request with a 400 ("invalid field"), which Cline surfaces as "model
-    # not capable" (this is exactly what broke the retired Qwen3-Coder).
+    # The coder backend (Deepseek V4 Flash) is a real reasoning model, but
+    # defaults to thinking OFF like every other tier — external coding
+    # agents (Cline/Cursor) want fast turns by default, and can opt in via
+    # extra_body.max_thinking / reasoning_effort=high same as kautilya-pro.
     is_coder = (
         requested_model == 'kautilya-coder'
-        or 'kimi' in upstream_model.lower()
+        or 'deepseek' in upstream_model.lower()
+        or 'kimi' in upstream_model.lower()  # legacy alias, retired backend
         or ('qwen' in upstream_model.lower() and 'coder' in upstream_model.lower())
     )
-    rb = reasoning_budget if (max_thinking and not is_daily and not is_coder) else 0
+    rb = reasoning_budget if (max_thinking and not is_daily) else 0
     # Map OpenAI-style reasoning_effort to the upstream value:
     #   high → enable thinking path (handled via max_thinking above)
     #   low / medium / none / unspecified → fastest path, no reasoning tokens
     if is_coder:
-        upstream_effort = None  # never send reasoning_effort to the coder model
-        thinking_on = False
-        expose_thinking_flag = False
+        # Deepseek V4 Flash wants reasoning_effort='high' alongside
+        # chat_template_kwargs.thinking=True when thinking is on; otherwise
+        # no reasoning_effort at all (fastest path).
+        upstream_effort = 'high' if max_thinking else None
+        thinking_on = max_thinking
+        expose_thinking_flag = bool(max_thinking)
     elif is_daily:
         # Nemotron (daily) uses chat_template_kwargs.enable_thinking, driven
         # by max_thinking — not a Mistral-style reasoning_effort string.

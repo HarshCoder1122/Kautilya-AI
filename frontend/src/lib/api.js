@@ -511,6 +511,18 @@ export const userAPI = {
     return response.data;
   },
 
+  // Built-in personas for the picker (static server-side list — cache hard)
+  getPersonalities: async ({ force = false } = {}) => {
+    return cachedGet('user:personalities', async () => (await api.get('/api/user/personalities')).data, { ttl: 3600000, force });
+  },
+
+  // Turn a plain-language description into a persona overlay (preview only —
+  // the caller still saves it through saveSettings).
+  generatePersonality: async ({ description, name }) => {
+    const response = await api.post('/api/user/personality/generate', { description, name });
+    return response.data;
+  },
+
   // Idempotent first-login welcome trigger. Safe to call after every login.
   welcomeCheck: async () => {
     const response = await api.post('/api/user/welcome-check');
@@ -596,6 +608,12 @@ export const telephonyAPI = {
   saveConfig: async (config) => {
     const response = await api.post('/api/telephony/save', config);
     bustCache('telephony:config');
+    return response.data;
+  },
+
+  // Ready-to-paste Vobiz Answer/Events URLs for INBOUND calls on an agent
+  inboundUrl: async (agentId) => {
+    const response = await api.get(`/api/telephony/inbound-url/${agentId}`);
     return response.data;
   },
 

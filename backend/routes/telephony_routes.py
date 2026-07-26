@@ -133,6 +133,37 @@ def api_telephony_save():
         return jsonify({"error": str(e)}), 500
 
 
+@telephony_bp.route('/telephony/inbound-url/<agent_id>', methods=['GET'])
+def api_telephony_inbound_url(agent_id):
+    """Return the ready-to-paste Vobiz Answer/Events URLs for INBOUND calls.
+
+    The user pastes the answer_url into the Vobiz portal against their virtual
+    number ("Answer URL", method POST). When someone calls that number, Vobiz
+    hits our webhook, which bridges the call into LiveKit SIP and the mapped
+    agent picks it up. The WEBHOOK_SECRET is appended server-side so the
+    frontend never needs to know it."""
+    from extensions import db
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid: return jsonify({"error": "Unauthorized"}), 401
+    if not db: return jsonify({"error": "Database not available"}), 503
+    try:
+        doc = db.collection('agents').document(agent_id).get()
+        if not doc.exists or (doc.to_dict() or {}).get('uid') != uid:
+            return jsonify({"error": "Agent not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    base_url = request.host_url.rstrip('/').replace('http://', 'https://')
+    answer_url = f"{base_url}/api/webhooks/vobiz/answer/{agent_id}"
+    events_url = f"{base_url}/api/webhooks/vobiz/events"
+    secret = (os.environ.get("WEBHOOK_SECRET") or "").strip()
+    if secret:
+        answer_url += f"?secret={secret}"
+        events_url += f"?secret={secret}"
+    return jsonify({"answer_url": answer_url, "events_url": events_url, "method": "POST"})
+
+
 @telephony_bp.route('/telephony/outbound-call', methods=['POST'])
 def api_agent_call_outbound():
     from extensions import db, limit_manager

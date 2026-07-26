@@ -163,6 +163,15 @@ def api_agent_create():
     
     data = request.get_json() or {}
     name = data.get('name', 'My Agent')[:100]
+
+    def _secs(key, default, hi):
+        # Silence-watchdog fields: 0 = disabled, clamp to sane ceilings.
+        try:
+            v = data.get(key, default)
+            if v is None or str(v).strip() == '': v = default
+            return min(max(int(float(v)), 0), hi)
+        except Exception:
+            return default
     
     is_pro = limit_manager.is_pro_user(uid)
     max_agents = MAX_AGENTS_PRO if is_pro else MAX_AGENTS_FREE
@@ -192,6 +201,10 @@ def api_agent_create():
         'silence_timeout': min(max(float(data.get('silence_timeout', 1.5)), 0.5), 10.0),
         'max_call_duration': int(data.get('max_call_duration', 300)),
         'end_on_silence': bool(data.get('end_on_silence', False)),
+        # Silence watchdog: nudge the caller after N sec of dead air, hang up
+        # after M sec. 0 = stage disabled. Read by the LiveKit voice worker.
+        'silence_nudge_seconds': _secs('silence_nudge_seconds', 15, 120),
+        'silence_disconnect_seconds': _secs('silence_disconnect_seconds', 30, 600),
         'exotel_sid': data.get('exotel_sid', '')[:100],
         'exotel_api_key': data.get('exotel_api_key', '')[:100],
         'exotel_token': data.get('exotel_token', '')[:100],
@@ -306,10 +319,10 @@ def api_agent_detail(agent_id):
         allowed = [
             'name', 'system_prompt', 'welcome_message', 'fallback_message', 'model', 'voice', 'language', 'temperature', 
             'max_tokens', 'agent_type', 'stt_provider', 'tts_provider', 'interruption_mode', 'silence_timeout', 'max_call_duration', 
-            'end_on_silence', 'exotel_sid', 'exotel_api_key', 'exotel_token', 'exotel_number', 'exotel_subdomain', 'telephony_provider', 
+            'end_on_silence', 'exotel_sid', 'exotel_api_key', 'exotel_token', 'exotel_number', 'exotel_subdomain', 'telephony_provider',
             'vobiz_auth_id', 'vobiz_auth_token', 'vobiz_number', 'conversational_flow', 'knowledge_base', 'status', 'linked_numbers',
             'call_objective', 'post_call_webhook', 'handoff_enabled', 'handoff_number', 'handoff_callback_message', 'lead_webhook_url',
-            'integrations'
+            'integrations', 'silence_nudge_seconds', 'silence_disconnect_seconds'
         ]
         for field in allowed:
             if field in data:
@@ -322,6 +335,8 @@ def api_agent_detail(agent_id):
                 elif field == 'silence_timeout': val = min(max(float(val), 0.5), 10.0)
                 elif field == 'max_call_duration': val = int(val)
                 elif field == 'end_on_silence': val = bool(val)
+                elif field == 'silence_nudge_seconds': val = min(max(int(float(val or 0)), 0), 120)
+                elif field == 'silence_disconnect_seconds': val = min(max(int(float(val or 0)), 0), 600)
                 elif field == 'integrations': val = _sanitize_integrations(val)
                 update_fields[field] = val
         
@@ -842,9 +857,9 @@ def api_agent_chat(agent_id):
     model_choice = normalize_model_choice(model_name, default="daily")
     upstream_model = "llama-3.3-70b-versatile"
     if model_choice == "pro":
-        upstream_model = "z-ai/glm-5.1"   # GLM-5.1 on NVIDIA NIM (nemotron retired)
+        upstream_model = "z-ai/glm-5.2"   # GLM 5.2 on NVIDIA NIM (Nemotron 3 Ultra moved to Daily)
     elif model_choice == "coder":
-        upstream_model = "moonshotai/kimi-k2.6"
+        upstream_model = "deepseek-ai/deepseek-v4-flash"
     # Gemini Live is voice-only — fall through to Groq for chat.
 
     chat_messages = [{"role": "system", "content": full_system}]

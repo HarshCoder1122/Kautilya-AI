@@ -18,7 +18,8 @@ from services.auth_service import verify_firebase_token, record_usage
 from services.memory_service import (
     get_user_chat_dir, get_user_memory, save_user_memory, get_user_settings,
     extract_memories, build_personalized_prompt, build_cli_system_prompt,
-    process_uploaded_file, record_user_session
+    process_uploaded_file, record_user_session,
+    begin_text_capture, end_text_capture,
 )
 from services.agent_loop_service import get_llm_response, normalize_model_choice
 from services.research_service import deep_research_stream
@@ -171,6 +172,46 @@ def _enforce_user_limit(uid):
     sorted_sids = sorted(user_convs.keys(), key=lambda s: user_convs[s].get('last_active', 0), reverse=True)
     for sid in sorted_sids[MAX_INMEM_CONVERSATIONS_PER_USER:]:
         del user_convs[sid]
+
+
+def _ingest_uploaded_documents(uid, session_id, captured):
+    """Index uploaded documents so they survive past the turn they arrived on.
+
+    Small documents are ingested inline — no embedding calls, so it costs
+    nothing. Large ones are embedded on a background thread: this turn is
+    already grounded by the truncated text in the message itself, and blocking
+    TTFT for several seconds of embedding would be a bad trade.
+    """
+    if not captured or not session_id:
+        return
+    try:
+        from services.document_service import ingest_document, INLINE_FULL_TEXT_LIMIT
+    except Exception as e:
+        print(f"[Chat] document_service unavailable: {e}")
+        return
+
+    big = []
+    for item in captured:
+        text = item.get('text') or ''
+        if len(text) <= INLINE_FULL_TEXT_LIMIT:
+            try:
+                ingest_document(uid, session_id, item.get('filename'), text, kind=item.get('kind'))
+            except Exception as e:
+                print(f"[Chat] inline ingest failed for {item.get('filename')}: {e}")
+        else:
+            big.append(item)
+
+    if not big:
+        return
+
+    def _worker():
+        for it in big:
+            try:
+                ingest_document(uid, session_id, it.get('filename'), it.get('text'), kind=it.get('kind'))
+            except Exception as e:
+                print(f"[Chat] background ingest failed for {it.get('filename')}: {e}")
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 def _generate_chat_title(uid, session_id, user_msg, assistant_msg):
@@ -498,17 +539,38 @@ def jarvis_stream():
     # images) — flatten either way so the LLM gets a clean multipart payload.
     user_content_parts = []
     if files:
-        for f in files:
-            processed = process_uploaded_file(f)
-            if not processed:
-                continue
-            if isinstance(processed, list):
-                user_content_parts.extend(processed)
-            else:
-                user_content_parts.append(processed)
+        # Capture the UNtruncated extracted text on the way past, so the whole
+        # document can be indexed even though the chat payload only carries the
+        # first MAX_TEXT_CHARS of it.
+        begin_text_capture()
+        try:
+            for f in files:
+                processed = process_uploaded_file(f)
+                if not processed:
+                    continue
+                if isinstance(processed, list):
+                    user_content_parts.extend(processed)
+                else:
+                    user_content_parts.append(processed)
+        finally:
+            captured = end_text_capture()
+        _ingest_uploaded_documents(uid, session_id, captured)
 
     if message:
         user_content_parts.insert(0, {"type": "text", "text": message})
+
+    # Follow-up turns: the document is no longer in the message history, so pull
+    # the passages that answer THIS question out of the indexed document. Only
+    # on turns without fresh uploads — a fresh upload already carries its text.
+    if not files and message and session_id:
+        try:
+            from services.document_service import build_document_context
+            doc_ctx = build_document_context(uid, session_id, message)
+            if doc_ctx:
+                user_content_parts.insert(0, {"type": "text", "text": doc_ctx})
+                print(f"[Chat] Injected document context ({len(doc_ctx)} chars) for session {session_id}")
+        except Exception as e:
+            print(f"[Chat] document context failed: {e}")
 
     if not user_content_parts:
         return jsonify({"error": "No message"}), 400

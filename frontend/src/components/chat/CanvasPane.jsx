@@ -10,6 +10,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { coderProjectsAPI, artifactsAPI, deckAPI } from '@/lib/api';
 import { renderDeckHTML, parseDeck, THEMES, THEME_IDS } from '@/lib/deck';
+import { MermaidDiagram, SvgBlock } from './MermaidDiagram';
 
 /** Parse `<file ...>...</file>` blocks from model output.
  *
@@ -459,6 +460,21 @@ function cleanDocumentContent(raw) {
 
 /** Custom ReactMarkdown components for document-style rendering. */
 const DOC_COMPONENTS = {
+  // react-markdown wraps fenced code in <pre>; unwrap it for diagram
+  // languages so MermaidDiagram/SvgBlock's own block-level <div> doesn't end
+  // up nested inside a <pre> (invalid + broke the layout/centering).
+  pre: ({ node, children }) => {
+    try {
+      const codeEl = (node?.children || []).find((c) => c.tagName === 'code');
+      const cls = codeEl?.properties?.className || [];
+      const langClass = (Array.isArray(cls) ? cls : [cls])
+        .find((c) => typeof c === 'string' && c.startsWith('language-'));
+      if (langClass === 'language-mermaid' || langClass === 'language-svg') {
+        return <>{children}</>;
+      }
+    } catch { /* fall through to default <pre> */ }
+    return <pre className="bg-[var(--k-surface)] border border-[var(--k-border)] rounded-md p-3 sm:p-4 overflow-x-auto my-4 text-sm font-mono max-w-full">{children}</pre>;
+  },
   h1: ({ children }) => <h1 className="k-heading text-3xl md:text-4xl font-bold mb-6 mt-2 text-foreground tracking-tight">{children}</h1>,
   h2: ({ children }) => <h2 className="k-heading text-2xl font-semibold mb-4 mt-10 text-foreground border-b border-[var(--k-border)] pb-2">{children}</h2>,
   h3: ({ children }) => <h3 className="k-heading text-xl font-semibold mb-3 mt-8 text-foreground">{children}</h3>,
@@ -482,9 +498,28 @@ const DOC_COMPONENTS = {
   thead: ({ children }) => <thead className="bg-[var(--k-surface)]">{children}</thead>,
   th: ({ children }) => <th className="px-4 py-2 text-left font-semibold border-b border-[var(--k-border)]">{children}</th>,
   td: ({ children }) => <td className="px-4 py-2 border-b border-[var(--k-border)]">{children}</td>,
-  code: ({ inline, children }) => inline
-    ? <code className="bg-accent/50 px-1.5 py-0.5 rounded text-[0.85em] font-mono break-all">{children}</code>
-    : <pre className="bg-[var(--k-surface)] border border-[var(--k-border)] rounded-md p-3 sm:p-4 overflow-x-auto my-4 text-sm font-mono max-w-full"><code className="whitespace-pre">{children}</code></pre>,
+  code: ({ inline, className, children }) => {
+    const match = /language-(\w+)/.exec(className || '');
+    const lang = match ? match[1] : '';
+    const codeString = String(children).replace(/\n$/, '');
+    // Same live-diagram treatment as the chat bubble (ChatMessage.jsx) — a
+    // document artifact is just markdown too, so a ```mermaid/```svg block
+    // in a generated report was previously falling through to the plain
+    // <pre><code> branch below and showing as raw fenced text instead of a
+    // rendered diagram.
+    if (!inline && lang === 'mermaid') {
+      return <MermaidDiagram code={codeString} />;
+    }
+    if (!inline && (lang === 'svg' || (!lang && codeString.includes('\n') && codeString.trim().startsWith('<svg')))) {
+      return <SvgBlock code={codeString} />;
+    }
+    // Non-diagram code: the outer `pre` override above already supplies the
+    // styled <pre> wrapper, so just return the <code> — returning our own
+    // <pre> here too would double-wrap (<pre><pre><code>...).
+    return inline
+      ? <code className="bg-accent/50 px-1.5 py-0.5 rounded text-[0.85em] font-mono break-all">{children}</code>
+      : <code className="whitespace-pre">{children}</code>;
+  },
   hr: () => <hr className="my-8 border-[var(--k-border)]" />,
   strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
 };

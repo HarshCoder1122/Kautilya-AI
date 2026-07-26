@@ -143,7 +143,7 @@ def public_agent_chat(agent_id):
 
     # Pick backend by model id
     if 'kautilya-coder' in model or 'deepseek' in model or 'kimi' in model:
-        gen = call_nvidia(messages, stream=True, model='moonshotai/kimi-k2.6',
+        gen = call_nvidia(messages, stream=True, model='deepseek-ai/deepseek-v4-flash',
                           temperature=temperature, max_tokens=max_tokens, expose_thinking=False)
     elif 'kautilya-pro' in model or 'glm' in model:
         gen = call_nvidia(messages, stream=True, model='z-ai/glm-5.2',

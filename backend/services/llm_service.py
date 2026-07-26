@@ -679,7 +679,9 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
         # GLM and Nemotron 3 Ultra use enable_thinking; thinking
         # can be explicitly turned OFF by passing enable_thinking=False so
         # the user's "Max Thinking" toggle is honored in both directions.
-        # Qwen3-thinking variants use {thinking: {type, budget_tokens}}.
+        # Deepseek V4 Flash uses a boolean chat_template_kwargs.thinking +
+        # top-level reasoning_effort. Qwen3-thinking variants use
+        # {thinking: {type, budget_tokens}}.
         if model.startswith("z-ai/glm") or model.startswith("nvidia/nemotron"):
             # max_thinking ON  → enable_thinking True, stream reasoning back
             # max_thinking OFF → enable_thinking False, skip reasoning entirely
@@ -690,10 +692,18 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                 payload["chat_template_kwargs"]["clear_thinking"] = False
             if bool(max_thinking) or (expose_thinking and reasoning_budget and reasoning_budget > 0):
                 payload["chat_template_kwargs"]["enable_thinking"] = True
-                if reasoning_budget and reasoning_budget > 0:
-                    payload["reasoning_budget"] = reasoning_budget
-                elif model.startswith("nvidia/nemotron"):
-                    payload["reasoning_budget"] = 16384
+                # GLM 5.2 400s on an unrecognized top-level `reasoning_budget`
+                # param ("Validation: Unsupported parameter(s)") — only
+                # Nemotron accepts it as a top-level field.
+                if model.startswith("nvidia/nemotron"):
+                    payload["reasoning_budget"] = reasoning_budget if (reasoning_budget and reasoning_budget > 0) else 16384
+        elif model.startswith("deepseek-ai/deepseek-v4"):
+            # max_thinking ON  → thinking=True + reasoning_effort='high'.
+            # max_thinking OFF → thinking=False, no reasoning_effort (fastest
+            # path — matches the other tiers' "opt-in only" thinking policy).
+            payload["chat_template_kwargs"] = {"thinking": bool(max_thinking)}
+            if bool(max_thinking):
+                reasoning_effort = reasoning_effort or "high"
         elif expose_thinking and reasoning_budget and reasoning_budget > 0:
             payload["chat_template_kwargs"] = {"thinking": {"type": "enabled", "budget_tokens": reasoning_budget}}
         # Mistral-style top-level reasoning toggle (low|medium|high)
@@ -830,13 +840,21 @@ def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
                             except Exception:
                                 continue
 
-                            reasoning = delta.get("reasoning_content")
+                            # Most models key reasoning as `reasoning_content`;
+                            # Deepseek V4 Flash was observed using `reasoning`.
+                            reasoning = delta.get("reasoning_content") or delta.get("reasoning")
                             if reasoning:
                                 if expose_thinking:
                                     thinking_active = True
                                     collected_chunks.append({"thinking": reasoning})
                                     yield {"thinking": reasoning}
-                                continue
+                                # Deliberately NOT `continue` here — some models
+                                # (GLM 5.2 observed) pack the first content
+                                # token(s) into the SAME delta as the last
+                                # reasoning_content fragment. An early continue
+                                # here silently dropped that leading content,
+                                # which showed up as answers missing their
+                                # first word ("What's the task" -> "'s the task").
 
                             if "tool_calls" in delta:
                                 has_tool_calls = True

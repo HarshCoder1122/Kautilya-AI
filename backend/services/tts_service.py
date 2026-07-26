@@ -7,7 +7,8 @@ from config import EDGE_TTS_VOICES
 
 
 def clean_text_for_tts(text):
-    """Remove markdown, emojis, URLs, code blocks for clean TTS output."""
+    """Remove markdown, emojis, URLs, code blocks and convert special
+    characters to spoken-word equivalents for natural human-like TTS output."""
     if not text:
         return ""
     # Remove code blocks
@@ -27,8 +28,45 @@ def clean_text_for_tts(text):
                   r'\U0001F1E0-\U0001F1FF\U00002702-\U000027B0\U0001F900-\U0001F9FF'
                   r'\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002600-\U000026FF'
                   r'\U0000FE00-\U0000FE0F\U0000200D]+', '', text)
-    # Remove special chars but keep punctuation
-    text = re.sub(r'[|•·►▸▶→←↑↓★☆♦♥♣♠]', '', text)
+
+    # ---- Mathematical / comparison operators → spoken equivalents ----
+    # Multi-char operators MUST be replaced before single-char ones
+    text = re.sub(r'<=', ' less than or equal to ', text)
+    text = re.sub(r'>=', ' greater than or equal to ', text)
+    text = re.sub(r'!=', ' not equal to ', text)
+    text = re.sub(r'==', ' equals ', text)
+    text = re.sub(r'=>', ' implies ', text)
+    text = re.sub(r'->', ' to ', text)
+    text = re.sub(r'<-', ' from ', text)
+    # Single < > only when surrounded by spaces (avoid breaking words)
+    text = re.sub(r'\s<\s', ' less than ', text)
+    text = re.sub(r'\s>\s', ' greater than ', text)
+    # Common math symbols
+    text = re.sub(r'\+', ' plus ', text)
+    text = re.sub(r'\s-\s', ' minus ', text)  # only spaced dash (preserve hyphens)
+    text = re.sub(r'\s/\s', ' divided by ', text)
+    text = re.sub(r'\s\*\s', ' times ', text)
+    text = re.sub(r'%', ' percent ', text)
+
+    # ---- Arrows and decorative symbols → remove or speak ----
+    text = re.sub(r'[|•·►▸▶←↑↓★☆♦♥♣♠→⇒⇐⇔≈≠≤≥±∞√∑∏∫]', ' ', text)
+
+    # ---- Programming / structural chars that TTS reads literally ----
+    text = re.sub(r'[{}()\[\]\\<>@#$^&~`|]', ' ', text)
+
+    # ---- Numbered / bulleted list markers → clean ----
+    text = re.sub(r'^\d+[.)]\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^[-*]\s+', '', text, flags=re.MULTILINE)
+
+    # ---- Ellipsis → single period (pause) ----
+    text = re.sub(r'\.{2,}', '.', text)
+
+    # ---- Semicolons / colons → comma pause (more natural) ----
+    text = re.sub(r'[;:]', ',', text)
+
+    # ---- Quotes (spoken awkwardly by most TTS) → remove ----
+    text = re.sub(r'["""\'\'`]', '', text)
+
     # Collapse whitespace
     text = re.sub(r'\s+', ' ', text).strip()
     return text

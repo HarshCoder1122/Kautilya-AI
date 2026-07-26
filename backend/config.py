@@ -111,12 +111,12 @@ from system_prompts import (
 SYSTEM_PROMPT = DAILY_SYSTEM_PROMPT
 CODER_SYSTEM_PROMPT = CODER_SYSTEM_PROMPT_PRO
 
-# File-based override (optional)
-_prompt_path = os.path.join(BASE_DIR, "system_prompt_cloud.txt")
-if os.path.exists(_prompt_path):
-    with open(_prompt_path, "r", encoding="utf-8") as f:
-        SYSTEM_PROMPT = f.read().strip()
-    print(f"[CONFIG] Loaded custom system prompt from {SYSTEM_PROMPT[:50]}...")
+# NOTE: system_prompt_cloud.txt is already loaded by system_prompts.py as the
+# MASTER prompt and composed with the per-tier overlays. Do NOT re-read it here
+# and overwrite SYSTEM_PROMPT — that used to silently drop Daily's tool, diagram
+# and question-card overlays (the file always exists, so the "optional override"
+# always fired). Edit the .txt to change the master; edit system_prompts.py to
+# change a tier.
 
 # ============== Constants ==============
 MAX_HISTORY = 20

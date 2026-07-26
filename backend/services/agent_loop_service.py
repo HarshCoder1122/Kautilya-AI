@@ -33,11 +33,14 @@ MODEL_ALIASES = {
     "nvidia/nemotron-3-super-120b-a12b": "daily",
     "nvidia/nemotron-3-ultra-550b-a55b": "daily",
     "kautilya-coder": "coder",
+    "deepseek": "coder",
+    "deepseek-v4-flash": "coder",
+    "deepseek-ai/deepseek-v4-flash": "coder",
+    # Legacy aliases from retired coder backends — keep mapping to coder so
+    # old clients don't break.
     "kimi": "coder",
     "kimi-k2.6": "coder",
     "moonshotai/kimi-k2.6": "coder",
-    # Legacy aliases from the retired Qwen3-Coder backend — keep mapping to
-    # coder so old clients don't break.
     "qwen": "coder",
     "qwen-3": "coder",
     "qwen-3-coder-480b-a35b-instruct": "coder",
@@ -458,7 +461,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     # Model display names for UI status
     # NVIDIA NIM model IDs - verified available on https://build.nvidia.com
     _MODEL_LABELS = {
-        'coder': ('Kautilya Coder', 'moonshotai/kimi-k2.6'),
+        'coder': ('Kautilya Coder', 'deepseek-ai/deepseek-v4-flash'),
         'pro':   ('Kautilya Pro', 'z-ai/glm-5.2'),
         'daily': ('Kautilya Daily', 'nvidia/nemotron-3-ultra-550b-a55b'),
     }
@@ -535,6 +538,17 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             is_content = (
                 isinstance(item, dict) and ("chunk" in item or "tool_calls" in item)
             ) or isinstance(item, str)
+            is_real_thinking = isinstance(item, dict) and "thinking" in item
+
+            # The model's OWN reasoning has started arriving — close out the
+            # fake placeholder phrase first so it doesn't run straight into
+            # real reasoning text with no separator (e.g. "Reading your
+            # question… The user wants to…" reading as one garbled line).
+            # A fresh thinking_done/re-open lets the UI collapse-and-restart
+            # the "Thinking…" bubble cleanly for the real trace.
+            if is_real_thinking and placeholder_shown and not thinking_closed:
+                yield {"thinking_done": True}
+                thinking_closed = True
 
             if is_content and not thinking_closed:
                 if placeholder_shown:
@@ -660,12 +674,10 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         if model_choice == 'coder':
             from config import NVIDIA_API_KEYS
             label, model_id = _MODEL_LABELS['coder']
-            # The coder backend (Kimi K2.6) is driven as a plain chat model:
-            # no reasoning_effort, no chat_template_kwargs. Sending thinking
-            # params a hosted model doesn't accept makes NVIDIA 400 the whole
-            # request (this is what broke the retired Qwen3-Coder). If the
-            # model emits inline <think> tags, _ThinkSplitter already strips
-            # them from the visible answer.
+            # Deepseek V4 Flash is a real reasoning model (unlike the retired
+            # Kimi K2.6 chat-only backend), so it honors the same "Max
+            # Thinking" opt-in toggle as Pro — thinking stays OFF unless the
+            # user explicitly asked for it, keeping default coder turns fast.
             if not NVIDIA_API_KEYS:
                 yield json.dumps({"event": "status", "message": f"⚡ {label} temporarily unavailable — using fast model…"})
                 response_gen = _call_daily(current_messages, max_tokens=max_tokens,
@@ -675,14 +687,14 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
                                            model=model_id, tools=tools, tool_choice=tool_choice,
                                            temperature=1.0, top_p=0.95,
-                                           max_thinking=False, reasoning_budget=0,
-                                           expose_thinking=False)
+                                           max_thinking=effective_max_thinking, reasoning_budget=reasoning_budget,
+                                           expose_thinking=True)
                 if not response_gen:
                     yield json.dumps({"event": "status", "message": f"⚡ Retrying {label}…"})
                     response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
                                                model=model_id, temperature=1.0, top_p=0.95,
-                                               max_thinking=False, reasoning_budget=0,
-                                               expose_thinking=False)
+                                               max_thinking=effective_max_thinking, reasoning_budget=reasoning_budget,
+                                               expose_thinking=True)
                 if not response_gen:
                     yield json.dumps({"event": "status", "message": f"⚡ {label} unavailable — using fast model…"})
                     response_gen = _call_daily(current_messages, max_tokens=max_tokens,

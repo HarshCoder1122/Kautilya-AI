@@ -615,6 +615,82 @@ except ImportError:
         return _wrap
 
 
+def _clean_tts_token(token):
+    """Space-PRESERVING clean for streaming tokens. clean_text_for_tts() ends
+    with .strip(), which would glue adjacent streamed tokens together
+    ('Hello'+' there' -> 'Hellothere'). Here we keep the token's leading/
+    trailing whitespace and only clean the inner text, so word boundaries
+    survive the token stream."""
+    from services.tts_service import clean_text_for_tts
+    if not token:
+        return token
+    lead = " " if token[:1].isspace() else ""
+    trail = " " if token[-1:].isspace() else ""
+    core = clean_text_for_tts(token)
+    if not core:
+        return " " if (lead or trail) else ""
+    return f"{lead}{core}{trail}"
+
+
+# ---- TTS text-cleaning wrapper — filters special characters before synthesis ----
+class _CleanStreamProxy:
+    """Proxies a SynthesizeStream, cleaning every text token as it is pushed.
+    Streaming TTS (e.g. Sarvam) is driven by AgentSession via stream()/push_text,
+    NOT synthesize() — so this is what actually prevents raw signs/symbols from
+    being spoken mid-call. All other calls delegate to the wrapped stream."""
+    def __init__(self, inner_stream):
+        self._inner = inner_stream
+
+    def push_text(self, token):
+        cleaned = _clean_tts_token(token)
+        if cleaned:
+            self._inner.push_text(cleaned)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def __aiter__(self):
+        return self._inner.__aiter__()
+
+    async def __aenter__(self):
+        return await self._inner.__aenter__()
+
+    async def __aexit__(self, *a):
+        return await self._inner.__aexit__(*a)
+
+
+class _CleanTTSWrapper(_tts.TTS):
+    """Wraps any TTS to filter special characters before synthesis so output
+    sounds natural and human-like. Mathematical operators (<=, >=, ->), markdown,
+    programming symbols etc. are converted to spoken-word equivalents. Cleans
+    BOTH the one-shot synthesize() path and the streaming stream()/push_text
+    path (the latter matters for streaming-only providers like Sarvam)."""
+    def __init__(self, inner_tts):
+        super().__init__(
+            capabilities=inner_tts.capabilities,
+            sample_rate=inner_tts.sample_rate,
+            num_channels=inner_tts.num_channels,
+        )
+        self._inner = inner_tts
+
+    def synthesize(self, text, **kwargs):
+        from services.tts_service import clean_text_for_tts
+        cleaned = clean_text_for_tts(text)
+        return self._inner.synthesize(cleaned, **kwargs)
+
+    def stream(self, **kwargs):
+        return _CleanStreamProxy(self._inner.stream(**kwargs))
+
+    def prewarm(self):
+        try:
+            return self._inner.prewarm()
+        except AttributeError:
+            return None
+
+    async def aclose(self):
+        return await self._inner.aclose()
+
+
 class KautilyaAgent(Agent):
     def __init__(self, owner_uid=None, **kwargs):
         if 'instructions' not in kwargs:
@@ -670,6 +746,46 @@ class KautilyaAgent(Agent):
             "company": company, "title": title, "notes": notes,
         })
 
+    @function_tool()
+    async def send_gmail(self, to: str, subject: str, body: str, cc: str = ""):
+        """Send an email from the owner's Gmail account. Use this to send call summary,
+        case studies, pricing info, brochures, or any follow-up material the caller requested.
+        HTML is allowed in the body."""
+        return await asyncio.to_thread(self._exec_tool, "send_gmail",
+                                       {"to": to, "subject": subject, "body": body, "cc": cc})
+
+    @function_tool()
+    async def read_sheet_rows(self, spreadsheet_id: str, search_column: str = "",
+                              search_value: str = "", sheet_name: str = "Sheet1"):
+        """Look up a contact's previous data in the CRM Google Sheet by phone or email.
+        Use at the START of a call to check if the caller has prior history."""
+        return await asyncio.to_thread(self._exec_tool, "read_sheet_rows",
+                                       {"spreadsheet_id": spreadsheet_id, "search_column": search_column,
+                                        "search_value": search_value, "sheet_name": sheet_name})
+
+    @function_tool()
+    async def update_sheet_row(self, spreadsheet_id: str, key_column: str, key_value: str,
+                               values: list, sheet_name: str = "Sheet1"):
+        """Save or update contact data in the CRM Google Sheet. Finds the existing row by
+        key_column/key_value (phone), updates it in-place, or appends if new contact.
+        Call this to persist conversation data so call continuity is maintained even after drops."""
+        return await asyncio.to_thread(self._exec_tool, "update_sheet_row",
+                                       {"spreadsheet_id": spreadsheet_id, "key_column": key_column,
+                                        "key_value": key_value, "values": values, "sheet_name": sheet_name})
+
+    @function_tool()
+    async def append_sheet_row(self, spreadsheet_id: str, values: list, sheet_name: str = "Sheet1"):
+        """Add a new row of data to a Google Sheet."""
+        return await asyncio.to_thread(self._exec_tool, "append_sheet_row",
+                                       {"spreadsheet_id": spreadsheet_id, "values": values,
+                                        "sheet_name": sheet_name})
+
+    @function_tool()
+    async def create_spreadsheet(self, title: str, headers: list = None):
+        """Create a new Google Sheet spreadsheet with a name and column headers."""
+        return await asyncio.to_thread(self._exec_tool, "create_spreadsheet",
+                                       {"title": title, "headers": headers})
+
 
 async def entrypoint(ctx: JobContext):
     # START CONNECT AND LOOKUP IN PARALLEL
@@ -683,6 +799,8 @@ async def entrypoint(ctx: JobContext):
     agent_language = "hi-IN"
     selected_model = "kautilya-daily"
     owner_uid = None
+    agent_data = {}  # full agent doc dict — used for crm_spreadsheet_id, kb_files etc.
+    crm_spreadsheet_id = ""  # Google Sheets CRM sheet ID (from agent config)
     # For OUTBOUND calls we dialed the number ourselves, so we already have it —
     # the dialer bakes it into room metadata as `to_number`. Captured below and
     # used as the lead's phone (no need to mine it out of the transcript).
@@ -734,12 +852,14 @@ async def entrypoint(ctx: JobContext):
         if doc and getattr(doc, 'exists', False):
             try:
                 data = doc.to_dict() or {}
+                agent_data = data  # stash for later (sheet CRM, KB links, etc.)
                 system_prompt = data.get("system_prompt") or system_prompt
                 welcome_message = data.get("welcome_message") or welcome_message
                 agent_language = data.get("language") or agent_language
                 selected_model = (data.get("model") or selected_model)
                 agent_voice = data.get("voice") or agent_voice
                 owner_uid = data.get("uid")
+                crm_spreadsheet_id = data.get("crm_spreadsheet_id") or ""
                 handoff_enabled = bool(data.get("handoff_enabled", False))
                 handoff_number = data.get("handoff_number", "")
                 handoff_callback_message = data.get("handoff_callback_message") or handoff_callback_message
@@ -758,23 +878,51 @@ async def entrypoint(ctx: JobContext):
     system_prompt = _clean_placeholders(system_prompt)
     welcome_message = _clean_placeholders(welcome_message)
 
-    # Knowledge base injection — make the agent's uploaded KB available to EVERY
-    # voice model, including Gemini Live. The metadata fast-path doesn't carry the
-    # KB (it's large), so we fetch it from Firestore by agent_id off the event loop.
+    # Knowledge base injection & config enrichment from Firestore
     if db and agent_id:
         try:
-            def _load_kb():
-                kb_doc = db.collection('agents').document(agent_id).get()
-                if kb_doc and getattr(kb_doc, 'exists', False):
-                    return (kb_doc.to_dict() or {}).get('knowledge_base') or []
-                return []
-            kb_files = await asyncio.to_thread(_load_kb)
+            def _load_agent_data():
+                doc_snap = db.collection('agents').document(agent_id).get()
+                if doc_snap and getattr(doc_snap, 'exists', False):
+                    return doc_snap.to_dict() or {}
+                return {}
+            agent_data = await asyncio.to_thread(_load_agent_data)
+            
+            # Inject knowledge base
+            kb_files = agent_data.get('knowledge_base') or []
             kb_ctx = _build_kb_context(kb_files)
             if kb_ctx:
                 system_prompt += kb_ctx
                 print(f"[KB] Injected {len(kb_files)} knowledge file(s) into voice agent instructions", flush=True)
+            
+            # Populate spreadsheet ID if not loaded
+            if not crm_spreadsheet_id:
+                crm_spreadsheet_id = agent_data.get("crm_spreadsheet_id") or ""
         except Exception as _ke:
-            print(f"[KB] voice injection warning: {_ke}", flush=True)
+            print(f"[Config] agent data load warning: {_ke}", flush=True)
+
+    # Google Sheets CRM Auto-Creation:
+    # If Google Sheets is connected, no HubSpot/Zoho connected, and crm_spreadsheet_id is empty,
+    # auto-create a spreadsheet and save its ID to the agent config.
+    if owner_uid and agent_id and not crm_spreadsheet_id:
+        try:
+            from services.integration_tools import _is_connected, execute_tool
+            has_crm = _is_connected(owner_uid, 'hubspot') or _is_connected(owner_uid, 'zoho')
+            has_sheets = _is_connected(owner_uid, 'google_sheets')
+            if not has_crm and has_sheets:
+                agent_name = (agent_data or {}).get("name") or agent_id
+                title = f"Kautilya CRM - {agent_name}"
+                print(f"[Sheets CRM] Auto-creating Google Sheet CRM: '{title}'...", flush=True)
+                res = await asyncio.to_thread(execute_tool, owner_uid, "create_spreadsheet", {"title": title})
+                if res.get("ok"):
+                    crm_spreadsheet_id = res["spreadsheet_id"]
+                    if db:
+                        def _save_sheet_id():
+                            db.collection('agents').document(agent_id).update({"crm_spreadsheet_id": crm_spreadsheet_id})
+                        await asyncio.to_thread(_save_sheet_id)
+                        print(f"[Sheets CRM] Auto-created spreadsheet ID: {crm_spreadsheet_id} and saved to agent doc", flush=True)
+        except Exception as _se:
+            print(f"[Sheets CRM] Auto-creation failed: {_se}", flush=True)
 
     if handoff_enabled:
         system_prompt += f"\n\nHANDOFF: If user wants human, say: \"{handoff_callback_message}\""
@@ -829,8 +977,33 @@ async def entrypoint(ctx: JobContext):
         "4. LOG: As soon as you understand their issue or intent, call log_crm_activity with the contact_id to record what they said.\n"
         "5. SCHEDULE: If you commit to any follow-up with a time, call create_calendar_event before ending the call.\n"
         "6. ESCALATE: Use post_slack to alert the team if the issue is urgent or out-of-scope.\n"
+        "7. EMAIL FOLLOW-UP: If the caller shares their email AND asks for information (case studies, pricing, brochure, etc.) or you discuss important action items, use send_gmail to email them a summary and the requested materials DURING the call — don't wait until later. Use links from the knowledge base when available.\n"
         "Speak naturally — do not narrate that you're 'logging' or 'saving' anything."
     )
+
+    # Google Sheets CRM protocol — for users without HubSpot/Zoho, the agent can
+    # read/write lead data from a configured Google Sheet. The sheet acts as a
+    # lightweight CRM with phone as the primary key.
+    if crm_spreadsheet_id and owner_uid:
+        try:
+            from services.integration_tools import _is_connected
+            has_crm = _is_connected(owner_uid, 'hubspot') or _is_connected(owner_uid, 'zoho')
+            has_sheets = _is_connected(owner_uid, 'google_sheets')
+            if not has_crm and has_sheets:
+                system_prompt += (
+                    f"\n\nGOOGLE SHEETS CRM PROTOCOL (no HubSpot/Zoho connected — use this instead):\n"
+                    f"- CRM Spreadsheet ID: {crm_spreadsheet_id}\n"
+                    f"- Tab (sheet_name): 'CRM' — ALWAYS pass sheet_name='CRM' on every read/update.\n"
+                    f"- Columns: Phone | Email | Name | Company | Intent | Last Call Summary | Last Call Date | Call Count | Status\n"
+                    f"- At START of call: look up the caller by phone in column A using read_sheet_rows (spreadsheet_id='{crm_spreadsheet_id}', sheet_name='CRM', search_column='A', search_value=caller_phone).\n"
+                    f"- If found: greet them by name, reference their previous intent/summary for continuity.\n"
+                    f"- During call: capture name, email, company, intent as usual.\n"
+                    f"- Before call ends (or if you sense the call may drop): save via update_sheet_row (spreadsheet_id='{crm_spreadsheet_id}', sheet_name='CRM', key_column='A', key_value=phone).\n"
+                    f"- This ensures NO data is lost even if the call drops mid-conversation.\n"
+                )
+                print(f"[Config] 📊 Google Sheets CRM protocol enabled (sheet: {crm_spreadsheet_id[:20]}...)", flush=True)
+        except Exception as _e:
+            print(f"[Config] Sheets CRM check soft-fail: {_e}", flush=True)
 
     await connect_task
 
@@ -838,8 +1011,15 @@ async def entrypoint(ctx: JobContext):
     session = None
     agent_obj = None
     transcript_turns = []
+    # Silence-watchdog state — any committed turn counts as activity; a USER
+    # turn also clears the "already nudged" flag so the nudge→hangup cycle
+    # restarts fresh every time the caller speaks.
+    silence_state = {"last": _time.time(), "nudged": False}
 
     def _record_turn(role, content):
+        silence_state["last"] = _time.time()
+        if str(role).lower() == 'user':
+            silence_state["nudged"] = False
         if not content: return
         text = str(content).strip()
         if not text: return
@@ -894,18 +1074,22 @@ async def entrypoint(ctx: JobContext):
             _attach_session_events(session)
             await session.start(room=ctx.room, agent=agent_obj)
 
-            greet_prompt = f"Greet me warmly in {agent_language} with: \"{welcome_message}\""
-            triggered = False
+            greet_prompt = f"Greet me warmly in {agent_language} with: \"{welcome_message}\". Say it immediately."
+            # Realtime models (Gemini Live) speak via generate_reply —
+            # session.say() needs a TTS plugin the realtime session doesn't
+            # have, so it silently failed (bare except) and the agent sat
+            # quiet until the CALLER spoke first. generate_reply is the
+            # canonical "speak first" API for realtime models.
             try:
-                model_lower = (selected_model or "").lower()
-                is_multimodal = any(x in model_lower for x in ["flash", "live", "gemini"])
-                if hasattr(session, 'generate_reply') and not is_multimodal:
+                if hasattr(session, 'generate_reply'):
                     await session.generate_reply(instructions=greet_prompt)
-                    triggered = True
+                    print("[Agent] Gemini greet dispatched", flush=True)
                 elif hasattr(session, 'say'):
                     await session.say(welcome_message)
-                    triggered = True
-            except: pass
+            except Exception as _ge:
+                print(f"[Agent] Gemini greet failed ({_ge}) — retrying via say()", flush=True)
+                try: await session.say(welcome_message)
+                except Exception: pass
         else:
             vad = _get_vad()
             stt = sarvam.STT(language=agent_language)
@@ -957,6 +1141,8 @@ async def entrypoint(ctx: JobContext):
                 tts = sarvam.TTS(target_language_code=agent_language, speaker=voice_id, model="bulbul:v3")
 
             llm_plugin = openai.LLM(base_url="https://api.groq.com/openai/v1", api_key=os.environ.get("GROQ_API_KEY"), model="llama-3.3-70b-versatile")
+            # Wrap TTS through the cleaner so special characters are filtered
+            tts = _CleanTTSWrapper(tts)
             session = AgentSession(vad=vad, stt=stt, llm=llm_plugin, tts=tts)
             agent_obj = KautilyaAgent(instructions=system_prompt, owner_uid=owner_uid)
             _attach_session_events(session)
@@ -967,8 +1153,97 @@ async def entrypoint(ctx: JobContext):
         print(f"[Agent] ❌ Session start failed: {e}", flush=True)
         return
 
+    # ---- Silence watchdog: nudge after N sec of dead air, hang up after M ----
+    # Configurable per agent (Agent Studio → "Silence Timeout" / "Call
+    # Disconnect"). 0 disables that stage. Works for BOTH pipelines: the
+    # Sarvam/Groq AgentSession and Gemini Live (RealtimeModel).
+    def _cfg_secs(key, default):
+        try:
+            v = (agent_data or {}).get(key)
+            if v is None or str(v).strip() == "":
+                return default
+            return max(0, int(float(v)))
+        except Exception:
+            return default
+    silence_nudge_secs = _cfg_secs('silence_nudge_seconds', 15)
+    silence_hangup_secs = _cfg_secs('silence_disconnect_seconds', 30)
+    if silence_hangup_secs and silence_nudge_secs and silence_hangup_secs <= silence_nudge_secs:
+        silence_hangup_secs = silence_nudge_secs + 10  # disconnect must come after the nudge
+
+    _lang_hi = (agent_language or '').lower().startswith('hi')
+    nudge_message = (agent_data or {}).get('silence_nudge_message') or (
+        "Hello? Kya aap mujhe sun sakte hain?" if _lang_hi else "Hello? Are you still there?")
+    goodbye_message = (agent_data or {}).get('silence_goodbye_message') or (
+        "Koi baat nahi, yeh call ab end ho rahi hai. Aap kabhi bhi dobara call kar sakte hain. Dhanyavaad!" if _lang_hi
+        else "It seems you're busy right now, so I'll end the call. Feel free to call back anytime. Thank you!")
+
+    def _session_busy():
+        # Don't count time as silence while the agent is speaking/thinking or
+        # the caller is mid-utterance (long answers must not trigger a hangup).
+        try:
+            if 'speaking' in str(getattr(session, 'agent_state', '')).lower(): return True
+            if 'thinking' in str(getattr(session, 'agent_state', '')).lower(): return True
+        except Exception: pass
+        try:
+            if 'speaking' in str(getattr(session, 'user_state', '')).lower(): return True
+        except Exception: pass
+        return False
+
+    async def _speak_nudge(text):
+        try:
+            if is_gemini_live and hasattr(session, 'generate_reply'):
+                await session.generate_reply(instructions=(
+                    f"The caller has been silent for a while. Gently check in — "
+                    f"say something like: \"{text}\""))
+            elif hasattr(session, 'say'):
+                await session.say(text)
+        except Exception as _ne:
+            print(f"[Silence] nudge failed: {_ne}", flush=True)
+
+    async def _hangup_call():
+        # Deleting the room kicks every participant (incl. the SIP leg) — this
+        # is the reliable way to hang up a phone call. The connection_state
+        # change then breaks the watch loop and post-call analysis runs as usual.
+        try:
+            lkapi = api.LiveKitAPI()
+            try:
+                await lkapi.room.delete_room(api.DeleteRoomRequest(room=ctx.room.name))
+            finally:
+                try: await lkapi.aclose()
+                except Exception: pass
+            print("[Silence] Room deleted — call disconnected", flush=True)
+        except Exception as _he:
+            print(f"[Silence] delete_room failed ({_he}) — falling back to room.disconnect", flush=True)
+            try: await ctx.room.disconnect()
+            except Exception: pass
+
     while ctx.room.connection_state == rtc.ConnectionState.CONN_CONNECTED:
         await asyncio.sleep(1)
+        if not (silence_nudge_secs or silence_hangup_secs):
+            continue
+        if _session_busy():
+            silence_state["last"] = _time.time()
+            continue
+        idle = _time.time() - silence_state["last"]
+        if silence_nudge_secs and not silence_state["nudged"] and idle >= silence_nudge_secs:
+            print(f"[Silence] {int(idle)}s of dead air — nudging caller", flush=True)
+            silence_state["nudged"] = True
+            silence_state["last"] = _time.time()
+            await _speak_nudge(nudge_message)
+        elif silence_hangup_secs and idle >= (
+                max(silence_hangup_secs - silence_nudge_secs, 5)
+                if (silence_state["nudged"] and silence_nudge_secs) else silence_hangup_secs):
+            print(f"[Silence] Still silent after nudge — saying goodbye and ending call", flush=True)
+            try:
+                if is_gemini_live and hasattr(session, 'generate_reply'):
+                    await session.generate_reply(instructions=f"Briefly and politely say goodbye: \"{goodbye_message}\"")
+                    await asyncio.sleep(2.5)
+                elif hasattr(session, 'say'):
+                    await session.say(goodbye_message)
+                    await asyncio.sleep(0.5)
+            except Exception: pass
+            await _hangup_call()
+            break
 
     # ========== SESSION ENDED — Persist transcript & call log ==========
     duration_seconds = int(_time.time() - started_at)
@@ -1010,18 +1285,24 @@ async def entrypoint(ctx: JobContext):
             analysis_prompt = (
                 "You are a call analyst. Extract JSON only:\n"
                 '{"summary": "...", "sentiment": "positive|neutral|negative", "outcome": "...", "topics": [...], '
-                '"lead": {"name": "...", "email": "...", "company": "...", "phone": "...", "intent": "...", "score": 0-10}}\n'
+                '"lead": {"name": "...", "email": "...", "company": "...", "phone": "...", "intent": "...", "score": 0-10}, '
+                '"follow_up": {"datetime": "ISO8601 datetime or empty string", "topic": "what the follow-up is about"}, '
+                '"requested_materials": ["case_study", "pricing", "brochure", "demo"...or empty list if nothing was requested], '
+                '"action_items": ["item1", "item2"...or empty list]}\n'
                 "Use \"\" for anything not mentioned; never invent emails/phone digits.\n\n"
                 f"TRANSCRIPT:\n{transcript_text[:6000]}"
             )
-            # Post-call analysis uses NVIDIA NIM GLM 5.1 (Kautilya Pro). Crucially
-            # we call it with thinking OFF (max_thinking=False → enable_thinking
-            # False) and a hard timeout: this block runs after the room
-            # disconnects while LiveKit waits for the entrypoint to exit, so a
-            # slow/hanging model gets the worker SIGKILLed ("entrypoint did not
-            # exit in time") BEFORE the call log / lead is written. GLM with
-            # thinking off returns a final JSON quickly; Groq llama-3.3-70b is the
-            # fast fallback if GLM is empty/unavailable.
+            # Post-call analysis uses NVIDIA NIM Nemotron 3 Ultra (Kautilya Daily) —
+            # hardcoded to this specific lightweight model regardless of tier
+            # registry swaps, since this path is timing-critical (see below), not
+            # a quality showcase. Crucially we call it with thinking OFF
+            # (max_thinking=False → enable_thinking False) and a hard timeout:
+            # this block runs after the room disconnects while LiveKit waits for
+            # the entrypoint to exit, so a slow/hanging model gets the worker
+            # SIGKILLed ("entrypoint did not exit in time") BEFORE the call log /
+            # lead is written. Nemotron with thinking off returns a final JSON
+            # quickly; Groq llama-3.3-70b is the fast fallback if Nemotron is
+            # empty/unavailable.
             from services.llm_service import call_groq
             result = None
             try:
@@ -1029,23 +1310,35 @@ async def entrypoint(ctx: JobContext):
                     asyncio.to_thread(
                         call_nvidia,
                         [{"role": "user", "content": analysis_prompt}],
-                        stream=False, max_tokens=500, model='z-ai/glm-5.1',
-                        max_thinking=False, expose_thinking=False, is_pro=True),
+                        stream=False, max_tokens=500, model='nvidia/nemotron-3-ultra-550b-a55b',
+                        max_thinking=False, expose_thinking=False, is_pro=True,
+                        # Tight socket read timeout so the blocking worker thread
+                        # actually dies at ~12s. asyncio.wait_for below only
+                        # cancels the AWAIT, not the OS thread — without a bounded
+                        # read timeout the thread would linger on the request and
+                        # keep the process alive until LiveKit SIGKILLs the worker
+                        # (the "entrypoint did not exit in time" crash), losing the
+                        # analysis + follow-up. 12s < 15s wait_for < shutdown grace.
+                        read_timeout=12),
                     timeout=15,
                 )
             except (asyncio.TimeoutError, Exception) as _e:
-                print(f"[Agent] GLM-5.1 analysis timed out/failed: {_e}", flush=True)
+                print(f"[Agent] Nemotron analysis timed out/failed: {_e}", flush=True)
                 result = None
-            # Fallback to Groq only if GLM was empty/slow/unavailable
+            # Fallback to Groq only if Nemotron was empty/slow/unavailable
             if not result:
-                print(f"[Agent] GLM-5.1 empty — falling back to Groq", flush=True)
+                print(f"[Agent] Nemotron empty — falling back to Groq", flush=True)
                 try:
                     result = await asyncio.wait_for(
                         asyncio.to_thread(
                             call_groq,
                             [{"role": "user", "content": analysis_prompt}],
                             stream=False, max_tokens=500,
-                            model='llama-3.3-70b-versatile'),
+                            model='llama-3.3-70b-versatile',
+                            # Same reason as the GLM call above: bound the socket
+                            # read so the thread dies at ~8s and can't outlive the
+                            # shutdown window and get the worker SIGKILLed.
+                            read_timeout=8),
                         timeout=10,
                     )
                 except (asyncio.TimeoutError, Exception) as _e:
@@ -1131,6 +1424,155 @@ async def entrypoint(ctx: JobContext):
                 print(f"[Agent] LLM returned empty analysis result", flush=True)
     except Exception as e:
         print(f"[Agent] Analysis block error: {e}", flush=True)
+
+    # ========== POST-CALL FOLLOW-UPS (email summary, calendar invite, sheets CRM) ==========
+    follow_up_data = {}
+    requested_materials = []
+    action_items = []
+
+    # Extract follow_up, requested_materials, action_items from parsed analysis
+    try:
+        # 'parsed' was set during the analysis JSON parsing above (line ~1156)
+        # It only exists if the LLM returned valid JSON
+        follow_up_data = parsed.get('follow_up') or {}
+        requested_materials = parsed.get('requested_materials') or []
+        action_items = parsed.get('action_items') or []
+    except (NameError, AttributeError):
+        pass
+
+    # --- 1. Send follow-up email to lead ---
+    lead_email = (lead_fields.get('email') or '').strip()
+    lead_name = (lead_fields.get('name') or '').strip()
+    if owner_uid and lead_email and '@' in lead_email and summary:
+        try:
+            from services.integration_tools import _is_connected, execute_tool
+
+            if _is_connected(owner_uid, 'gmail'):
+                # Build email body
+                first_name = lead_name.split(' ')[0] if lead_name else 'there'
+
+                # Build action items section if any
+                items_html = ""
+                if action_items:
+                    items_list = "".join(f"<li style='margin:4px 0;'>{item}</li>" for item in action_items[:10])
+                    items_html = f"""<p style="font-size:15px;font-weight:600;margin:18px 0 8px;">Action Items:</p>
+                    <ul style="margin:0;padding-left:20px;color:#333;">{items_list}</ul>"""
+
+                # Build requested materials section from KB
+                materials_html = ""
+                if requested_materials:
+                    kb_files = (agent_data or {}).get('knowledge_base') or []
+                    material_links = []
+                    for mat in requested_materials[:5]:
+                        mat_lower = mat.lower().replace('_', ' ')
+                        # Try to match KB files by name
+                        for kf in kb_files:
+                            kf_name = (kf.get('name') or '').lower()
+                            if mat_lower in kf_name or any(w in kf_name for w in mat_lower.split()):
+                                content_preview = (kf.get('content') or '')[:500]
+                                if content_preview:
+                                    material_links.append(f"<li style='margin:4px 0;'><strong>{kf.get('name', mat)}</strong>: {content_preview}...</li>")
+                                break
+                        else:
+                            material_links.append(f"<li style='margin:4px 0;'>{mat.replace('_', ' ').title()}: We'll send this separately.</li>")
+
+                    if material_links:
+                        materials_html = f"""<p style="font-size:15px;font-weight:600;margin:18px 0 8px;">Requested Information:</p>
+                        <ul style="margin:0;padding-left:20px;color:#333;">{''.join(material_links)}</ul>"""
+
+                email_body = f"""<!doctype html><html><body style="margin:0;background:#f6f7f9;">
+<div style="max-width:560px;margin:24px auto;padding:24px;background:#fff;border:1px solid #e6e8eb;border-radius:12px;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#1a1a1a;">
+  <p style="font-size:16px;margin:0 0 14px;">Hi {first_name},</p>
+  <p style="font-size:15px;line-height:1.6;margin:0 0 14px;">Thanks for your time on the call today. Here's a quick recap:</p>
+  <p style="font-size:15px;line-height:1.6;margin:0 0 18px;color:#333;">{summary}</p>
+  {items_html}
+  {materials_html}
+  <p style="font-size:15px;line-height:1.6;margin:18px 0 0;">If anything's unclear or you'd like to take the next step, just reply to this email — happy to help.</p>
+</div></body></html>"""
+
+                email_result = await asyncio.wait_for(
+                    asyncio.to_thread(execute_tool, owner_uid, "send_gmail", {
+                        "to": lead_email,
+                        "subject": "Following up on our call",
+                        "body": email_body,
+                    }),
+                    timeout=10,
+                )
+                if (email_result or {}).get("ok"):
+                    print(f"[Agent] 📧 Follow-up email sent to {lead_email}", flush=True)
+                else:
+                    print(f"[Agent] Follow-up email failed: {(email_result or {}).get('error')}", flush=True)
+        except (asyncio.TimeoutError, Exception) as _e:
+            print(f"[Agent] Follow-up email soft-fail: {_e}", flush=True)
+
+    # --- 2. Create calendar invite for scheduled follow-up ---
+    follow_up_dt = (follow_up_data.get('datetime') or '').strip()
+    follow_up_topic = (follow_up_data.get('topic') or 'Follow-up call').strip()
+    if owner_uid and follow_up_dt and len(follow_up_dt) > 8:
+        try:
+            from services.integration_tools import _is_connected, execute_tool
+            if _is_connected(owner_uid, 'google_calendar'):
+                # Parse and create end time (default 30 min meeting)
+                from datetime import datetime as _dt, timedelta as _td
+                try:
+                    start_dt = _dt.fromisoformat(follow_up_dt.replace('Z', '+00:00'))
+                    end_dt = start_dt + _td(minutes=30)
+                    attendees = [lead_email] if lead_email and '@' in lead_email else []
+                    cal_result = await asyncio.wait_for(
+                        asyncio.to_thread(execute_tool, owner_uid, "create_calendar_event", {
+                            "title": follow_up_topic,
+                            "start": start_dt.isoformat(),
+                            "end": end_dt.isoformat(),
+                            "description": f"Follow-up from call. Summary: {summary[:300]}",
+                            "attendees": attendees,
+                            "tz": "Asia/Kolkata",
+                        }),
+                        timeout=10,
+                    )
+                    if (cal_result or {}).get("ok"):
+                        print(f"[Agent] 📅 Follow-up calendar event created: {follow_up_topic}", flush=True)
+                    else:
+                        print(f"[Agent] Calendar event failed: {(cal_result or {}).get('error')}", flush=True)
+                except (ValueError, Exception) as _e:
+                    print(f"[Agent] Calendar datetime parse error: {_e}", flush=True)
+        except (asyncio.TimeoutError, Exception) as _e:
+            print(f"[Agent] Calendar follow-up soft-fail: {_e}", flush=True)
+
+    # --- 3. Auto-save to Google Sheets CRM (if configured, no HubSpot/Zoho) ---
+    if owner_uid and crm_spreadsheet_id and lead_fields:
+        try:
+            from services.integration_tools import _is_connected, execute_tool
+            has_crm = _is_connected(owner_uid, 'hubspot') or _is_connected(owner_uid, 'zoho')
+            has_sheets = _is_connected(owner_uid, 'google_sheets')
+
+            if not has_crm and has_sheets:
+                contact_phone = lead_fields.get('phone', '') or dialed_number or caller_phone or ''
+                if contact_phone:
+                    row_values = [
+                        contact_phone.lstrip('+'),
+                        lead_fields.get('email', ''),
+                        lead_fields.get('name', ''),
+                        lead_fields.get('company', ''),
+                        lead_fields.get('intent', '')[:200],
+                        (summary or '')[:500],
+                        datetime.now().isoformat()[:19],
+                        '1',
+                        'active',
+                    ]
+                    sheet_result = await asyncio.wait_for(
+                        asyncio.to_thread(execute_tool, owner_uid, "update_sheet_row", {
+                            "spreadsheet_id": crm_spreadsheet_id,
+                            "key_column": "A",
+                            "key_value": contact_phone.lstrip('+'),
+                            "values": row_values,
+                            "sheet_name": "CRM",
+                        }),
+                        timeout=10,
+                    )
+                    action = (sheet_result or {}).get('action', '?')
+                    print(f"[Agent] 📊 Lead {action} in Google Sheet CRM", flush=True)
+        except (asyncio.TimeoutError, Exception) as _e:
+            print(f"[Agent] Sheets CRM auto-save soft-fail: {_e}", flush=True)
 
     if not summary and convo_turns: summary = convo_turns[0]['content'][:200]
 
