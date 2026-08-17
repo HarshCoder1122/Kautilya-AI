@@ -50,6 +50,30 @@
   contain: layout;
 }
 
+.computer-pane {
+  width: 38%;
+  min-width: 340px;
+  max-width: 560px;
+  border-left: 1px solid var(--k-border);
+  background: var(--k-surface);
+  height: 100vh;
+  overflow: hidden;
+  contain: layout;
+}
+
+@media (max-width: 1024px) and (min-width: 769px) {
+  .computer-pane {
+    position: fixed;
+    right: 0;
+    top: 0;
+    width: 75vw !important;
+    min-width: unset !important;
+    max-width: 480px;
+    z-index: 40;
+    box-shadow: -8px 0 32px rgba(0,0,0,0.18);
+  }
+}
+
 /* ── Radix ScrollArea width-containment fix ───────────────────────────────
    Radix wraps a ScrollArea's children in an inline `display:table` div that
    shrink-wraps to the WIDEST child. A wide markdown table or a `white-space:
@@ -353,7 +377,8 @@
     width: 100%;
   }
 
-  .canvas-pane {
+  .canvas-pane,
+  .computer-pane {
     position: fixed;
     right: 0;
     top: 0;

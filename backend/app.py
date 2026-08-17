@@ -34,6 +34,7 @@ from routes.webhooks_routes import webhooks_bp
 from routes.openai_compat_routes import openai_compat_bp
 from routes.background_routes import background_bp
 from routes.code_routes import code_bp
+from routes.computer_routes import computer_bp
 from routes.research_routes import research_bp
 from routes.integrations_routes import integrations_bp
 from routes.embed_routes import embed_bp
@@ -103,6 +104,7 @@ app.register_blueprint(webhooks_bp, url_prefix='/api')
 app.register_blueprint(openai_compat_bp, url_prefix='/api')  # routes: /api/v1/...
 app.register_blueprint(background_bp, url_prefix='/api')
 app.register_blueprint(code_bp, url_prefix='/api')
+app.register_blueprint(computer_bp, url_prefix='/api')
 app.register_blueprint(research_bp, url_prefix='/api')
 app.register_blueprint(integrations_bp, url_prefix='/api')
 app.register_blueprint(embed_bp, url_prefix='/api')

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning, Columns, CaretDown, X, Microphone, MicrophoneSlash, Phone, StopCircle, File, Image, Camera, HardDrive, Cpu, Brain, Diamond, Lock, ShareNetwork, Copy, Check, Sparkle, Presentation, Layout, FileMagnifyingGlass, GitBranch, ChartBar } from "@phosphor-icons/react";
+import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning, Columns, CaretDown, X, Microphone, MicrophoneSlash, Phone, StopCircle, File, Image, Camera, HardDrive, HardDrives, Cpu, Brain, Diamond, Lock, ShareNetwork, Copy, Check, Sparkle, Presentation, Layout, FileMagnifyingGlass, GitBranch, ChartBar } from "@phosphor-icons/react";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { QuestionPrompt } from "@/components/chat/QuestionPrompt";
 import { extractQuestionBlock, parseQuestion } from "../../lib/questionBlock";
@@ -72,7 +72,7 @@ const _writeStreamCache = (sid, messages, streaming) => {
   } catch { /* quota / private mode — soft-fail */ }
 };
 
-export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSidebar, canvasOpen, onToggleCanvas, onOpenCanvas, activeMode, onSetMode, theme, toggleTheme, sessionId, onSessionChange, onNewSession, onStreamComplete }) {
+export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSidebar, canvasOpen, onToggleCanvas, onOpenCanvas, computerOpen, onToggleComputer, onComputerActivity, activeMode, onSetMode, theme, toggleTheme, sessionId, onSessionChange, onNewSession, onStreamComplete }) {
   // Restore previous in-progress messages synchronously so a remount (after
   // navigating to dashboard / switching tabs) never shows a blank screen.
   const [messages, setMessages] = useState(() => _readStreamCache(sessionId)?.messages || []);
@@ -80,6 +80,8 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   const [selectedFiles, setSelectedFiles] = useState([]);
   // Deep-research depth: quick | standard | exhaustive (drives backend breadth).
   const [researchDepth, setResearchDepth] = useState('standard');
+  // Deep-research output shape: research (analyst report) | prd (Product Requirements Doc).
+  const [researchMode, setResearchMode] = useState('research');
   const [isThinking, setIsThinking] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -608,7 +610,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       abortControllerRef.current = new AbortController();
 
       const response = activeMode === 'research'
-        ? await chatAPI.streamResearch(currentInput, currentSessionId, { signal: abortControllerRef.current.signal, depth: researchDepth })
+        ? await chatAPI.streamResearch(currentInput, currentSessionId, { signal: abortControllerRef.current.signal, depth: researchDepth, mode: researchMode })
         : await chatAPI.streamMessage(currentInput, currentSessionId, model, currentFiles, {
           // Only respect the user's explicit "Max Thinking" toggle. Code
           // mode used to force this true, but Qwen3-Coder is NOT a
@@ -826,6 +828,10 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                   toolResults.push({ tool: parsed.tool, data: parsed.data });
                   return { ...msg, toolResults };
                 }));
+                // First sign of Computer activity this stream — surface the panel.
+                if (onComputerActivity && (parsed.tool === 'file_write' || parsed.tool === 'file_read' || parsed.tool === 'file_list')) {
+                  onComputerActivity();
+                }
                 continue;
               }
               if (parsed.event === 'artifact') {
@@ -1153,6 +1159,21 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
             <Columns className="w-3.5 h-3.5" weight="duotone" />
             <span>Canvas</span>
           </button>
+
+          {onToggleComputer && (
+            <button
+              data-testid="toggle-computer-btn"
+              onClick={onToggleComputer}
+              title="Kautilya Computer — this session's file workspace"
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200 ${computerOpen
+                  ? 'bg-sky-500 text-white'
+                  : 'hover:bg-accent text-muted-foreground'
+                }`}
+            >
+              <HardDrives className="w-3.5 h-3.5" weight="duotone" />
+              <span className="hidden sm:inline">Computer</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -1602,6 +1623,28 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                   Running — you can leave, we'll save it
                 </span>
+              )}
+              {/* Deep-research output shape: analyst report vs. PRD */}
+              {activeMode === 'research' && !isStreaming && (
+                <div className="flex items-center rounded-md border border-[var(--k-border)] overflow-hidden">
+                  {[
+                    { id: 'research', label: 'Report' },
+                    { id: 'prd', label: 'PRD' },
+                  ].map(m => (
+                    <button
+                      key={m.id}
+                      onClick={() => setResearchMode(m.id)}
+                      title={m.id === 'prd'
+                        ? 'Product Requirements Document — problem, user stories, requirements, success metrics'
+                        : 'Analyst-style research report — findings, analysis, outlook'}
+                      className={`px-2 py-0.5 text-[10px] font-medium transition-colors ${researchMode === m.id
+                        ? 'bg-sky-500 text-white'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-accent'}`}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
               )}
               {/* Deep-research depth selector */}
               {activeMode === 'research' && !isStreaming && (

@@ -49,6 +49,21 @@ MODEL_ALIASES = {
 }
 
 
+# Authoritative tier -> (display label, NVIDIA NIM model id) registry.
+# This is THE single source of truth for which model each tier actually
+# calls — routes/openai_compat_routes.py's KAUTILYA_MODEL_MAP and
+# services/research_service.py's SYNTH_MODEL/SYNTH_FALLBACK_MODEL both derive
+# their defaults from this dict instead of hardcoding their own copies, so a
+# model swap here can no longer silently desync chat vs. the OpenAI-compatible
+# proxy vs. deep research.
+_MODEL_LABELS = {
+    'coder': ('Kautilya Coder', 'deepseek-ai/deepseek-v4-flash'),
+    'pro':   ('Kautilya Pro', 'z-ai/glm-5.2'),
+    'daily': ('Kautilya Daily', 'nvidia/nemotron-3-ultra-550b-a55b'),
+}
+DAILY_MODEL = _MODEL_LABELS['daily'][1]
+
+
 def normalize_model_choice(model, default="daily"):
     """Normalize UI/API aliases into the internal routing ids.
     Bypass orchestrator for 'auto' mode to directly use the daily model.
@@ -142,7 +157,7 @@ class _ThinkSplitter:
             yield ("thinking_done", None)
 
 
-def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=None, tool_choice=None, max_thinking=False):
+def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=None, tool_choice=None, max_thinking=False, session_id=None):
     """
     Agentic Loop: Thoughts -> Actions -> Observations -> Final Answer.
     Yields chunks of text OR special status JSONs.
@@ -458,14 +473,8 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
 
     response_gen = None
 
-    # Model display names for UI status
-    # NVIDIA NIM model IDs - verified available on https://build.nvidia.com
-    _MODEL_LABELS = {
-        'coder': ('Kautilya Coder', 'deepseek-ai/deepseek-v4-flash'),
-        'pro':   ('Kautilya Pro', 'z-ai/glm-5.2'),
-        'daily': ('Kautilya Daily', 'nvidia/nemotron-3-ultra-550b-a55b'),
-    }
-    DAILY_MODEL = 'nvidia/nemotron-3-ultra-550b-a55b'
+    # _MODEL_LABELS / DAILY_MODEL are now module-level (see top of file) —
+    # this used to redefine local copies here every call.
 
     def _wrap_with_placeholder_thinking(inner_gen):
         """Show a 'thinking' placeholder while the upstream model's TTFT is pending.
@@ -671,7 +680,41 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         effective_max_thinking = bool(max_thinking)
         reasoning_budget = _estimate_reasoning_budget(max_tokens, effective_max_thinking)
 
-        if model_choice == 'coder':
+        if has_image:
+            # Vision takes priority over the tier's normal model, REGARDLESS of
+            # model_choice. Previously this was an `elif` checked AFTER
+            # coder/pro/fast, so a Coder/Pro/Fast user attaching an image had
+            # it silently sent as-is to DeepSeek/GLM/Groq-text (none of which
+            # are wired for multimodal here) instead of a vision-capable model
+            # — the image was effectively ignored. Prefer Gemini 2.5 Flash
+            # (most reliable for OCR / chart reading), fall back to Groq
+            # llama-4-scout (current vision-capable Groq model).
+            yield json.dumps({"event": "status", "message": "👁️ Analyzing image…"})
+            from services.llm_service import call_gemini_vision
+            try:
+                gemini_text = call_gemini_vision(current_messages, temperature=0.6, max_tokens=max_tokens)
+            except Exception as e:
+                print(f"[Vision] Gemini exception: {e}")
+                gemini_text = None
+            if gemini_text:
+                # Wrap the single string as a generator so the downstream
+                # streaming loop handles it uniformly.
+                def _wrap(t=gemini_text):
+                    yield {"chunk": t}
+                response_gen = _wrap()
+            else:
+                print("[Vision] Gemini unavailable — falling back to Groq llama-4-scout")
+                response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
+                                         model='meta-llama/llama-4-scout-17b-16e-instruct',
+                                         temperature=0.6)
+                if not response_gen:
+                    response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
+                                             model='meta-llama/llama-4-maverick-17b-128e-instruct',
+                                             temperature=0.6)
+                if not response_gen:
+                    response_gen = _call_daily(current_messages, max_tokens=max_tokens)
+
+        elif model_choice == 'coder':
             from config import NVIDIA_API_KEYS
             label, model_id = _MODEL_LABELS['coder']
             # Deepseek V4 Flash is a real reasoning model (unlike the retired
@@ -737,33 +780,6 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 response_gen = _call_daily(current_messages, max_tokens=min(max_tokens, 4096),
                                            tools=tools, tool_choice=tool_choice)
 
-        elif has_image:
-            # Vision: prefer Gemini 2.5 Flash (most reliable for OCR / chart reading),
-            # fall back to Groq llama-4-scout (current vision-capable Groq model).
-            yield json.dumps({"event": "status", "message": "👁️ Analyzing image…"})
-            from services.llm_service import call_gemini_vision
-            try:
-                gemini_text = call_gemini_vision(current_messages, temperature=0.6, max_tokens=max_tokens)
-            except Exception as e:
-                print(f"[Vision] Gemini exception: {e}")
-                gemini_text = None
-            if gemini_text:
-                # Wrap the single string as a generator so the downstream
-                # streaming loop handles it uniformly.
-                def _wrap(t=gemini_text):
-                    yield {"chunk": t}
-                response_gen = _wrap()
-            else:
-                print("[Vision] Gemini unavailable — falling back to Groq llama-4-scout")
-                response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
-                                         model='meta-llama/llama-4-scout-17b-16e-instruct',
-                                         temperature=0.6)
-                if not response_gen:
-                    response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
-                                             model='meta-llama/llama-4-maverick-17b-128e-instruct',
-                                             temperature=0.6)
-                if not response_gen:
-                    response_gen = _call_daily(current_messages, max_tokens=max_tokens)
         else:
             # Daily = NVIDIA Nemotron 3 Ultra (low reasoning), Groq llama as fallback
             response_gen = _call_daily(current_messages, max_tokens=max_tokens,
@@ -886,7 +902,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 # sanitized text for what gets persisted and fed to the next
                 # turn.
                 accumulated_response = sanitized_response
-        planned_actions = _plan_actions(accumulated_response, uid, start_id=action_counter + 1)
+        planned_actions = _plan_actions(accumulated_response, uid, start_id=action_counter + 1, session_id=session_id)
 
         # Tool-step budget exhausted: stop chaining tools and force ONE clean
         # final answer (no more tool tags) rather than looping forever.
@@ -1060,7 +1076,7 @@ def _looks_like_orphan_preamble(text):
         # Long responses are real answers, not orphan preambles.
         return False
     # If any tool tag already exists, the loop handled it elsewhere.
-    if re.search(r'\[(INTEGRATION|SEARCH|CALCULATE|RUN_PYTHON|FETCH_URL|CALENDAR_|GMAIL_|WHATSAPP_SEND|SLACK_POST|HUBSPOT_CREATE_CONTACT)', t):
+    if re.search(r'\[(INTEGRATION|SEARCH|CALCULATE|RUN_PYTHON|FETCH_URL|CALENDAR_|GMAIL_|WHATSAPP_SEND|SLACK_POST|HUBSPOT_CREATE_CONTACT|FILE_WRITE|FILE_READ|FILE_LIST)', t):
         return False
     tl = t.lower()
     # If the model is ASKING THE USER for info (a question anywhere in the
@@ -1202,7 +1218,7 @@ def _strip_truncated_tool_tags(text):
     return ''.join(out).rstrip()
 
 
-def _plan_actions(text, uid, start_id=1):
+def _plan_actions(text, uid, start_id=1, session_id=None):
     """Scan an LLM response for tool tags and produce a parallelizable plan.
     Multiple tags (including repeats of the same tool) are all included.
     Order in the list = order they appear in the text = order shown in the UI.
@@ -1361,8 +1377,50 @@ def _plan_actions(text, uid, start_id=1):
         code = m.group(1).strip()
         preview = code[:80] + ("…" if len(code) > 80 else "")
         actions.append(_mk("python", preview,
-                           _runner_python(code),
+                           _runner_python(uid, session_id, code),
                            "Code, output, and any charts are already shown. Give a one-line interpretation.",
+                           m.start()))
+
+    # 11.5 [FILE_WRITE: name | ```content```]  — Kautilya Computer, persistent per-session file.
+    fw_iter = list(re.finditer(
+        r'\[FILE_WRITE:\s*([^\|\n]+?)\s*\|\s*```(?:\w+)?\s*([\s\S]*?)```\s*\]', text))
+    if not fw_iter:
+        m = re.search(r'\[FILE_WRITE:\s*([^\|\n]+?)\s*\|\s*([\s\S]+?)\]\s*$', text.strip())
+        if m:
+            fw_iter = [m]
+    for m in fw_iter:
+        fname = m.group(1).strip()
+        content = m.group(2)
+        # Strip exactly one leading/trailing newline the fence commonly adds,
+        # keep everything else (indentation etc.) byte-for-byte.
+        if content.startswith('\n'):
+            content = content[1:]
+        if content.endswith('\n'):
+            content = content[:-1]
+        if _is_placeholder_arg(fname):
+            continue
+        actions.append(_mk("file_write", fname,
+                           _runner_file_write(uid, session_id, fname, content),
+                           "The file is saved to the session workspace. Give a one-line confirmation "
+                           "— do NOT re-paste its contents.",
+                           m.start()))
+
+    # 11.6 [FILE_READ: name]
+    for m in re.finditer(r'\[FILE_READ:\s*(.*?)\]', text):
+        fname = m.group(1).strip()
+        if _is_placeholder_arg(fname):
+            continue
+        actions.append(_mk("file_read", fname,
+                           _runner_file_read(uid, session_id, fname),
+                           "Use the file content above to continue (e.g. to find the bug, then "
+                           "[FILE_WRITE:] the fix). Don't dump the whole file back to the user unless asked.",
+                           m.start()))
+
+    # 11.7 [FILE_LIST:]
+    for m in re.finditer(r'\[FILE_LIST:\s*\]', text):
+        actions.append(_mk("file_list", "workspace files",
+                           _runner_file_list(uid, session_id),
+                           "The file list is already shown to the user as a card — don't re-list it in prose.",
                            m.start()))
 
     # 12. [GST_INVOICE: ```json {...} ```]  — India GST invoice; maths server-side.
@@ -1733,10 +1791,29 @@ def _runner_hubspot(uid, email, first, last, co, ph):
     return run
 
 
-def _runner_python(code):
+def _runner_python(uid, session_id, code):
     def run():
         try:
-            res = _python_run(code)
+            if session_id:
+                # Session-aware path: runs inside this chat's persistent
+                # Computer workspace (services/computer_service.py) so files
+                # from a prior [FILE_WRITE:] / run are on disk, and anything
+                # this run creates persists for the next turn.
+                from services.computer_service import run_python as _computer_run_python
+                raw = _computer_run_python(uid or 'anon', session_id, code, timeout=15)
+                res = {
+                    "stdout": raw.get("stdout", ""),
+                    "stderr": raw.get("stderr", ""),
+                    "images": [f"data:image/png;base64,{b}" for b in raw.get("figures", [])],
+                    "ok": raw.get("exit_code") == 0 and not raw.get("timed_out"),
+                    "exit_code": raw.get("exit_code"),
+                }
+                if raw.get("timed_out"):
+                    res["stderr"] = res["stderr"] or "Execution exceeded the time limit."
+            else:
+                # No session (e.g. legacy/API caller) — fall back to the
+                # original fully-stateless sandbox.
+                res = _python_run(code)
             extra = [{"event": "tool_result", "tool": "python_run",
                       "data": {"code": code, "stdout": res["stdout"],
                                "stderr": res["stderr"], "images": res["images"],
@@ -1748,12 +1825,91 @@ def _runner_python(code):
                         "observation": f"PYTHON EXECUTED OK.\nStdout (first 1500 chars):\n{short}",
                         "done_extras": {}, "extra_events": extra}
             return {"ok": False, "preview": (res["stderr"] or "error")[:80],
-                    "observation": f"PYTHON ERROR (exit {res['exit_code']}):\n{res['stderr'][:1500]}",
+                    "observation": f"PYTHON ERROR (exit {res.get('exit_code')}):\n{(res['stderr'] or '')[:1500]}",
                     "done_extras": {}, "extra_events": extra}
         except Exception as e:
             return {"ok": False, "preview": str(e)[:100],
                     "observation": f"PYTHON RUNNER ERROR: {e}",
                     "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_file_write(uid, session_id, name, content):
+    def run():
+        if not session_id:
+            return {"ok": False, "preview": "no session",
+                    "observation": "FILE_WRITE ERROR: no active session to write to.",
+                    "done_extras": {}, "extra_events": []}
+        try:
+            from services.computer_service import write_file
+            res = write_file(uid or 'anon', session_id, name, content)
+            if not res.get("ok"):
+                return {"ok": False, "preview": res.get("error", "write failed")[:100],
+                        "observation": f"FILE_WRITE ERROR: {res.get('error')}",
+                        "done_extras": {}, "extra_events": []}
+            extra = [{"event": "tool_result", "tool": "file_write",
+                      "data": {"path": res["path"], "bytes": res["bytes"]}}]
+            return {"ok": True, "preview": f"Wrote {res['path']} ({res['bytes']} bytes)",
+                    "observation": f"FILE_WRITE OK: '{res['path']}' saved ({res['bytes']} bytes) to the session workspace.",
+                    "done_extras": {"files_changed": [res["path"]]}, "extra_events": extra}
+        except PermissionError as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"FILE_WRITE ERROR: {e}", "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"FILE_WRITE ERROR: {e}", "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_file_read(uid, session_id, name):
+    def run():
+        if not session_id:
+            return {"ok": False, "preview": "no session",
+                    "observation": "FILE_READ ERROR: no active session to read from.",
+                    "done_extras": {}, "extra_events": []}
+        try:
+            from services.computer_service import read_file
+            res = read_file(uid or 'anon', session_id, name)
+            if not res.get("ok"):
+                return {"ok": False, "preview": res.get("error", "read failed")[:100],
+                        "observation": f"FILE_READ ERROR: {res.get('error')}",
+                        "done_extras": {}, "extra_events": []}
+            extra = [{"event": "tool_result", "tool": "file_read",
+                      "data": {"name": name, "content": res["content"], "truncated": res["truncated"]}}]
+            trunc_note = " (truncated)" if res["truncated"] else ""
+            return {"ok": True, "preview": f"Read {name}{trunc_note}",
+                    "observation": f"FILE_READ '{name}'{trunc_note}:\n```\n{res['content']}\n```",
+                    "done_extras": {}, "extra_events": extra}
+        except PermissionError as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"FILE_READ ERROR: {e}", "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"FILE_READ ERROR: {e}", "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_file_list(uid, session_id):
+    def run():
+        if not session_id:
+            return {"ok": False, "preview": "no session",
+                    "observation": "FILE_LIST ERROR: no active session.",
+                    "done_extras": {}, "extra_events": []}
+        try:
+            from services.computer_service import list_files
+            files = list_files(uid or 'anon', session_id)
+            extra = [{"event": "tool_result", "tool": "file_list", "data": {"files": files}}]
+            if not files:
+                return {"ok": True, "preview": "empty", "empty": True,
+                        "observation": "FILE_LIST: the session workspace is empty.",
+                        "done_extras": {}, "extra_events": extra}
+            listing = "\n".join(f"- {f['path']} ({f['bytes']} bytes)" for f in files)
+            return {"ok": True, "preview": f"{len(files)} file(s)",
+                    "observation": f"FILE_LIST:\n{listing}",
+                    "done_extras": {}, "extra_events": extra}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"FILE_LIST ERROR: {e}", "done_extras": {}, "extra_events": []}
     return run
 
 
@@ -2784,7 +2940,7 @@ def _hubspot_create_contact(uid, email, firstname='', lastname='', company='', p
     return r.json()
 
 
-def get_llm_response(messages, uid=None, model="daily", user_ip=None, tools=None, tool_choice=None, max_thinking=False):
+def get_llm_response(messages, uid=None, model="daily", user_ip=None, tools=None, tool_choice=None, max_thinking=False, session_id=None):
     """Entry point for chat. Routes to fast-path, orchestrator, or agent_loop."""
     model = normalize_model_choice(model)
 
@@ -2801,9 +2957,8 @@ def get_llm_response(messages, uid=None, model="daily", user_ip=None, tools=None
         elif isinstance(luc, list):
             user_input_text = " ".join([p["text"] for p in luc if p.get("type") == "text"])
 
-    # Pro and Coder ALWAYS go through agent_loop for NVIDIA NIM + thinking support
-    if model in ('pro', 'coder'):
-        return agent_loop(messages, uid, model_choice=model, user_ip=user_ip, tools=tools, tool_choice=tool_choice, max_thinking=max_thinking)
-
-    # All models (including daily) go through agent_loop so ReAct tools are processed
-    return agent_loop(messages, uid, model_choice=model, user_ip=user_ip, tools=tools, tool_choice=tool_choice, max_thinking=max_thinking)
+    # All models (including daily/pro/coder) go through agent_loop so ReAct
+    # tools (incl. the persistent Computer file tools) are processed; Pro and
+    # Coder additionally get NVIDIA NIM + thinking support inside agent_loop.
+    return agent_loop(messages, uid, model_choice=model, user_ip=user_ip, tools=tools,
+                       tool_choice=tool_choice, max_thinking=max_thinking, session_id=session_id)

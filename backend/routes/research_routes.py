@@ -54,6 +54,9 @@ def api_research_stream():
     depth = (data.get('depth') or 'standard').strip().lower()
     if depth not in ('quick', 'standard', 'exhaustive'):
         depth = 'standard'
+    mode = (data.get('mode') or 'research').strip().lower()
+    if mode not in ('research', 'prd'):
+        mode = 'research'
     if not question:
         return jsonify({"error": "question required"}), 400
 
@@ -97,7 +100,7 @@ def api_research_stream():
 
         def _run_research():
             try:
-                for event in deep_research_stream(question, depth=depth):
+                for event in deep_research_stream(question, depth=depth, mode=mode):
                     if isinstance(event, dict):
                         ev = event.get('event')
                         if ev == 'chunk' and event.get('chunk'):

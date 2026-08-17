@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { ChatMain } from "@/components/chat/ChatMain";
 import { CanvasPane } from "@/components/chat/CanvasPane";
+import { ComputerPanel } from "@/components/chat/ComputerPanel";
 import { OnboardingModal } from "@/components/shared/OnboardingModal";
 import { chatAPI } from "../lib/api";
 
@@ -27,6 +28,11 @@ export default function ChatPage({ theme, toggleTheme, user }) {
   const [selectedConversation, setSelectedConversation] = useState(null);
   const [canvasOpen, setCanvasOpen] = useState(false);
   const [canvasContent, setCanvasContent] = useState(null);
+  const [computerOpen, setComputerOpen] = useState(false);
+  const [computerRefreshSignal, setComputerRefreshSignal] = useState(0);
+  // Auto-open the Computer panel at most once per session so it doesn't keep
+  // popping back after the user explicitly closes it.
+  const computerAutoOpenedRef = useRef(new Set());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [activeMode, setActiveMode] = useState('pro'); // Pro selected by default on open
@@ -64,6 +70,22 @@ export default function ChatPage({ theme, toggleTheme, user }) {
     });
   }, []);
 
+  // Canvas and Computer share the same side-panel slot — opening one closes
+  // the other rather than trying to fit both side by side.
+  const handleToggleComputer = useCallback(() => {
+    setComputerOpen(open => {
+      if (!open) setCanvasOpen(false);
+      return !open;
+    });
+  }, []);
+
+  const handleComputerActivity = useCallback(() => {
+    if (selectedConversation && computerAutoOpenedRef.current.has(selectedConversation)) return;
+    if (selectedConversation) computerAutoOpenedRef.current.add(selectedConversation);
+    setCanvasOpen(false);
+    setComputerOpen(true);
+  }, [selectedConversation]);
+
   const refreshSessions = useCallback(async () => {
     try {
       const data = await chatAPI.getHistory();
@@ -76,6 +98,11 @@ export default function ChatPage({ theme, toggleTheme, user }) {
       setConvoLoading(false);
     }
   }, [user?.uid]);
+
+  const handleStreamComplete = useCallback(() => {
+    refreshSessions();
+    setComputerRefreshSignal(v => v + 1);
+  }, [refreshSessions]);
 
   // Append the next page of older chats (dedup by session id).
   const loadMoreSessions = useCallback(async () => {
@@ -136,8 +163,11 @@ export default function ChatPage({ theme, toggleTheme, user }) {
         onExpandSidebar={() => setSidebarCollapsed(false)}
         onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
         canvasOpen={canvasOpen}
-        onToggleCanvas={() => { if (canvasOpen) handleCloseCanvas(); else setCanvasOpen(true); }}
+        onToggleCanvas={() => { if (canvasOpen) handleCloseCanvas(); else { setComputerOpen(false); setCanvasOpen(true); } }}
         onOpenCanvas={handleOpenCanvas}
+        computerOpen={computerOpen}
+        onToggleComputer={handleToggleComputer}
+        onComputerActivity={handleComputerActivity}
         activeMode={activeMode}
         onSetMode={setActiveMode}
         theme={theme}
@@ -145,13 +175,20 @@ export default function ChatPage({ theme, toggleTheme, user }) {
         sessionId={selectedConversation}
         onSessionChange={setSelectedConversation}
         onNewSession={addOptimisticSession}
-        onStreamComplete={refreshSessions}
+        onStreamComplete={handleStreamComplete}
       />
       {canvasOpen && (
         <CanvasPane
           content={canvasContent}
           onClose={handleCloseCanvas}
           activeMode={activeMode}
+        />
+      )}
+      {computerOpen && (
+        <ComputerPanel
+          sessionId={selectedConversation}
+          onClose={() => setComputerOpen(false)}
+          refreshSignal={computerRefreshSignal}
         />
       )}
       <OnboardingModal user={user} />

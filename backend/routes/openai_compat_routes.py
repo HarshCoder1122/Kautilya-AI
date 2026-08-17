@@ -189,12 +189,17 @@ openai_compat_bp = Blueprint('openai_compat', __name__)
 
 
 # ---------- model registry ----------
-# These are the same backing models the dashboard chat uses (agent_loop_service.py).
+# Derived from agent_loop_service._MODEL_LABELS — THE single source of truth
+# for tier -> model id — instead of a hand-maintained copy that could silently
+# drift from what the dashboard chat actually calls. 'kautilya-fast' has no
+# _MODEL_LABELS entry (it's a lighter Groq-direct branch in agent_loop_service,
+# not routed through NVIDIA NIM) so it's still listed explicitly here.
+from services.agent_loop_service import _MODEL_LABELS as _KAUTILYA_TIER_MODELS
 KAUTILYA_MODEL_MAP = {
     "kautilya-fast":    "llama-3.3-70b-versatile",            # Groq direct — sub-500ms TTFT
-    "kautilya-coder":   "deepseek-ai/deepseek-v4-flash",
-    "kautilya-pro":     "z-ai/glm-5.2",                        # GLM 5.2 on NVIDIA NIM (Nemotron 3 Ultra moved to Daily)
-    "kautilya-daily":   "nvidia/nemotron-3-ultra-550b-a55b",
+    "kautilya-coder":   _KAUTILYA_TIER_MODELS['coder'][1],
+    "kautilya-pro":     _KAUTILYA_TIER_MODELS['pro'][1],
+    "kautilya-daily":   _KAUTILYA_TIER_MODELS['daily'][1],
 }
 
 # Per-model context windows. Match each upstream model's actual capability so

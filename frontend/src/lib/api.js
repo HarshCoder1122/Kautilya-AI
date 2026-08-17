@@ -242,7 +242,11 @@ export const chatAPI = {
   // so SerpAPI/source gathering is actually used.
   streamResearch: async (question, sessionId, options = {}) => {
     const buildBody = () => ({
-      body: JSON.stringify({ question, session_id: sessionId, depth: options.depth || 'standard' }),
+      body: JSON.stringify({
+        question, session_id: sessionId,
+        depth: options.depth || 'standard',
+        mode: options.mode || 'research',
+      }),
       contentType: 'application/json',
     });
     return _postStreamWithAuth(`${API_BASE_URL}/api/research/stream`, buildBody, options);
@@ -576,6 +580,18 @@ export const coderProjectsAPI = {
     const response = await api.get(`/api/coder/project/${encodeURIComponent(message_id)}`, {
       params: { uid }
     });
+    return response.data;
+  },
+};
+
+// Kautilya Computer — persistent per-session sandbox file browser
+export const computerAPI = {
+  listFiles: async (sessionId) => {
+    const response = await api.get('/api/computer/files', { params: { session_id: sessionId } });
+    return response.data;
+  },
+  readFile: async (sessionId, name) => {
+    const response = await api.get('/api/computer/file', { params: { session_id: sessionId, name } });
     return response.data;
   },
 };

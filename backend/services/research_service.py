@@ -40,7 +40,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from config import SERPAPI_API_KEY
+from config import SERPAPI_API_KEY, TAVILY_API_KEY
 from services.llm_service import call_groq, call_nvidia, model_circuit_open, build_capacity_event
 
 
@@ -75,14 +75,21 @@ SYNTH_RETRY_BACKOFF = float(os.getenv("RESEARCH_SYNTH_RETRY_BACKOFF", "2.0"))  #
 # Second search pass (gap-fill round) — on by default; can be disabled via env.
 SEARCH_ROUNDS_ENABLED = os.getenv("RESEARCH_SECOND_PASS", "1") not in ("0", "false", "False")
 
-# Synthesis runs on GLM 5.2 (z-ai/glm-5.2) — strong long-form report writing.
-# Routed through call_nvidia (NVIDIA NIM endpoint).
-SYNTH_MODEL = os.getenv("RESEARCH_SYNTH_MODEL", "z-ai/glm-5.2")
+# Synthesis runs on the same model the Pro chat tier uses (GLM 5.2 as of this
+# writing) — strong long-form report writing, routed through call_nvidia
+# (NVIDIA NIM endpoint). Default is pulled from agent_loop_service._MODEL_LABELS
+# (the single source of truth for tier -> model id) instead of a hardcoded
+# copy, so a model swap there doesn't silently leave research on a retired
+# model. RESEARCH_SYNTH_MODEL env var still overrides if you want research on
+# a different model than Pro chat.
+from services.agent_loop_service import _MODEL_LABELS as _KAUTILYA_TIER_MODELS
+SYNTH_MODEL = os.getenv("RESEARCH_SYNTH_MODEL", _KAUTILYA_TIER_MODELS['pro'][1])
 # When GLM is saturated (429), synthesis falls back to Nemotron 3 Ultra on
 # NVIDIA — a DIFFERENT model = a different rate-limit bucket, so it's usually
 # free even while GLM is hammered. Still a strong long-form writer; far better
-# than dropping straight to the weaker Groq llama. Override/disable via env.
-SYNTH_FALLBACK_MODEL = os.getenv("RESEARCH_SYNTH_FALLBACK_MODEL", "nvidia/nemotron-3-ultra-550b-a55b")
+# than dropping straight to the weaker Groq llama. Default tracks the Daily
+# tier's model; override/disable via env.
+SYNTH_FALLBACK_MODEL = os.getenv("RESEARCH_SYNTH_FALLBACK_MODEL", _KAUTILYA_TIER_MODELS['daily'][1])
 PLANNER_MODEL = os.getenv("RESEARCH_PLANNER_MODEL", "llama-3.3-70b-versatile")
 
 
@@ -115,26 +122,46 @@ def _extract_json(text: str):
 # Planning
 # =====================================================================
 
-def _plan_research(question: str) -> Tuple[List[str], List[str]]:
+def _plan_research(question: str, mode: str = "research") -> Tuple[List[str], List[str]]:
     """Return (initial_queries, outline_sections).
 
     The planner thinks like a research lead: it decomposes the question into a
     report outline AND a diverse set of search queries that, together, give
     both breadth and depth.
+
+    `mode="prd"` swaps the angle guidance from market-analyst angles (stats,
+    competitors, expert opinion) to product-thinking angles (user pain
+    points, competing products' actual features, technical/platform
+    constraints) — the search/read/gap-fill machinery below is unchanged.
     """
     year = datetime.now().year
-    sys = (
-        "You are the lead planner for a deep-research report. Decompose the user's "
-        "question into a rigorous research plan.\n"
-        f"Return RAW JSON (no markdown, no prose) shaped exactly:\n"
-        '{ "queries": ["...", "..."], "outline": ["Section title", "..."] }\n'
-        f"- queries: {MAX_QUERIES_R1} short, DIVERSE web-search queries covering different "
-        "angles — fundamentals/definitions, the latest developments (include the year "
-        f"{year} where recency matters), key players/competitors, hard data & statistics / "
-        "market size, expert analysis & contrarian views, and risks/criticisms. Add an "
-        "India-specific angle when the topic plausibly has one.\n"
-        "- outline: 5-8 section titles for a thorough analyst report on this question."
-    )
+    if mode == "prd":
+        sys = (
+            "You are the lead planner for a Product Requirements Document (PRD). Decompose the "
+            "user's feature/product idea into a rigorous research plan that will inform the PRD.\n"
+            f"Return RAW JSON (no markdown, no prose) shaped exactly:\n"
+            '{ "queries": ["...", "..."], "outline": ["Section title", "..."] }\n'
+            f"- queries: {MAX_QUERIES_R1} short, DIVERSE web-search queries covering different "
+            "angles a product manager actually needs — the user pain point / job-to-be-done this "
+            f"addresses, how existing/competing products solve it today (name real ones, {year} "
+            "state), technical or platform constraints and prior art, typical success metrics for "
+            "this category, and known failure modes / user complaints with similar features.\n"
+            "- outline: 5-8 section titles for a PRD covering this feature (e.g. problem, users, "
+            "requirements, success metrics, risks) — these are a starting hint, not final."
+        )
+    else:
+        sys = (
+            "You are the lead planner for a deep-research report. Decompose the user's "
+            "question into a rigorous research plan.\n"
+            f"Return RAW JSON (no markdown, no prose) shaped exactly:\n"
+            '{ "queries": ["...", "..."], "outline": ["Section title", "..."] }\n'
+            f"- queries: {MAX_QUERIES_R1} short, DIVERSE web-search queries covering different "
+            "angles — fundamentals/definitions, the latest developments (include the year "
+            f"{year} where recency matters), key players/competitors, hard data & statistics / "
+            "market size, expert analysis & contrarian views, and risks/criticisms. Add an "
+            "India-specific angle when the topic plausibly has one.\n"
+            "- outline: 5-8 section titles for a thorough analyst report on this question."
+        )
     msgs = [{"role": "system", "content": sys},
             {"role": "user", "content": question.strip()[:800]}]
     try:
@@ -223,6 +250,41 @@ def _serpapi_search(query: str, k: int = PER_QUERY_RESULTS) -> List[Dict[str, An
         return []
 
 
+def _tavily_search(query: str, k: int = PER_QUERY_RESULTS) -> List[Dict[str, Any]]:
+    """Second, independent search provider — queried IN PARALLEL with SerpAPI
+    (not a fallback-on-failure like _googlesearch_fallback/_wikipedia_fallback
+    below) and merged for better recall. No-ops without TAVILY_API_KEY."""
+    if not TAVILY_API_KEY:
+        return []
+    try:
+        resp = requests.post(
+            "https://api.tavily.com/search",
+            json={"api_key": TAVILY_API_KEY, "query": query, "max_results": k,
+                  "search_depth": "basic"},
+            timeout=FETCH_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            print(f"[Research] tavily HTTP {resp.status_code}: {resp.text[:200]}")
+            return []
+        data = resp.json()
+        results = []
+        for r in (data.get("results") or [])[:k]:
+            url = r.get("url")
+            if not url:
+                continue
+            results.append({
+                "title": r.get("title") or url,
+                "url": url,
+                "snippet": r.get("content", "")[:500],
+                "site": urlparse(url).netloc,
+                "favicon": _favicon(url),
+            })
+        return results
+    except Exception as e:
+        print(f"[Research] tavily err: {e}")
+        return []
+
+
 def _googlesearch_fallback(query: str, k: int = PER_QUERY_RESULTS) -> List[Dict[str, Any]]:
     try:
         from googlesearch import search as gs
@@ -266,14 +328,28 @@ def _wikipedia_fallback(query: str) -> List[Dict[str, Any]]:
 
 
 def _search_round(queries: List[str]) -> List[Dict[str, Any]]:
-    """Run all queries in parallel and flatten results (not yet deduped)."""
+    """Run all queries in parallel and flatten results (not yet deduped).
+
+    When both SERPAPI_API_KEY and TAVILY_API_KEY are set, BOTH providers are
+    queried for every query (not one-as-fallback-for-the-other) and their
+    results are pooled here — _merge_sources() downstream dedupes by URL and
+    caps per-domain, so this is pure recall/quality upside. With only one key
+    (or neither), behavior is unchanged from before: single provider, then
+    the scraper/Wikipedia last-ditch fallbacks."""
     if not queries:
         return []
-    searcher = _serpapi_search if SERPAPI_API_KEY else _googlesearch_fallback
+    primary = _serpapi_search if SERPAPI_API_KEY else _googlesearch_fallback
+    jobs = [(primary, q) for q in queries]
+    if TAVILY_API_KEY:
+        jobs += [(_tavily_search, q) for q in queries]
     out: List[Dict[str, Any]] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(2, len(queries))) as ex:
-        for res in ex.map(searcher, queries):
-            out.extend(res or [])
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(2, len(jobs))) as ex:
+        futures = [ex.submit(fn, q) for fn, q in jobs]
+        for fut in futures:
+            try:
+                out.extend(fut.result() or [])
+            except Exception as e:
+                print(f"[Research] search job failed: {e}")
     if not out:  # last-ditch
         for q in queries:
             out.extend(_wikipedia_fallback(q))
@@ -361,12 +437,59 @@ def _read_sources(sources: List[Dict[str, Any]]) -> List[str]:
 # Synthesis prompt
 # =====================================================================
 
-def _build_system_prompt(outline: List[str]) -> str:
+def _build_system_prompt(outline: List[str], mode: str = "research") -> str:
     outline_hint = ""
     if outline:
         outline_hint = (
             "\nUse this outline as a backbone (adapt/rename/merge as the evidence "
             "demands, drop sections with no support):\n- " + "\n- ".join(outline) + "\n"
+        )
+    if mode == "prd":
+        return (
+            "You are KAUTILYA, acting as a senior product manager writing a Product Requirements "
+            "Document (PRD). You have been given a numbered SET OF SOURCES (competitor research, "
+            "user pain points, prior art). Write a PRD grounded in that research, not a generic "
+            "template filled with guesses.\n\n"
+            "NON-NEGOTIABLE RULES:\n"
+            "- LANGUAGE: Write the ENTIRE PRD in the SAME language and script as the USER "
+            "REQUEST. Keep proper nouns, brand names, and the [N] citation markers as-is.\n"
+            "- Ground competitive claims and user-pain-point claims in the sources with inline "
+            "citations like [3] or [3][7]. Use ONLY source numbers that exist — never invent one.\n"
+            "- Requirements must be SPECIFIC and TESTABLE (\"the system SHALL...\"), not vague "
+            "aspirations. Prefer concrete numbers (latency targets, error budgets) over 'fast' / "
+            "'reliable'.\n"
+            "- Be honest about what the research does NOT tell you — call those out as open "
+            "questions rather than inventing an answer.\n"
+            "- No filler, no 'Sure, here is', no apologising. Start directly with the title line.\n\n"
+            "REQUIRED PRD STRUCTURE (rich markdown — use ##/### headings, **bold**, bullet lists, "
+            "and markdown TABLES for requirements/comparisons):\n"
+            "# <Product/Feature name> — PRD\n\n"
+            "## Problem Statement\n"
+            "What user pain point or job-to-be-done this addresses, grounded in the research "
+            "[N]. Why now.\n\n"
+            "## Goals & Non-Goals\n"
+            "Bullet list of what this explicitly does and does NOT try to solve.\n\n"
+            "## Target Users & Personas\n"
+            "Who this is for, with the evidence [N] behind that segmentation.\n\n"
+            f"{outline_hint}"
+            "## User Stories\n"
+            "5-10 \"As a [user], I want [goal], so that [benefit]\" stories covering the core "
+            "flows.\n\n"
+            "## Functional Requirements\n"
+            "A numbered, testable list (or table) of what the system SHALL do. Group by feature "
+            "area.\n\n"
+            "## Non-Functional Requirements\n"
+            "Performance, security, accessibility, compliance — concrete targets, not adjectives.\n\n"
+            "## Success Metrics\n"
+            "How you'll know this worked — specific, measurable, tied to the problem statement.\n\n"
+            "## Risks & Mitigations\n"
+            "What could go wrong (technical, market, adoption) [N] and the plan for each.\n\n"
+            "## Rollout Plan\n"
+            "Phasing — MVP vs. later phases, any gating/experimentation approach.\n\n"
+            "## Open Questions\n"
+            "What the research didn't settle and who needs to decide it.\n\n"
+            "Write thoroughly and concretely — vague requirements are worse than none. Do NOT "
+            "append your own 'Sources' list; that is added automatically."
         )
     return (
         "You are KAUTILYA DEEP RESEARCH — a senior analyst producing a definitive, "
@@ -436,7 +559,7 @@ def _bibliography_md(sources: List[Dict[str, Any]]) -> str:
 # =====================================================================
 
 def deep_research_stream(question: str, depth: str = "standard",
-                         is_pro: bool = False) -> Iterator[Dict[str, Any]]:
+                         is_pro: bool = False, mode: str = "research") -> Iterator[Dict[str, Any]]:
     """Stream an analyst-grade, multi-round deep-research report.
 
     `depth` tunes breadth/effort:
@@ -444,9 +567,21 @@ def deep_research_stream(question: str, depth: str = "standard",
       • standard   — full multi-round pipeline (default)
       • exhaustive — widest source net + second pass + longest report
 
+    `mode` tunes WHAT gets written, not how much research happens:
+      • research (default) — the analyst-report skeleton (Key Findings, Deep
+        Analysis, Outlook, Recommendations…)
+      • prd — a Product Requirements Document skeleton (Problem Statement,
+        User Stories, Functional/Non-Functional Requirements, Success
+        Metrics…), with the planner's search angles biased toward product
+        research (competing features, user pain points) instead of market
+        analysis. Search/read/gap-fill/synthesis/continuation/bibliography
+        are identical in both modes — only `_plan_research` and
+        `_build_system_prompt` branch on it.
+
     `is_pro` routes the GLM synthesis onto the reserved PRO NVIDIA lane and, on
     total failure, decides whether the user sees the PRO upsell.
     """
+    mode = "prd" if str(mode or "research").lower() == "prd" else "research"
     t0 = time.time()
     def time_left() -> float:
         return DEADLINE_S - (time.time() - t0)
@@ -464,7 +599,7 @@ def deep_research_stream(question: str, depth: str = "standard",
 
     # ---- 1. Plan -----------------------------------------------------------
     yield {"event": "status", "message": "🧭 Planning the research — outline & angles…"}
-    queries, outline = _plan_research(question)
+    queries, outline = _plan_research(question, mode=mode)
     yield {"event": "query", "queries": queries}
     if outline:
         yield {"thinking": "Planned report sections: " + " · ".join(outline)}
@@ -513,7 +648,7 @@ def deep_research_stream(question: str, depth: str = "standard",
     # ---- 7. Synthesis (with auto-continue on truncation) -------------------
     yield {"event": "status", "message": f"🧠 Synthesising the report from {len(sources)} sources…"}
 
-    system = _build_system_prompt(outline)
+    system = _build_system_prompt(outline, mode=mode)
     user_prompt = (f"USER QUESTION: {question}\n\n"
                    f"Write the full report now, citing the numbered sources below.\n\n"
                    f"SOURCES:\n{context}")
@@ -668,9 +803,10 @@ def deep_research_stream(question: str, depth: str = "standard",
         yield {"event": "chunk", "chunk": biblio}
 
     if len(final) > 400:
+        title_prefix = "PRD" if mode == "prd" else "Deep Research"
         yield {"event": "artifact",
                "artifactType": "document",
-               "artifactTitle": f"Deep Research: {question[:60]}"}
+               "artifactTitle": f"{title_prefix}: {question[:60]}"}
 
     elapsed = round(time.time() - t0, 1)
     yield {"event": "status",

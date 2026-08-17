@@ -131,12 +131,39 @@ TOOLS = [
         ],
         "guide": ("Use for calculations, data exploration, CSV summaries, or charts. "
                   "pandas / numpy / matplotlib / scipy are pre-installed; matplotlib runs headless — "
-                  "open figures are auto-captured as PNGs and shown to the user. No network, no "
-                  "filesystem beyond the temp workdir, keep runs under 15 seconds. The UI shows the "
-                  "code, stdout, and charts as cards — do NOT re-paste them; give a one-sentence "
+                  "open figures are auto-captured as PNGs and shown to the user. No network. Runs "
+                  "inside THIS session's Computer workspace (see below) — files written earlier via "
+                  "[FILE_WRITE:] (this turn or an earlier one) are on disk and can be read with "
+                  "normal relative paths (`pd.read_csv('data.csv')`); anything this run writes stays "
+                  "there for later turns too. Keep runs under 15 seconds. The UI shows the code, "
+                  "stdout, and charts as cards — do NOT re-paste them; give a one-sentence "
                   "interpretation only."),
-        "daily": ("Analysis, math, charts (matplotlib pre-installed, headless). Do not copy python "
-                  "output back into your reply; give a brief one-sentence interpretation."),
+        "daily": ("Analysis, math, charts (matplotlib pre-installed, headless, no network). Files "
+                  "persist in the session workspace across turns. Do not copy python output back "
+                  "into your reply; give a brief one-sentence interpretation."),
+    },
+    {
+        "group": "Kautilya Computer — persistent files (this session's sandboxed workspace)",
+        "syntax": [
+            "[FILE_WRITE: report.md | ```\nfile contents here\n```]",
+            "[FILE_READ: report.md]",
+            "[FILE_LIST:]",
+        ],
+        "guide": ("A real, persistent workspace scoped to THIS chat session — files survive across "
+                  "turns (unlike RUN_PYTHON's transient stdout). Use FILE_WRITE for anything the user "
+                  "wants built as an actual file (multi-file projects, scripts, data, configs) instead "
+                  "of pasting the whole thing inline every turn: name is a relative path (subfolders "
+                  "OK, e.g. `src/app.py`), content goes inside a fenced block. FILE_READ pulls a "
+                  "file's current content back (e.g. to see one you wrote earlier, or one the user "
+                  "uploaded that was staged into the workspace) — use this before editing a file "
+                  "instead of guessing its contents. FILE_LIST shows everything in the workspace so "
+                  "far. For iterative coding: WRITE the file, RUN_PYTHON to execute/test it, READ back "
+                  "any error, then WRITE the fix and rerun — do not re-paste entire files in prose "
+                  "just to show a change. No shell access; this is files + Python only. 5MB per file, "
+                  "50MB per session."),
+        "daily": ("Persistent per-session file workspace: FILE_WRITE (name | fenced content) to save "
+                  "a file, FILE_READ (name) to pull it back, FILE_LIST to see what's there. Files "
+                  "persist across turns and are visible to RUN_PYTHON. No shell access."),
     },
     {
         "group": "GST Invoice 🇮🇳 — server computes CGST/SGST/IGST deterministically",

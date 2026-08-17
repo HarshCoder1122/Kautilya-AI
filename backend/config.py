@@ -32,6 +32,10 @@ FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", os.urandom(24).hex())
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 SERPAPI_API_KEY = os.environ.get("SERPAPI_API_KEY", "")
+# Optional second web-search provider, queried IN PARALLEL with SerpAPI and
+# merged (services/research_service.py::_search_round) — pure recall/quality
+# upside. Fully optional: absent key = today's SerpAPI-only behavior.
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 MAPPLS_API_KEY = os.environ.get("MAPPLS_API_KEY", "")
 # ── Mappls (MapmyIndia) — maps, nearby search, routing ──
 # Mappls splits credentials by product:

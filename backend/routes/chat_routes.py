@@ -766,7 +766,8 @@ def jarvis_stream():
             try:
                 gen = get_llm_response(
                     conv['messages'], uid=uid, model=model,
-                    user_ip=client_ip, max_thinking=max_thinking
+                    user_ip=client_ip, max_thinking=max_thinking,
+                    session_id=session_id,
                 )
                 if gen is None:
                     # Total upstream failure → tell the user we're at capacity and
