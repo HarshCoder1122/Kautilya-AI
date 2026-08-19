@@ -170,29 +170,41 @@ TOOLS = [
         "syntax": [
             "[BROWSE: https://example.com/pricing]",
             "[BROWSE_CLICK: link text or #N from the last page]",
+            "[BROWSE_TYPE: field label or placeholder | text to type]",
         ],
         "guide": ("ON-DEMAND ONLY — this launches a REAL Chromium browser process, not a cheap fetch. "
                   "Call it ONLY when the user explicitly wants a specific site actually visited/"
-                  "navigated ('go to X and check Y', 'open the pricing page', 'click through to the "
-                  "docs') — never reflexively just because a URL or website is mentioned in passing. "
-                  "For general questions, facts, or 'what's the latest on X', use [SEARCH:] (cheap, "
-                  "no browser) or your own knowledge instead — do NOT reach for BROWSE by default. "
-                  "One persistent tab per session (not a one-off fetch): BROWSE loads a URL and "
-                  "returns the page title, visible text, a numbered list of its links, and a live "
-                  "screenshot (all shown to the user as a card — do not re-paste them). BROWSE_CLICK "
-                  "follows a link from the MOST RECENT page in this session — match by the link's "
-                  "visible text (partial match ok) or by its number from that page's link list; it "
-                  "also falls back to a real DOM click for JS-driven buttons that aren't plain <a "
-                  "href> links. Chain them only as far as the task actually needs: BROWSE the start "
-                  "page, read what came back, BROWSE_CLICK the specific link that gets you where the "
-                  "user needs, then STOP once you have the answer — don't keep clicking around. Only "
-                  "http/https, no internal/private addresses."),
+                  "navigated ('go to X and check Y', 'open the pricing page', 'log into X and check Y') "
+                  "— never reflexively just because a URL or website is mentioned in passing. For "
+                  "general questions, facts, or 'what's the latest on X', use [SEARCH:] (cheap, no "
+                  "browser) or your own knowledge instead — do NOT reach for BROWSE by default. ONE "
+                  "persistent tab per session (not a one-off fetch) — cookies and login state carry "
+                  "across every BROWSE/BROWSE_CLICK/BROWSE_TYPE call in this session, so a login done "
+                  "on turn 1 is STILL logged in on turn 5. BROWSE loads a URL and returns the page "
+                  "title, visible text, a numbered list of its links, and a live screenshot; the user "
+                  "sees these live in the Computer panel — do not re-paste them in your reply. "
+                  "BROWSE_CLICK follows a link/button from the MOST RECENT page in this session — "
+                  "match by visible text (partial match ok) or by number from that page's link list; "
+                  "it also does a real DOM click for JS-driven buttons that aren't plain <a href> "
+                  "links, and reaches into login/auth iframes and widgets, not just the top-level "
+                  "page. BROWSE_TYPE fills a form field on the CURRENT page — identify it by its "
+                  "visible label, placeholder text, or just 'email'/'password'/'username' if that's "
+                  "unambiguous; it also reaches into iframes. LOGIN FLOW: BROWSE the login page, "
+                  "BROWSE_TYPE the email/username field, BROWSE_TYPE the password field, BROWSE_CLICK "
+                  "the sign-in button — do this for real instead of saying you can't. Some sites still "
+                  "block automated browsers outright (CAPTCHA/bot walls) — if that happens, say so "
+                  "plainly rather than pretending it worked. Chain calls only as far as the task "
+                  "actually needs, then STOP once you have the answer. Only http/https, no internal/"
+                  "private addresses."),
         "daily": ("A REAL browser (launches Chromium) — only call it when the user explicitly wants "
-                  "a specific site visited/navigated, never reflexively for a mentioned URL or a "
-                  "general question (use [SEARCH:] for those, it's cheap). One tab per session. "
-                  "BROWSE: url — opens it, returns title/text/links/screenshot as a card. "
-                  "BROWSE_CLICK: link text or #N — follows a link from the page you just opened. "
-                  "Stop once you have the answer."),
+                  "a specific site visited/navigated/logged into, never reflexively for a mentioned "
+                  "URL or a general question (use [SEARCH:] for those, it's cheap). One tab per "
+                  "session — login/cookies persist across calls. BROWSE: url — opens it, shows title/"
+                  "text/links/screenshot in the Computer panel. BROWSE_CLICK: link text or #N — clicks "
+                  "a link/button on the page you just opened (reaches into auth iframes too). "
+                  "BROWSE_TYPE: field label | text — fills a form field (login, search box). Login "
+                  "flow: BROWSE the page, BROWSE_TYPE each field, BROWSE_CLICK submit. Stop once you "
+                  "have the answer."),
     },
     {
         "group": "GST Invoice 🇮🇳 — server computes CGST/SGST/IGST deterministically",

@@ -31,8 +31,14 @@ export default function ChatPage({ theme, toggleTheme, user }) {
   const [computerOpen, setComputerOpen] = useState(false);
   const [computerRefreshSignal, setComputerRefreshSignal] = useState(0);
   // Auto-open the Computer panel at most once per session so it doesn't keep
-  // popping back after the user explicitly closes it.
+  // popping back after the user explicitly closes it (shared by both the
+  // Files and Browser tabs — either activity can trigger the first open).
   const computerAutoOpenedRef = useRef(new Set());
+  // Latest live-browsed page (url/title/screenshot/links) — a single object,
+  // not a history list, since the Browser tab shows ONE persistent "current
+  // screen" rather than a card per action.
+  const [browserState, setBrowserState] = useState(null);
+  const [browseSignal, setBrowseSignal] = useState(0);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [activeMode, setActiveMode] = useState('pro'); // Pro selected by default on open
@@ -85,6 +91,23 @@ export default function ChatPage({ theme, toggleTheme, user }) {
     setCanvasOpen(false);
     setComputerOpen(true);
   }, [selectedConversation]);
+
+  // Every browse/click/type result updates the SAME live view (not a new
+  // card) — the panel switches to its Browser tab on every call (see
+  // ComputerPanel's browseSignal effect), but only force-OPENS the panel
+  // the first time this session, same as file activity.
+  const handleBrowseUpdate = useCallback((data) => {
+    setBrowserState(data);
+    setBrowseSignal(v => v + 1);
+    if (selectedConversation && computerAutoOpenedRef.current.has(selectedConversation)) return;
+    if (selectedConversation) computerAutoOpenedRef.current.add(selectedConversation);
+    setCanvasOpen(false);
+    setComputerOpen(true);
+  }, [selectedConversation]);
+
+  // Switching chats shouldn't keep showing a PREVIOUS conversation's browsed
+  // page.
+  useEffect(() => { setBrowserState(null); }, [selectedConversation]);
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -168,6 +191,7 @@ export default function ChatPage({ theme, toggleTheme, user }) {
         computerOpen={computerOpen}
         onToggleComputer={handleToggleComputer}
         onComputerActivity={handleComputerActivity}
+        onBrowseUpdate={handleBrowseUpdate}
         activeMode={activeMode}
         onSetMode={setActiveMode}
         theme={theme}
@@ -189,6 +213,8 @@ export default function ChatPage({ theme, toggleTheme, user }) {
           sessionId={selectedConversation}
           onClose={() => setComputerOpen(false)}
           refreshSignal={computerRefreshSignal}
+          browserState={browserState}
+          browseSignal={browseSignal}
         />
       )}
       <OnboardingModal user={user} />

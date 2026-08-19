@@ -1,24 +1,40 @@
 """
 Kautilya AI — Browser Service (Kautilya Computer, live web browsing).
 
-A real headless Chromium (Playwright) the agent can navigate and click
-through, session-scoped so "visit X, then click Y" acts on the SAME page
-across turns — mirrors computer_service.py's per-session model, but for a
-live browser instead of a filesystem.
+A real headless Chromium (Playwright) the agent can navigate, click, and
+type into — session-scoped so "visit X, log in, then click Y" acts on the
+SAME page/cookies across turns — mirrors computer_service.py's per-session
+model, but for a live browser instead of a filesystem.
 
 THREAD SAFETY: Playwright's async API objects (Browser/BrowserContext/Page)
 must only be driven from the event loop that created them. The rest of this
 codebase calls tools from an arbitrary ThreadPoolExecutor worker thread per
 request, so a single dedicated background thread runs its own asyncio event
 loop forever and owns the ONE shared Chromium process + all per-session
-BrowserContexts. Callers use `navigate()`/`click()` (plain sync functions);
-under the hood they hand a coroutine to that loop via
+BrowserContexts. Callers use `navigate()`/`click()`/`type_text()` (plain
+sync functions); under the hood they hand a coroutine to that loop via
 `asyncio.run_coroutine_threadsafe(...)` and block on the result — the
 standard, safe way to bridge sync multi-threaded callers into one asyncio
 loop running on another thread. Everything that touches `_sessions`/the
 browser itself runs as a coroutine ON that one loop, so it's all
 single-threaded from asyncio's point of view — no extra locking needed
 beyond the one-time bootstrap of the loop thread.
+
+HANG-PROOFING: every Playwright call carries an explicit timeout, the
+context has a blanket default timeout as a backstop, AND the outer sync
+wrapper cancels the asyncio future if it ever runs past its own timeout —
+so a wedged page can't block the shared loop thread (and therefore every
+OTHER session on this worker) forever. Any exception during a session's
+operation closes that session's context so the NEXT call starts a fresh
+page instead of retrying against something possibly broken.
+
+STEALTH: default headless Chromium is trivially fingerprinted (the #1 tell
+is `navigator.webdriver === true`) and gets blocked by ordinary bot/CAPTCHA
+walls before the agent can do anything useful. An init script + launch args
+below patch the well-known automation tells — this is NOT a guarantee
+against dedicated anti-bot vendors (Cloudflare/hCaptcha challenges can still
+trigger), but it clears the common case of a site simply refusing headless
+browsers outright.
 
 RESOURCE CAPS: this process (one of several gunicorn WORKER PROCESSES, see
 start.sh) launches its own Chromium if a browse call ever lands on it — one
@@ -28,14 +44,15 @@ shared browser process, up to BROWSER_MAX_SESSIONS lightweight contexts
 raise BROWSER_MAX_SESSIONS only after confirming the host has RAM to spare.
 
 SECURITY: navigation targets are resolved and checked against
-private/loopback/link-local/reserved ranges before every goto — same SSRF
-posture as the Python sandbox's socket guard — so this can't be used to
-reach internal services or the cloud metadata endpoint.
+private/loopback/link-local/reserved ranges before every goto/click/type —
+same SSRF posture as the Python sandbox's socket guard — so this can't be
+used to reach internal services or the cloud metadata endpoint.
 """
 from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
 import ipaddress
 import os
 import re
@@ -48,7 +65,8 @@ from urllib.parse import urlparse
 MAX_SESSIONS = int(os.environ.get("BROWSER_MAX_SESSIONS", "2"))
 SESSION_TTL_SECONDS = 10 * 60
 NAV_TIMEOUT_MS = 20_000
-CLICK_TIMEOUT_MS = 8_000
+ACTION_TIMEOUT_MS = 10_000       # click/fill/wait_for_load_state backstop
+OUTER_TIMEOUT_S = 35             # hard ceiling on the whole bridged call
 MAX_TEXT_CHARS = 6_000
 MAX_LINKS = 40
 
@@ -61,6 +79,27 @@ _loop_ready = threading.Event()
 _sessions: Dict[str, Dict[str, Any]] = {}
 _browser = None
 _playwright = None
+
+# Patches the handful of properties naive bot-detection scripts check.
+# Hand-rolled (no extra pip dependency) from the well-documented set of
+# headless "tells" — not a silver bullet against dedicated anti-bot vendors.
+_STEALTH_INIT_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+window.chrome = window.chrome || { runtime: {} };
+Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+const _origQuery = window.navigator.permissions && window.navigator.permissions.query;
+if (_origQuery) {
+    window.navigator.permissions.query = (params) => (
+        params.name === 'notifications'
+            ? Promise.resolve({ state: Notification.permission })
+            : _origQuery(params)
+    );
+}
+"""
+
+_REALISTIC_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
 
 def _ensure_loop():
@@ -83,12 +122,20 @@ def _ensure_loop():
         _loop_ready.wait(timeout=10)
 
 
-def _run(coro, timeout=30):
+def _run(coro, timeout=OUTER_TIMEOUT_S):
+    """Bridge a coroutine onto the dedicated Playwright loop and block for
+    the result. If it overruns, CANCEL it rather than just giving up on
+    waiting — an uncancelled coroutine keeps running on the shared loop and
+    would stall every other session on this worker process behind it."""
     _ensure_loop()
     if _loop is None:
         raise RuntimeError("browser event loop failed to start")
     fut = asyncio.run_coroutine_threadsafe(coro, _loop)
-    return fut.result(timeout=timeout)
+    try:
+        return fut.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        fut.cancel()
+        raise TimeoutError(f"Browser operation exceeded {timeout}s and was cancelled")
 
 
 def _is_blocked_host(host: str) -> bool:
@@ -139,7 +186,10 @@ async def _get_browser():
         _playwright = await async_playwright().start()
     _browser = await _playwright.chromium.launch(
         headless=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        args=[
+            "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+            "--disable-blink-features=AutomationControlled",
+        ],
     )
     return _browser
 
@@ -175,10 +225,16 @@ async def _get_session(uid: str, session_id: str) -> Dict[str, Any]:
     browser = await _get_browser()
     context = await browser.new_context(
         viewport={"width": 1280, "height": 800},
-        user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 KautilyaBot/1.0"),
+        user_agent=_REALISTIC_UA,
+        locale="en-US",
     )
+    # Blanket backstop for EVERY action/assertion on this context (fill,
+    # click, wait_for_*, …), not just navigation — belt-and-suspenders
+    # against any Playwright call site that might otherwise fall back to
+    # its own much longer default timeout.
+    context.set_default_timeout(ACTION_TIMEOUT_MS)
     context.set_default_navigation_timeout(NAV_TIMEOUT_MS)
+    await context.add_init_script(_STEALTH_INIT_SCRIPT)
     page = await context.new_page()
     entry = {"context": context, "page": page, "last_used": time.time(), "links": []}
     _sessions[key] = entry
@@ -194,7 +250,7 @@ async def _extract_page(entry: Dict[str, Any], page) -> Dict[str, Any]:
 
     text = ""
     try:
-        text = await page.inner_text("body")
+        text = await page.inner_text("body", timeout=5000)
         text = re.sub(r'\n{3,}', '\n\n', text or "").strip()[:MAX_TEXT_CHARS]
     except Exception:
         pass
@@ -272,28 +328,86 @@ async def _click(uid: str, session_id: str, target: str) -> Dict[str, Any]:
         # Not in the last extracted link list (or points at JS, not an
         # href) — fall back to a real DOM click, which also handles
         # JS-driven buttons/nav a static <a href> scrape wouldn't capture.
-        await page.get_by_text(target_clean, exact=False).first.click(timeout=CLICK_TIMEOUT_MS)
-        await page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
+        # get_by_text pierces same- and cross-origin iframes automatically
+        # (Playwright operates at the CDP level, not plain JS DOM access),
+        # so this also reaches most embedded auth-widget buttons.
+        await page.get_by_text(target_clean, exact=False).first.click(timeout=ACTION_TIMEOUT_MS)
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
+        except Exception:
+            pass  # a click that doesn't navigate (e.g. opens a menu) is fine
         _check_url_allowed(page.url)
 
     return await _extract_page(entry, page)
 
 
+async def _type(uid: str, session_id: str, field: str, value: str) -> Dict[str, Any]:
+    entry = await _get_session(uid, session_id)
+    page = entry["page"]
+    field_clean = (field or "").strip()
+    if not field_clean:
+        raise ValueError("no field description given")
+
+    # Try the common ways a form field is identified, in order of how
+    # reliably each one pins down a SINGLE field. All of these pierce
+    # iframes automatically (same CDP-level reasoning as _click above),
+    # which is what makes typing into embedded auth widgets work.
+    locator_attempts = [
+        lambda: page.get_by_label(field_clean, exact=False),
+        lambda: page.get_by_placeholder(field_clean, exact=False),
+        lambda: page.get_by_role("textbox", name=field_clean, exact=False),
+        lambda: page.locator(
+            f'input[name*="{field_clean}" i], input[id*="{field_clean}" i], '
+            f'input[aria-label*="{field_clean}" i]'
+        ),
+    ]
+    # A bare "password"/"email" ask should also match the input TYPE even
+    # when there's no matching label/placeholder text at all.
+    fl = field_clean.lower()
+    if "password" in fl:
+        locator_attempts.append(lambda: page.locator('input[type="password"]'))
+    if "email" in fl:
+        locator_attempts.append(lambda: page.locator('input[type="email"]'))
+
+    last_err = None
+    for make_locator in locator_attempts:
+        try:
+            loc = make_locator().first
+            await loc.wait_for(state="visible", timeout=3000)
+            await loc.fill(value, timeout=ACTION_TIMEOUT_MS)
+            return await _extract_page(entry, page)
+        except Exception as e:
+            last_err = e
+            continue
+    raise ValueError(f"couldn't find a field matching '{field_clean}': {last_err}")
+
+
 # ── Public sync API (safe to call from any thread) ─────────────────────────
 
-def navigate(uid: str, session_id: str, url: str, timeout: int = 30) -> Dict[str, Any]:
+def _guarded(coro_factory, uid, session_id, timeout=OUTER_TIMEOUT_S):
+    """Run one browser op; on ANY unexpected failure (not our own
+    PermissionError/ValueError), close the session so the next call gets a
+    fresh page instead of retrying against something possibly wedged."""
     try:
-        return _run(_navigate(uid or "anon", session_id, url), timeout=timeout)
-    except PermissionError:
+        return _run(coro_factory(), timeout=timeout)
+    except (PermissionError, ValueError):
         raise
     except Exception as e:
+        key = f"{uid or 'anon'}::{session_id}"
+        try:
+            _run(_close_session(key), timeout=10)
+        except Exception:
+            pass
         return {"ok": False, "error": str(e)}
 
 
-def click(uid: str, session_id: str, target: str, timeout: int = 30) -> Dict[str, Any]:
-    try:
-        return _run(_click(uid or "anon", session_id, target), timeout=timeout)
-    except PermissionError:
-        raise
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+def navigate(uid: str, session_id: str, url: str, timeout: int = OUTER_TIMEOUT_S) -> Dict[str, Any]:
+    return _guarded(lambda: _navigate(uid or "anon", session_id, url), uid, session_id, timeout)
+
+
+def click(uid: str, session_id: str, target: str, timeout: int = OUTER_TIMEOUT_S) -> Dict[str, Any]:
+    return _guarded(lambda: _click(uid or "anon", session_id, target), uid, session_id, timeout)
+
+
+def type_text(uid: str, session_id: str, field: str, value: str, timeout: int = OUTER_TIMEOUT_S) -> Dict[str, Any]:
+    return _guarded(lambda: _type(uid or "anon", session_id, field, value), uid, session_id, timeout)

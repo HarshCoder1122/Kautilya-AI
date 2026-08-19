@@ -1086,7 +1086,7 @@ def _looks_like_orphan_preamble(text):
         # Long responses are real answers, not orphan preambles.
         return False
     # If any tool tag already exists, the loop handled it elsewhere.
-    if re.search(r'\[(INTEGRATION|SEARCH|CALCULATE|RUN_PYTHON|FETCH_URL|CALENDAR_|GMAIL_|WHATSAPP_SEND|SLACK_POST|HUBSPOT_CREATE_CONTACT|FILE_WRITE|FILE_READ|FILE_LIST|BROWSE|BROWSE_CLICK)', t):
+    if re.search(r'\[(INTEGRATION|SEARCH|CALCULATE|RUN_PYTHON|FETCH_URL|CALENDAR_|GMAIL_|WHATSAPP_SEND|SLACK_POST|HUBSPOT_CREATE_CONTACT|FILE_WRITE|FILE_READ|FILE_LIST|BROWSE|BROWSE_CLICK|BROWSE_TYPE)', t):
         return False
     tl = t.lower()
     # If the model is ASKING THE USER for info (a question anywhere in the
@@ -1494,6 +1494,18 @@ def _plan_actions(text, uid, start_id=1, session_id=None):
                            "The new page's title, text, links and a screenshot are already shown as "
                            "a card — don't re-paste them. Answer using what you read, or click again "
                            "if you need to go further.",
+                           m.start()))
+
+    # 11.10 [BROWSE_TYPE: field label | text to type]  — fill a form field (login, search box, etc.)
+    for m in re.finditer(r'\[BROWSE_TYPE:\s*([^\|\n]+?)\s*\|\s*([\s\S]+?)\]', text):
+        field = m.group(1).strip()
+        value = m.group(2).strip()
+        if _is_placeholder_arg(field):
+            continue
+        actions.append(_mk("browse_type", f"{field} → {'•' * min(len(value), 8) if 'pass' in field.lower() else value[:40]}",
+                           _runner_browse_type(uid, session_id, field, value),
+                           "The field is filled — the updated page is already shown as a card. "
+                           "[BROWSE_CLICK:] the submit/login button next, or fill another field.",
                            m.start()))
 
     # 12. [GST_INVOICE: ```json {...} ```]  — India GST invoice; maths server-side.
@@ -2046,6 +2058,30 @@ def _runner_browse_click(uid, session_id, target):
         except Exception as e:
             return {"ok": False, "preview": str(e)[:100],
                     "observation": f"BROWSE_CLICK ERROR: {e}", "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_browse_type(uid, session_id, field, value):
+    def run():
+        if not session_id:
+            return {"ok": False, "preview": "no session",
+                    "observation": "BROWSE_TYPE ERROR: no active session to browse in.",
+                    "done_extras": {}, "extra_events": []}
+        try:
+            from services.browser_service import type_text
+            res = type_text(uid or 'anon', session_id, field, value, timeout=30)
+            return _browse_result_to_action_result("browse_type", res)
+        except PermissionError as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"BROWSE_TYPE ERROR: {e}", "done_extras": {}, "extra_events": []}
+        except ValueError as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"BROWSE_TYPE ERROR: {e} — re-check the field's exact label/"
+                                    f"placeholder text from the page's screenshot/text and retry.",
+                    "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"BROWSE_TYPE ERROR: {e}", "done_extras": {}, "extra_events": []}
     return run
 
 

@@ -31,8 +31,11 @@ function ToolResultCard({ tool, data }) {
     case "file_write":   return <FileWriteCard {...data} />;
     case "file_read":    return <FileReadCard {...data} />;
     case "file_list":    return <FileListCard {...data} />;
-    case "browse":
-    case "browse_click": return <BrowseCard {...data} />;
+    // browse / browse_click / browse_type deliberately DON'T render inline —
+    // that was a screenshot card per action flooding the chat transcript.
+    // The same data now lives in the Computer panel's Browser tab (a single
+    // persistent live view, see ComputerPanel.jsx) — this component just
+    // exports <BrowseCard> for that panel to reuse.
     default:             return null;
   }
 }
@@ -208,7 +211,7 @@ function FileListCard({ files = [] }) {
 }
 
 // ============= KAUTILYA COMPUTER (live browsing) =============
-function BrowseCard({ url = "", title = "", screenshot_b64 = "", links = [] }) {
+export function BrowseCard({ url = "", title = "", screenshot_b64 = "", links = [] }) {
   const [showLinks, setShowLinks] = useState(false);
   return (
     <CardShell icon={Compass} accent="sky" label={`Browsing · ${hostFromUrl(url)}`}>

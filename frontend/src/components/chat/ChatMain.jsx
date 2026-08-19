@@ -72,7 +72,7 @@ const _writeStreamCache = (sid, messages, streaming) => {
   } catch { /* quota / private mode — soft-fail */ }
 };
 
-export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSidebar, canvasOpen, onToggleCanvas, onOpenCanvas, computerOpen, onToggleComputer, onComputerActivity, activeMode, onSetMode, theme, toggleTheme, sessionId, onSessionChange, onNewSession, onStreamComplete }) {
+export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSidebar, canvasOpen, onToggleCanvas, onOpenCanvas, computerOpen, onToggleComputer, onComputerActivity, onBrowseUpdate, activeMode, onSetMode, theme, toggleTheme, sessionId, onSessionChange, onNewSession, onStreamComplete }) {
   // Restore previous in-progress messages synchronously so a remount (after
   // navigating to dashboard / switching tabs) never shows a blank screen.
   const [messages, setMessages] = useState(() => _readStreamCache(sessionId)?.messages || []);
@@ -831,6 +831,12 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                 // First sign of Computer activity this stream — surface the panel.
                 if (onComputerActivity && (parsed.tool === 'file_write' || parsed.tool === 'file_read' || parsed.tool === 'file_list')) {
                   onComputerActivity();
+                }
+                // Live browsing — push the latest page (url/title/screenshot/
+                // links) up so the Computer panel's Browser tab can show ONE
+                // persistent view instead of a card per action.
+                if (onBrowseUpdate && (parsed.tool === 'browse' || parsed.tool === 'browse_click' || parsed.tool === 'browse_type')) {
+                  onBrowseUpdate(parsed.data);
                 }
                 continue;
               }
