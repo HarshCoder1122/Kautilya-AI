@@ -1086,7 +1086,7 @@ def _looks_like_orphan_preamble(text):
         # Long responses are real answers, not orphan preambles.
         return False
     # If any tool tag already exists, the loop handled it elsewhere.
-    if re.search(r'\[(INTEGRATION|SEARCH|CALCULATE|RUN_PYTHON|FETCH_URL|CALENDAR_|GMAIL_|WHATSAPP_SEND|SLACK_POST|HUBSPOT_CREATE_CONTACT|FILE_WRITE|FILE_READ|FILE_LIST)', t):
+    if re.search(r'\[(INTEGRATION|SEARCH|CALCULATE|RUN_PYTHON|FETCH_URL|CALENDAR_|GMAIL_|WHATSAPP_SEND|SLACK_POST|HUBSPOT_CREATE_CONTACT|FILE_WRITE|FILE_READ|FILE_LIST|BROWSE|BROWSE_CLICK)', t):
         return False
     tl = t.lower()
     # If the model is ASKING THE USER for info (a question anywhere in the
@@ -1470,6 +1470,30 @@ def _plan_actions(text, uid, start_id=1, session_id=None):
         actions.append(_mk("file_list", "workspace files",
                            _runner_file_list(uid, session_id),
                            "The file list is already shown to the user as a card — don't re-list it in prose.",
+                           m.start()))
+
+    # 11.8 [BROWSE: url]  — Kautilya Computer, live browser (session-scoped tab).
+    for m in re.finditer(r'\[BROWSE:\s*(.*?)\]', text):
+        url = m.group(1).strip()
+        if _is_placeholder_arg(url):
+            continue
+        actions.append(_mk("browse", url,
+                           _runner_browse(uid, session_id, url),
+                           "The page's title, text, links and a screenshot are already shown as a "
+                           "card — don't re-paste them. Answer using what you read, or "
+                           "[BROWSE_CLICK:] a link from it if you need to go further.",
+                           m.start()))
+
+    # 11.9 [BROWSE_CLICK: link text or #N]
+    for m in re.finditer(r'\[BROWSE_CLICK:\s*(.*?)\]', text):
+        target = m.group(1).strip()
+        if _is_placeholder_arg(target):
+            continue
+        actions.append(_mk("browse_click", target,
+                           _runner_browse_click(uid, session_id, target),
+                           "The new page's title, text, links and a screenshot are already shown as "
+                           "a card — don't re-paste them. Answer using what you read, or click again "
+                           "if you need to go further.",
                            m.start()))
 
     # 12. [GST_INVOICE: ```json {...} ```]  — India GST invoice; maths server-side.
@@ -1959,6 +1983,69 @@ def _runner_file_list(uid, session_id):
         except Exception as e:
             return {"ok": False, "preview": str(e)[:100],
                     "observation": f"FILE_LIST ERROR: {e}", "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _browse_result_to_action_result(tool_name, res):
+    """Shared shaping for both BROWSE and BROWSE_CLICK results — same
+    services/browser_service.py return shape either way."""
+    if not res.get("ok"):
+        err = res.get("error", "browse failed")
+        return {"ok": False, "preview": err[:100],
+                "observation": f"{tool_name.upper()} ERROR: {err}",
+                "done_extras": {}, "extra_events": []}
+    title = res.get("title") or res.get("url", "")
+    text = (res.get("text") or "")[:2500]
+    links = res.get("links") or []
+    link_lines = "\n".join(f"{i+1}. {l['text']} → {l['href']}" for i, l in enumerate(links[:20]))
+    extra = [{"event": "tool_result", "tool": tool_name,
+              "data": {"url": res.get("url"), "title": title,
+                       "screenshot_b64": res.get("screenshot_b64"),
+                       "links": links[:20]}}]
+    observation = (
+        f"{tool_name.upper()} → {res.get('url')}\nTITLE: {title}\n\n"
+        f"PAGE TEXT (excerpt):\n{text}\n\n"
+        f"LINKS ON THIS PAGE (use with [BROWSE_CLICK: text] or [BROWSE_CLICK: #N]):\n{link_lines}"
+    )
+    return {"ok": True, "preview": f"{title[:80]} — {res.get('url', '')[:60]}",
+            "observation": observation, "done_extras": {}, "extra_events": extra}
+
+
+def _runner_browse(uid, session_id, url):
+    def run():
+        if not session_id:
+            return {"ok": False, "preview": "no session",
+                    "observation": "BROWSE ERROR: no active session to browse in.",
+                    "done_extras": {}, "extra_events": []}
+        try:
+            from services.browser_service import navigate
+            res = navigate(uid or 'anon', session_id, url, timeout=30)
+            return _browse_result_to_action_result("browse", res)
+        except PermissionError as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"BROWSE ERROR: {e}", "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"BROWSE ERROR: {e}", "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_browse_click(uid, session_id, target):
+    def run():
+        if not session_id:
+            return {"ok": False, "preview": "no session",
+                    "observation": "BROWSE_CLICK ERROR: no active session to browse in.",
+                    "done_extras": {}, "extra_events": []}
+        try:
+            from services.browser_service import click
+            res = click(uid or 'anon', session_id, target, timeout=30)
+            return _browse_result_to_action_result("browse_click", res)
+        except PermissionError as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"BROWSE_CLICK ERROR: {e}", "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"BROWSE_CLICK ERROR: {e}", "done_extras": {}, "extra_events": []}
     return run
 
 

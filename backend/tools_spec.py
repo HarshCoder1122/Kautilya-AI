@@ -166,6 +166,29 @@ TOOLS = [
                   "persist across turns and are visible to RUN_PYTHON. No shell access."),
     },
     {
+        "group": "Kautilya Computer — live browsing (a real browser you navigate, this session's tab)",
+        "syntax": [
+            "[BROWSE: https://example.com/pricing]",
+            "[BROWSE_CLICK: link text or #N from the last page]",
+        ],
+        "guide": ("A REAL headless browser scoped to this session — one persistent tab, not a "
+                  "one-off fetch. Use it when the user wants you to actually go look at a specific "
+                  "site/page (not a broad web question — that's [SEARCH:]), especially when you "
+                  "need to navigate INTO it: open a page, then follow a link on THAT page. BROWSE "
+                  "loads a URL and returns the page title, visible text, a numbered list of its "
+                  "links, and a live screenshot (all shown to the user as a card — do not re-paste "
+                  "them). BROWSE_CLICK follows a link from the MOST RECENT page in this session — "
+                  "match by the link's visible text (partial match ok) or by its number from that "
+                  "page's link list; it also falls back to a real DOM click for JS-driven buttons "
+                  "that aren't plain <a href> links. Chain them to actually browse: BROWSE the "
+                  "start page, read what came back, BROWSE_CLICK the specific link that gets you "
+                  "where the user needs, repeat. Only http/https, no internal/private addresses."),
+        "daily": ("Real browser, one tab per session. BROWSE: url — opens it, returns title/text/"
+                  "links/screenshot as a card. BROWSE_CLICK: link text or #N — follows a link from "
+                  "the page you just opened. Use for 'go to this site and find X', not broad "
+                  "questions (use [SEARCH:] for those)."),
+    },
+    {
         "group": "GST Invoice 🇮🇳 — server computes CGST/SGST/IGST deterministically",
         "syntax": [
             "[GST_INVOICE: ```json\n"

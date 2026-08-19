@@ -6,7 +6,7 @@
  *   {"event":"tool_result","tool":"<name>","data":{...}}
  * ChatMain accumulates them into msg.toolResults; this component renders them.
  */
-import { Envelope, CalendarCheck, MapPin, VideoCamera, Code, Image as ImageIcon, Terminal, MagnifyingGlass, FilePlus, FileText, FolderOpen } from "@phosphor-icons/react";
+import { Envelope, CalendarCheck, MapPin, VideoCamera, Code, Image as ImageIcon, Terminal, MagnifyingGlass, FilePlus, FileText, FolderOpen, Compass, ArrowSquareOut } from "@phosphor-icons/react";
 import { useState } from "react";
 import { MapCard } from "./MapCard";
 import { RouteCard } from "./RouteCard";
@@ -31,6 +31,8 @@ function ToolResultCard({ tool, data }) {
     case "file_write":   return <FileWriteCard {...data} />;
     case "file_read":    return <FileReadCard {...data} />;
     case "file_list":    return <FileListCard {...data} />;
+    case "browse":
+    case "browse_click": return <BrowseCard {...data} />;
     default:             return null;
   }
 }
@@ -201,6 +203,50 @@ function FileListCard({ files = [] }) {
           </div>
         ))}
       </div>
+    </CardShell>
+  );
+}
+
+// ============= KAUTILYA COMPUTER (live browsing) =============
+function BrowseCard({ url = "", title = "", screenshot_b64 = "", links = [] }) {
+  const [showLinks, setShowLinks] = useState(false);
+  return (
+    <CardShell icon={Compass} accent="sky" label={`Browsing · ${hostFromUrl(url)}`}>
+      <a href={url} target="_blank" rel="noopener noreferrer"
+         className="flex items-center gap-1.5 text-sm font-medium text-foreground hover:text-[var(--k-brand)] transition-colors mb-2">
+        <span className="line-clamp-1">{title || url}</span>
+        <ArrowSquareOut className="w-3.5 h-3.5 shrink-0 opacity-60" />
+      </a>
+      {screenshot_b64 && (
+        <a href={url} target="_blank" rel="noopener noreferrer" className="block mb-3">
+          <img
+            src={`data:image/jpeg;base64,${screenshot_b64}`}
+            alt={title || url}
+            className="w-full rounded-md border border-[var(--k-border)]/60"
+          />
+        </a>
+      )}
+      {links.length > 0 && (
+        <>
+          <button
+            onClick={() => setShowLinks(s => !s)}
+            className="text-[11px] text-[var(--k-brand)] hover:underline"
+          >
+            {showLinks ? "Hide links" : `Show ${links.length} link${links.length > 1 ? "s" : ""} on this page`}
+          </button>
+          {showLinks && (
+            <div className="mt-2 divide-y divide-[var(--k-border)]/60 max-h-[220px] overflow-y-auto">
+              {links.map((l, i) => (
+                <a key={i} href={l.href} target="_blank" rel="noopener noreferrer"
+                   className="flex items-center gap-2 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
+                  <span className="text-[10px] text-muted-foreground/60 w-4 shrink-0">{i + 1}</span>
+                  <span className="line-clamp-1">{l.text}</span>
+                </a>
+              ))}
+            </div>
+          )}
+        </>
+      )}
     </CardShell>
   );
 }

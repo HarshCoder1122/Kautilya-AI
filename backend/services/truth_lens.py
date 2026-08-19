@@ -56,7 +56,7 @@ def should_verify(model_choice, answer_text, turn):
     if not answer_text or len(answer_text) < _MIN_ANSWER_CHARS:
         return False
     # Tool tags mean this turn isn't final prose — the loop handles it.
-    if "[INTEGRATION:" in answer_text or re.search(r"\[(SEARCH|CALCULATE|RUN_PYTHON|MAP_SEARCH|ROUTE_PLAN|CALENDAR_|GMAIL_|WHATSAPP_|SLACK_|HUBSPOT_|GST_INVOICE|FILE_WRITE|FILE_READ|FILE_LIST)", answer_text):
+    if "[INTEGRATION:" in answer_text or re.search(r"\[(SEARCH|CALCULATE|RUN_PYTHON|MAP_SEARCH|ROUTE_PLAN|CALENDAR_|GMAIL_|WHATSAPP_|SLACK_|HUBSPOT_|GST_INVOICE|FILE_WRITE|FILE_READ|FILE_LIST|BROWSE|BROWSE_CLICK)", answer_text):
         return False
     return True
 

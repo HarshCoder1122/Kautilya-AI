@@ -15,6 +15,18 @@ RUN apt-get update && apt-get install -y \
 # Install global MCP servers as root to make them globally available
 RUN npm install -g @modelcontextprotocol/server-github @modelcontextprotocol/server-sequential-thinking
 
+# System libraries Chromium needs at runtime (Kautilya Computer's live
+# browsing tool, services/browser_service.py). Installed as ROOT via
+# Playwright's own dependency-resolver (`install-deps`) rather than a
+# hand-maintained apt package list, so it stays correct for whatever Debian
+# base this image is on. A throwaway pip install just to reach that CLI —
+# the real `playwright` the app imports is installed later, per-user, from
+# requirements.txt; only the system .so libraries from this step persist.
+RUN pip install --no-cache-dir playwright \
+    && playwright install-deps chromium \
+    && pip uninstall -y playwright \
+    && rm -rf /var/lib/apt/lists/*
+
 # Use a non-root user for security (HF requirement)
 RUN useradd -m -u 1000 user
 USER user
@@ -22,9 +34,13 @@ ENV PATH="/home/user/.local/bin:$PATH"
 
 WORKDIR /home/user/app
 
-# Copy requirements and install
+# Copy requirements and install. The trailing `playwright install chromium`
+# downloads the BROWSER BINARY only (system .so libs were already installed
+# as root above) — deliberately no --with-deps here, that would try to
+# apt-get as this non-root user and fail.
 COPY --chown=user requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+RUN pip install --no-cache-dir --user -r requirements.txt \
+    && python -m playwright install chromium
 
 # Copy source code
 COPY --chown=user . .

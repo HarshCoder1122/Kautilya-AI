@@ -1,7 +1,8 @@
 import {
   MagnifyingGlass, Calculator, Code, Globe, Spinner, CheckCircle,
   WarningCircle, ArrowSquareOut, EnvelopeSimple, Calendar,
-  WhatsappLogo, SlackLogo, Lightning, Receipt, FilePlus, FileText, FolderOpen
+  WhatsappLogo, SlackLogo, Lightning, Receipt, FilePlus, FileText, FolderOpen,
+  Compass, CursorClick
 } from "@phosphor-icons/react";
 
 const TOOL_META = {
@@ -19,6 +20,8 @@ const TOOL_META = {
   file_write:  { icon: FilePlus,        label: "Computer",    color: "text-sky-400",     bg: "bg-sky-400/10",     border: "border-sky-400/20" },
   file_read:   { icon: FileText,        label: "Computer",    color: "text-sky-400",     bg: "bg-sky-400/10",     border: "border-sky-400/20" },
   file_list:   { icon: FolderOpen,      label: "Computer",    color: "text-sky-400",     bg: "bg-sky-400/10",     border: "border-sky-400/20" },
+  browse:      { icon: Compass,         label: "Browsing",    color: "text-cyan-400",    bg: "bg-cyan-400/10",    border: "border-cyan-400/20" },
+  browse_click:{ icon: CursorClick,     label: "Browsing",    color: "text-cyan-400",    bg: "bg-cyan-400/10",    border: "border-cyan-400/20" },
 };
 
 const DEFAULT_TOOL = { icon: Globe, label: "Tool", color: "text-muted-foreground", bg: "bg-accent", border: "border-border" };

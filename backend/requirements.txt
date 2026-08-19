@@ -44,4 +44,5 @@ mcp>=1.2.0
 uv
 mcp-server-fetch
 mcp-server-time
+playwright
 
