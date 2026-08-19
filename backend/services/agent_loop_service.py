@@ -2042,7 +2042,10 @@ def _browse_result_to_action_result(tool_name, res):
         if console_errors:
             diag.append("Console errors:\n" + "\n".join(f"- {e}" for e in console_errors[-10:]))
         if failed_requests:
-            diag.append("Failed/error network requests:\n" + "\n".join(f"- {e}" for e in failed_requests[-10:]))
+            diag.append("Network/WebSocket events (failed/4xx/5xx requests, and any WebSocket "
+                        "opened/closed/errored — a WebSocket that opened but never closed with no "
+                        "further activity is a real-time backend the page may be silently waiting "
+                        "on forever):\n" + "\n".join(f"- {e}" for e in failed_requests[-10:]))
         observation += "\n".join(diag)
     return {"ok": True, "preview": f"{title[:80]} — {res.get('url', '')[:60]}",
             "observation": observation, "done_extras": {}, "extra_events": extra}

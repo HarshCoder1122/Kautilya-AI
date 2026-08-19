@@ -61,6 +61,7 @@ import base64
 import concurrent.futures
 import ipaddress
 import os
+import queue
 import re
 import socket
 import threading
@@ -77,11 +78,22 @@ SESSION_TTL_SECONDS = int(os.environ.get("BROWSER_SESSION_TTL_S", str(30 * 60)))
 JANITOR_INTERVAL_S = 60          # how often the background sweep runs
 NAV_TIMEOUT_MS = 20_000
 ACTION_TIMEOUT_MS = 10_000       # click/fill/wait_for_load_state backstop
-OUTER_TIMEOUT_S = 40             # hard ceiling on the whole bridged call
+OUTER_TIMEOUT_S = 60             # hard ceiling on the whole bridged call
 SETTLE_NETWORK_IDLE_MS = 6_000   # post-click/type: let an SPA's login/API call finish
+NAV_SETTLE_NETWORK_IDLE_MS = 15_000  # post-navigate: a fresh "workspace bootstrap" can
+                                      # legitimately take longer than a click's response
 SETTLE_MIN_MS = 700              # then a beat for the client-side re-render off it
 MAX_TEXT_CHARS = 6_000
 MAX_LINKS = 40
+
+# Genuinely live viewing (CDP screencast), not a polled screenshot — Chrome
+# streams frames continuously via Page.startScreencast while at least one
+# viewer is connected; started/stopped lazily so a session nobody's watching
+# doesn't pay the encoding overhead.
+SCREENCAST_QUALITY = 45
+SCREENCAST_MAX_WIDTH = 1024
+SCREENCAST_MAX_HEIGHT = 640
+SCREENCAST_MIN_FRAME_INTERVAL_S = 0.12   # ~8fps cap — CDP has no built-in rate limit
 
 _boot_lock = threading.Lock()
 _loop: Optional[asyncio.AbstractEventLoop] = None
@@ -289,6 +301,9 @@ async def _get_session(uid: str, session_id: str) -> Dict[str, Any]:
         # ring-buffers, read (and cleared on a fresh navigate) in
         # _extract_page()/_navigate().
         "console_errors": [], "failed_requests": [],
+        # Live screencast state (see _ensure_cdp / _start_screencast_if_needed).
+        "cdp": None, "screencast_active": False,
+        "frame_subscribers": set(), "last_frame_sent": 0.0,
     }
     _wire_diagnostics(entry)
     _sessions[key] = entry
@@ -341,13 +356,135 @@ def _wire_diagnostics(entry: Dict[str, Any]):
         except Exception:
             pass
 
+    def _on_websocket(ws):
+        # A stuck "workspace loading" screen with NO console error and NO
+        # failed HTTP request is exactly the signature of a real-time
+        # backend (WebSocket/SSE) that the page is silently waiting on
+        # forever — invisible to the listeners above since a WS connection
+        # isn't a "request" that fails/succeeds the normal way. Recording
+        # that one was even OPENED, and whether it then closed/errored, is
+        # the one diagnostic angle those listeners can't cover.
+        try:
+            fr = entry["failed_requests"]
+            fr.append(f"WEBSOCKET opened: {ws.url}"[:200])
+            del fr[:-20]
+
+            def _ws_closed():
+                try:
+                    fr.append(f"WEBSOCKET closed: {ws.url}"[:200])
+                    del fr[:-20]
+                except Exception:
+                    pass
+
+            def _ws_error(err=None):
+                try:
+                    fr.append(f"WEBSOCKET error: {ws.url} — {err}"[:200])
+                    del fr[:-20]
+                except Exception:
+                    pass
+
+            ws.on("close", lambda: _ws_closed())
+            ws.on("socketerror", _ws_error)
+        except Exception:
+            pass
+
     page.on("console", _on_console)
     page.on("pageerror", _on_pageerror)
     page.on("requestfailed", _on_requestfailed)
     page.on("response", _on_response)
+    page.on("websocket", _on_websocket)
 
 
-async def _settle_after_action(page):
+async def _ensure_cdp(entry: Dict[str, Any]):
+    """Lazily create the CDP session for this page and wire the screencast
+    frame handler ONCE — the handler itself decides per-frame whether a
+    screencast is even running (frames only arrive while one is)."""
+    if entry["cdp"] is not None:
+        return entry["cdp"]
+    page = entry["page"]
+    cdp = await page.context.new_cdp_session(page)
+    entry["cdp"] = cdp
+
+    def _on_frame(params):
+        # ACK immediately — fire-and-forget — or Chrome stalls and stops
+        # sending further frames waiting for the ack that never comes.
+        cdp_session_id = params.get("sessionId")
+        if cdp_session_id is not None:
+            asyncio.ensure_future(cdp.send("Page.screencastFrameAck", {"sessionId": cdp_session_id}))
+        now = time.time()
+        if now - entry["last_frame_sent"] < SCREENCAST_MIN_FRAME_INTERVAL_S:
+            return  # throttled — still ack'd above, just not forwarded to viewers
+        frame_b64 = params.get("data")
+        if not frame_b64:
+            return
+        entry["last_frame_sent"] = now
+        dead = []
+        for q in entry["frame_subscribers"]:
+            try:
+                q.put_nowait(frame_b64)
+            except Exception:
+                dead.append(q)  # a full/broken queue — drop it, its consumer will time out
+        for q in dead:
+            entry["frame_subscribers"].discard(q)
+
+    cdp.on("Page.screencastFrame", _on_frame)
+    return cdp
+
+
+async def _start_screencast_if_needed(entry: Dict[str, Any]):
+    if entry["screencast_active"]:
+        return
+    cdp = await _ensure_cdp(entry)
+    try:
+        await cdp.send("Page.startScreencast", {
+            "format": "jpeg", "quality": SCREENCAST_QUALITY,
+            "maxWidth": SCREENCAST_MAX_WIDTH, "maxHeight": SCREENCAST_MAX_HEIGHT,
+            "everyNthFrame": 1,
+        })
+        entry["screencast_active"] = True
+    except Exception:
+        pass  # a live view failing to start shouldn't break browsing itself
+
+
+async def _stop_screencast_if_idle(entry: Dict[str, Any]):
+    """Stop encoding frames the moment nobody's watching — screencast has
+    real CPU cost even with no viewers if left running."""
+    if not entry["screencast_active"] or entry["frame_subscribers"]:
+        return
+    cdp = entry.get("cdp")
+    if cdp is None:
+        return
+    try:
+        await cdp.send("Page.stopScreencast")
+    except Exception:
+        pass
+    entry["screencast_active"] = False
+
+
+async def _subscribe_screencast(uid: str):
+    key = _session_key(uid)
+    entry = _sessions.get(key)
+    if entry is None:
+        return None
+    entry["last_used"] = time.time()
+    # maxsize small on purpose: a live view should show the LATEST frame, not
+    # queue up a backlog of stale ones if the consumer falls behind.
+    q: "queue.Queue" = queue.Queue(maxsize=4)
+    entry["frame_subscribers"].add(q)
+    await _start_screencast_if_needed(entry)
+    return q
+
+
+async def _unsubscribe_screencast(uid: str, q):
+    key = _session_key(uid)
+    entry = _sessions.get(key)
+    if entry is None:
+        return
+    entry["frame_subscribers"].discard(q)
+    await _stop_screencast_if_idle(entry)
+
+
+async def _settle_after_action(page, network_idle_timeout_ms=SETTLE_NETWORK_IDLE_MS):
     """After a click/type that MIGHT be an SPA login/form-submit rather than
     a real page navigation: `wait_for_load_state("domcontentloaded")` is a
     no-op here — that event already fired when the page first loaded, ages
@@ -361,7 +498,7 @@ async def _settle_after_action(page):
     catches a client-side re-render that lands slightly after the network
     settles (React state update, toast animation, etc.)."""
     try:
-        await page.wait_for_load_state("networkidle", timeout=SETTLE_NETWORK_IDLE_MS)
+        await page.wait_for_load_state("networkidle", timeout=network_idle_timeout_ms)
     except Exception:
         pass  # persistent polling/websockets/SSE never go idle — fine, move on
     try:
@@ -439,8 +576,10 @@ async def _navigate(uid: str, session_id: str, url: str) -> Dict[str, Any]:
     await page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
     # Give the SPA's post-navigation bootstrap (auth check, workspace init,
     # first data fetch) a chance to finish or fail before reading the page —
-    # same reasoning as _settle_after_action, just for the initial load.
-    await _settle_after_action(page)
+    # same reasoning as _settle_after_action, just for the initial load, and
+    # with more patience: a fresh workspace bootstrap legitimately takes
+    # longer than a click's response.
+    await _settle_after_action(page, network_idle_timeout_ms=NAV_SETTLE_NETWORK_IDLE_MS)
     return await _extract_page(entry, page)
 
 
@@ -522,6 +661,29 @@ async def _type(uid: str, session_id: str, field: str, value: str) -> Dict[str, 
     raise ValueError(f"couldn't find a field matching '{field_clean}': {last_err}")
 
 
+async def _current_screenshot(uid: str) -> Dict[str, Any]:
+    """Lightweight sibling of `_current_state` for FREQUENT polling — just
+    the screenshot + url, skipping title/inner_text/link-scraping (each an
+    extra CDP round-trip `_extract_page` normally does). This is what makes
+    the Computer panel's Browser tab feel genuinely live: the frontend polls
+    this every ~1s while that tab is visible, so the screen updates as the
+    agent works instead of only once per completed tool call. Screenshots
+    interleave safely with an in-flight navigate/click on the SAME page —
+    everything runs on the one dedicated loop, so this just captures
+    whatever the page looks like at that exact moment, mid-action or not."""
+    key = _session_key(uid)
+    entry = _sessions.get(key)
+    if entry is None:
+        return {"ok": False, "error": "no active browser session"}
+    entry["last_used"] = time.time()
+    page = entry["page"]
+    try:
+        buf = await page.screenshot(type="jpeg", quality=45, timeout=4000)
+        return {"ok": True, "url": page.url, "screenshot_b64": base64.b64encode(buf).decode("ascii")}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 async def _current_state(uid: str) -> Dict[str, Any]:
     """Read-only: the CURRENT page's title/url/screenshot/links for this
     user's persistent browser, without navigating anywhere. Used so opening
@@ -544,6 +706,32 @@ def get_current_state(uid: str, timeout: int = 15) -> Dict[str, Any]:
         return _run(_current_state(uid or "anon"), timeout=timeout)
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def get_screenshot(uid: str, timeout: int = 8) -> Dict[str, Any]:
+    try:
+        return _run(_current_screenshot(uid or "anon"), timeout=timeout)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def open_live_view(uid: str, timeout: int = 10):
+    """Start (or join) the live CDP screencast for this user's browser and
+    return a thread-safe queue.Queue the CALLER reads directly (plain
+    blocking .get(timeout=...) — no need to bridge back through _run for
+    that part, queue.Queue is safe to read from any thread). Returns None
+    if there's no active browser session to watch. ALWAYS pair with
+    close_live_view() (e.g. in a try/finally) once the caller is done
+    streaming, or the screencast keeps encoding frames for a viewer that
+    already left."""
+    return _run(_subscribe_screencast(uid or "anon"), timeout=timeout)
+
+
+def close_live_view(uid: str, q, timeout: int = 10):
+    try:
+        _run(_unsubscribe_screencast(uid or "anon", q), timeout=timeout)
+    except Exception:
+        pass
 
 
 def _guarded(coro_factory, uid, session_id, timeout=OUTER_TIMEOUT_S):

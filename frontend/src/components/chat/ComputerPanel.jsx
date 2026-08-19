@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
-import { X, HardDrives, File, ArrowClockwise, FileText, FolderOpen, Compass } from "@phosphor-icons/react";
-import { computerAPI } from "@/lib/api";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { X, HardDrives, File, ArrowClockwise, FileText, FolderOpen, Compass, ArrowSquareOut } from "@phosphor-icons/react";
+import { computerAPI, API_BASE_URL, getAuthHeaders } from "@/lib/api";
 import { BrowseCard } from "./ToolResultCards";
 
 /**
@@ -82,6 +82,75 @@ export function ComputerPanel({ sessionId, onClose, refreshSignal, browserState,
   }, [browseSignal]);
 
   const effectiveBrowserState = browserState || pulledBrowserState;
+
+  // ── Genuinely live view (CDP screencast via SSE), not a polled screenshot ──
+  // Each `data:` line from /api/computer/browser/live is one JPEG frame,
+  // arriving continuously while connected. EventSource can't send auth
+  // headers, so this is a raw fetch + stream reader, same mechanics as the
+  // main chat SSE consumer in ChatMain.jsx.
+  const [liveFrame, setLiveFrame] = useState(null);
+  const [liveConnected, setLiveConnected] = useState(false);
+  const liveAbortRef = useRef(null);
+  const liveActiveRef = useRef(false); // guards against a stale retry firing after teardown
+
+  useEffect(() => {
+    if (activeTab !== "browser") {
+      liveActiveRef.current = false;
+      liveAbortRef.current?.abort();
+      setLiveConnected(false);
+      return;
+    }
+
+    liveActiveRef.current = true;
+    let retryTimer = null;
+
+    const connect = async () => {
+      if (!liveActiveRef.current) return;
+      const controller = new AbortController();
+      liveAbortRef.current = controller;
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/computer/browser/live`, {
+          headers: getAuthHeaders(),
+          signal: controller.signal,
+        });
+        if (!res.ok || !res.body) throw new Error(`live view unavailable (${res.status})`);
+        setLiveConnected(true);
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (liveActiveRef.current) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n\n");
+          buf = lines.pop() || "";
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue; // skip ": keep-alive" comments
+            const frame = line.slice(6).trim();
+            if (frame) setLiveFrame(`data:image/jpeg;base64,${frame}`);
+          }
+        }
+      } catch (e) {
+        // Aborted on purpose (tab switched away/unmount) — don't retry.
+        if (e?.name === "AbortError") return;
+      } finally {
+        setLiveConnected(false);
+        if (liveActiveRef.current) {
+          // No active browser yet, or the stream dropped — retry shortly
+          // rather than leaving the panel permanently stuck on a stale frame.
+          retryTimer = setTimeout(connect, 3000);
+        }
+      }
+    };
+
+    connect();
+
+    return () => {
+      liveActiveRef.current = false;
+      liveAbortRef.current?.abort();
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [activeTab]);
 
   const openFile = async (path) => {
     setSelected(path);
@@ -193,7 +262,7 @@ export function ComputerPanel({ sessionId, onClose, refreshSignal, browserState,
 
       {activeTab === "browser" && (
         <div className="flex-1 min-h-0 overflow-y-auto p-4">
-          {!effectiveBrowserState && !loadingBrowser && (
+          {!liveFrame && !effectiveBrowserState && !loadingBrowser && (
             <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground gap-2">
               <Compass className="w-8 h-8 opacity-40" />
               <p className="text-xs max-w-[220px]">
@@ -202,10 +271,28 @@ export function ComputerPanel({ sessionId, onClose, refreshSignal, browserState,
               </p>
             </div>
           )}
-          {!effectiveBrowserState && loadingBrowser && (
+          {!liveFrame && !effectiveBrowserState && loadingBrowser && (
             <div className="text-xs text-muted-foreground">Checking your browser…</div>
           )}
-          {effectiveBrowserState && <BrowseCard {...effectiveBrowserState} />}
+          {liveFrame && (
+            <div className="rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] p-3 w-full max-w-full overflow-hidden">
+              <div className="flex items-center gap-2 mb-2">
+                <span className={`flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest ${liveConnected ? "text-rose-400" : "text-muted-foreground"}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${liveConnected ? "bg-rose-400 animate-pulse" : "bg-muted-foreground"}`} />
+                  {liveConnected ? "Live" : "Reconnecting…"}
+                </span>
+                {effectiveBrowserState?.url && (
+                  <a href={effectiveBrowserState.url} target="_blank" rel="noopener noreferrer"
+                     className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground truncate transition-colors">
+                    <span className="truncate">{effectiveBrowserState.url}</span>
+                    <ArrowSquareOut className="w-3 h-3 shrink-0 opacity-60" />
+                  </a>
+                )}
+              </div>
+              <img src={liveFrame} alt="Live browser view" className="w-full rounded-md border border-[var(--k-border)]/60" />
+            </div>
+          )}
+          {!liveFrame && effectiveBrowserState && <BrowseCard {...effectiveBrowserState} />}
         </div>
       )}
     </div>

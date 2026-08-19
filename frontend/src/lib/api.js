@@ -6,7 +6,7 @@ import axios from 'axios';
 // bypasses the proxy and breaks signed cookies / custom auth headers.
 const _hn = (typeof window !== 'undefined' ? window.location.hostname : '') || '';
 const _onOwnDomain = /(^|\.)revealiq\.in$/i.test(_hn);
-const API_BASE_URL = _onOwnDomain
+export const API_BASE_URL = _onOwnDomain
   ? window.location.origin
   : (process.env.REACT_APP_API_URL
       || (_hn === 'localhost' ? 'http://localhost:5000' : window.location.origin));

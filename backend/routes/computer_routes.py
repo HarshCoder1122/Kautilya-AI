@@ -10,20 +10,39 @@ loop, never directly from the client, so this blueprint is GET-only.
 GET /api/computer/files?session_id=...             -> { files: [{path, bytes}] }
 GET /api/computer/file?session_id=...&name=...      -> { path, content, truncated, bytes }
 GET /api/computer/browser                           -> current browser state (see below)
+GET /api/computer/browser/live                      -> SSE stream of live screencast frames
 
 The browser (services/browser_service.py) is scoped per USER, not per chat —
 one persistent "computer" regardless of which conversation you're in — so
-/computer/browser deliberately takes NO session_id: it returns whatever the
-CURRENT state of that one shared browser is, so opening the panel in a
+/computer/browser* deliberately take NO session_id: they operate on whatever
+the CURRENT state of that one shared browser is, so opening the panel in a
 different chat than the one that did the browsing still shows the truth.
+
+/computer/browser/live is a REAL live view (Chrome DevTools Protocol
+screencast — the same mechanism remote-browser tools like Browserbase use),
+not a polled screenshot: each `data:` line is one JPEG frame, arriving
+continuously (~8fps cap) for as long as the connection stays open. The
+screencast only runs while at least one client is actually connected here —
+see services/browser_service.py's _start_screencast_if_needed /
+_stop_screencast_if_idle.
 """
-from flask import Blueprint, request, jsonify
+import queue as _queue
+import time as _time
+
+from flask import Blueprint, request, jsonify, Response
 
 from services.auth_service import verify_firebase_token
 from services.computer_service import list_files, read_file
-from services.browser_service import get_current_state
+from services.browser_service import get_current_state, open_live_view, close_live_view
 
 computer_bp = Blueprint('computer', __name__)
+
+# How long the SSE loop waits for a frame before sending a keep-alive
+# comment (proxies/browsers can otherwise decide the connection is dead).
+_LIVE_FRAME_WAIT_S = 5
+# Hard ceiling on ONE stream connection's lifetime — the frontend reconnects
+# after this rather than a single request pinning a gunicorn thread forever.
+_LIVE_MAX_DURATION_S = 10 * 60
 
 
 @computer_bp.route('/computer/files', methods=['GET'])
@@ -98,3 +117,34 @@ def api_computer_browser():
         "screenshot_b64": res.get("screenshot_b64"),
         "links": res.get("links") or [],
     })
+
+
+@computer_bp.route('/computer/browser/live', methods=['GET'])
+def api_computer_browser_live():
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Authentication required"}), 401
+
+    q = open_live_view(uid)
+    if q is None:
+        return jsonify({"error": "No active browser session to watch"}), 404
+
+    def stream():
+        start = _time.time()
+        try:
+            while _time.time() - start < _LIVE_MAX_DURATION_S:
+                try:
+                    frame_b64 = q.get(timeout=_LIVE_FRAME_WAIT_S)
+                    yield f"data: {frame_b64}\n\n"
+                except _queue.Empty:
+                    yield ": keep-alive\n\n"
+        finally:
+            # Runs even if the client disconnects mid-stream (generator
+            # close) — without this the screencast keeps encoding frames
+            # for a viewer that already left.
+            close_live_view(uid, q)
+
+    return Response(stream(), mimetype='text/event-stream',
+                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no',
+                              'Connection': 'keep-alive'})
