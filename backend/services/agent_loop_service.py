@@ -996,12 +996,22 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         if truncation_detected and turn < CONTINUATION_MAX_TURNS - 1:
             current_messages.append({"role": "assistant", "content": accumulated_response})
             if tag_truncation_detected:
-                nudge = (
-                    "[SYSTEM] Your previous response was cut off mid tool tag. "
-                    "Re-emit the complete [INTEGRATION: …] tag with valid JSON, OR — if it "
-                    "was a long document — send it in smaller chunks via multiple "
-                    "append_google_doc calls instead of one mega call."
-                )
+                if '[FILE_WRITE:' in accumulated_response and '[FILE_WRITE:' not in sanitized_response:
+                    nudge = (
+                        "[SYSTEM] Your previous [FILE_WRITE:] was cut off mid-file — it was "
+                        "DISCARDED, nothing was saved. Re-emit it, but keep this file under "
+                        "roughly 150-200 lines so it fits in one turn. If the project genuinely "
+                        "needs more, split it into SEPARATE files (e.g. index.html, style.css, "
+                        "script.js) with separate [FILE_WRITE:] calls across turns instead of one "
+                        "giant file."
+                    )
+                else:
+                    nudge = (
+                        "[SYSTEM] Your previous response was cut off mid tool tag. "
+                        "Re-emit the complete [INTEGRATION: …] tag with valid JSON, OR — if it "
+                        "was a long document — send it in smaller chunks via multiple "
+                        "append_google_doc calls instead of one mega call."
+                    )
             else:
                 # Pure prose truncation: continue from where the model left off
                 # so the user sees a seamless answer rather than a redo.
@@ -1177,42 +1187,81 @@ def _find_json_end(text, start):
     return -1
 
 
+def _complete_integration_tag_end(text, idx):
+    """If a well-formed `[INTEGRATION: tool | {json}]` starts at idx, return
+    the index just past its closing `]`. Otherwise -1 (truncated/malformed)."""
+    json_start = text.find('{', idx)
+    if json_start == -1:
+        return -1
+    end = _find_json_end(text, json_start)
+    if end == -1:
+        return -1
+    tail = text[end + 1:]
+    m = re.match(r'\s*\]', tail)
+    if not m:
+        return -1
+    return end + 1 + m.end()
+
+
+def _complete_file_write_tag_end(text, idx):
+    """If a well-formed `[FILE_WRITE: name | ```...```]` starts at idx, return
+    the index just past its closing `]`. Otherwise -1 (truncated/malformed).
+    A large file body (a full multi-file project crammed into one write) is
+    the realistic way this gets cut off mid-tag by the token cap — the same
+    failure mode [INTEGRATION:] already guards against, just with a fenced
+    body instead of a JSON payload."""
+    m = re.match(r'\[FILE_WRITE:\s*[^\|\n]+?\s*\|\s*```(?:\w+)?\s*[\s\S]*?```\s*\]', text[idx:])
+    if not m:
+        return -1
+    return idx + m.end()
+
+
+# Tag prefix -> function(text, idx_of_prefix) -> end index of the complete
+# tag, or -1 if truncated/malformed. Add an entry here whenever a NEW tool
+# tag can carry a large enough payload to plausibly get cut off mid-tag by
+# the token cap (short single-line tags like [FILE_READ: name] don't need
+# one — a few characters realistically never straddles a truncation point).
+_TRUNCATION_GUARDED_TAGS = {
+    "[INTEGRATION:": _complete_integration_tag_end,
+    "[FILE_WRITE:": _complete_file_write_tag_end,
+}
+
+
 def _strip_truncated_tool_tags(text):
-    """Remove silently-truncated `[INTEGRATION: ...` tags from text that will
-    be shown to the user. Models occasionally run out of max_tokens mid-JSON;
-    without this, the raw tag (including the entire prompt-style payload)
-    bleeds into the chat bubble."""
-    if not text or "[INTEGRATION:" not in text:
+    """Remove silently-truncated tool tags (see `_TRUNCATION_GUARDED_TAGS`)
+    from text that will be shown to the user. Models occasionally run out of
+    max_tokens mid-tag (mid-JSON for [INTEGRATION:], mid-file for
+    [FILE_WRITE:]); without this, the raw tag — including the entire
+    prompt-style payload or half-written file — bleeds into the chat bubble
+    verbatim instead of being caught by the truncation-retry path."""
+    if not text or not any(p in text for p in _TRUNCATION_GUARDED_TAGS):
         return text
     out = []
     i = 0
     while i < len(text):
-        idx = text.find("[INTEGRATION:", i)
+        # Find whichever guarded tag prefix appears soonest.
+        idx, prefix, checker = -1, None, None
+        for p, fn in _TRUNCATION_GUARDED_TAGS.items():
+            pidx = text.find(p, i)
+            if pidx != -1 and (idx == -1 or pidx < idx):
+                idx, prefix, checker = pidx, p, fn
         if idx == -1:
             out.append(text[i:])
             break
-        # Look ahead for a closing `]` on the same tag, with JSON awareness.
-        json_start = text.find('{', idx)
-        if json_start != -1:
-            end = _find_json_end(text, json_start)
-            if end != -1:
-                tail = text[end + 1:]
-                m = re.match(r'\s*\]', tail)
-                if m:
-                    # Complete tag — keep it; the parser will execute it.
-                    out.append(text[i:end + 1 + m.end()])
-                    i = end + 1 + m.end()
-                    continue
-        # Truncated or malformed — drop everything from `[INTEGRATION:` on.
-        # We deliberately stop at the first newline that's followed by a
-        # non-JSON-looking line so we don't eat unrelated trailing content,
-        # but in practice the truncation runs to end-of-text, so drop the rest.
+        end = checker(text, idx)
+        if end != -1:
+            # Complete tag — keep it verbatim; the parser will execute it.
+            out.append(text[i:end])
+            i = end
+            continue
+        # Truncated or malformed — drop everything from the tag prefix on.
+        # In practice the truncation runs to end-of-text, so we deliberately
+        # don't try to resync mid-payload; a stray later `]` just gets
+        # skipped past as the safest conservative behavior.
         out.append(text[i:idx])
-        # Conservative: only strip to end-of-text if no `]` ever appears after.
         rest = text[idx:]
         if ']' not in rest:
             break
-        # If a stray `]` exists later, skip up to and including it.
         close = rest.find(']')
         i = idx + close + 1
     return ''.join(out).rstrip()
