@@ -171,22 +171,28 @@ TOOLS = [
             "[BROWSE: https://example.com/pricing]",
             "[BROWSE_CLICK: link text or #N from the last page]",
         ],
-        "guide": ("A REAL headless browser scoped to this session — one persistent tab, not a "
-                  "one-off fetch. Use it when the user wants you to actually go look at a specific "
-                  "site/page (not a broad web question — that's [SEARCH:]), especially when you "
-                  "need to navigate INTO it: open a page, then follow a link on THAT page. BROWSE "
-                  "loads a URL and returns the page title, visible text, a numbered list of its "
-                  "links, and a live screenshot (all shown to the user as a card — do not re-paste "
-                  "them). BROWSE_CLICK follows a link from the MOST RECENT page in this session — "
-                  "match by the link's visible text (partial match ok) or by its number from that "
-                  "page's link list; it also falls back to a real DOM click for JS-driven buttons "
-                  "that aren't plain <a href> links. Chain them to actually browse: BROWSE the "
-                  "start page, read what came back, BROWSE_CLICK the specific link that gets you "
-                  "where the user needs, repeat. Only http/https, no internal/private addresses."),
-        "daily": ("Real browser, one tab per session. BROWSE: url — opens it, returns title/text/"
-                  "links/screenshot as a card. BROWSE_CLICK: link text or #N — follows a link from "
-                  "the page you just opened. Use for 'go to this site and find X', not broad "
-                  "questions (use [SEARCH:] for those)."),
+        "guide": ("ON-DEMAND ONLY — this launches a REAL Chromium browser process, not a cheap fetch. "
+                  "Call it ONLY when the user explicitly wants a specific site actually visited/"
+                  "navigated ('go to X and check Y', 'open the pricing page', 'click through to the "
+                  "docs') — never reflexively just because a URL or website is mentioned in passing. "
+                  "For general questions, facts, or 'what's the latest on X', use [SEARCH:] (cheap, "
+                  "no browser) or your own knowledge instead — do NOT reach for BROWSE by default. "
+                  "One persistent tab per session (not a one-off fetch): BROWSE loads a URL and "
+                  "returns the page title, visible text, a numbered list of its links, and a live "
+                  "screenshot (all shown to the user as a card — do not re-paste them). BROWSE_CLICK "
+                  "follows a link from the MOST RECENT page in this session — match by the link's "
+                  "visible text (partial match ok) or by its number from that page's link list; it "
+                  "also falls back to a real DOM click for JS-driven buttons that aren't plain <a "
+                  "href> links. Chain them only as far as the task actually needs: BROWSE the start "
+                  "page, read what came back, BROWSE_CLICK the specific link that gets you where the "
+                  "user needs, then STOP once you have the answer — don't keep clicking around. Only "
+                  "http/https, no internal/private addresses."),
+        "daily": ("A REAL browser (launches Chromium) — only call it when the user explicitly wants "
+                  "a specific site visited/navigated, never reflexively for a mentioned URL or a "
+                  "general question (use [SEARCH:] for those, it's cheap). One tab per session. "
+                  "BROWSE: url — opens it, returns title/text/links/screenshot as a card. "
+                  "BROWSE_CLICK: link text or #N — follows a link from the page you just opened. "
+                  "Stop once you have the answer."),
     },
     {
         "group": "GST Invoice 🇮🇳 — server computes CGST/SGST/IGST deterministically",
