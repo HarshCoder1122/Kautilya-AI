@@ -21,6 +21,13 @@ from services.llm_service import call_groq, call_nvidia
 _ANSWER_SIZE_CLASSIFIER_ENABLED = os.environ.get("ANSWER_SIZE_CLASSIFIER", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _envint(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except Exception:
+        return default
+
+
 MODEL_ALIASES = {
     "kautilya-daily": "daily",
     "llama": "daily",
@@ -608,17 +615,22 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     #
     # Claude doesn't try to predict total work from the first message; it
     # runs many short turns, each with its own fresh budget, and trusts the
-    # outer loop. We mirror that:
-    #   - Coder mode gets 25 turns (real coding tasks routinely chain
-    #     read_file → grep → read_file → edit → run_tests → fix → re-run,
-    #     and our previous 8-turn cap was strangling them halfway through).
-    #   - Daily/Pro keep 12 turns (was 8; bumped because tool-heavy
-    #     workflows like "search → write doc → send email" hit the cap on
-    #     genuinely sequential chains too).
+    # outer loop. We mirror that. Deliberately NOT literally unbounded
+    # (`while True` with no cap) — a genuinely runaway loop (stuck browsing,
+    # a tool that keeps failing the same way) would otherwise burn NVIDIA
+    # API cost/time indefinitely with no backstop at all. These are high
+    # enough that no realistic multi-step task (a long browsing/login
+    # session, a big multi-file coding task) should ever hit the ceiling —
+    # raise further via env if one genuinely does.
+    #   - Coder: 200 turns (real coding tasks chain read→grep→edit→
+    #     run_tests→fix→re-run; browsing/login flows chain BROWSE→
+    #     BROWSE_TYPE→BROWSE_CLICK repeatedly too).
+    #   - Daily/Pro: 80 turns (tool-heavy workflows like "search → write doc
+    #     → send email" or a shorter browsing task).
     # Parallel tool execution still collapses N concurrent tools into one
     # turn each, so the wall-clock cost of a higher cap is small in the
-    # common case, and the cap only bites on sequential chains.
-    MAX_TURNS = 25 if model_choice == 'coder' else 12
+    # common case, and the cap only bites on long sequential chains.
+    MAX_TURNS = _envint('AGENT_MAX_TURNS_CODER', 200) if model_choice == 'coder' else _envint('AGENT_MAX_TURNS_DEFAULT', 80)
     # MAX_TURNS caps TOOL-CHAINING (read→grep→edit→run…) to stop runaway tool
     # loops. But pure OUTPUT continuation — a big multi-file <file> project or a
     # long document that keeps hitting the token cap — is benign and must be
@@ -2019,6 +2031,19 @@ def _browse_result_to_action_result(tool_name, res):
         f"PAGE TEXT (excerpt):\n{text}\n\n"
         f"LINKS ON THIS PAGE (use with [BROWSE_CLICK: text] or [BROWSE_CLICK: #N]):\n{link_lines}"
     )
+    # Real diagnostics instead of guessing: if the page is stuck/broken, this
+    # is usually WHY — a JS exception, a blocked/failed request, or a 4xx/5xx
+    # from an API the page depends on.
+    console_errors = res.get("console_errors") or []
+    failed_requests = res.get("failed_requests") or []
+    if console_errors or failed_requests:
+        diag = ["\n\nBROWSER DIAGNOSTICS (use this to explain WHY something is broken/stuck — "
+                "don't just guess by clicking repeatedly):"]
+        if console_errors:
+            diag.append("Console errors:\n" + "\n".join(f"- {e}" for e in console_errors[-10:]))
+        if failed_requests:
+            diag.append("Failed/error network requests:\n" + "\n".join(f"- {e}" for e in failed_requests[-10:]))
+        observation += "\n".join(diag)
     return {"ok": True, "preview": f"{title[:80]} — {res.get('url', '')[:60]}",
             "observation": observation, "done_extras": {}, "extra_events": extra}
 

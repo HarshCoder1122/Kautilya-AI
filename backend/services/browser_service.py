@@ -99,6 +99,13 @@ if (_origQuery) {
             : _origQuery(params)
     );
 }
+// Some SPAs gate expensive init work (workspace/dashboard bootstrap) behind
+// the Page Visibility API, treating a headless/background tab as "don't
+// bother yet" — this was directly observed causing an infinite "Preparing
+// your workspace..." spinner. Report the tab as always visible/focused.
+Object.defineProperty(document, 'visibilityState', { get: () => 'visible' });
+Object.defineProperty(document, 'hidden', { get: () => false });
+document.hasFocus = () => true;
 """
 
 _REALISTIC_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -255,9 +262,69 @@ async def _get_session(uid: str, session_id: str) -> Dict[str, Any]:
     context.set_default_navigation_timeout(NAV_TIMEOUT_MS)
     await context.add_init_script(_STEALTH_INIT_SCRIPT)
     page = await context.new_page()
-    entry = {"context": context, "page": page, "last_used": time.time(), "links": []}
+    entry = {
+        "context": context, "page": page, "last_used": time.time(), "links": [],
+        # Diagnostics for exactly the "stuck loading, no visible cause" case:
+        # without these the model can only guess by clicking blindly. Capped
+        # ring-buffers, read (and cleared on a fresh navigate) in
+        # _extract_page()/_navigate().
+        "console_errors": [], "failed_requests": [],
+    }
+    _wire_diagnostics(entry)
     _sessions[key] = entry
     return entry
+
+
+def _wire_diagnostics(entry: Dict[str, Any]):
+    """Attach console/pageerror/response listeners so a stuck-workspace-style
+    failure (silent JS exception, a blocked/failed API call, a 401/403/500
+    on the init request) shows up in the observation instead of the model
+    having to guess by clicking around. Listener callbacks run ON the
+    dedicated Playwright loop (Playwright dispatches them there), so plain
+    list mutation is safe — same single-threaded-from-asyncio's-view
+    reasoning as the rest of this module."""
+    page = entry["page"]
+
+    def _on_console(msg):
+        try:
+            if msg.type in ("error", "warning"):
+                errs = entry["console_errors"]
+                errs.append(f"[console.{msg.type}] {msg.text}"[:300])
+                del errs[:-20]
+        except Exception:
+            pass
+
+    def _on_pageerror(exc):
+        try:
+            errs = entry["console_errors"]
+            errs.append(f"[uncaught exception] {exc}"[:300])
+            del errs[:-20]
+        except Exception:
+            pass
+
+    def _on_requestfailed(request):
+        try:
+            fr = entry["failed_requests"]
+            failure = request.failure
+            reason = failure.get("errorText") if isinstance(failure, dict) else str(failure)
+            fr.append(f"{request.method} {request.url} — {reason}"[:200])
+            del fr[:-20]
+        except Exception:
+            pass
+
+    def _on_response(response):
+        try:
+            if response.status >= 400:
+                fr = entry["failed_requests"]
+                fr.append(f"HTTP {response.status} — {response.url}"[:200])
+                del fr[:-20]
+        except Exception:
+            pass
+
+    page.on("console", _on_console)
+    page.on("pageerror", _on_pageerror)
+    page.on("requestfailed", _on_requestfailed)
+    page.on("response", _on_response)
 
 
 async def _settle_after_action(page):
@@ -331,6 +398,11 @@ async def _extract_page(entry: Dict[str, Any], page) -> Dict[str, Any]:
         "text": text,
         "links": links,
         "screenshot_b64": screenshot_b64,
+        # See _wire_diagnostics — surfaces the actual cause of a stuck/broken
+        # page (JS exception, failed/blocked API call, 4xx/5xx response)
+        # instead of leaving the model to guess by clicking blindly.
+        "console_errors": list(entry.get("console_errors") or []),
+        "failed_requests": list(entry.get("failed_requests") or []),
     }
 
 
@@ -339,7 +411,16 @@ async def _navigate(uid: str, session_id: str, url: str) -> Dict[str, Any]:
     _check_url_allowed(url)
     entry = await _get_session(uid, session_id)
     page = entry["page"]
+    # Fresh page load — start this page's diagnostic slate clean so a stale
+    # error from wherever the session was before doesn't get reported as if
+    # it were caused by the page we're about to land on.
+    entry["console_errors"] = []
+    entry["failed_requests"] = []
     await page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+    # Give the SPA's post-navigation bootstrap (auth check, workspace init,
+    # first data fetch) a chance to finish or fail before reading the page —
+    # same reasoning as _settle_after_action, just for the initial load.
+    await _settle_after_action(page)
     return await _extract_page(entry, page)
 
 

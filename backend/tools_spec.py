@@ -193,9 +193,14 @@ TOOLS = [
                   "BROWSE_TYPE the email/username field, BROWSE_TYPE the password field, BROWSE_CLICK "
                   "the sign-in button — do this for real instead of saying you can't. Some sites still "
                   "block automated browsers outright (CAPTCHA/bot walls) — if that happens, say so "
-                  "plainly rather than pretending it worked. Chain calls only as far as the task "
-                  "actually needs, then STOP once you have the answer. Only http/https, no internal/"
-                  "private addresses."),
+                  "plainly rather than pretending it worked. If a page seems stuck/broken (infinite "
+                  "spinner, click does nothing), do NOT just click around repeatedly guessing — every "
+                  "result includes BROWSER DIAGNOSTICS (console errors, failed/4xx/5xx network "
+                  "requests) when present; read those FIRST to find the actual cause before trying "
+                  "another action. After 2-3 genuinely different attempts with no change, say plainly "
+                  "what's stuck and what the diagnostics showed, rather than repeating the same click. "
+                  "Chain calls only as far as the task actually needs, then STOP once you have the "
+                  "answer. Only http/https, no internal/private addresses."),
         "daily": ("A REAL browser (launches Chromium) — only call it when the user explicitly wants "
                   "a specific site visited/navigated/logged into, never reflexively for a mentioned "
                   "URL or a general question (use [SEARCH:] for those, it's cheap). One tab per "
@@ -203,8 +208,9 @@ TOOLS = [
                   "text/links/screenshot in the Computer panel. BROWSE_CLICK: link text or #N — clicks "
                   "a link/button on the page you just opened (reaches into auth iframes too). "
                   "BROWSE_TYPE: field label | text — fills a form field (login, search box). Login "
-                  "flow: BROWSE the page, BROWSE_TYPE each field, BROWSE_CLICK submit. Stop once you "
-                  "have the answer."),
+                  "flow: BROWSE the page, BROWSE_TYPE each field, BROWSE_CLICK submit. If something "
+                  "looks stuck, check the BROWSER DIAGNOSTICS in the result before clicking again — "
+                  "don't guess-click repeatedly. Stop once you have the answer."),
     },
     {
         "group": "GST Invoice 🇮🇳 — server computes CGST/SGST/IGST deterministically",
