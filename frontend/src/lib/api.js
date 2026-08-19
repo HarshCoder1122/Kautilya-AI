@@ -594,6 +594,12 @@ export const computerAPI = {
     const response = await api.get('/api/computer/file', { params: { session_id: sessionId, name } });
     return response.data;
   },
+  // The browser is per-USER (one persistent "computer"), not per-chat — no
+  // session_id here on purpose, see backend routes/computer_routes.py.
+  getBrowserState: async () => {
+    const response = await api.get('/api/computer/browser');
+    return response.data;
+  },
 };
 
 // API Keys

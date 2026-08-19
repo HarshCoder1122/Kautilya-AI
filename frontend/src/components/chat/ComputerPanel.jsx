@@ -4,11 +4,13 @@ import { computerAPI } from "@/lib/api";
 import { BrowseCard } from "./ToolResultCards";
 
 /**
- * Kautilya Computer — ONE persistent view for this chat session's sandbox:
- * a Files tab (backend: services/computer_service.py, tools: [FILE_WRITE:] /
- * [FILE_READ:] / [FILE_LIST:] / [RUN_PYTHON:]) and a Browser tab (backend:
- * services/browser_service.py, tools: [BROWSE:] / [BROWSE_CLICK:] /
- * [BROWSE_TYPE:]).
+ * Kautilya Computer — two tabs: Files (backend: services/computer_service.py,
+ * tools: [FILE_WRITE:] / [FILE_READ:] / [FILE_LIST:] / [RUN_PYTHON:] — still
+ * scoped per CHAT session) and Browser (backend: services/browser_service.py,
+ * tools: [BROWSE:] / [BROWSE_CLICK:] / [BROWSE_TYPE:] — scoped per USER: one
+ * persistent "computer" that's the same machine regardless of which chat
+ * you're in, so a login done in one conversation is still logged in when you
+ * open a brand new one).
  *
  * The Browser tab is deliberately the ONLY place browsing shows up — earlier
  * this rendered a screenshot card in the chat transcript per action, which
@@ -17,9 +19,12 @@ import { BrowseCard } from "./ToolResultCards";
  * screenshot, links) and the chat only gets a one-line status
  * ("Browsing example.com…") in the action timeline.
  *
- * Files stay pull-based (REST) since they're not naturally "live" the same
- * way; Browser state is pushed in via the `browserState` prop, updated by
- * ChatMain on every browse-family tool_result event.
+ * Files stay pull-based per chat session. Browser state is BOTH pulled on
+ * mount (GET /api/computer/browser, no session_id — it's the user's one
+ * persistent browser, so this shows the truth even in a chat that never
+ * itself did any browsing) AND pushed live via the `browserState` prop,
+ * updated by ChatMain on every browse-family tool_result event in the
+ * CURRENT chat. The live push always wins once one arrives.
  */
 export function ComputerPanel({ sessionId, onClose, refreshSignal, browserState, browseSignal }) {
   const [activeTab, setActiveTab] = useState(browserState ? "browser" : "files");
@@ -29,6 +34,8 @@ export function ComputerPanel({ sessionId, onClose, refreshSignal, browserState,
   const [content, setContent] = useState("");
   const [loadingContent, setLoadingContent] = useState(false);
   const [error, setError] = useState("");
+  const [pulledBrowserState, setPulledBrowserState] = useState(null);
+  const [loadingBrowser, setLoadingBrowser] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!sessionId) return;
@@ -46,11 +53,35 @@ export function ComputerPanel({ sessionId, onClose, refreshSignal, browserState,
 
   useEffect(() => { refresh(); }, [refresh, refreshSignal]);
 
-  // A new browse/click/type result arrived — bring it to the front even if
-  // the panel was already open on the Files tab.
+  const refreshBrowser = useCallback(async () => {
+    setLoadingBrowser(true);
+    try {
+      const res = await computerAPI.getBrowserState();
+      if (res.active) {
+        setPulledBrowserState({ url: res.url, title: res.title, screenshot_b64: res.screenshot_b64, links: res.links || [] });
+      }
+    } catch (e) {
+      // silent — just means the panel falls back to "nothing yet"
+    } finally {
+      setLoadingBrowser(false);
+    }
+  }, []);
+
+  // Pull the real, current state of the user's persistent browser on open
+  // AND whenever the user switches chats (the panel doesn't unmount on a
+  // chat switch, so without the sessionId dependency this would only ever
+  // fetch once and go stale the moment browsing happens from elsewhere) —
+  // it may already be logged into something from a different conversation.
+  useEffect(() => { refreshBrowser(); }, [refreshBrowser, sessionId]);
+
+  // A new browse/click/type result arrived in THIS chat — bring it to the
+  // front even if the panel was already open on the Files tab, and prefer
+  // it over whatever we pulled (it's guaranteed fresher).
   useEffect(() => {
     if (browseSignal) setActiveTab("browser");
   }, [browseSignal]);
+
+  const effectiveBrowserState = browserState || pulledBrowserState;
 
   const openFile = async (path) => {
     setSelected(path);
@@ -80,6 +111,11 @@ export function ComputerPanel({ sessionId, onClose, refreshSignal, browserState,
               <ArrowClockwise className={`w-4 h-4 text-muted-foreground ${loadingFiles ? "animate-spin" : ""}`} />
             </button>
           )}
+          {activeTab === "browser" && (
+            <button onClick={refreshBrowser} className="p-2 rounded-md hover:bg-accent transition-all duration-200" title="Refresh">
+              <ArrowClockwise className={`w-4 h-4 text-muted-foreground ${loadingBrowser ? "animate-spin" : ""}`} />
+            </button>
+          )}
           <div className="w-px h-4 bg-[var(--k-border)] mx-1" />
           <button onClick={onClose} className="p-2 rounded-md hover:bg-accent transition-all duration-200 group">
             <X className="w-5 h-5 text-muted-foreground group-hover:text-foreground" />
@@ -90,7 +126,7 @@ export function ComputerPanel({ sessionId, onClose, refreshSignal, browserState,
       <div className="flex items-center gap-1 px-3 pt-2 border-b border-[var(--k-border)] bg-[var(--k-surface)]">
         {[
           { id: "files", label: "Files", icon: FolderOpen, count: files.length },
-          { id: "browser", label: "Browser", icon: Compass, count: browserState ? 1 : 0 },
+          { id: "browser", label: "Browser", icon: Compass, count: effectiveBrowserState ? 1 : 0 },
         ].map((t) => (
           <button
             key={t.id}
@@ -157,15 +193,19 @@ export function ComputerPanel({ sessionId, onClose, refreshSignal, browserState,
 
       {activeTab === "browser" && (
         <div className="flex-1 min-h-0 overflow-y-auto p-4">
-          {!browserState && (
+          {!effectiveBrowserState && !loadingBrowser && (
             <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground gap-2">
               <Compass className="w-8 h-8 opacity-40" />
               <p className="text-xs max-w-[220px]">
-                Nothing browsed yet this session. Ask Kautilya to visit a specific site and this fills in live.
+                Nothing browsed yet. Ask Kautilya to visit a specific site — this is your one persistent
+                browser, so it stays logged in across chats too.
               </p>
             </div>
           )}
-          {browserState && <BrowseCard {...browserState} />}
+          {!effectiveBrowserState && loadingBrowser && (
+            <div className="text-xs text-muted-foreground">Checking your browser…</div>
+          )}
+          {effectiveBrowserState && <BrowseCard {...effectiveBrowserState} />}
         </div>
       )}
     </div>

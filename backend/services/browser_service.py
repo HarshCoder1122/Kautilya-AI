@@ -2,9 +2,13 @@
 Kautilya AI — Browser Service (Kautilya Computer, live web browsing).
 
 A real headless Chromium (Playwright) the agent can navigate, click, and
-type into — session-scoped so "visit X, log in, then click Y" acts on the
-SAME page/cookies across turns — mirrors computer_service.py's per-session
-model, but for a live browser instead of a filesystem.
+type into — ONE persistent tab per USER (see `_session_key`), not per chat.
+This is meant to actually be "Kautilya Computer": the same machine whichever
+conversation you're in, so a login done in one chat is STILL logged in when
+you open a brand new chat and ask it to keep going — unlike
+computer_service.py's file workspace, which today is still scoped per CHAT
+session, not per user (a difference worth reconciling later for the same
+"one persistent computer" story, but out of scope for this specific fix).
 
 THREAD SAFETY: Playwright's async API objects (Browser/BrowserContext/Page)
 must only be driven from the event loop that created them. The rest of this
@@ -38,10 +42,12 @@ browsers outright.
 
 RESOURCE CAPS: this process (one of several gunicorn WORKER PROCESSES, see
 start.sh) launches its own Chromium if a browse call ever lands on it — one
-shared browser process, up to BROWSER_MAX_SESSIONS lightweight contexts
-(LRU-evicted beyond that). Kept deliberately low: worst case is
-(gunicorn workers) x (one Chromium process each), which is real but bounded;
-raise BROWSER_MAX_SESSIONS only after confirming the host has RAM to spare.
+shared browser process, up to BROWSER_MAX_SESSIONS lightweight contexts —
+now one per USER rather than per chat, so this is "how many distinct users
+can be actively browsing at once on this worker" (LRU-evicted beyond that,
+oldest-idle-user first). Kept deliberately low: worst case is (gunicorn
+workers) x (one Chromium process each), which is real but bounded; raise
+BROWSER_MAX_SESSIONS only after confirming the host has RAM to spare.
 
 SECURITY: navigation targets are resolved and checked against
 private/loopback/link-local/reserved ranges before every goto/click/type —
@@ -63,7 +69,11 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 MAX_SESSIONS = int(os.environ.get("BROWSER_MAX_SESSIONS", "2"))
-SESSION_TTL_SECONDS = int(os.environ.get("BROWSER_SESSION_TTL_S", "300"))   # 5 min idle
+# One browser per USER (see _session_key) means this now represents "how
+# long before Kautilya Computer logs you out of a site from inactivity" —
+# a real personal-computer-ish expectation, not a throwaway per-chat
+# resource, hence longer than the old 5 min per-chat default.
+SESSION_TTL_SECONDS = int(os.environ.get("BROWSER_SESSION_TTL_S", str(30 * 60)))   # 30 min idle
 JANITOR_INTERVAL_S = 60          # how often the background sweep runs
 NAV_TIMEOUT_MS = 20_000
 ACTION_TIMEOUT_MS = 10_000       # click/fill/wait_for_load_state backstop
@@ -236,8 +246,18 @@ async def _sweep_idle():
         await _close_session(k)
 
 
+def _session_key(uid: str, session_id: str = None) -> str:
+    """ONE browser per USER, not per chat — this is meant to be "Kautilya
+    Computer": a persistent machine that's always yours, the same one
+    regardless of which chat you're in, not something that resets (losing
+    any login) the moment you open a new conversation. `session_id` is kept
+    as a parameter for API stability with agent_loop_service.py's callers
+    but deliberately NOT part of the key."""
+    return str(uid or "anon")
+
+
 async def _get_session(uid: str, session_id: str) -> Dict[str, Any]:
-    key = f"{uid}::{session_id}"
+    key = _session_key(uid)
     entry = _sessions.get(key)
     if entry is not None:
         entry["last_used"] = time.time()
@@ -502,7 +522,29 @@ async def _type(uid: str, session_id: str, field: str, value: str) -> Dict[str, 
     raise ValueError(f"couldn't find a field matching '{field_clean}': {last_err}")
 
 
+async def _current_state(uid: str) -> Dict[str, Any]:
+    """Read-only: the CURRENT page's title/url/screenshot/links for this
+    user's persistent browser, without navigating anywhere. Used so opening
+    the Computer panel in a DIFFERENT chat than the one that did the
+    browsing still shows the real, current state of the one shared browser
+    — not "nothing happened yet in this chat", which would be misleading
+    now that the browser is per-user, not per-chat."""
+    key = _session_key(uid)
+    entry = _sessions.get(key)
+    if entry is None:
+        return {"ok": False, "error": "no active browser session"}
+    entry["last_used"] = time.time()
+    return await _extract_page(entry, entry["page"])
+
+
 # ── Public sync API (safe to call from any thread) ─────────────────────────
+
+def get_current_state(uid: str, timeout: int = 15) -> Dict[str, Any]:
+    try:
+        return _run(_current_state(uid or "anon"), timeout=timeout)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 
 def _guarded(coro_factory, uid, session_id, timeout=OUTER_TIMEOUT_S):
     """Run one browser op; on ANY unexpected failure (not our own
@@ -513,7 +555,7 @@ def _guarded(coro_factory, uid, session_id, timeout=OUTER_TIMEOUT_S):
     except (PermissionError, ValueError):
         raise
     except Exception as e:
-        key = f"{uid or 'anon'}::{session_id}"
+        key = _session_key(uid)
         try:
             _run(_close_session(key), timeout=10)
         except Exception:
@@ -533,15 +575,17 @@ def type_text(uid: str, session_id: str, field: str, value: str, timeout: int = 
     return _guarded(lambda: _type(uid or "anon", session_id, field, value), uid, session_id, timeout)
 
 
-def close_session(uid: str, session_id: str, timeout: int = 10) -> None:
-    """Explicitly close a session's browser context (frees that Chromium
+def close_session(uid: str, session_id: str = None, timeout: int = 10) -> None:
+    """Explicitly close a user's persistent browser (frees that Chromium
     context's memory immediately rather than waiting for the janitor's next
     sweep or the idle TTL). Safe to call even if no session exists — no-op.
-    Wire this to a real "chat closed"/"conversation deleted" event if one
-    becomes available; until then, the background janitor thread (see
-    `_janitor_loop`) is what actually guarantees an abandoned session
+    Not currently wired to anything automatic (there's one browser per USER,
+    not per chat, so "closing a chat" is never the right trigger for this —
+    see _session_key) — available for an explicit "log out of Kautilya
+    Computer" action if one gets added; until then the background janitor
+    thread (`_janitor_loop`) is what guarantees an abandoned browser
     doesn't linger forever."""
-    key = f"{uid or 'anon'}::{session_id}"
+    key = _session_key(uid)
     try:
         _run(_close_session(key), timeout=timeout)
     except Exception:
