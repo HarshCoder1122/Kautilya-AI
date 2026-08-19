@@ -63,10 +63,13 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 MAX_SESSIONS = int(os.environ.get("BROWSER_MAX_SESSIONS", "2"))
-SESSION_TTL_SECONDS = 10 * 60
+SESSION_TTL_SECONDS = int(os.environ.get("BROWSER_SESSION_TTL_S", "300"))   # 5 min idle
+JANITOR_INTERVAL_S = 60          # how often the background sweep runs
 NAV_TIMEOUT_MS = 20_000
 ACTION_TIMEOUT_MS = 10_000       # click/fill/wait_for_load_state backstop
-OUTER_TIMEOUT_S = 35             # hard ceiling on the whole bridged call
+OUTER_TIMEOUT_S = 40             # hard ceiling on the whole bridged call
+SETTLE_NETWORK_IDLE_MS = 6_000   # post-click/type: let an SPA's login/API call finish
+SETTLE_MIN_MS = 700              # then a beat for the client-side re-render off it
 MAX_TEXT_CHARS = 6_000
 MAX_LINKS = 40
 
@@ -102,6 +105,21 @@ _REALISTIC_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
 
+def _janitor_loop():
+    """Runs for the lifetime of this worker process once browsing is first
+    used — closes idle sessions on its OWN schedule instead of relying on
+    some future browse call to trigger the sweep. Without this, a session
+    nobody ever revisits (chat abandoned, tab closed) keeps its Chromium
+    context — and the RAM it holds — alive indefinitely, since nothing else
+    would ever call `_sweep_idle()` again."""
+    while True:
+        time.sleep(JANITOR_INTERVAL_S)
+        try:
+            _run(_sweep_idle(), timeout=15)
+        except Exception:
+            pass  # never let a sweep hiccup kill the janitor thread
+
+
 def _ensure_loop():
     global _loop
     if _loop is not None:
@@ -120,6 +138,7 @@ def _ensure_loop():
 
         threading.Thread(target=_runner, daemon=True, name="kautilya-browser-loop").start()
         _loop_ready.wait(timeout=10)
+        threading.Thread(target=_janitor_loop, daemon=True, name="kautilya-browser-janitor").start()
 
 
 def _run(coro, timeout=OUTER_TIMEOUT_S):
@@ -241,6 +260,29 @@ async def _get_session(uid: str, session_id: str) -> Dict[str, Any]:
     return entry
 
 
+async def _settle_after_action(page):
+    """After a click/type that MIGHT be an SPA login/form-submit rather than
+    a real page navigation: `wait_for_load_state("domcontentloaded")` is a
+    no-op here — that event already fired when the page first loaded, ages
+    before this click. The actual login/API request is an in-page fetch/XHR
+    with no navigation at all, so without this, `_extract_page()` runs
+    before that request (and the error toast / redirect / re-render it
+    triggers) has happened — which is exactly why a failed login looked
+    like "nothing happened, no error visible": the DOM was read too early.
+
+    `networkidle` catches the request finishing; the fixed beat after it
+    catches a client-side re-render that lands slightly after the network
+    settles (React state update, toast animation, etc.)."""
+    try:
+        await page.wait_for_load_state("networkidle", timeout=SETTLE_NETWORK_IDLE_MS)
+    except Exception:
+        pass  # persistent polling/websockets/SSE never go idle — fine, move on
+    try:
+        await page.wait_for_timeout(SETTLE_MIN_MS)
+    except Exception:
+        pass
+
+
 async def _extract_page(entry: Dict[str, Any], page) -> Dict[str, Any]:
     title = ""
     try:
@@ -332,10 +374,7 @@ async def _click(uid: str, session_id: str, target: str) -> Dict[str, Any]:
         # (Playwright operates at the CDP level, not plain JS DOM access),
         # so this also reaches most embedded auth-widget buttons.
         await page.get_by_text(target_clean, exact=False).first.click(timeout=ACTION_TIMEOUT_MS)
-        try:
-            await page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
-        except Exception:
-            pass  # a click that doesn't navigate (e.g. opens a menu) is fine
+        await _settle_after_action(page)
         _check_url_allowed(page.url)
 
     return await _extract_page(entry, page)
@@ -411,3 +450,18 @@ def click(uid: str, session_id: str, target: str, timeout: int = OUTER_TIMEOUT_S
 
 def type_text(uid: str, session_id: str, field: str, value: str, timeout: int = OUTER_TIMEOUT_S) -> Dict[str, Any]:
     return _guarded(lambda: _type(uid or "anon", session_id, field, value), uid, session_id, timeout)
+
+
+def close_session(uid: str, session_id: str, timeout: int = 10) -> None:
+    """Explicitly close a session's browser context (frees that Chromium
+    context's memory immediately rather than waiting for the janitor's next
+    sweep or the idle TTL). Safe to call even if no session exists — no-op.
+    Wire this to a real "chat closed"/"conversation deleted" event if one
+    becomes available; until then, the background janitor thread (see
+    `_janitor_loop`) is what actually guarantees an abandoned session
+    doesn't linger forever."""
+    key = f"{uid or 'anon'}::{session_id}"
+    try:
+        _run(_close_session(key), timeout=timeout)
+    except Exception:
+        pass
