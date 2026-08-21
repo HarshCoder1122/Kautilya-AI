@@ -2048,6 +2048,36 @@ def _runner_browse(uid, session_id, url):
     return run
 
 
+def _browse_error_with_diagnostics(uid, tool_name, err_text, hint=""):
+    """A click/type miss is recoverable (see the ValueError-not-TimeoutError
+    fix in browser_service._click/_type — the session is deliberately left
+    open), so unlike a hard BROWSE error there's still a live page to look
+    at. Pull its current console/network diagnostics into the observation
+    instead of handing back a bare error string — the model can actually
+    see WHY (a JS exception, a blocked request) instead of guess-retrying."""
+    diag_text = ""
+    try:
+        from services.browser_service import get_current_state
+        state = get_current_state(uid or 'anon', timeout=8)
+        if state.get("ok"):
+            console_errors = state.get("console_errors") or []
+            failed_requests = state.get("failed_requests") or []
+            if console_errors or failed_requests:
+                parts = ["\n\nBROWSER DIAGNOSTICS (current page):"]
+                if console_errors:
+                    parts.append("Console errors:\n" + "\n".join(f"- {e}" for e in console_errors[-10:]))
+                if failed_requests:
+                    parts.append("Network/WebSocket events:\n" + "\n".join(f"- {e}" for e in failed_requests[-10:]))
+                diag_text = "\n".join(parts)
+            title = state.get("title") or state.get("url", "")
+            diag_text += f"\n\nCurrent page is still: {title} ({state.get('url', '')})"
+    except Exception:
+        pass
+    return {"ok": False, "preview": err_text[:100],
+            "observation": f"{tool_name.upper()} ERROR: {err_text}{(' — ' + hint) if hint else ''}{diag_text}",
+            "done_extras": {}, "extra_events": []}
+
+
 def _runner_browse_click(uid, session_id, target):
     def run():
         if not session_id:
@@ -2061,6 +2091,11 @@ def _runner_browse_click(uid, session_id, target):
         except PermissionError as e:
             return {"ok": False, "preview": str(e)[:100],
                     "observation": f"BROWSE_CLICK ERROR: {e}", "done_extras": {}, "extra_events": []}
+        except ValueError as e:
+            return _browse_error_with_diagnostics(
+                uid, "browse_click", str(e),
+                "re-check the exact visible text from the page's text/links and retry, or try a "
+                "different phrasing — don't guess a number that wasn't actually on the link list")
         except Exception as e:
             return {"ok": False, "preview": str(e)[:100],
                     "observation": f"BROWSE_CLICK ERROR: {e}", "done_extras": {}, "extra_events": []}
@@ -2081,10 +2116,9 @@ def _runner_browse_type(uid, session_id, field, value):
             return {"ok": False, "preview": str(e)[:100],
                     "observation": f"BROWSE_TYPE ERROR: {e}", "done_extras": {}, "extra_events": []}
         except ValueError as e:
-            return {"ok": False, "preview": str(e)[:100],
-                    "observation": f"BROWSE_TYPE ERROR: {e} — re-check the field's exact label/"
-                                    f"placeholder text from the page's screenshot/text and retry.",
-                    "done_extras": {}, "extra_events": []}
+            return _browse_error_with_diagnostics(
+                uid, "browse_type", str(e),
+                "re-check the field's exact label/placeholder text from the page's screenshot/text and retry")
         except Exception as e:
             return {"ok": False, "preview": str(e)[:100],
                     "observation": f"BROWSE_TYPE ERROR: {e}", "done_extras": {}, "extra_events": []}

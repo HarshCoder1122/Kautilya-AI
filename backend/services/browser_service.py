@@ -590,10 +590,16 @@ async def _click(uid: str, session_id: str, target: str) -> Dict[str, Any]:
     if not target_clean:
         raise ValueError("no link text or number given")
 
+    # Accept "19" or "#19" as the same numeric index — a model that follows
+    # the prompt's literal "#N" syntax would otherwise never match here
+    # (the string wouldn't be all-digits) and always fall through to a text
+    # search for the literal "#19", which can never exist on a real page.
+    digit_part = target_clean.lstrip('#').strip()
+
     links = entry.get("links") or []
     href = None
-    if target_clean.isdigit():
-        idx = int(target_clean) - 1
+    if digit_part.isdigit():
+        idx = int(digit_part) - 1
         if 0 <= idx < len(links):
             href = links[idx]["href"]
     if href is None:
@@ -610,10 +616,52 @@ async def _click(uid: str, session_id: str, target: str) -> Dict[str, Any]:
         # Not in the last extracted link list (or points at JS, not an
         # href) — fall back to a real DOM click, which also handles
         # JS-driven buttons/nav a static <a href> scrape wouldn't capture.
-        # get_by_text pierces same- and cross-origin iframes automatically
-        # (Playwright operates at the CDP level, not plain JS DOM access),
-        # so this also reaches most embedded auth-widget buttons.
-        await page.get_by_text(target_clean, exact=False).first.click(timeout=ACTION_TIMEOUT_MS)
+        # Multiple strategies, cheapest/most-specific first: a single
+        # get_by_text(exact=False) call used to be the ONLY fallback, so
+        # any paraphrased target ("the Sign in button" instead of "Sign
+        # in") died on one bare timeout with nothing else tried. All of
+        # these pierce same- and cross-origin iframes automatically
+        # (Playwright operates at the CDP level), so they still reach
+        # embedded auth-widget buttons.
+        candidates = [target_clean]
+        stripped = re.sub(r'(?i)^(the|click|press|tap)\s+|\s+(button|link|icon)$', '', target_clean).strip()
+        if stripped and stripped.lower() != target_clean.lower():
+            candidates.append(stripped)
+
+        clicked = False
+        last_err = None
+        for i, cand in enumerate(candidates):
+            is_last_candidate = (i == len(candidates) - 1)
+            strategies = [
+                lambda c=cand: page.get_by_role("button", name=c, exact=False),
+                lambda c=cand: page.get_by_role("link", name=c, exact=False),
+                lambda c=cand: page.get_by_text(c, exact=False),
+            ]
+            for j, make_locator in enumerate(strategies):
+                # Quick probes for the cheaper role-based strategies; the
+                # final text-match attempt on the last candidate gets the
+                # full timeout since it's the last real chance to succeed.
+                is_last_strategy = is_last_candidate and (j == len(strategies) - 1)
+                probe_timeout = ACTION_TIMEOUT_MS if is_last_strategy else 1500
+                try:
+                    await make_locator().first.click(timeout=probe_timeout)
+                    clicked = True
+                    break
+                except Exception as e:
+                    last_err = e
+            if clicked:
+                break
+        if not clicked:
+            # ValueError (not the raw Playwright TimeoutError) deliberately —
+            # _guarded() below treats ValueError/PermissionError as an
+            # ordinary, recoverable miss and leaves the session alone, but
+            # any OTHER exception type is treated as "the browser context
+            # itself is broken" and gets the whole session closed. A click
+            # that simply couldn't find its target (by far the most common
+            # failure — a paraphrased or slightly-off target) is completely
+            # recoverable and must NOT nuke cookies/login state/everything
+            # browsed so far just because one guess missed.
+            raise ValueError(f"couldn't find a clickable element matching '{target_clean}': {last_err}")
         await _settle_after_action(page)
         _check_url_allowed(page.url)
 
