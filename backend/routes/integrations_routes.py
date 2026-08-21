@@ -39,7 +39,8 @@ import requests
 from flask import Blueprint, request, redirect, jsonify, url_for
 
 from services.auth_service import verify_firebase_token
-from services.llm_service import call_groq
+from services.llm_service import call_vertex_gemini
+from services.agent_loop_service import FAST_MODEL
 
 integrations_bp = Blueprint('integrations', __name__)
 
@@ -976,8 +977,8 @@ def followup_extract():
          "contact (str, email or phone if applicable else null). Output ONLY the JSON array."},
         {"role": "user", "content": transcript[:8000]},
     ]
-    out = call_groq(messages, model="llama-3.3-70b-versatile",
-                    temperature=0.1, max_tokens=1200, stream=False)
+    out = call_vertex_gemini(messages, model=FAST_MODEL,
+                             temperature=0.1, max_tokens=1200, stream=False)
     items = []
     if isinstance(out, str):
         import re as _re

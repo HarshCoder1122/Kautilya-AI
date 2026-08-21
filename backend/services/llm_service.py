@@ -1,6 +1,8 @@
 """
 Kautilya AI — LLM Service
-Unified LLM call interface: Groq, NVIDIA NIM, OpenRouter, Gemini.
+Unified LLM call interface: Google Vertex AI (Gemini) for chat/completion,
+plus OpenRouter as a standalone opt-in provider. NVIDIA NIM and Groq
+text-completion were fully retired — see call_vertex_gemini().
 """
 import os
 import json
@@ -12,18 +14,9 @@ import threading
 import contextvars
 from requests.adapters import HTTPAdapter
 from config import (
-    GROQ_API_KEYS, GROQ_COOLDOWN_SECONDS,
-    OPENROUTER_API_KEY, NVIDIA_API_KEY,
-    NVIDIA_API_KEYS,
-    GEMINI_API_KEYS,
+    OPENROUTER_API_KEY,
     CHAT_DATA_DIR,
 )
-
-# Groq key rotation state
-_groq_key_index = 0
-_groq_key_cooldowns = {}
-_gemini_key_index = 0
-
 
 def _make_pooled_session(pool_connections=20, pool_maxsize=50):
     """Session with connection pooling AND TCP_NODELAY so streaming SSE
@@ -52,15 +45,14 @@ def _make_pooled_session(pool_connections=20, pool_maxsize=50):
     return s
 
 
-# Shared session — module-level so all NVIDIA calls reuse the same TLS pool.
-_NVIDIA_SESSION = _make_pooled_session()
-_GROQ_SESSION = _make_pooled_session()
+# Shared session — module-level so OpenRouter calls reuse the same TLS pool.
 _OPENROUTER_SESSION = _make_pooled_session()
 
 # ── Per-request PRO flag ─────────────────────────────────────────────────
-# Set once per request by the route handlers (set_request_pro). The NVIDIA key
-# selector reads it so PRO traffic gets the reserved lane WITHOUT having to
-# thread an is_pro flag through every call_nvidia call site. Reads default to
+# Set once per request by the route handlers (set_request_pro). Vertex calls
+# accept an explicit is_pro but don't currently act on it (no key-rotation
+# lane to reserve with a single provider) — kept for interface parity and
+# any future PRO-specific routing. Reads default to
 # False (free). Note: ContextVars are per-thread — a PRO flag set in the
 # request thread is visible to LLM calls made on that same thread (the normal
 # streaming path), but NOT to calls offloaded onto a separate executor thread;
@@ -96,192 +88,351 @@ def build_capacity_event(is_pro=False):
     }
 
 
-# ── NVIDIA key pools: reserve a lane for PRO ─────────────────────────────
-# A burst of free-tier traffic must not be able to rate-limit EVERY NVIDIA key
-# and starve paying users. So we reserve the tail of the key pool exclusively
-# for PRO requests: free traffic rotates only the shared keys, while PRO
-# rotates the reserved key(s) first (then the shared pool). When free load
-# exhausts the shared keys, PRO still has an un-contended lane to land on.
-# Tunable via NVIDIA_PRO_RESERVED_KEYS; auto-disabled when there's only one key
-# (nothing to reserve) so single-key dev/deploys behave exactly as before.
-try:
-    _NVIDIA_RESERVED_PRO_COUNT = max(0, int(os.environ.get("NVIDIA_PRO_RESERVED_KEYS", "1")))
-except ValueError:
-    _NVIDIA_RESERVED_PRO_COUNT = 1
-if len(NVIDIA_API_KEYS) <= 1:
-    _NVIDIA_RESERVED_PRO_COUNT = 0
 
 
-def _nvidia_key_pools():
-    """(shared_keys, reserved_pro_keys). Reserved is empty unless there are
-    strictly more keys than the reserve count (never reserve the whole pool)."""
-    n = _NVIDIA_RESERVED_PRO_COUNT
-    if n and len(NVIDIA_API_KEYS) > n:
-        return NVIDIA_API_KEYS[:-n], NVIDIA_API_KEYS[-n:]
-    return NVIDIA_API_KEYS, []
+# ==========================================
+# Google Vertex AI (Gemini) — primary chat/completion provider
+# ==========================================
+_vertex_client = None
+_vertex_client_lock = threading.Lock()
 
 
-# NVIDIA key rotation state
-_nvidia_key_index = 0
-_nvidia_pro_key_index = 0
-# (key, model) -> unix ts until which that key is benched FOR THAT MODEL.
-# Per-MODEL because NVIDIA throttles per model: a 429 on GLM must NOT bench the
-# key for Mistral too (different model = different bucket), else the GLM→Mistral
-# research fallback can never land — it'd see every key as "cooling".
-_nvidia_key_cooldowns = {}
-# How long to bench a key after it 429s, and how many keys to try within ONE
-# request before giving up. Without the per-request retry, a single 429 killed
-# the whole call even with other keys idle — which is why deep research (GLM)
-# always died while light chat survived.
-try:
-    _NVIDIA_KEY_COOLDOWN_SECONDS = max(5, int(os.environ.get("NVIDIA_KEY_COOLDOWN_SECONDS", "30")))
-except ValueError:
-    _NVIDIA_KEY_COOLDOWN_SECONDS = 30
-try:
-    _NVIDIA_MAX_KEY_RETRIES = max(1, int(os.environ.get("NVIDIA_MAX_KEY_RETRIES", "4")))
-except ValueError:
-    _NVIDIA_MAX_KEY_RETRIES = 4
-
-
-def _mark_nvidia_key_cooldown(key, model, seconds=None):
-    """Bench a rate-limited key FOR ONE MODEL so rotation skips it for a while."""
-    if key:
-        _nvidia_key_cooldowns[(key, model)] = time.time() + (seconds or _NVIDIA_KEY_COOLDOWN_SECONDS)
-
-
-def _pick_from_pool(pool, which, model):
-    """Round-robin `pool`, skipping keys currently benched for `model`. `which`
-    selects the cursor ('pro' or 'free'). Falls back to the soonest-recovering
-    key if every key in the pool is cooling down for this model."""
-    global _nvidia_key_index, _nvidia_pro_key_index
-    n = len(pool)
-    if n == 0:
-        return None
-    now = time.time()
-    for _ in range(n):
-        if which == 'pro':
-            key = pool[_nvidia_pro_key_index % n]
-            _nvidia_pro_key_index = (_nvidia_pro_key_index + 1) % n
-        else:
-            key = pool[_nvidia_key_index % n]
-            _nvidia_key_index = (_nvidia_key_index + 1) % n
-        if _nvidia_key_cooldowns.get((key, model), 0) <= now:
-            return key
-    return min(pool, key=lambda k: _nvidia_key_cooldowns.get((k, model), 0))
-
-
-# NVIDIA key rotation function
-def _get_available_nvidia_key(is_pro=None, model=""):
-    """Pick an NVIDIA key, skipping ones benched for `model`. PRO requests prefer
-    the reserved lane (falling back to the shared pool only if all reserved keys
-    are cooling down); free requests rotate only the shared pool. `is_pro=None`
-    falls back to the per-request contextvar so most callers pass nothing."""
-    if not NVIDIA_API_KEYS:
-        return None
-    if is_pro is None:
-        is_pro = _request_is_pro.get()
-    shared, reserved = _nvidia_key_pools()
-    if is_pro and reserved:
-        now = time.time()
-        k = _pick_from_pool(reserved, 'pro', model)
-        if k and _nvidia_key_cooldowns.get((k, model), 0) <= now:
-            return k
-        # reserved lane is saturated → let PRO borrow the shared pool
-        return _pick_from_pool(shared or NVIDIA_API_KEYS, 'free', model) or k
-    return _pick_from_pool(shared or NVIDIA_API_KEYS, 'free', model)
-
-
-# ── NVIDIA keep-warm heartbeat — REMOVED ─────────────────────────────────
-# A background thread used to fire a real 1-token completion at every tier
-# model on a timer to keep them hot. Those pings competed with live traffic
-# for NVIDIA's per-model rate limit — the Pro (z-ai/glm-5.2) synthesis behind
-# Deep Research kept landing on 429s the heartbeat itself had just provoked.
-# We now lean purely on real traffic to keep models warm: a slightly slower
-# first token beats self-inflicted rate-limiting. Do NOT re-add a timed ping
-# here without real per-model rate-limit accounting.
-
-
-def get_gemini_key():
-    global _gemini_key_index
-    if not GEMINI_API_KEYS:
-        return None
-    key = GEMINI_API_KEYS[_gemini_key_index % len(GEMINI_API_KEYS)]
-    _gemini_key_index += 1
-    return key
-
-
-def _get_available_groq_key():
-    global _groq_key_index, _groq_key_cooldowns
-    if not GROQ_API_KEYS:
-        return None, -1
-    now = time.time()
-    _groq_key_cooldowns = {k: v for k, v in _groq_key_cooldowns.items() if v > now}
-    for attempt in range(len(GROQ_API_KEYS)):
-        idx = (_groq_key_index + attempt) % len(GROQ_API_KEYS)
-        if idx not in _groq_key_cooldowns:
-            _groq_key_index = (idx + 1) % len(GROQ_API_KEYS)
-            return GROQ_API_KEYS[idx], idx
-    soonest_idx = min(_groq_key_cooldowns, key=_groq_key_cooldowns.get)
-    print(f"[Groq] All {len(GROQ_API_KEYS)} keys rate-limited. Soonest recovery: {int(_groq_key_cooldowns[soonest_idx] - now)}s")
-    return None, -1
-
-
-def _mark_groq_key_exhausted(key_index):
-    global _groq_key_cooldowns
-    _groq_key_cooldowns[key_index] = time.time() + GROQ_COOLDOWN_SECONDS
-    print(f"[Groq] Key #{key_index + 1} rate-limited. Cooldown: {GROQ_COOLDOWN_SECONDS}s")
-
-
-def call_gemini_vision(messages, temperature=0.7, max_tokens=4096):
-    """Call Gemini API for vision/image analysis."""
-    api_key = get_gemini_key()
-    if not api_key:
-        return None
-    gemini_contents = []
-    for m in messages:
-        role = "user" if m["role"] in ["user", "system"] else "model"
-        content = m.get("content")
-        if isinstance(content, list):
-            parts = []
-            for part in content:
-                if part.get("type") == "text":
-                    parts.append({"text": part["text"]})
-                elif part.get("type") == "image_url":
-                    img_url = part["image_url"]["url"]
-                    if img_url.startswith("data:"):
-                        header, b64data = img_url.split(",", 1)
-                        mime = header.split(":")[1].split(";")[0]
-                        parts.append({"inline_data": {"mime_type": mime, "data": b64data}})
-            gemini_contents.append({"role": role, "parts": parts})
-        elif isinstance(content, str) and content.strip():
-            gemini_contents.append({"role": role, "parts": [{"text": content}]})
-    if not gemini_contents:
-        return None
-    for attempt in range(len(GEMINI_API_KEYS)):
+def _get_vertex_client():
+    """Lazy singleton genai.Client wired to Vertex AI. Returns None if the
+    google-genai SDK isn't installed or the project isn't configured."""
+    global _vertex_client
+    if _vertex_client is not None:
+        return _vertex_client
+    with _vertex_client_lock:
+        if _vertex_client is not None:
+            return _vertex_client
         try:
-            resp = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}",
-                headers={"Content-Type": "application/json"},
-                json={"contents": gemini_contents, "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens}},
-                timeout=60
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                candidates = data.get("candidates", [])
-                if candidates:
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    text_parts = [p["text"] for p in parts if "text" in p]
-                    return "\n".join(text_parts) if text_parts else None
+            from google import genai
+            from config import VERTEX_PROJECT_ID, VERTEX_LOCATION, VERTEX_CREDENTIALS
+            if not VERTEX_PROJECT_ID:
+                print("[Vertex] VERTEX_PROJECT_ID not set — Vertex AI disabled")
                 return None
-            elif resp.status_code == 429:
-                api_key = get_gemini_key()
-            else:
-                print(f"[Gemini] Error {resp.status_code}: {resp.text[:200]}")
-                return None
+            kwargs = {"vertexai": True, "project": VERTEX_PROJECT_ID, "location": VERTEX_LOCATION}
+            if VERTEX_CREDENTIALS is not None:
+                kwargs["credentials"] = VERTEX_CREDENTIALS
+            _vertex_client = genai.Client(**kwargs)
+            print(f"[Vertex] Client ready (project={VERTEX_PROJECT_ID}, location={VERTEX_LOCATION})")
         except Exception as e:
-            print(f"[Gemini] Exception: {e}")
+            print(f"[Vertex] Failed to initialize client: {e}")
             return None
-    return None
+    return _vertex_client
+
+
+def _messages_to_gemini(messages):
+    """OpenAI-style messages -> (system_instruction: str|None, contents: list[dict]).
+
+    Gemini has no "system" role in the turn sequence — system text is passed
+    separately via GenerateContentConfig.system_instruction. "assistant"
+    becomes "model". Multimodal content (image_url data: URIs) and native
+    tool-calling messages (assistant tool_calls / role="tool" results) are
+    translated to Gemini's function_call / function_response parts so the
+    OpenAI-compatible proxy (Cline/Cursor/Continue) keeps working.
+    """
+    from google.genai import types
+
+    system_parts = []
+    contents = []
+    # tool_call_id -> function name, so a later role="tool" message (which
+    # OpenAI callers often omit the name on) can be matched back to it.
+    call_id_to_name = {}
+
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content")
+
+        if role == "system":
+            if isinstance(content, str) and content.strip():
+                system_parts.append(content)
+            elif isinstance(content, list):
+                for p in content:
+                    if isinstance(p, dict) and p.get("type") == "text":
+                        system_parts.append(p.get("text", ""))
+            continue
+
+        if role == "tool":
+            name = m.get("name") or call_id_to_name.get(m.get("tool_call_id"), "tool_result")
+            result_text = content if isinstance(content, str) else json.dumps(content, default=str)
+            try:
+                part = types.Part.from_function_response(name=name, response={"result": result_text})
+                contents.append({"role": "user", "parts": [part]})
+            except Exception:
+                contents.append({"role": "user", "parts": [types.Part.from_text(text=f"[tool result: {name}] {result_text}")]})
+            continue
+
+        gemini_role = "model" if role == "assistant" else "user"
+        parts = []
+
+        if isinstance(content, str):
+            if content:
+                parts.append(types.Part.from_text(text=content))
+        elif isinstance(content, list):
+            for p in content:
+                if not isinstance(p, dict):
+                    continue
+                ptype = p.get("type")
+                if ptype == "text":
+                    txt = p.get("text", "")
+                    if txt:
+                        parts.append(types.Part.from_text(text=txt))
+                elif ptype == "image_url":
+                    img_url = (p.get("image_url") or {}).get("url", "")
+                    if img_url.startswith("data:"):
+                        try:
+                            header, b64data = img_url.split(",", 1)
+                            mime = header.split(":")[1].split(";")[0]
+                            import base64 as _b64
+                            parts.append(types.Part.from_bytes(data=_b64.b64decode(b64data), mime_type=mime))
+                        except Exception:
+                            pass
+                    elif img_url:
+                        try:
+                            parts.append(types.Part.from_uri(file_uri=img_url, mime_type="image/jpeg"))
+                        except Exception:
+                            pass
+
+        # Assistant messages carrying OpenAI-style tool_calls -> function_call parts.
+        for tc in (m.get("tool_calls") or []):
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") or {}
+            name = fn.get("name")
+            if not name:
+                continue
+            call_id_to_name[tc.get("id")] = name
+            args = fn.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args) if args.strip() else {}
+                except Exception:
+                    args = {}
+            elif not isinstance(args, dict):
+                args = {}
+            try:
+                fc_part = types.Part.from_function_call(name=name, args=args)
+                # Gemini 3.x requires a `thought_signature` on every replayed
+                # function_call part (its own signed reasoning continuity
+                # token) or it 400s the whole request. OpenAI-format callers
+                # (Cline/Cursor/Continue) have no field to carry that opaque
+                # signature back to us, so we can never legitimately have the
+                # real one here. Google's own documented escape hatch for
+                # exactly this situation is this literal sentinel string as
+                # the (unencoded) signature bytes — it tells the API "trust
+                # this call, skip signature validation" instead of rejecting.
+                fc_part.thought_signature = b"skip_thought_signature_validator"
+                parts.append(fc_part)
+            except Exception:
+                pass
+
+        if parts:
+            contents.append({"role": gemini_role, "parts": parts})
+
+    system_instruction = "\n\n".join(p for p in system_parts if p) or None
+    return system_instruction, contents
+
+
+def _tools_to_gemini(tools):
+    """OpenAI tool schema (list of {"type":"function","function":{...}}) ->
+    a single google.genai.types.Tool with function declarations. OpenAI's
+    `parameters` is already JSON Schema, so it maps straight onto
+    FunctionDeclaration.parametersJsonSchema — no schema-object translation
+    needed."""
+    from google.genai import types
+    decls = []
+    for t in (tools or []):
+        if not isinstance(t, dict):
+            continue
+        fn = t.get("function") or t
+        name = fn.get("name")
+        if not name:
+            continue
+        try:
+            decls.append(types.FunctionDeclaration(
+                name=name,
+                description=fn.get("description") or "",
+                parametersJsonSchema=fn.get("parameters") or {"type": "object", "properties": {}},
+            ))
+        except Exception as e:
+            print(f"[Vertex] Skipping malformed tool schema for {name}: {e}")
+    if not decls:
+        return None
+    return [types.Tool(functionDeclarations=decls)]
+
+
+def _gemini_function_call_to_delta(fc, index):
+    """A Gemini function_call part -> one OpenAI-style streamed tool_calls
+    delta entry. Gemini hands back complete (non-fragmented) args, so this
+    is emitted as a single whole-argument chunk rather than char-by-char."""
+    import uuid as _uuid
+    try:
+        args = dict(fc.args) if fc.args else {}
+    except Exception:
+        args = {}
+    return [{
+        "index": index,
+        "id": f"call_{_uuid.uuid4().hex[:24]}",
+        "type": "function",
+        "function": {"name": fc.name, "arguments": json.dumps(args)},
+    }]
+
+
+def call_vertex_gemini(messages, temperature=0.7, max_tokens=16384, stream=True,
+                       model="gemini-3.1-pro-preview", tools=None, tool_choice=None,
+                       expose_thinking=True, max_thinking=False, top_p=0.9,
+                       reasoning_budget=None, reasoning_effort=None, is_pro=None,
+                       read_timeout=None, json_mode=False):
+    """Call Google Vertex AI (Gemini). Drop-in replacement for call_nvidia —
+    same streaming-dict-yield contract:
+
+      • `{"thinking": "<token>"}`   — a delta of the model's reasoning trace.
+      • `{"chunk": "<token>"}`      — a delta of the final answer.
+      • `{"thinking_done": True}`   — emitted once reasoning ends.
+      • `{"tool_calls": [...]}`     — OpenAI-shaped tool-call deltas.
+      • `{"_finish_reason": "length"}` — sentinel: truncated by max_tokens.
+
+    Non-streaming calls return a plain string (or None on failure/no client).
+    `reasoning_effort`/`is_pro` are accepted for interface parity with
+    call_nvidia but unused here (Vertex has no key-rotation or per-provider
+    effort string — thinking is controlled by max_thinking / reasoning_budget
+    alone). `read_timeout` (seconds) DOES bound the real HTTP request via
+    GenerateContentConfig.http_options — important for timing-critical
+    callers (e.g. LiveKit post-call analysis right before shutdown).
+    """
+    if model_circuit_open(model):
+        print(f"[Vertex] Circuit OPEN for {model} — skipping")
+        return None
+
+    client = _get_vertex_client()
+    if client is None:
+        return None
+
+    cache_key = _hash_payload(messages, model, temperature, max_tokens, tools, tool_choice, top_p, reasoning_budget, reasoning_effort, json_mode)
+    cached_val = _get_from_cache(cache_key)
+    if cached_val is not None:
+        res_type, res_data = cached_val
+        if res_type == "stream":
+            if stream:
+                return generate_cached_stream(res_data, expose_thinking)
+        else:
+            if not stream:
+                return res_data
+
+    try:
+        from google.genai import types
+        system_instruction, contents = _messages_to_gemini(messages)
+        if not contents:
+            return None
+
+        cfg_kwargs = {
+            "temperature": temperature,
+            "max_output_tokens": max_tokens,
+            "top_p": top_p,
+        }
+        if system_instruction:
+            cfg_kwargs["system_instruction"] = system_instruction
+        cfg_kwargs["thinking_config"] = types.ThinkingConfig(
+            include_thoughts=bool(max_thinking and expose_thinking),
+            thinking_budget=(reasoning_budget or 8192) if max_thinking else 0,
+        )
+        gemini_tools = _tools_to_gemini(tools)
+        if gemini_tools:
+            cfg_kwargs["tools"] = gemini_tools
+        if json_mode:
+            cfg_kwargs["response_mime_type"] = "application/json"
+        if read_timeout:
+            # Bounds the actual HTTP socket read, not just the asyncio-level
+            # await. Callers on a tight shutdown deadline (e.g. LiveKit's
+            # post-call analysis, which SIGKILLs the whole worker if a
+            # blocking thread outlives the room-teardown window) need the
+            # underlying request itself to die on time — asyncio.wait_for()
+            # alone only abandons the await, it can't kill an OS thread stuck
+            # in a slow read.
+            cfg_kwargs["http_options"] = types.HttpOptions(timeout=int(read_timeout * 1000))
+        config = types.GenerateContentConfig(**cfg_kwargs)
+    except Exception as e:
+        print(f"[Vertex] Request build failed: {e}")
+        return None
+
+    _t0 = time.time()
+
+    if stream:
+        def generate():
+            thinking_active = False
+            collected_chunks = []
+            has_tool_calls = False
+            finish_reason = None
+            tc_index = 0
+            try:
+                resp_stream = client.models.generate_content_stream(
+                    model=model, contents=contents, config=config)
+                for chunk in resp_stream:
+                    cands = getattr(chunk, "candidates", None)
+                    if not cands:
+                        continue
+                    cand = cands[0]
+                    fr = getattr(cand, "finish_reason", None)
+                    if fr:
+                        finish_reason = str(fr)
+                    content_obj = cand.content
+                    if not content_obj or not content_obj.parts:
+                        continue
+                    for part in content_obj.parts:
+                        fc = getattr(part, "function_call", None)
+                        if fc and getattr(fc, "name", None):
+                            has_tool_calls = True
+                            delta = _gemini_function_call_to_delta(fc, tc_index)
+                            tc_index += 1
+                            collected_chunks.append({"tool_calls": delta})
+                            yield {"tool_calls": delta}
+                            continue
+                        text = getattr(part, "text", None)
+                        if not text:
+                            continue
+                        if getattr(part, "thought", False):
+                            if expose_thinking:
+                                thinking_active = True
+                                collected_chunks.append({"thinking": text})
+                                yield {"thinking": text}
+                        else:
+                            if thinking_active:
+                                collected_chunks.append({"thinking_done": True})
+                                yield {"thinking_done": True}
+                                thinking_active = False
+                            collected_chunks.append({"chunk": text})
+                            yield {"chunk": text}
+
+                if thinking_active:
+                    collected_chunks.append({"thinking_done": True})
+                    yield {"thinking_done": True}
+
+                record_model_result(model, True, latency_ms=(time.time() - _t0) * 1000)
+
+                truncated = bool(finish_reason and "MAX_TOKENS" in finish_reason.upper())
+                if truncated:
+                    yield {"_finish_reason": "length"}
+
+                if not has_tool_calls and collected_chunks and not truncated:
+                    _save_to_cache(cache_key, "stream", json.dumps(collected_chunks))
+            except Exception as e:
+                record_model_result(model, False, error=e)
+                print(f"[Vertex] Streaming exception ({model}): {e}")
+        return generate()
+    else:
+        try:
+            resp = client.models.generate_content(model=model, contents=contents, config=config)
+            record_model_result(model, True, latency_ms=(time.time() - _t0) * 1000)
+            text = getattr(resp, "text", None) or ""
+            if text:
+                _save_to_cache(cache_key, "string", text)
+            return text
+        except Exception as e:
+            record_model_result(model, False, error=e)
+            print(f"[Vertex] Exception ({model}): {e}")
+            return None
 
 
 def call_openrouter(messages, temperature=0.7, max_tokens=16384, stream=True, model="qwen/qwen3-coder:free"):
@@ -452,7 +603,7 @@ def _save_to_cache(cache_key, response_type, response_data):
     except Exception as e:
         print(f"[NVIDIA Cache] Error writing cache: {e}")
 
-def _hash_payload(messages, model, temperature, max_tokens, tools, tool_choice, top_p, reasoning_budget, reasoning_effort):
+def _hash_payload(messages, model, temperature, max_tokens, tools, tool_choice, top_p, reasoning_budget, reasoning_effort, json_mode=False):
     try:
         payload = {
             "model": str(model),
@@ -463,28 +614,13 @@ def _hash_payload(messages, model, temperature, max_tokens, tools, tool_choice, 
             "tool_choice": tool_choice,
             "top_p": float(top_p) if top_p is not None else 0.9,
             "reasoning_budget": reasoning_budget,
-            "reasoning_effort": reasoning_effort
+            "reasoning_effort": reasoning_effort,
+            "json_mode": bool(json_mode),
         }
         payload_str = json.dumps(payload, sort_keys=True, default=str)
         return hashlib.sha256(payload_str.encode('utf-8')).hexdigest()
     except Exception as e:
         print(f"[NVIDIA Cache] Error hashing payload: {e}")
-        return hashlib.sha256(str(messages).encode('utf-8')).hexdigest()
-
-def _hash_groq_payload(messages, model, temperature, max_tokens, tools, tool_choice):
-    try:
-        payload = {
-            "model": str(model),
-            "messages": messages,
-            "temperature": float(temperature) if temperature is not None else 0.7,
-            "max_tokens": int(max_tokens) if max_tokens is not None else None,
-            "tools": tools,
-            "tool_choice": tool_choice
-        }
-        payload_str = json.dumps(payload, sort_keys=True, default=str)
-        return hashlib.sha256(payload_str.encode('utf-8')).hexdigest()
-    except Exception as e:
-        print(f"[Groq Cache] Error hashing payload: {e}")
         return hashlib.sha256(str(messages).encode('utf-8')).hexdigest()
 
 def generate_cached_stream(chunks, expose_thinking=True):
@@ -576,546 +712,3 @@ def llm_health_snapshot():
         "models": out,
     }
 
-
-def call_nvidia(messages, temperature=0.7, max_tokens=16384, stream=True,
-                model="nvidia/nemotron-3-ultra-550b-a55b", tools=None, tool_choice=None,
-                expose_thinking=True, max_thinking=False, top_p=0.9,
-                reasoning_budget=None, reasoning_effort=None, is_pro=None,
-                read_timeout=None):
-    """Call NVIDIA NIM API with tool support.
-
-    Streaming protocol:
-      • `{"thinking": "<token>"}` — a delta of the model's reasoning trace.
-        The frontend renders these into a Gemini-style collapsible
-        "Thinking…" bubble that updates live as tokens arrive.
-      • `{"chunk": "<token>"}`   — a delta of the final answer (content).
-      • `{"thinking_done": True}` — emitted once when reasoning ends and
-        the model starts emitting actual content. The UI uses this to
-        collapse the thinking bubble and switch focus to the answer.
-
-    Pass `expose_thinking=False` to silently drop reasoning deltas (useful
-    for non-chat call sites such as post-call NIM analysis where we just
-    want a final string).
-    """
-    if not NVIDIA_API_KEYS:
-        return None
-
-    # Compute cache key and check Kautilya Heavy Caching Engine
-    cache_key = _hash_payload(messages, model, temperature, max_tokens, tools, tool_choice, top_p, reasoning_budget, reasoning_effort)
-    cached_val = _get_from_cache(cache_key)
-    if cached_val is not None:
-        res_type, res_data = cached_val
-        if res_type == "stream":
-            if stream:
-                return generate_cached_stream(res_data, expose_thinking=expose_thinking)
-            else:
-                full_text = ""
-                for chunk in res_data:
-                    if "chunk" in chunk:
-                        full_text += chunk["chunk"]
-                return full_text
-        else:
-            if stream:
-                def _stream_str():
-                    yield {"chunk": res_data}
-                return _stream_str()
-            else:
-                return res_data
-
-    # Self-healing mesh: model is cooling down after repeated failures —
-    # skip the doomed request so the caller's fallback chain fires instantly
-    # instead of after a connect timeout.
-    if model_circuit_open(model):
-        print(f"[ModelMesh] {model} circuit open — skipping call")
-        return None
-
-    try:
-        clean_messages = []
-        has_dropped_image = False
-        for m in messages:
-            content = m.get("content", "")
-            if isinstance(content, list):
-                text_parts = [p["text"] for p in content if p.get("type") == "text"]
-                # If user attached an image, NVIDIA's text-only endpoints can't
-                # see it — surface that fact to the model rather than silently
-                # losing it.
-                if any(p.get("type") == "image_url" for p in content):
-                    has_dropped_image = True
-                    text_parts.append("[NOTE: An image was attached but this model is text-only. "
-                                      "Tell the user the image is unavailable on this tier and "
-                                      "suggest they retry — vision routing will pick a vision model.]")
-                content = "\n".join(text_parts)
-            # Preserve the OpenAI tool-use schema: assistant messages may
-            # carry `tool_calls`, tool messages carry `tool_call_id`, named
-            # function messages carry `name`. Previously we kept only
-            # role+content — that wiped tool-call history, so Cline / any
-            # coding agent's follow-up tool turns saw "tool result" with no
-            # link to the call that produced it. Result: model refuses to
-            # continue or hallucinates a different call. Now we forward the
-            # full envelope and let the upstream model decide.
-            entry = {"role": m["role"]}
-            # Content can legitimately be None for assistant-with-tool_calls
-            # turns — only stringify when actually present.
-            if content is not None and content != "":
-                entry["content"] = str(content) if not isinstance(content, (list, dict)) else content
-            else:
-                # OpenAI permits null content on assistant tool-call turns.
-                entry["content"] = None if m.get("tool_calls") else ""
-            for k in ("tool_calls", "tool_call_id", "name"):
-                if m.get(k) is not None:
-                    entry[k] = m[k]
-            clean_messages.append(entry)
-        if has_dropped_image:
-            print(f"[NVIDIA] Image dropped — model {model} is text-only")
-        payload = {"model": model, "messages": clean_messages, "temperature": temperature,
-                   "top_p": top_p, "stream": stream}
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
-        if tools:
-            payload["tools"] = tools
-        if tool_choice:
-            payload["tool_choice"] = tool_choice
-        # Extended thinking — payload shape depends on model family.
-        # GLM and Nemotron 3 Ultra use enable_thinking; thinking
-        # can be explicitly turned OFF by passing enable_thinking=False so
-        # the user's "Max Thinking" toggle is honored in both directions.
-        # Deepseek V4 Flash uses a boolean chat_template_kwargs.thinking +
-        # top-level reasoning_effort. Qwen3-thinking variants use
-        # {thinking: {type, budget_tokens}}.
-        if model.startswith("z-ai/glm") or model.startswith("nvidia/nemotron"):
-            # max_thinking ON  → enable_thinking True, stream reasoning back
-            # max_thinking OFF → enable_thinking False, skip reasoning entirely
-            payload["chat_template_kwargs"] = {
-                "enable_thinking": bool(max_thinking),
-            }
-            if model.startswith("z-ai/glm"):
-                payload["chat_template_kwargs"]["clear_thinking"] = False
-            if bool(max_thinking) or (expose_thinking and reasoning_budget and reasoning_budget > 0):
-                payload["chat_template_kwargs"]["enable_thinking"] = True
-                # GLM 5.2 400s on an unrecognized top-level `reasoning_budget`
-                # param ("Validation: Unsupported parameter(s)") — only
-                # Nemotron accepts it as a top-level field.
-                if model.startswith("nvidia/nemotron"):
-                    payload["reasoning_budget"] = reasoning_budget if (reasoning_budget and reasoning_budget > 0) else 16384
-        elif model.startswith("deepseek-ai/deepseek-v4"):
-            # max_thinking ON  → thinking=True + reasoning_effort='high'.
-            # max_thinking OFF → thinking=False, no reasoning_effort (fastest
-            # path — matches the other tiers' "opt-in only" thinking policy).
-            payload["chat_template_kwargs"] = {"thinking": bool(max_thinking)}
-            if bool(max_thinking):
-                reasoning_effort = reasoning_effort or "high"
-        elif expose_thinking and reasoning_budget and reasoning_budget > 0:
-            payload["chat_template_kwargs"] = {"thinking": {"type": "enabled", "budget_tokens": reasoning_budget}}
-        # Mistral-style top-level reasoning toggle (low|medium|high)
-        if reasoning_effort:
-            payload["reasoning_effort"] = reasoning_effort
-        # Latency optimizations:
-        #   • Shared Session keeps TLS handshake amortized across calls
-        #   • Accept-Encoding: identity → no gzip buffering on the SSE stream
-        #     (gzip would batch tokens until enough bytes accumulate for a frame)
-        #   • Connection: keep-alive lets urllib3 hold the socket open
-        #   • Lower connect timeout fails fast if NVIDIA edge is dead
-        _t0 = time.time()
-        # Retry across keys on 429 / upstream-5xx so multiple keys actually give
-        # a single request resilience (not just load-spread across requests).
-        # PRO lands on the reserved lane first. Bounded by how many distinct
-        # keys we have.
-        resp = None
-        last_status = None
-        attempts = max(1, min(len(NVIDIA_API_KEYS), _NVIDIA_MAX_KEY_RETRIES))
-        for _attempt in range(attempts):
-            picked = _get_available_nvidia_key(is_pro, model)
-            # If the rotator can only hand back a key that's STILL in cooldown
-            # for THIS model, every key is benched from a recent 429. Firing
-            # anyway just earns another guaranteed 429 and re-benches the key —
-            # we'd be rate-limiting ourselves into a deeper hole (this is exactly
-            # what killed Deep Research: its 2s/4s synth retries kept slamming
-            # keys benched for 30s). Bail out so the caller's fallback fires now.
-            if picked and _nvidia_key_cooldowns.get((picked, model), 0) > time.time():
-                last_status = last_status or 429
-                print(f"[NVIDIA] all keys cooling down — skipping doomed 429 (model {model})")
-                break
-            nvidia_api_key = picked or NVIDIA_API_KEY
-            headers = {
-                "Authorization": f"Bearer {nvidia_api_key}",
-                "Content-Type": "application/json",
-                "Connection": "keep-alive",
-            }
-            if stream:
-                headers["Accept"] = "text/event-stream"
-                headers["Accept-Encoding"] = "identity"
-            else:
-                headers["Accept"] = "application/json"
-            try:
-                # (connect, read). Fail fast on connect. For a STREAMING call the
-                # read gaps are between SSE tokens so we allow a very long read
-                # (3600s). For a NON-streaming call the whole JSON body must
-                # arrive in one read, so a 1-hour ceiling is dangerous: a slow/
-                # hung NVIDIA edge would block this (possibly executor) thread
-                # for an hour. That is exactly what SIGKILLed the LiveKit worker
-                # in post-call analysis — asyncio.wait_for gives up but the
-                # blocking thread lingers and stops the process from exiting.
-                # Bound non-stream reads (default 90s) and let callers on a tight
-                # deadline (e.g. the agent shutdown window) pass a smaller value.
-                _read_to = read_timeout if read_timeout else (3600 if stream else 90)
-                resp = _NVIDIA_SESSION.post(
-                    "https://integrate.api.nvidia.com/v1/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=(5, _read_to),
-                    stream=stream,
-                )
-            except Exception as _e:
-                last_status = f"exc:{_e}"
-                resp = None
-                continue
-            if resp.status_code == 200:
-                break
-            last_status = resp.status_code
-            # Rate-limited / transient upstream error → cool this key and try
-            # the next one. Other 4xx (400/401/404) won't change across keys.
-            if resp.status_code in (429, 500, 502, 503, 504):
-                _mark_nvidia_key_cooldown(nvidia_api_key, model)
-                # On a 429, log WHY NVIDIA throttled — the body + rate-limit
-                # headers say whether it was a requests/min, tokens/min, or
-                # concurrency limit, and for how long (Retry-After). This is the
-                # only way to know if input or output VOLUME is the real cause
-                # instead of guessing. (Also reveals if every key shares ONE
-                # account's bucket — then they all 429 together regardless.)
-                diag = ""
-                if resp.status_code == 429:
-                    try:
-                        rl_hdrs = {k: v for k, v in resp.headers.items()
-                                   if k.lower().startswith(("x-ratelimit", "ratelimit", "retry-after"))}
-                        diag = f" | hdrs={rl_hdrs} body={resp.text[:300]!r}"
-                    except Exception:
-                        pass
-                print(f"[NVIDIA] {resp.status_code} on key — cooling down, retrying "
-                      f"({_attempt + 1}/{attempts}, model {model}){diag}")
-                try: resp.close()
-                except Exception: pass
-                resp = None
-                continue
-            break
-
-        if resp is not None and resp.status_code == 200:
-            record_model_result(model, True, latency_ms=(time.time() - _t0) * 1000)
-            print(f"[NVIDIA] Success (model: {model})")
-            if stream:
-                def generate():
-                    try:
-                        thinking_active = False
-                        collected_chunks = []
-                        has_tool_calls = False
-                        finish_reason = None
-                        usage_info = None
-                        for line in resp.iter_lines():
-                            if not line:
-                                continue
-                            line = line.decode('utf-8', errors='replace')
-                            if not line.startswith('data: '):
-                                continue
-                            json_str = line[6:]
-                            if json_str.strip() == '[DONE]':
-                                if thinking_active:
-                                    collected_chunks.append({"thinking_done": True})
-                                    yield {"thinking_done": True}
-                                break
-                            try:
-                                data = json.loads(json_str)
-                                # NVIDIA sends real token counts on the final
-                                # chunk (often with empty choices) — capture
-                                # them so API consumers (Cline, Cursor) can
-                                # display true context-window usage.
-                                if isinstance(data.get("usage"), dict):
-                                    usage_info = data["usage"]
-                                choices = data.get("choices", [])
-                                if not choices: continue
-                                delta = choices[0].get("delta", {})
-                                # Capture finish_reason — "length" means max_tokens
-                                # was hit and the answer was truncated mid-flight.
-                                fr = choices[0].get("finish_reason")
-                                if fr:
-                                    finish_reason = fr
-                            except Exception:
-                                continue
-
-                            # Most models key reasoning as `reasoning_content`;
-                            # Deepseek V4 Flash was observed using `reasoning`.
-                            reasoning = delta.get("reasoning_content") or delta.get("reasoning")
-                            if reasoning:
-                                if expose_thinking:
-                                    thinking_active = True
-                                    collected_chunks.append({"thinking": reasoning})
-                                    yield {"thinking": reasoning}
-                                # Deliberately NOT `continue` here — some models
-                                # (GLM 5.2 observed) pack the first content
-                                # token(s) into the SAME delta as the last
-                                # reasoning_content fragment. An early continue
-                                # here silently dropped that leading content,
-                                # which showed up as answers missing their
-                                # first word ("What's the task" -> "'s the task").
-
-                            if "tool_calls" in delta:
-                                has_tool_calls = True
-                                collected_chunks.append({"tool_calls": delta["tool_calls"]})
-                                yield {"tool_calls": delta["tool_calls"]}
-                                continue
-
-                            content = delta.get("content")
-                            if content is not None:
-                                if thinking_active:
-                                    collected_chunks.append({"thinking_done": True})
-                                    yield {"thinking_done": True}
-                                    thinking_active = False
-                                collected_chunks.append({"chunk": content})
-                                yield {"chunk": content}
-
-                        # Surface mid-stream truncation so the agent loop can
-                        # auto-continue with a bigger budget. Sentinel only —
-                        # NOT cached (the cached stream should be the complete
-                        # one after the continuation merges in).
-                        if finish_reason == "length":
-                            yield {"_finish_reason": "length"}
-
-                        # Real token counts from the provider. Sentinel only —
-                        # not cached (replayed streams fall back to estimates).
-                        if usage_info:
-                            yield {"_usage": usage_info}
-
-                        # Save successful non-tool, non-truncated generation
-                        # to cache. Truncated streams would poison the cache
-                        # with cut-off answers on the next identical request.
-                        if (not has_tool_calls
-                                and collected_chunks
-                                and finish_reason != "length"):
-                            _save_to_cache(cache_key, "stream", json.dumps(collected_chunks))
-                    finally:
-                        resp.close()
-                return generate()
-            else:
-                content = resp.json()["choices"][0]["message"].get("content", "")
-                if content:
-                    _save_to_cache(cache_key, "string", content)
-                return content
-        else:
-            # All key attempts exhausted (resp is None or a non-200).
-            body = ""
-            try:
-                body = resp.text[:120] if resp is not None else ""
-            except Exception:
-                pass
-            record_model_result(model, False, error=f"HTTP {last_status}: {body}")
-            print(f"[NVIDIA] Error after {attempts} attempt(s) (status {last_status}, model {model})")
-            return None
-    except Exception as e:
-        record_model_result(model, False, error=e)
-        print(f"[NVIDIA] Exception: {e}")
-        return None
-
-
-def call_groq(messages, temperature=0.7, max_tokens=4096, stream=False,
-              model="llama-3.3-70b-versatile", tools=None, tool_choice=None,
-              read_timeout=None):
-    """Call Groq API with automatic multi-key rotation and 429 handling."""
-    if not GROQ_API_KEYS:
-        return None
-
-    # Compute cache key and check Kautilya Heavy Caching Engine
-    cache_key = _hash_groq_payload(messages, model, temperature, max_tokens, tools, tool_choice)
-    cached_val = _get_from_cache(cache_key)
-    if cached_val is not None:
-        res_type, res_data = cached_val
-        if res_type == "stream":
-            if stream:
-                return generate_cached_stream(res_data)
-            else:
-                full_text = ""
-                for chunk in res_data:
-                    if "chunk" in chunk:
-                        full_text += chunk["chunk"]
-                if tools:
-                    return {"content": full_text, "tool_calls": None}
-                return full_text
-        else:
-            if stream:
-                def _stream_str():
-                    yield {"chunk": res_data}
-                return _stream_str()
-            else:
-                if tools:
-                    return {"content": res_data, "tool_calls": None}
-                return res_data
-
-    is_vision = "vision" in model.lower() or "scout" in model.lower()
-    clean_messages = []
-    image_count = 0
-    MAX_IMAGES = 2
-    for m in reversed(messages):
-        content = m.get("content")
-        new_m = {"role": m["role"]}
-        if isinstance(content, list):
-            if is_vision:
-                new_content = []
-                for p in content:
-                    if p.get("type") == "image_url":
-                        if image_count < MAX_IMAGES:
-                            new_content.append(p)
-                            image_count += 1
-                    else:
-                        new_content.append(p)
-                if new_content:
-                    new_m["content"] = new_content
-            else:
-                text_parts = [p["text"] for p in content if p.get("type") == "text"]
-                combined_text = "\n".join(text_parts).strip()
-                if combined_text:
-                    new_m["content"] = combined_text
-        elif content is not None:
-            new_m["content"] = content
-        # Preserve tool-protocol fields so multi-turn tool-use conversations
-        # (Cline / Cursor / Continue) actually thread correctly upstream.
-        # Without these, an assistant tool-call turn would arrive at Groq
-        # with no `tool_calls` and the matching tool-result turn would arrive
-        # with no `tool_call_id` — the model can't reconcile them.
-        for k in ("tool_calls", "tool_call_id", "name"):
-            if m.get(k) is not None:
-                new_m[k] = m[k]
-        # Keep a message if it has content OR carries tool-protocol data
-        # (assistant turns with only tool_calls are legitimate; tool turns
-        # without content are not, but we keep them so the upstream can
-        # reject explicitly rather than have us silently swallow them).
-        if new_m.get("content") or new_m.get("tool_calls") or new_m["role"] == "tool":
-            # OpenAI allows null content on assistant tool-call turns.
-            if "content" not in new_m and new_m.get("tool_calls"):
-                new_m["content"] = None
-            clean_messages.append(new_m)
-    clean_messages.reverse()
-    if not clean_messages:
-        return None
-    tried_keys = 0
-    while tried_keys < len(GROQ_API_KEYS):
-        api_key, key_idx = _get_available_groq_key()
-        if api_key is None:
-            return None
-        tried_keys += 1
-        key_label = f"Key#{key_idx + 1}"
-        try:
-            payload = {"model": model, "messages": clean_messages, "temperature": temperature,
-                       "stream": stream}
-            
-            # Use max_completion_tokens only for O1 models
-            if "o1-" in model:
-                if max_tokens is not None:
-                    payload["max_completion_tokens"] = max_tokens
-                payload["reasoning_effort"] = "medium"
-            else:
-                if max_tokens is not None:
-                    payload["max_tokens"] = max_tokens
-
-            if stream:
-                payload["stream_options"] = {"include_usage": True}
-            if tools:
-                payload["tools"] = tools
-            if tool_choice:
-                payload["tool_choice"] = tool_choice
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "Connection": "keep-alive",
-            }
-            if stream:
-                headers["Accept-Encoding"] = "identity"
-            # See call_nvidia: long read timeout is only safe for streaming
-            # (gaps between SSE tokens). A non-stream call must get the whole
-            # body in one read, so bound it (default 90s) to keep a blocking
-            # thread from lingering an hour after the caller has given up.
-            _read_to = read_timeout if read_timeout else (3600 if stream else 90)
-            resp = _GROQ_SESSION.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=headers,
-                json=payload, timeout=(5, _read_to), stream=stream
-            )
-            if resp.status_code == 200:
-                record_model_result(f"groq/{model}", True)
-                is_classifier = max_tokens <= 20 and stream is False if max_tokens else False
-                tag = "[Classifier]" if is_classifier else "[Groq]"
-                print(f"{tag} Success with {key_label} (model: {model})")
-                if not stream:
-                    msg = resp.json()["choices"][0]["message"]
-                    content = msg.get("content", "")
-                    t_calls = msg.get("tool_calls")
-                    if tools:
-                        if not t_calls and content:
-                            _save_to_cache(cache_key, "string", content)
-                        return {"content": content, "tool_calls": t_calls}
-                    if content:
-                        _save_to_cache(cache_key, "string", content)
-                    return content
-
-                def generate():
-                    collected_chunks = []
-                    has_tool_calls = False
-                    finish_reason = None
-                    for line in resp.iter_lines():
-                        if line:
-                            line = line.decode('utf-8')
-                            if line.startswith('data: '):
-                                try:
-                                    json_str = line[6:]
-                                    if json_str.strip() == '[DONE]':
-                                        break
-                                    data = json.loads(json_str)
-                                    usage = data.get("usage")
-                                    if usage:
-                                        yield {"usage": usage}
-                                        continue
-                                    choice = data["choices"][0]
-                                    fr = choice.get("finish_reason")
-                                    if fr:
-                                        finish_reason = fr
-                                    content = choice["delta"].get("content", "")
-                                    if content:
-                                        collected_chunks.append({"chunk": content})
-                                        yield {"chunk": content}
-                                    tool_calls = choice["delta"].get("tool_calls")
-                                    if tool_calls:
-                                        has_tool_calls = True
-                                        collected_chunks.append({"tool_calls": tool_calls})
-                                        yield {"tool_calls": tool_calls}
-                                except GeneratorExit:
-                                    return
-                                except Exception:
-                                    pass
-                    if finish_reason == "length":
-                        yield {"_finish_reason": "length"}
-                    # Don't cache truncated answers — they'd serve cut-off
-                    # responses to identical follow-up prompts.
-                    if (not has_tool_calls
-                            and collected_chunks
-                            and finish_reason != "length"):
-                        _save_to_cache(cache_key, "stream", json.dumps(collected_chunks))
-                return generate()
-            elif resp.status_code == 429:
-                _mark_groq_key_exhausted(key_idx)
-                continue
-            elif resp.status_code == 400:
-                record_model_result(f"groq/{model}", False, error=f"HTTP 400: {resp.text[:120]}")
-                print(f"[Groq] {key_label} Bad Request (400): {resp.text[:200]}")
-                return None
-            else:
-                print(f"[Groq] {key_label} Error {resp.status_code}: {resp.text[:200]}")
-                if resp.status_code >= 500:
-                    continue
-                record_model_result(f"groq/{model}", False, error=f"HTTP {resp.status_code}: {resp.text[:120]}")
-                return None
-        except requests.exceptions.Timeout:
-            print(f"[Groq] {key_label} Timeout. Trying next key...")
-            continue
-        except Exception as e:
-            record_model_result(f"groq/{model}", False, error=e)
-            print(f"[Groq] {key_label} Failed: {e}")
-            return None
-    record_model_result(f"groq/{model}", False, error=f"all {tried_keys} keys exhausted")
-    print(f"[Groq] All {tried_keys} key attempts exhausted")
-    return None

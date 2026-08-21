@@ -8,18 +8,14 @@ it were an OpenAI-compatible provider.
 Auth: `Authorization: Bearer kautilya-...` — the same API keys issued
 by /api/keys/create. The master KAUTILYA_API_KEY also works.
 
-Under the hood requests are forwarded to NVIDIA NIM with the appropriate
-Kautilya model mapping and thinking-toggle logic:
+Under the hood requests are forwarded to Google Vertex AI (Gemini) with the
+appropriate Kautilya model mapping and thinking-toggle logic — see
+_MODEL_LABELS in services/agent_loop_service.py for the live tier→model map.
 
-    kautilya-coder  → deepseek-ai/deepseek-v4-flash
-    kautilya-pro    → z-ai/glm-5.2
-    kautilya-daily  → nvidia/nemotron-3-ultra-550b-a55b
-
-Requests may also pass the raw NVIDIA model id directly.
+Requests may also pass the raw Gemini model id directly.
 The `max_thinking` toggle can be requested via:
   - `extra_body.max_thinking: true`
-  - `extra_body.chat_template_kwargs.enable_thinking: true`  (nemotron)
-  - `extra_body.chat_template_kwargs.thinking: true`         (deepseek)
+  - top-level `reasoning_effort: "high"`
 """
 import json
 import time
@@ -27,9 +23,8 @@ import uuid
 
 from flask import Blueprint, request, jsonify, Response
 
-from config import NVIDIA_API_KEY, NVIDIA_API_KEYS
 from services.auth_service import verify_api_key, record_usage
-from services.llm_service import call_groq, call_nvidia
+from services.llm_service import call_vertex_gemini
 from system_prompts import DAILY_SYSTEM_PROMPT, PRO_SYSTEM_PROMPT, CODER_SYSTEM_PROMPT_PRO
 from middleware.security import block_sensitive_query
 
@@ -192,14 +187,26 @@ openai_compat_bp = Blueprint('openai_compat', __name__)
 # Derived from agent_loop_service._MODEL_LABELS — THE single source of truth
 # for tier -> model id — instead of a hand-maintained copy that could silently
 # drift from what the dashboard chat actually calls. 'kautilya-fast' has no
-# _MODEL_LABELS entry (it's a lighter Groq-direct branch in agent_loop_service,
-# not routed through NVIDIA NIM) so it's still listed explicitly here.
-from services.agent_loop_service import _MODEL_LABELS as _KAUTILYA_TIER_MODELS
+# _MODEL_LABELS entry (it's a lighter latency-optimized branch in
+# agent_loop_service) so it's still listed explicitly here.
+from services.agent_loop_service import (
+    _MODEL_LABELS as _KAUTILYA_TIER_MODELS,
+    FAST_MODEL as _KAUTILYA_FAST_MODEL,
+    _FALLBACK_MODEL as _KAUTILYA_TIER_FALLBACKS,
+)
 KAUTILYA_MODEL_MAP = {
-    "kautilya-fast":    "llama-3.3-70b-versatile",            # Groq direct — sub-500ms TTFT
+    "kautilya-fast":    _KAUTILYA_FAST_MODEL,                 # Gemini Flash-Lite — sub-500ms TTFT
     "kautilya-coder":   _KAUTILYA_TIER_MODELS['coder'][1],
     "kautilya-pro":     _KAUTILYA_TIER_MODELS['pro'][1],
     "kautilya-daily":   _KAUTILYA_TIER_MODELS['daily'][1],
+}
+# Stable GA fallback per requested_model, used if the primary (often preview)
+# model errors — mirrors agent_loop_service's own resilience fallback.
+_KAUTILYA_FALLBACK_MODEL = {
+    "kautilya-fast":    _KAUTILYA_TIER_FALLBACKS['fast'],
+    "kautilya-coder":   _KAUTILYA_TIER_FALLBACKS['coder'],
+    "kautilya-pro":     _KAUTILYA_TIER_FALLBACKS['pro'],
+    "kautilya-daily":   _KAUTILYA_TIER_FALLBACKS['daily'],
 }
 
 # Per-model context windows. Match each upstream model's actual capability so
@@ -242,7 +249,7 @@ PUBLIC_MODELS = [
      "supports_function_calling": True,
      "supports_tool_choice": True,
      "supports_parallel_function_calling": True,
-     "supports_vision": False,
+     "supports_vision": True,
      "supports_system_messages": True,
      "supports_prompt_cache": False},
     {"id": "kautilya-coder",  "object": "model", "owned_by": "kautilya",
@@ -252,7 +259,7 @@ PUBLIC_MODELS = [
      "supports_function_calling": True,
      "supports_tool_choice": True,
      "supports_parallel_function_calling": True,
-     "supports_vision": False,
+     "supports_vision": True,
      "supports_system_messages": True,
      "supports_reasoning": True,
      "supports_prompt_cache": False},
@@ -263,7 +270,7 @@ PUBLIC_MODELS = [
      "supports_function_calling": True,
      "supports_tool_choice": True,
      "supports_parallel_function_calling": True,
-     "supports_vision": False,
+     "supports_vision": True,
      "supports_system_messages": True,
      "supports_reasoning": True,
      "supports_prompt_cache": False},
@@ -274,7 +281,7 @@ PUBLIC_MODELS = [
      "supports_function_calling": True,
      "supports_tool_choice": True,
      "supports_parallel_function_calling": True,
-     "supports_vision": False,
+     "supports_vision": True,
      "supports_system_messages": True,
      "supports_prompt_cache": False},
 ]
@@ -448,7 +455,7 @@ def chat_completions():
     )
     if isinstance(reasoning_effort, str):
         reasoning_effort = reasoning_effort.strip().lower() or None
-    # `max_thinking` is the on/off switch we pass to call_nvidia. Treat
+    # `max_thinking` is the on/off switch we pass to call_vertex_gemini. Treat
     # high effort OR an explicit toggle as "on"; anything else (low / none /
     # unspecified) means "answer at earliest" so external clients aren't
     # silently paying for reasoning latency they didn't ask for.
@@ -463,167 +470,30 @@ def chat_completions():
 
     print(f"[OpenAI Compat] {requested_model} → {upstream_model} | stream={stream} | uid={uid}")
 
-    # ---- Groq path for daily / llama models ----
-    if 'llama' in upstream_model.lower() and 'nemotron' not in upstream_model.lower():
-        gen = call_groq(messages, stream=stream, model=upstream_model,
-                        temperature=temperature, max_tokens=max_tokens,
-                        tools=tools, tool_choice=tool_choice)
-        if gen is None:
-            print(f"[OpenAI Compat] Groq returned None for {upstream_model}")
-            return jsonify({"error": {"message": "Upstream unavailable — Groq keys exhausted or model error", "type": "upstream_error"}}), 503
-        if not stream:
-            # gen can be a str (plain content) or dict (when tools are used)
-            if isinstance(gen, str):
-                content = gen
-                tool_calls_out = None
-            elif isinstance(gen, dict):
-                content = gen.get("content") or ""
-                tool_calls_out = gen.get("tool_calls")
-            else:
-                content = ""
-                tool_calls_out = None
-            usage = _usage_payload(None, messages, len(content))
-            envelope = _openai_completion_envelope(requested_model, content, tool_calls=tool_calls_out, usage=usage)
-            print(f"[OpenAI Compat] Non-stream response: {len(content)} chars")
-            if uid:
-                try:
-                    record_usage(uid, 'llm_tokens', usage["total_tokens"], model=requested_model)
-                except Exception:
-                    pass
-            return jsonify(envelope)
-
-        def sse():
-            cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
-            created = int(time.time())
-            first = True
-            full = ""
-            had_tool_calls = False
-            length_capped = False
-            upstream_usage = None
-            for chunk in gen:
-                if isinstance(chunk, str):
-                    piece = chunk
-                    if not piece:
-                        continue
-                    full += piece
-                    delta = {"content": piece}
-                elif isinstance(chunk, dict):
-                    if chunk.get("_finish_reason") == "length":
-                        length_capped = True
-                        continue
-                    # call_groq surfaces Groq's real token counts as a
-                    # {"usage": ...} event — capture, don't forward raw.
-                    if chunk.get("usage") and not chunk.get("chunk"):
-                        upstream_usage = chunk["usage"]
-                        continue
-                    if chunk.get("tool_calls"):
-                        normalized = []
-                        for i, tc in enumerate(chunk["tool_calls"]):
-                            if not isinstance(tc, dict):
-                                continue
-                            out = dict(tc)
-                            if "index" not in out:
-                                out["index"] = tc.get("index", i)
-                            fn = out.get("function") or {}
-                            if isinstance(fn, dict):
-                                args = fn.get("arguments")
-                                if args is not None and not isinstance(args, str):
-                                    try:
-                                        fn["arguments"] = json.dumps(args)
-                                    except Exception:
-                                        fn["arguments"] = str(args)
-                                out["function"] = fn
-                            if "type" not in out:
-                                out["type"] = "function"
-                            normalized.append(out)
-                        if not normalized:
-                            continue
-                        delta = {"tool_calls": normalized}
-                        had_tool_calls = True
-                    elif chunk.get("chunk"):
-                        piece = chunk["chunk"]
-                        full += piece
-                        delta = {"content": piece}
-                    else:
-                        continue
-                else:
-                    continue
-                if first:
-                    delta["role"] = "assistant"
-                    first = False
-                yield _openai_stream_chunk(cid, created, requested_model, delta)
-            finish_r = "tool_calls" if had_tool_calls else ("length" if length_capped else "stop")
-            usage = _usage_payload(upstream_usage, messages, len(full))
-            yield _openai_stream_chunk(cid, created, requested_model, {}, finish_reason=finish_r, usage=usage)
-            if include_usage:
-                yield _usage_stream_chunk(cid, created, requested_model, usage)
-            yield "data: [DONE]\n\n"
-            if uid and full:
-                try:
-                    record_usage(uid, 'llm_tokens', usage["total_tokens"], model=requested_model)
-                except Exception:
-                    pass
-
-        return Response(sse(), mimetype='text/event-stream',
-                        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
-
-    # ---- NVIDIA path (kimi-coder / glm-pro / nemotron-daily) ----
-    if not NVIDIA_API_KEYS:
-        return jsonify({"error": {"message": "Model backend temporarily unavailable", "type": "upstream_error"}}), 503
-
-    # Same path the dashboard chat uses — call_nvidia handles streaming with
-    # proper thinking/content separation for glm/nemotron via
-    # chat_template_kwargs.enable_thinking. Daily tier always uses lowest
-    # effort so Cline/Cursor stay snappy.
+    # ---- Vertex AI (Gemini) path — every Kautilya tier now runs here ----
+    # Daily tier always answers at lowest effort so Cline/Cursor stay snappy;
+    # thinking is opt-in via extra_body.max_thinking / reasoning_effort=high,
+    # same toggle for every tier now (no more per-model-family branching —
+    # that was only needed for NVIDIA NIM's mix of chat-template dialects).
     is_daily = requested_model == 'kautilya-daily'
-    # The coder backend (Deepseek V4 Flash) is a real reasoning model, but
-    # defaults to thinking OFF like every other tier — external coding
-    # agents (Cline/Cursor) want fast turns by default, and can opt in via
-    # extra_body.max_thinking / reasoning_effort=high same as kautilya-pro.
-    is_coder = (
-        requested_model == 'kautilya-coder'
-        or 'deepseek' in upstream_model.lower()
-        or 'kimi' in upstream_model.lower()  # legacy alias, retired backend
-        or ('qwen' in upstream_model.lower() and 'coder' in upstream_model.lower())
-    )
     rb = reasoning_budget if (max_thinking and not is_daily) else 0
-    # Map OpenAI-style reasoning_effort to the upstream value:
-    #   high → enable thinking path (handled via max_thinking above)
-    #   low / medium / none / unspecified → fastest path, no reasoning tokens
-    if is_coder:
-        # Deepseek V4 Flash wants reasoning_effort='high' alongside
-        # chat_template_kwargs.thinking=True when thinking is on; otherwise
-        # no reasoning_effort at all (fastest path).
-        upstream_effort = 'high' if max_thinking else None
-        thinking_on = max_thinking
-        expose_thinking_flag = bool(max_thinking)
-    elif is_daily:
-        # Nemotron (daily) uses chat_template_kwargs.enable_thinking, driven
-        # by max_thinking — not a Mistral-style reasoning_effort string.
-        upstream_effort = None
-        thinking_on = max_thinking
-        # Expose reasoning_content deltas only when the caller asked for it,
-        # otherwise the 'Thinking…' panel would show for a tier meant to be fast.
-        expose_thinking_flag = bool(max_thinking)
-    else:
-        # For the GLM (pro) reasoning path we use max_thinking to decide; pass effort hint
-        # through only when explicitly low/medium so the model can dial it down.
-        if max_thinking:
-            upstream_effort = None  # default high path via reasoning_budget
-        elif reasoning_effort in ('low', 'medium', 'none'):
-            upstream_effort = reasoning_effort
-        else:
-            upstream_effort = 'low'  # default: answer at earliest
-        thinking_on = max_thinking
-        expose_thinking_flag = True
-    gen = call_nvidia(
+    gen = call_vertex_gemini(
         messages, stream=True, max_tokens=max_tokens,
         model=upstream_model, tools=tools, tool_choice=tool_choice,
         temperature=temperature, top_p=top_p,
-        max_thinking=thinking_on, reasoning_budget=rb,
-        expose_thinking=expose_thinking_flag,
-        reasoning_effort=upstream_effort,
+        max_thinking=max_thinking, reasoning_budget=rb,
+        expose_thinking=bool(max_thinking),
     )
+    if gen is None and upstream_model != _KAUTILYA_FALLBACK_MODEL.get(requested_model):
+        fallback_model = _KAUTILYA_FALLBACK_MODEL.get(requested_model, _KAUTILYA_FAST_MODEL)
+        print(f"[OpenAI Compat] {upstream_model} unavailable — retrying on {fallback_model}")
+        gen = call_vertex_gemini(
+            messages, stream=True, max_tokens=max_tokens,
+            model=fallback_model, tools=tools, tool_choice=tool_choice,
+            temperature=temperature, top_p=top_p,
+            max_thinking=max_thinking, reasoning_budget=rb,
+            expose_thinking=bool(max_thinking),
+        )
     if gen is None:
         return jsonify({"error": {"message": "Upstream unavailable", "type": "upstream_error"}}), 503
 
@@ -686,7 +556,7 @@ def chat_completions():
                 pass
         return jsonify(envelope)
 
-    # Streaming: convert call_nvidia events → OpenAI SSE chunks.
+    # Streaming: convert call_vertex_gemini events → OpenAI SSE chunks.
     def sse():
         cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())

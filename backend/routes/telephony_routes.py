@@ -27,6 +27,11 @@ def api_telephony_diagnostic():
     env_checks = {k: bool(os.environ.get(k)) for k in [
         "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "LIVEKIT_SIP_URI",
         "VOBIZ_MASTER_USER", "VOBIZ_MASTER_PASS", "VOBIZ_MASTER_NUMBER",
+        # GOOGLE_VERTEX_CREDENTIALS_JSON powers the voice agent's real-time
+        # conversational LLM (livekit_agent.py's google.LLM) — required.
+        # NVIDIA_API_KEY (embeddings/RAG) and GROQ_API_KEY (Whisper STT) are
+        # still separate, non-chat capabilities this box may also use.
+        "GOOGLE_VERTEX_CREDENTIALS_JSON", "VERTEX_PROJECT_ID",
         "NVIDIA_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY",
         "FIREBASE_SERVICE_ACCOUNT_JSON",
     ]}

@@ -9,7 +9,7 @@ import time
 import concurrent.futures
 from typing import Dict, Optional, List
 
-from services.llm_service import call_groq, call_nvidia
+from services.llm_service import call_vertex_gemini
 
 
 # Answer-size classifier (a tiny Groq call that predicts S/M/L/XL to size the
@@ -56,19 +56,38 @@ MODEL_ALIASES = {
 }
 
 
-# Authoritative tier -> (display label, NVIDIA NIM model id) registry.
+# Authoritative tier -> (display label, Vertex AI Gemini model id) registry.
 # This is THE single source of truth for which model each tier actually
 # calls — routes/openai_compat_routes.py's KAUTILYA_MODEL_MAP and
 # services/research_service.py's SYNTH_MODEL/SYNTH_FALLBACK_MODEL both derive
 # their defaults from this dict instead of hardcoding their own copies, so a
 # model swap here can no longer silently desync chat vs. the OpenAI-compatible
 # proxy vs. deep research.
+#
+# All chat/completion traffic runs on Google Vertex AI Gemini (NVIDIA NIM and
+# Groq text-completion were fully retired here — see services/llm_service.py
+# ::call_vertex_gemini). Coder/Pro get the most powerful model available
+# (gemini-3.1-pro-preview); Daily gets the newest well-behaved flash model.
+# ("gemini-3.7-flash" was tried and rejected: it ignores thinking_budget=0
+# and silently burns ~45 hidden reasoning tokens on every call, which can
+# starve short-budget answers — gemini-3.6-flash has no such bug.)
 _MODEL_LABELS = {
-    'coder': ('Kautilya Coder', 'deepseek-ai/deepseek-v4-flash'),
-    'pro':   ('Kautilya Pro', 'z-ai/glm-5.2'),
-    'daily': ('Kautilya Daily', 'nvidia/nemotron-3-ultra-550b-a55b'),
+    'coder': ('Kautilya Coder', 'gemini-3.1-pro-preview'),
+    'pro':   ('Kautilya Pro', 'gemini-3.1-pro-preview'),
+    'daily': ('Kautilya Daily', 'gemini-3.6-flash'),
 }
 DAILY_MODEL = _MODEL_LABELS['daily'][1]
+# Kautilya Fast tier (latency-sensitive: voice agents, quick utility calls).
+FAST_MODEL = 'gemini-3.5-flash-lite'
+# Stable GA fallbacks if a preview model 404s / degrades / gets retired —
+# mirrors the old NVIDIA multi-key retry's resilience, one rung simpler
+# since there's a single provider now.
+_FALLBACK_MODEL = {
+    'coder': 'gemini-2.5-pro',
+    'pro': 'gemini-2.5-pro',
+    'daily': 'gemini-2.5-flash',
+    'fast': 'gemini-2.5-flash-lite',
+}
 
 
 def normalize_model_choice(model, default="daily"):
@@ -576,40 +595,34 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             yield {"thinking_done": True}
 
     def _call_daily(msgs, **kw):
-        """Daily tier: NVIDIA Nemotron 3 Ultra.
+        """Daily tier: Gemini (fast flash model), via Vertex AI.
 
         Honors the user's Max Thinking toggle:
-          • ON  → chat_template_kwargs.enable_thinking=True, thinking deltas
-            streamed back to the UI as a collapsible "Thinking…" panel.
-          • OFF → enable_thinking=False (fastest TTFT — Nemotron skips
-            reasoning entirely).
-        call_nvidia already branches on the nvidia/nemotron* model prefix to
-        build the chat_template_kwargs payload, so we only need to pass
-        max_thinking through here — no Mistral-style reasoning_effort string.
+          • ON  → thinking_budget set, reasoning deltas streamed back to the
+            UI as a collapsible "Thinking…" panel.
+          • OFF → thinking_budget=0 (fastest TTFT — no reasoning tokens).
 
-        Groq Llama is still the last-resort fallback if NVIDIA is unreachable.
-        Output is wrapped with a placeholder-thinking stream so the UI shows
-        the thinking bubble during Nemotron's time-to-first-token wait.
+        Falls back to a stable GA Gemini model if the primary (newest) one
+        errors or is temporarily unavailable. Output is wrapped with a
+        placeholder-thinking stream so the UI shows the thinking bubble
+        during the time-to-first-token wait.
         """
-        from config import NVIDIA_API_KEYS
-        # Closure-captured toggle from the outer agent_loop call. The kwargs
-        # form is the override path for explicit callers.
         mt = bool(kw.get('max_thinking', max_thinking))
-        if NVIDIA_API_KEYS:
-            r = call_nvidia(msgs, stream=True, model=DAILY_MODEL,
-                            temperature=kw.get('temperature', 0.6),
-                            top_p=kw.get('top_p', 1.0),
-                            max_tokens=kw.get('max_tokens', 16384),
-                            tools=kw.get('tools'), tool_choice=kw.get('tool_choice'),
-                            expose_thinking=mt,
-                            max_thinking=mt)
-            if r:
-                return _wrap_with_placeholder_thinking(r)
-        groq_gen = call_groq(msgs, stream=True, model='llama-3.3-70b-versatile',
-                             temperature=kw.get('temperature', 0.6),
-                             max_tokens=kw.get('max_tokens', 16384),
-                             tools=kw.get('tools'), tool_choice=kw.get('tool_choice'))
-        return _wrap_with_placeholder_thinking(groq_gen) if groq_gen else None
+        r = call_vertex_gemini(msgs, stream=True, model=DAILY_MODEL,
+                               temperature=kw.get('temperature', 0.6),
+                               top_p=kw.get('top_p', 1.0),
+                               max_tokens=kw.get('max_tokens', 16384),
+                               tools=kw.get('tools'), tool_choice=kw.get('tool_choice'),
+                               expose_thinking=mt,
+                               max_thinking=mt)
+        if r:
+            return _wrap_with_placeholder_thinking(r)
+        r = call_vertex_gemini(msgs, stream=True, model=_FALLBACK_MODEL['daily'],
+                               temperature=kw.get('temperature', 0.6),
+                               max_tokens=kw.get('max_tokens', 16384),
+                               tools=kw.get('tools'), tool_choice=kw.get('tool_choice'),
+                               expose_thinking=mt, max_thinking=mt)
+        return _wrap_with_placeholder_thinking(r) if r else None
 
     # Turn budget — Claude-like multi-turn loop.
     #
@@ -693,114 +706,79 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         reasoning_budget = _estimate_reasoning_budget(max_tokens, effective_max_thinking)
 
         if has_image:
-            # Vision takes priority over the tier's normal model, REGARDLESS of
-            # model_choice. Previously this was an `elif` checked AFTER
-            # coder/pro/fast, so a Coder/Pro/Fast user attaching an image had
-            # it silently sent as-is to DeepSeek/GLM/Groq-text (none of which
-            # are wired for multimodal here) instead of a vision-capable model
-            # — the image was effectively ignored. Prefer Gemini 2.5 Flash
-            # (most reliable for OCR / chart reading), fall back to Groq
-            # llama-4-scout (current vision-capable Groq model).
+            # Gemini is natively multimodal on every tier now — no separate
+            # vision model/branch needed. Just surface a status event and
+            # fall through to the tier's normal dispatch below, which sees
+            # the image parts already sitting in current_messages. This also
+            # fixes the old "image forces a model switch, losing tier
+            # context" behavior: the model that reasons about the request
+            # now also sees the image, instead of handing it to a smaller
+            # vision-only fallback.
             yield json.dumps({"event": "status", "message": "👁️ Analyzing image…"})
-            from services.llm_service import call_gemini_vision
-            try:
-                gemini_text = call_gemini_vision(current_messages, temperature=0.6, max_tokens=max_tokens)
-            except Exception as e:
-                print(f"[Vision] Gemini exception: {e}")
-                gemini_text = None
-            if gemini_text:
-                # Wrap the single string as a generator so the downstream
-                # streaming loop handles it uniformly.
-                def _wrap(t=gemini_text):
-                    yield {"chunk": t}
-                response_gen = _wrap()
-            else:
-                print("[Vision] Gemini unavailable — falling back to Groq llama-4-scout")
-                response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
-                                         model='meta-llama/llama-4-scout-17b-16e-instruct',
-                                         temperature=0.6)
-                if not response_gen:
-                    response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
-                                             model='meta-llama/llama-4-maverick-17b-128e-instruct',
-                                             temperature=0.6)
-                if not response_gen:
-                    response_gen = _call_daily(current_messages, max_tokens=max_tokens)
 
-        elif model_choice == 'coder':
-            from config import NVIDIA_API_KEYS
+        if model_choice == 'coder':
             label, model_id = _MODEL_LABELS['coder']
-            # Deepseek V4 Flash is a real reasoning model (unlike the retired
-            # Kimi K2.6 chat-only backend), so it honors the same "Max
-            # Thinking" opt-in toggle as Pro — thinking stays OFF unless the
-            # user explicitly asked for it, keeping default coder turns fast.
-            if not NVIDIA_API_KEYS:
-                yield json.dumps({"event": "status", "message": f"⚡ {label} temporarily unavailable — using fast model…"})
+            yield json.dumps({"event": "status", "message": f"🧠 Connecting to {label}…"})
+            response_gen = call_vertex_gemini(current_messages, stream=True, max_tokens=max_tokens,
+                                              model=model_id, tools=tools, tool_choice=tool_choice,
+                                              temperature=1.0, top_p=0.95,
+                                              max_thinking=effective_max_thinking, reasoning_budget=reasoning_budget,
+                                              expose_thinking=True)
+            if not response_gen:
+                yield json.dumps({"event": "status", "message": f"⚡ Retrying {label}…"})
+                response_gen = call_vertex_gemini(current_messages, stream=True, max_tokens=max_tokens,
+                                                  model=_FALLBACK_MODEL['coder'], tools=tools, tool_choice=tool_choice,
+                                                  temperature=1.0, top_p=0.95,
+                                                  max_thinking=effective_max_thinking, reasoning_budget=reasoning_budget,
+                                                  expose_thinking=True)
+            if not response_gen:
+                yield json.dumps({"event": "status", "message": f"⚡ {label} unavailable — using fast model…"})
                 response_gen = _call_daily(current_messages, max_tokens=max_tokens,
                                            tools=tools, tool_choice=tool_choice)
-            else:
-                yield json.dumps({"event": "status", "message": f"🧠 Connecting to {label}…"})
-                response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
-                                           model=model_id, tools=tools, tool_choice=tool_choice,
-                                           temperature=1.0, top_p=0.95,
-                                           max_thinking=effective_max_thinking, reasoning_budget=reasoning_budget,
-                                           expose_thinking=True)
-                if not response_gen:
-                    yield json.dumps({"event": "status", "message": f"⚡ Retrying {label}…"})
-                    response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
-                                               model=model_id, temperature=1.0, top_p=0.95,
-                                               max_thinking=effective_max_thinking, reasoning_budget=reasoning_budget,
-                                               expose_thinking=True)
-                if not response_gen:
-                    yield json.dumps({"event": "status", "message": f"⚡ {label} unavailable — using fast model…"})
-                    response_gen = _call_daily(current_messages, max_tokens=max_tokens,
-                                               tools=tools, tool_choice=tool_choice)
 
         elif model_choice == 'pro':
-            from config import NVIDIA_API_KEYS
             label, model_id = _MODEL_LABELS['pro']
-            if not NVIDIA_API_KEYS:
-                yield json.dumps({"event": "status", "message": f"⚡ {label} temporarily unavailable — using fast model…"})
+            yield json.dumps({"event": "status", "message": f"💎 Connecting to {label}…"})
+            response_gen = call_vertex_gemini(current_messages, stream=True, max_tokens=max_tokens,
+                                              model=model_id, tools=tools, tool_choice=tool_choice,
+                                              temperature=1.0, top_p=0.95, max_thinking=effective_max_thinking,
+                                              reasoning_budget=reasoning_budget)
+            if not response_gen:
+                yield json.dumps({"event": "status", "message": f"⚡ Retrying {label}…"})
+                response_gen = call_vertex_gemini(current_messages, stream=True, max_tokens=max_tokens,
+                                                  model=_FALLBACK_MODEL['pro'], tools=tools, tool_choice=tool_choice,
+                                                  temperature=1.0, top_p=0.95,
+                                                  max_thinking=effective_max_thinking, reasoning_budget=reasoning_budget)
+            if not response_gen:
+                yield json.dumps({"event": "status", "message": f"⚡ {label} unavailable — using fast model…"})
+                print(f"[FALLBACK] {label} failed/unavailable. Switching to Daily.")
                 response_gen = _call_daily(current_messages, max_tokens=max_tokens,
                                            tools=tools, tool_choice=tool_choice)
-            else:
-                yield json.dumps({"event": "status", "message": f"💎 Connecting to {label}…"})
-                response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
-                                           model=model_id, tools=tools, tool_choice=tool_choice,
-                                           temperature=1.0, top_p=0.95, max_thinking=effective_max_thinking,
-                                           reasoning_budget=reasoning_budget)
-                if not response_gen:
-                    yield json.dumps({"event": "status", "message": f"⚡ Retrying {label}…"})
-                    response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
-                                               model=model_id, temperature=1.0, top_p=0.95,
-                                               max_thinking=effective_max_thinking, reasoning_budget=reasoning_budget)
-                if not response_gen:
-                    yield json.dumps({"event": "status", "message": f"⚡ {label} unavailable — using fast model…"})
-                    print(f"[FALLBACK] {label} failed/unavailable. Switching to Daily.")
-                    response_gen = _call_daily(current_messages, max_tokens=max_tokens,
-                                               tools=tools, tool_choice=tool_choice)
 
         elif model_choice == 'fast':
-            # Kautilya Fast: direct Groq, no NVIDIA overhead, no thinking,
-            # no placeholder wrapper. Sub-500ms TTFT for voice agents and
-            # any latency-sensitive workflow.
-            response_gen = call_groq(current_messages, stream=True,
-                                     model='llama-3.3-70b-versatile',
-                                     temperature=0.5,
-                                     max_tokens=min(max_tokens, 4096),
-                                     tools=tools, tool_choice=tool_choice)
+            # Kautilya Fast: Gemini Flash-Lite, no thinking, no placeholder
+            # wrapper — lowest TTFT for voice agents and any latency-
+            # sensitive workflow.
+            response_gen = call_vertex_gemini(current_messages, stream=True,
+                                              model=FAST_MODEL,
+                                              temperature=0.5,
+                                              max_tokens=min(max_tokens, 4096),
+                                              tools=tools, tool_choice=tool_choice,
+                                              max_thinking=False, expose_thinking=False)
             if not response_gen:
                 response_gen = _call_daily(current_messages, max_tokens=min(max_tokens, 4096),
                                            tools=tools, tool_choice=tool_choice)
 
         else:
-            # Daily = NVIDIA Nemotron 3 Ultra (low reasoning), Groq llama as fallback
+            # Daily = Gemini flash tier (low reasoning by default)
             response_gen = _call_daily(current_messages, max_tokens=max_tokens,
                                        tools=tools, tool_choice=tool_choice)
 
         # Final fallback: try anything
         if not response_gen:
             yield json.dumps({"event": "status", "message": "🔄 Trying backup service…"})
-            response_gen = call_nvidia(current_messages, max_tokens=max_tokens)
+            response_gen = call_vertex_gemini(current_messages, max_tokens=max_tokens,
+                                              model=_FALLBACK_MODEL['daily'], stream=True)
 
         if not response_gen:
             yield json.dumps({"event": "status", "message": None})
@@ -2270,10 +2248,7 @@ def _classify_answer_size(user_msg: str, mode: str, timeout_sec: float = 0.2) ->
 
     # LLM classifier
     try:
-        from services.llm_service import call_groq
-        from config import GROQ_API_KEY
-        if not GROQ_API_KEY:
-            return None
+        from services.llm_service import call_vertex_gemini
         sys_prompt = (
             "Predict the size of the assistant's answer to the user request below. "
             "Output EXACTLY one of: S, M, L, XL. No explanation.\n"
@@ -2291,11 +2266,11 @@ def _classify_answer_size(user_msg: str, mode: str, timeout_sec: float = 0.2) ->
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": msg[:800]},
         ]
-        # Run with a tight timeout via thread + future so a slow Groq call
+        # Run with a tight timeout via thread + future so a slow call
         # never freezes the request.
         from concurrent.futures import ThreadPoolExecutor as _TPE
         with _TPE(max_workers=1) as ex:
-            fut = ex.submit(call_groq, msgs, model="llama-3.3-70b-versatile",
+            fut = ex.submit(call_vertex_gemini, msgs, model=FAST_MODEL,
                             temperature=0, max_tokens=4, stream=False)
             out = fut.result(timeout=timeout_sec)
         if isinstance(out, str):

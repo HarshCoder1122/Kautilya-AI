@@ -157,7 +157,8 @@ def compute_gst(items: List[Dict[str, Any]],
 def extract_invoice(text: str) -> Dict[str, Any]:
     """Parse a pasted/scanned invoice (or a free-text request) into structured
     fields the engine can price. Best-effort; missing fields come back empty."""
-    from services.llm_service import call_groq
+    from services.llm_service import call_vertex_gemini
+    from services.agent_loop_service import FAST_MODEL
     sys = (
         "Extract invoice data from the user's text into RAW JSON ONLY (no prose, no "
         "markdown). Shape:\n"
@@ -169,10 +170,10 @@ def extract_invoice(text: str) -> Dict[str, Any]:
         "If a field is unknown, use \"\" (or [] for items). Never invent GSTINs."
     )
     try:
-        resp = call_groq([{"role": "system", "content": sys},
-                          {"role": "user", "content": text.strip()[:6000]}],
-                         model="llama-3.3-70b-versatile", temperature=0.1,
-                         max_tokens=1500, stream=False)
+        resp = call_vertex_gemini([{"role": "system", "content": sys},
+                                   {"role": "user", "content": text.strip()[:6000]}],
+                                  model=FAST_MODEL, temperature=0.1,
+                                  max_tokens=1500, stream=False)
         if isinstance(resp, str):
             m = re.search(r'\{[\s\S]*\}', resp)
             if m:

@@ -65,8 +65,9 @@ def verify(question, answer):
     """Cross-examine `answer` with an independent model.
     Returns a `truth_lens` event dict, or None (fail-silent)."""
     try:
-        from services.llm_service import call_groq
-        result = call_groq(
+        from services.llm_service import call_vertex_gemini
+        from services.agent_loop_service import FAST_MODEL
+        result = call_vertex_gemini(
             [
                 {"role": "system", "content": _VERIFIER_PROMPT},
                 {"role": "user", "content": (
@@ -74,6 +75,7 @@ def verify(question, answer):
                     f"AI ANSWER TO CHECK:\n{(answer or '')[:_MAX_ANSWER_CHARS]}"
                 )},
             ],
+            model=FAST_MODEL,
             temperature=0.0,
             max_tokens=220,
             stream=False,

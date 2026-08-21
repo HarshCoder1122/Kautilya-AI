@@ -484,7 +484,8 @@ def _dispatch_post_call_integrations(uid, agent_id, log_data, transcript_text):
     - Email: a follow-up email to the lead (if we captured an address).
     """
     from services.integration_tools import execute_tool, _is_connected, _lookup_crm_contact
-    from services.llm_service import call_groq
+    from services.llm_service import call_vertex_gemini
+    from services.agent_loop_service import FAST_MODEL
 
     actions = []
     summary = log_data.get('summary') or '(no summary)'
@@ -531,8 +532,8 @@ def _dispatch_post_call_integrations(uid, agent_id, log_data, transcript_text):
              "Only items the agent explicitly committed to. If none, return []."},
             {"role": "user", "content": transcript_text[:6000]},
         ]
-        out = call_groq(prompt, model="llama-3.3-70b-versatile",
-                        temperature=0.1, max_tokens=600, stream=False)
+        out = call_vertex_gemini(prompt, model=FAST_MODEL,
+                                 temperature=0.1, max_tokens=600, stream=False)
         import re as _re
         m = _re.search(r'\[.*\]', out or "", _re.S)
         items = json.loads(m.group(0)) if m else []

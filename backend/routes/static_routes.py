@@ -124,12 +124,12 @@ def health_check_simple():
 def llm_health():
     """Live self-healing model-mesh status: per-model circuit-breaker state,
     consecutive failures, cooldowns, last latency and last error."""
-    from config import GROQ_API_KEYS, NVIDIA_API_KEYS
+    from config import VERTEX_CREDENTIALS, VERTEX_PROJECT_ID
     from services.llm_service import llm_health_snapshot
     snap = llm_health_snapshot()
     snap["providers"] = {
-        "nvidia_keys_configured": len(NVIDIA_API_KEYS),
-        "groq_keys_configured": len(GROQ_API_KEYS),
+        "vertex_configured": bool(VERTEX_CREDENTIALS) or bool(VERTEX_PROJECT_ID),
+        "vertex_project": VERTEX_PROJECT_ID,
     }
     return jsonify(snap)
 

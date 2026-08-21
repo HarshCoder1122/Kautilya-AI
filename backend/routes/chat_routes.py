@@ -232,7 +232,8 @@ def _generate_chat_title(uid, session_id, user_msg, assistant_msg):
                 if existing and len(existing) > 0 and len(existing) < 60 and not existing.startswith('New Chat'):
                     return  # leave intact
 
-            from services.llm_service import call_groq
+            from services.llm_service import call_vertex_gemini
+            from services.agent_loop_service import FAST_MODEL
             um = (user_msg or '')[:600] if isinstance(user_msg, str) else str(user_msg)[:600]
             am = (assistant_msg or '')[:600]
             prompt = (
@@ -241,9 +242,9 @@ def _generate_chat_title(uid, session_id, user_msg, assistant_msg):
                 "Examples: 'React date picker bug', 'Marketing budget Q3', 'Sanskrit grammar help'.\n\n"
                 f"User: {um}\n\nAssistant: {am}\n\nTitle:"
             )
-            raw = call_groq(
+            raw = call_vertex_gemini(
                 [{"role": "user", "content": prompt}],
-                model='llama-3.3-70b-versatile',
+                model=FAST_MODEL,
                 temperature=0.3, max_tokens=20, stream=False,
             )
             if not raw or not isinstance(raw, str):

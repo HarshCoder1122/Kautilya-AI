@@ -22,7 +22,7 @@ from flask import Blueprint, request, jsonify, Response, send_from_directory
 
 from config import STATIC_FOLDER
 from services.auth_service import verify_firebase_token
-from services.llm_service import call_groq, call_nvidia
+from services.llm_service import call_vertex_gemini
 
 embed_bp = Blueprint('embed', __name__)
 
@@ -142,18 +142,17 @@ def public_agent_chat(agent_id):
     max_tokens = int(agent.get('max_tokens') or 1024)
 
     # Pick backend by model id
+    from services.agent_loop_service import _MODEL_LABELS, FAST_MODEL
     if 'kautilya-coder' in model or 'deepseek' in model or 'kimi' in model:
-        gen = call_nvidia(messages, stream=True, model='deepseek-ai/deepseek-v4-flash',
-                          temperature=temperature, max_tokens=max_tokens, expose_thinking=False)
+        upstream_model = _MODEL_LABELS['coder'][1]
     elif 'kautilya-pro' in model or 'glm' in model:
-        gen = call_nvidia(messages, stream=True, model='z-ai/glm-5.2',
-                          temperature=temperature, max_tokens=max_tokens, expose_thinking=False)
+        upstream_model = _MODEL_LABELS['pro'][1]
     elif 'kautilya-daily' in model or 'nemotron' in model:
-        gen = call_nvidia(messages, stream=True, model='nvidia/nemotron-3-ultra-550b-a55b',
-                          temperature=temperature, max_tokens=max_tokens, expose_thinking=False)
+        upstream_model = _MODEL_LABELS['daily'][1]
     else:
-        gen = call_groq(messages, stream=True, model='llama-3.3-70b-versatile',
-                        temperature=temperature, max_tokens=max_tokens)
+        upstream_model = FAST_MODEL
+    gen = call_vertex_gemini(messages, stream=True, model=upstream_model,
+                             temperature=temperature, max_tokens=max_tokens, expose_thinking=False)
 
     if gen is None:
         return _with_cors(jsonify({"error": "LLM unavailable"})), 503

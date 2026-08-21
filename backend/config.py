@@ -100,6 +100,39 @@ if not GEMINI_API_KEY:
     print("[CONFIG] WARNING: GEMINI_API_KEY not set — Gemini/VectorStore disabled")
 GEMINI_API_KEYS = [GEMINI_API_KEY] if GEMINI_API_KEY else []
 
+# ============== Vertex AI (Gemini) — primary chat/completion provider ==============
+# All Daily/Pro/Coder chat completions run through Vertex AI Gemini models
+# (services/llm_service.py::call_vertex_gemini). NVIDIA NIM and Groq are no
+# longer used for chat text generation — only for embeddings (NVIDIA NIM,
+# services/embedding_service.py) and speech-to-text (Groq Whisper,
+# routes/voice_routes.py), which are separate capabilities left untouched.
+#
+# Credentials: prefer a full service-account JSON in GOOGLE_VERTEX_CREDENTIALS_JSON
+# (set as an HF Space "secret" so it never touches the git-tracked repo or the
+# deployed filesystem) and build credentials in-memory. Local dev without that
+# env var falls back to Application Default Credentials (e.g. a
+# GOOGLE_APPLICATION_CREDENTIALS file path, or `gcloud auth application-default login`).
+VERTEX_PROJECT_ID = os.environ.get("VERTEX_PROJECT_ID", "gen-lang-client-0058297446")
+# "global" is required for the newest Gemini 3.x model family — the older
+# 2.5 generation is regional (e.g. us-central1) but also reachable via global.
+VERTEX_LOCATION = os.environ.get("VERTEX_LOCATION", "global")
+VERTEX_CREDENTIALS_JSON = os.environ.get("GOOGLE_VERTEX_CREDENTIALS_JSON", "")
+VERTEX_CREDENTIALS = None
+if VERTEX_CREDENTIALS_JSON:
+    try:
+        import json as _json
+        from google.oauth2 import service_account as _service_account
+        VERTEX_CREDENTIALS = _service_account.Credentials.from_service_account_info(
+            _json.loads(VERTEX_CREDENTIALS_JSON),
+            scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
+        print("[CONFIG] Vertex AI credentials loaded from GOOGLE_VERTEX_CREDENTIALS_JSON")
+    except Exception as _e:
+        print(f"[CONFIG] WARNING: failed to parse GOOGLE_VERTEX_CREDENTIALS_JSON: {_e}")
+if not VERTEX_CREDENTIALS:
+    print("[CONFIG] GOOGLE_VERTEX_CREDENTIALS_JSON not set — Vertex AI will fall back to "
+          "Application Default Credentials (fine for local dev, must be set in production)")
+
 # ============== System Prompts ==============
 # Import advanced tier-based system prompts
 from system_prompts import (

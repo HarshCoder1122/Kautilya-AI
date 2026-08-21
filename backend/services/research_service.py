@@ -41,7 +41,7 @@ from urllib.parse import urlparse
 import requests
 
 from config import SERPAPI_API_KEY, TAVILY_API_KEY
-from services.llm_service import call_groq, call_nvidia, model_circuit_open, build_capacity_event
+from services.llm_service import call_vertex_gemini, model_circuit_open, build_capacity_event
 
 
 def _envint(name: str, default: int) -> int:
@@ -75,22 +75,21 @@ SYNTH_RETRY_BACKOFF = float(os.getenv("RESEARCH_SYNTH_RETRY_BACKOFF", "2.0"))  #
 # Second search pass (gap-fill round) — on by default; can be disabled via env.
 SEARCH_ROUNDS_ENABLED = os.getenv("RESEARCH_SECOND_PASS", "1") not in ("0", "false", "False")
 
-# Synthesis runs on the same model the Pro chat tier uses (GLM 5.2 as of this
-# writing) — strong long-form report writing, routed through call_nvidia
-# (NVIDIA NIM endpoint). Default is pulled from agent_loop_service._MODEL_LABELS
-# (the single source of truth for tier -> model id) instead of a hardcoded
-# copy, so a model swap there doesn't silently leave research on a retired
-# model. RESEARCH_SYNTH_MODEL env var still overrides if you want research on
-# a different model than Pro chat.
-from services.agent_loop_service import _MODEL_LABELS as _KAUTILYA_TIER_MODELS
+# Synthesis runs on the same model the Pro chat tier uses (Gemini 3.1 Pro
+# Preview as of this writing) — strong long-form report writing, routed
+# through call_vertex_gemini (Google Vertex AI). Default is pulled from
+# agent_loop_service._MODEL_LABELS (the single source of truth for tier ->
+# model id) instead of a hardcoded copy, so a model swap there doesn't
+# silently leave research on a retired model. RESEARCH_SYNTH_MODEL env var
+# still overrides if you want research on a different model than Pro chat.
+from services.agent_loop_service import _MODEL_LABELS as _KAUTILYA_TIER_MODELS, FAST_MODEL as _KAUTILYA_FAST_MODEL
 SYNTH_MODEL = os.getenv("RESEARCH_SYNTH_MODEL", _KAUTILYA_TIER_MODELS['pro'][1])
-# When GLM is saturated (429), synthesis falls back to Nemotron 3 Ultra on
-# NVIDIA — a DIFFERENT model = a different rate-limit bucket, so it's usually
-# free even while GLM is hammered. Still a strong long-form writer; far better
-# than dropping straight to the weaker Groq llama. Default tracks the Daily
+# When the primary Pro model is saturated, synthesis falls back to the Daily
+# tier's Gemini model — still a strong long-form writer; far better than
+# dropping straight to the fast/lite fallback. Default tracks the Daily
 # tier's model; override/disable via env.
 SYNTH_FALLBACK_MODEL = os.getenv("RESEARCH_SYNTH_FALLBACK_MODEL", _KAUTILYA_TIER_MODELS['daily'][1])
-PLANNER_MODEL = os.getenv("RESEARCH_PLANNER_MODEL", "llama-3.3-70b-versatile")
+PLANNER_MODEL = os.getenv("RESEARCH_PLANNER_MODEL", _KAUTILYA_FAST_MODEL)
 
 
 def _favicon(url: str) -> str:
@@ -165,8 +164,8 @@ def _plan_research(question: str, mode: str = "research") -> Tuple[List[str], Li
     msgs = [{"role": "system", "content": sys},
             {"role": "user", "content": question.strip()[:800]}]
     try:
-        resp = call_groq(msgs, model=PLANNER_MODEL, temperature=0.3,
-                         max_tokens=600, stream=False)
+        resp = call_vertex_gemini(msgs, model=PLANNER_MODEL, temperature=0.3,
+                                  max_tokens=600, stream=False)
         data = _extract_json(resp) if resp else None
         if isinstance(data, dict):
             qs = [str(x).strip() for x in (data.get("queries") or []) if str(x).strip()]
@@ -200,10 +199,10 @@ def _find_gaps(question: str, outline: List[str], sources: List[Dict[str, Any]],
     user = (f"QUESTION: {question}\n\nINTENDED OUTLINE: {outline_blob}\n\n"
             f"ALREADY GATHERED:\n{excerpts_blob}")
     try:
-        resp = call_groq([{"role": "system", "content": sys},
-                          {"role": "user", "content": user[:6000]}],
-                         model=PLANNER_MODEL, temperature=0.4,
-                         max_tokens=400, stream=False)
+        resp = call_vertex_gemini([{"role": "system", "content": sys},
+                                   {"role": "user", "content": user[:6000]}],
+                                  model=PLANNER_MODEL, temperature=0.4,
+                                  max_tokens=400, stream=False)
         data = _extract_json(resp) if resp else None
         if isinstance(data, list):
             qs = [str(x).strip() for x in data if str(x).strip()]
@@ -659,17 +658,23 @@ def deep_research_stream(question: str, depth: str = "standard",
     streamed_anything = False
 
     def _run(call_messages, max_tokens, model=SYNTH_MODEL):
-        """Generator: yields events from one NVIDIA synthesis call and RETURNS
-        whether the model was truncated (hit its token ceiling). Consumed with
-        `yield from`, which both streams the events and captures the return."""
+        """Generator: yields events from one Vertex Gemini synthesis call and
+        RETURNS whether the model was truncated (hit its token ceiling).
+        Consumed with `yield from`, which both streams the events and
+        captures the return."""
         nonlocal streamed_anything
         truncated = False
         try:
-            gen = call_nvidia(call_messages, model=model, temperature=0.45,
-                              stream=True, expose_thinking=True, max_tokens=max_tokens,
-                              is_pro=is_pro)
+            # max_thinking stays OFF: thinking tokens count against the same
+            # max_tokens ceiling as the report itself for Gemini, and this
+            # budget (SYNTH_MAX_TOKENS) is tuned for a long report body — a
+            # 8k-token thinking pass would eat most of it and shrink the
+            # visible report.
+            gen = call_vertex_gemini(call_messages, model=model, temperature=0.45,
+                                     stream=True, expose_thinking=True, max_tokens=max_tokens,
+                                     max_thinking=False, is_pro=is_pro)
         except Exception as e:
-            print(f"[Research] NVIDIA synth failed ({model}): {e}")
+            print(f"[Research] Vertex synth failed ({model}): {e}")
             gen = None
         if not gen:
             return truncated
@@ -694,7 +699,7 @@ def deep_research_stream(question: str, depth: str = "standard",
                     streamed_anything = True
                     yield {"event": "chunk", "chunk": chunk}
         except Exception as e:
-            print(f"[Research] NVIDIA stream error: {e}")
+            print(f"[Research] Vertex stream error: {e}")
         return truncated
 
     def _synthesize(model, allow_empty_retry):
@@ -711,7 +716,7 @@ def deep_research_stream(question: str, depth: str = "standard",
                                         model=model)
             # Empty on the FIRST pass → model busy (429) or briefly cooling.
             # Retry a couple of times with a short backoff before moving on.
-            # Skip if its circuit is hard-open (call_nvidia would no-op for
+            # Skip if its circuit is hard-open (call_vertex_gemini would no-op for
             # ~45s) or we're low on deadline budget.
             if (allow_empty_retry
                     and not streamed_anything
@@ -744,26 +749,22 @@ def deep_research_stream(question: str, depth: str = "standard",
                 continue
             break
 
-    # Primary synthesis on GLM — the strongest long-form report writer.
+    # Primary synthesis on Gemini Pro — the strongest long-form report writer.
     yield from _synthesize(SYNTH_MODEL, allow_empty_retry=True)
 
-    # ---- GLM dead → fall back to Nemotron (Daily) BEFORE Groq -------------
-    # GLM and Nemotron are DIFFERENT NVIDIA models = different rate-limit
-    # buckets. A research run's burst (huge context + 16k output, fired 3-5×
-    # back-to-back) blows GLM's per-minute token budget, but Nemotron's bucket
-    # is usually still free — so when GLM 429s we keep the report on a strong
-    # NVIDIA model instead of dropping straight to the weaker Groq llama.
+    # ---- Pro dead → fall back to the Daily-tier Gemini model --------------
+    # Different model = a different rate-limit bucket, so it's usually free
+    # even while the Pro model is briefly saturated — keeps the report on a
+    # strong model instead of dropping straight to the fast/lite fallback.
     if not streamed_anything and time_left() > 30:
         yield {"event": "status",
                "message": "🔁 Pro model busy — switching to the Daily model to finish the report…"}
         yield from _synthesize(SYNTH_FALLBACK_MODEL, allow_empty_retry=False)
 
-    # ---- Last-ditch Groq fallback if both NVIDIA models produced nothing ---
-    # Groq's free tier is a tiny 12k TPM (it returned HTTP 413 on the full
-    # sources context). So this last-ditch builds a COMPACT context — fewer
-    # sources, shorter excerpts — so the request fits and still yields a cited
-    # report instead of nothing. NVIDIA (GLM/Nemotron) gets the full context;
-    # only this fallback is squeezed.
+    # ---- Last-ditch fast-tier fallback if both above produced nothing -----
+    # Builds a COMPACT context — fewer sources, shorter excerpts — on the
+    # lightest model so a request still lands and yields a cited report
+    # instead of nothing, even if both stronger models are unavailable.
     if not streamed_anything:
         gq_sources = sources[:8]
         gq_context = "\n\n".join(
@@ -778,8 +779,8 @@ def deep_research_stream(question: str, depth: str = "standard",
                 f"SOURCES:\n{gq_context}")},
         ]
         try:
-            gq_gen = call_groq(gq_messages, stream=True, model=PLANNER_MODEL,
-                               temperature=0.4, max_tokens=3072)
+            gq_gen = call_vertex_gemini(gq_messages, stream=True, model=PLANNER_MODEL,
+                                        temperature=0.4, max_tokens=3072)
             if gq_gen:
                 for item in gq_gen:
                     chunk = item.get("chunk", "") if isinstance(item, dict) else item
@@ -788,10 +789,10 @@ def deep_research_stream(question: str, depth: str = "standard",
                         streamed_anything = True
                         yield {"event": "chunk", "chunk": chunk}
         except Exception as e:
-            print(f"[Research] Groq fallback failed: {e}")
+            print(f"[Research] Fast-tier fallback failed: {e}")
 
     if not streamed_anything:
-        # GLM + Mistral + Groq all gave nothing → genuinely at capacity. Show
+        # All three model attempts gave nothing → genuinely at capacity. Show
         # the PRO upsell card (free) or a soft retry (PRO).
         yield build_capacity_event(is_pro)
 

@@ -17,7 +17,6 @@ from docx import Document
 
 from config import (
     CHAT_DATA_DIR, MAX_MEMORIES, SYSTEM_PROMPT, CODER_SYSTEM_PROMPT,
-    GROQ_API_KEY,
 )
 
 
@@ -218,23 +217,19 @@ def extract_memories(user_msg, assistant_msg, existing_memories):
                 "Extract new facts (JSON array only):"
             )}
         ]
-        if GROQ_API_KEY:
-            resp = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-                json={"model": "llama-3.3-70b-versatile", "messages": extraction_prompt,
-                      "temperature": 0.1, "max_tokens": 200},
-                timeout=8
-            )
-            if resp.status_code == 200:
-                content = resp.json()["choices"][0]["message"]["content"].strip()
-                if content.startswith("```"):
-                    content = content.split("```")[1]
-                    if content.startswith("json"):
-                        content = content[4:]
-                new_facts = json.loads(content)
-                if isinstance(new_facts, list):
-                    return [f for f in new_facts if isinstance(f, str) and f.strip()]
+        from services.llm_service import call_vertex_gemini
+        from services.agent_loop_service import FAST_MODEL
+        content = call_vertex_gemini(extraction_prompt, model=FAST_MODEL,
+                                     temperature=0.1, max_tokens=200, stream=False)
+        if content:
+            content = content.strip()
+            if content.startswith("```"):
+                content = content.split("```")[1]
+                if content.startswith("json"):
+                    content = content[4:]
+            new_facts = json.loads(content)
+            if isinstance(new_facts, list):
+                return [f for f in new_facts if isinstance(f, str) and f.strip()]
         return []
     except Exception as e:
         print(f"[Memory] Extraction failed: {e}")
@@ -1028,10 +1023,11 @@ def process_uploaded_file(file):
 def generate_semantic_chunks(text, max_chunks=10):
     if not text or len(text) < 500:
         return [text] if text else []
-    from services.llm_service import call_groq
+    from services.llm_service import call_vertex_gemini
+    from services.agent_loop_service import FAST_MODEL
     prompt = f"Split the following text into up to {max_chunks} logical, semantic sections. Each section should be a complete thought or topic. Return each section separated by '|||'.\n\nTEXT:\n{text[:10000]}"
     try:
-        resp = call_groq([{"role": "user", "content": prompt}], temperature=0.3, model="llama-3.3-70b-versatile")
+        resp = call_vertex_gemini([{"role": "user", "content": prompt}], temperature=0.3, model=FAST_MODEL, stream=False)
         if resp:
             chunks = [c.strip() for c in resp.split('|||') if c.strip()]
             return chunks

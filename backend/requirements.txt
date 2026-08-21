@@ -9,6 +9,7 @@ PyPDF2
 pymupdf
 Pillow
 google-genai
+google-auth
 numpy
 pandas
 matplotlib

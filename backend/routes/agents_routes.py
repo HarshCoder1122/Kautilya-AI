@@ -799,8 +799,8 @@ def api_agent_chat(agent_id):
     Server-Sent Events: `data: {"content": "..."}` per chunk, `data: [DONE]`.
     """
     from extensions import db
-    from services.agent_loop_service import normalize_model_choice
-    from services.llm_service import call_groq, call_nvidia
+    from services.agent_loop_service import normalize_model_choice, _MODEL_LABELS, FAST_MODEL
+    from services.llm_service import call_vertex_gemini
 
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
@@ -853,14 +853,9 @@ def api_agent_chat(agent_id):
     if welcome:
         full_system += f"\n\nIf the conversation has just started, greet the user with: \"{welcome}\""
 
-    # Map dashboard model aliases to a real Groq model id
+    # Map dashboard model aliases to a real Gemini model id
     model_choice = normalize_model_choice(model_name, default="daily")
-    upstream_model = "llama-3.3-70b-versatile"
-    if model_choice == "pro":
-        upstream_model = "z-ai/glm-5.2"   # GLM 5.2 on NVIDIA NIM (Nemotron 3 Ultra moved to Daily)
-    elif model_choice == "coder":
-        upstream_model = "deepseek-ai/deepseek-v4-flash"
-    # Gemini Live is voice-only — fall through to Groq for chat.
+    upstream_model = _MODEL_LABELS.get(model_choice, _MODEL_LABELS['daily'])[1]
 
     chat_messages = [{"role": "system", "content": full_system}]
     for m in incoming:
@@ -870,30 +865,22 @@ def api_agent_chat(agent_id):
     def stream():
         full_text = ""
         try:
-            if model_choice in ("pro", "coder"):
-                gen = call_nvidia(
+            gen = call_vertex_gemini(
+                chat_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+                model=upstream_model,
+                expose_thinking=False,
+            )
+            if gen is None:
+                gen = call_vertex_gemini(
                     chat_messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     stream=True,
-                    model=upstream_model,
+                    model=FAST_MODEL,
                     expose_thinking=False,
-                )
-                if gen is None:
-                    gen = call_groq(
-                        chat_messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        stream=True,
-                        model="llama-3.3-70b-versatile",
-                    )
-            else:
-                gen = call_groq(
-                    chat_messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    stream=True,
-                    model=upstream_model,
                 )
             if gen is None:
                 yield f"data: {json.dumps({'content': 'Service temporarily unavailable.'})}\n\n"

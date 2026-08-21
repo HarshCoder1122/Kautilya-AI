@@ -189,7 +189,8 @@ def generate_custom_personality():
     from personalities_spec import (
         CUSTOM_PERSONALITY_GENERATOR_PROMPT, MAX_CUSTOM_PERSONALITY_CHARS,
     )
-    from services.llm_service import call_groq
+    from services.llm_service import call_vertex_gemini
+    from services.agent_loop_service import FAST_MODEL
 
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
@@ -206,11 +207,12 @@ def generate_custom_personality():
     name = (data.get('name') or '').strip()[:60]
 
     try:
-        overlay = call_groq(
+        overlay = call_vertex_gemini(
             [
                 {"role": "system", "content": CUSTOM_PERSONALITY_GENERATOR_PROMPT},
                 {"role": "user", "content": f"Personality I want:\n{description}"},
             ],
+            model=FAST_MODEL,
             temperature=0.8,
             max_tokens=900,
             stream=False,

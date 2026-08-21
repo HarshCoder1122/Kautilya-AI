@@ -1,54 +1,21 @@
 import os
 import json
-import uuid
-import datetime
-from openai import OpenAI
-from config import KAUTILYA_API_KEY, NVIDIA_API_KEY, NVIDIA_API_KEYS
 import traceback
 
-# Post-call analytics model: NVIDIA NIM Nemotron 3 Ultra (Kautilya Pro). We call it with
-# thinking OFF (see extra_body below) so it returns the final JSON fast instead
-# of spending seconds on a reasoning trace. Groq llama-3.3-70b is the fast
-# fallback. Both overridable via env.
-NIM_ANALYTICS_MODEL = os.environ.get("NIM_ANALYTICS_MODEL", "nvidia/nemotron-3-ultra-550b-a55b")
-GROQ_ANALYTICS_MODEL = os.environ.get("GROQ_ANALYTICS_MODEL", "llama-3.3-70b-versatile")
+# Post-call analytics model: Gemini Flash-Lite via Vertex AI. Called with
+# thinking OFF so it returns the final JSON fast instead of spending seconds
+# on a reasoning trace. A stable GA model is the fallback. Both overridable
+# via env.
+NIM_ANALYTICS_MODEL = os.environ.get("NIM_ANALYTICS_MODEL", "gemini-3.5-flash-lite")
+NIM_ANALYTICS_FALLBACK_MODEL = os.environ.get("NIM_ANALYTICS_FALLBACK_MODEL", "gemini-2.5-flash")
 
-
-def _nvidia_client():
-    api_key = NVIDIA_API_KEYS[0] if NVIDIA_API_KEYS else NVIDIA_API_KEY
-    if not api_key:
-        return None
-    return OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=api_key)
-
-
-def _groq_client():
-    groq_key = os.environ.get("GROQ_API_KEY")
-    if not groq_key:
-        return None
-    return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
-
-
-def _analytics_providers():
-    """Ordered (label, client, model) list to try. NVIDIA first, Groq as a
-    real fallback — not just when the NVIDIA key is missing, but whenever the
-    NVIDIA call itself fails (404 on a retired model, 5xx, timeout, etc.)."""
-    providers = []
-    nv = _nvidia_client()
-    if nv:
-        providers.append(("NVIDIA", nv, NIM_ANALYTICS_MODEL))
-    gq = _groq_client()
-    if gq:
-        providers.append(("Groq", gq, GROQ_ANALYTICS_MODEL))
-    return providers
 
 def analyze_call_transcript(transcript: str) -> dict:
     """
-    Analyzes a call transcript using Nvidia NIM (Nemotron-120B or similar).
+    Analyzes a call transcript using Gemini (via Vertex AI).
     Returns a structured dictionary with analytics.
     """
-    providers = _analytics_providers()
-    if not providers:
-        return _fallback_analytics(reason="No API keys (NIM/Groq) configured")
+    from services.llm_service import call_vertex_gemini
 
     if not transcript or len(transcript.strip()) < 10:
         return _fallback_analytics(reason="Transcript too short or empty")
@@ -80,32 +47,23 @@ def analyze_call_transcript(transcript: str) -> dict:
     """
 
     last_err = None
-    for label, client, model_name in providers:
+    for model_name in (NIM_ANALYTICS_MODEL, NIM_ANALYTICS_FALLBACK_MODEL):
         try:
-            print(f"[NIM] Analyzing transcript via {label} ({model_name})")
-            create_kwargs = dict(
-                model=model_name,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
-                top_p=0.7,
-                max_tokens=1024,
-                response_format={"type": "json_object"},
+            print(f"[NIM] Analyzing transcript via Vertex ({model_name})")
+            result_text = call_vertex_gemini(
+                [{"role": "user", "content": prompt}],
+                model=model_name, stream=False,
+                temperature=0.2, top_p=0.7, max_tokens=1024,
+                max_thinking=False, expose_thinking=False,
+                json_mode=True,
             )
-            # GLM and Nemotron 3 Ultra on NVIDIA NIM: turn thinking OFF so we get the
-            # final JSON immediately instead of a slow reasoning trace.
-            if model_name.startswith("z-ai/glm") or model_name.startswith("nvidia/nemotron"):
-                create_kwargs["extra_body"] = {
-                    "chat_template_kwargs": {"enable_thinking": False}
-                }
-                if model_name.startswith("z-ai/glm"):
-                    create_kwargs["extra_body"]["chat_template_kwargs"]["clear_thinking"] = False
-            response = client.chat.completions.create(**create_kwargs)
-            result_text = response.choices[0].message.content
+            if not result_text:
+                raise RuntimeError("empty response")
             return _normalize(json.loads(result_text))
         except Exception as e:
             last_err = e
-            print(f"[NIM Error] {label} analytics failed: {e} — trying next provider")
-    print("[NIM Error] All analytics providers failed.")
+            print(f"[NIM Error] {model_name} analytics failed: {e} — trying next model")
+    print("[NIM Error] All analytics attempts failed.")
     traceback.print_exc()
     return _fallback_analytics(reason=str(last_err) if last_err else "Analysis failed")
 

@@ -18,11 +18,11 @@ from livekit.agents import (
     AgentSession,
 )
 from livekit.agents.llm import ChatMessage
-from livekit.plugins import sarvam, openai, silero, cartesia, google, elevenlabs
+from livekit.plugins import sarvam, silero, cartesia, google, elevenlabs
 from livekit.agents import tts as _tts
 from livekit.agents.utils import shortuuid as _shortuuid
 import httpx as _httpx
-from services.llm_service import call_nvidia
+from services.llm_service import call_vertex_gemini
 
 
 # ============== Custom RevealIQ TTS (streams raw PCM from /v1/audio/stream) ==============
@@ -1140,7 +1140,17 @@ async def entrypoint(ctx: JobContext):
                 # Default to Sarvam Bulbul v3
                 tts = sarvam.TTS(target_language_code=agent_language, speaker=voice_id, model="bulbul:v3")
 
-            llm_plugin = openai.LLM(base_url="https://api.groq.com/openai/v1", api_key=os.environ.get("GROQ_API_KEY"), model="llama-3.3-70b-versatile")
+            from services.agent_loop_service import FAST_MODEL as _LK_FAST_MODEL
+            from config import VERTEX_PROJECT_ID, VERTEX_LOCATION, VERTEX_CREDENTIALS
+            # google.LLM talks to Vertex AI directly (same service-account auth
+            # as services/llm_service.call_vertex_gemini) — no extra HTTP hop
+            # through our own proxy, which matters for a real-time voice turn.
+            llm_plugin = google.LLM(model=_LK_FAST_MODEL, vertexai=True,
+                                    project=VERTEX_PROJECT_ID, location=VERTEX_LOCATION,
+                                    credentials=VERTEX_CREDENTIALS,
+                                    # Explicit budget=0 so a real-time voice turn never pays for a
+                                    # hidden reasoning pass — TTFT matters here more than anywhere else.
+                                    thinking_config={"thinking_budget": 0})
             # Wrap TTS through the cleaner so special characters are filtered
             tts = _CleanTTSWrapper(tts)
             session = AgentSession(vad=vad, stt=stt, llm=llm_plugin, tts=tts)
@@ -1292,25 +1302,25 @@ async def entrypoint(ctx: JobContext):
                 "Use \"\" for anything not mentioned; never invent emails/phone digits.\n\n"
                 f"TRANSCRIPT:\n{transcript_text[:6000]}"
             )
-            # Post-call analysis uses NVIDIA NIM Nemotron 3 Ultra (Kautilya Daily) —
+            # Post-call analysis uses Gemini Flash-Lite (Kautilya Fast) —
             # hardcoded to this specific lightweight model regardless of tier
             # registry swaps, since this path is timing-critical (see below), not
             # a quality showcase. Crucially we call it with thinking OFF
-            # (max_thinking=False → enable_thinking False) and a hard timeout:
-            # this block runs after the room disconnects while LiveKit waits for
-            # the entrypoint to exit, so a slow/hanging model gets the worker
-            # SIGKILLed ("entrypoint did not exit in time") BEFORE the call log /
-            # lead is written. Nemotron with thinking off returns a final JSON
-            # quickly; Groq llama-3.3-70b is the fast fallback if Nemotron is
-            # empty/unavailable.
-            from services.llm_service import call_groq
+            # (max_thinking=False) and a hard read_timeout that bounds the real
+            # HTTP request: this block runs after the room disconnects while
+            # LiveKit waits for the entrypoint to exit, so a slow/hanging model
+            # gets the worker SIGKILLed ("entrypoint did not exit in time")
+            # BEFORE the call log / lead is written. A stable GA fallback model
+            # covers the case where the primary is briefly unavailable.
+            from services.llm_service import call_vertex_gemini
+            from services.agent_loop_service import FAST_MODEL, _FALLBACK_MODEL
             result = None
             try:
                 result = await asyncio.wait_for(
                     asyncio.to_thread(
-                        call_nvidia,
+                        call_vertex_gemini,
                         [{"role": "user", "content": analysis_prompt}],
-                        stream=False, max_tokens=500, model='nvidia/nemotron-3-ultra-550b-a55b',
+                        stream=False, max_tokens=500, model=FAST_MODEL,
                         max_thinking=False, expose_thinking=False, is_pro=True,
                         # Tight socket read timeout so the blocking worker thread
                         # actually dies at ~12s. asyncio.wait_for below only
@@ -1323,26 +1333,27 @@ async def entrypoint(ctx: JobContext):
                     timeout=15,
                 )
             except (asyncio.TimeoutError, Exception) as _e:
-                print(f"[Agent] Nemotron analysis timed out/failed: {_e}", flush=True)
+                print(f"[Agent] Gemini analysis timed out/failed: {_e}", flush=True)
                 result = None
-            # Fallback to Groq only if Nemotron was empty/slow/unavailable
+            # Fallback to the stable GA model only if the primary was empty/slow/unavailable
             if not result:
-                print(f"[Agent] Nemotron empty — falling back to Groq", flush=True)
+                print(f"[Agent] Primary analysis model empty — falling back to GA Gemini", flush=True)
                 try:
                     result = await asyncio.wait_for(
                         asyncio.to_thread(
-                            call_groq,
+                            call_vertex_gemini,
                             [{"role": "user", "content": analysis_prompt}],
                             stream=False, max_tokens=500,
-                            model='llama-3.3-70b-versatile',
-                            # Same reason as the GLM call above: bound the socket
-                            # read so the thread dies at ~8s and can't outlive the
-                            # shutdown window and get the worker SIGKILLed.
+                            model=_FALLBACK_MODEL['fast'],
+                            max_thinking=False, expose_thinking=False,
+                            # Same reason as above: bound the socket read so the
+                            # thread dies at ~8s and can't outlive the shutdown
+                            # window and get the worker SIGKILLed.
                             read_timeout=8),
                         timeout=10,
                     )
                 except (asyncio.TimeoutError, Exception) as _e:
-                    print(f"[Agent] Groq analysis timed out/failed: {_e}", flush=True)
+                    print(f"[Agent] Fallback analysis timed out/failed: {_e}", flush=True)
                     result = None
             print(f"[Agent] Analysis result received from LLM: {bool(result)}", flush=True)
             if result:
