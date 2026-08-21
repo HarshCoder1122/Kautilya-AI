@@ -2,7 +2,7 @@ import {
   MagnifyingGlass, Calculator, Code, Globe, Spinner, CheckCircle,
   WarningCircle, ArrowSquareOut, EnvelopeSimple, Calendar,
   WhatsappLogo, SlackLogo, Lightning, Receipt, FilePlus, FileText, FolderOpen,
-  Compass, CursorClick, TextAa
+  Compass, CursorClick, TextAa, ArrowsDownUp
 } from "@phosphor-icons/react";
 
 const TOOL_META = {
@@ -23,6 +23,7 @@ const TOOL_META = {
   browse:      { icon: Compass,         label: "Browsing",    color: "text-cyan-400",    bg: "bg-cyan-400/10",    border: "border-cyan-400/20" },
   browse_click:{ icon: CursorClick,     label: "Browsing",    color: "text-cyan-400",    bg: "bg-cyan-400/10",    border: "border-cyan-400/20" },
   browse_type: { icon: TextAa,          label: "Browsing",    color: "text-cyan-400",    bg: "bg-cyan-400/10",    border: "border-cyan-400/20" },
+  browse_scroll:{ icon: ArrowsDownUp,   label: "Browsing",    color: "text-cyan-400",    bg: "bg-cyan-400/10",    border: "border-cyan-400/20" },
 };
 
 const DEFAULT_TOOL = { icon: Globe, label: "Tool", color: "text-muted-foreground", bg: "bg-accent", border: "border-border" };

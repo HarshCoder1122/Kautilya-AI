@@ -1076,7 +1076,7 @@ def _looks_like_orphan_preamble(text):
         # Long responses are real answers, not orphan preambles.
         return False
     # If any tool tag already exists, the loop handled it elsewhere.
-    if re.search(r'\[(INTEGRATION|SEARCH|CALCULATE|RUN_PYTHON|FETCH_URL|CALENDAR_|GMAIL_|WHATSAPP_SEND|SLACK_POST|HUBSPOT_CREATE_CONTACT|FILE_WRITE|FILE_READ|FILE_LIST|BROWSE|BROWSE_CLICK|BROWSE_TYPE)', t):
+    if re.search(r'\[(INTEGRATION|SEARCH|CALCULATE|RUN_PYTHON|FETCH_URL|CALENDAR_|GMAIL_|WHATSAPP_SEND|SLACK_POST|HUBSPOT_CREATE_CONTACT|FILE_WRITE|FILE_READ|FILE_LIST|BROWSE|BROWSE_CLICK|BROWSE_TYPE|BROWSE_SCROLL)', t):
         return False
     tl = t.lower()
     # If the model is ASKING THE USER for info (a question anywhere in the
@@ -1496,6 +1496,17 @@ def _plan_actions(text, uid, start_id=1, session_id=None):
                            _runner_browse_type(uid, session_id, field, value),
                            "The field is filled — the updated page is already shown as a card. "
                            "[BROWSE_CLICK:] the submit/login button next, or fill another field.",
+                           m.start()))
+
+    # 11.11 [BROWSE_SCROLL: down|up|top|bottom]  — move the viewport, then re-read the page.
+    for m in re.finditer(r'\[BROWSE_SCROLL:\s*(.*?)\]', text):
+        direction = m.group(1).strip()
+        if _is_placeholder_arg(direction):
+            continue
+        actions.append(_mk("browse_scroll", direction or "down",
+                           _runner_browse_scroll(uid, session_id, direction),
+                           "The page after scrolling is already shown as a card — don't re-paste it. "
+                           "Answer using what you read, or scroll/click again if you need to go further.",
                            m.start()))
 
     # 12. [GST_INVOICE: ```json {...} ```]  — India GST invoice; maths server-side.
@@ -2122,6 +2133,25 @@ def _runner_browse_type(uid, session_id, field, value):
         except Exception as e:
             return {"ok": False, "preview": str(e)[:100],
                     "observation": f"BROWSE_TYPE ERROR: {e}", "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_browse_scroll(uid, session_id, direction):
+    def run():
+        if not session_id:
+            return {"ok": False, "preview": "no session",
+                    "observation": "BROWSE_SCROLL ERROR: no active session to browse in.",
+                    "done_extras": {}, "extra_events": []}
+        try:
+            from services.browser_service import scroll
+            res = scroll(uid or 'anon', session_id, direction, timeout=30)
+            return _browse_result_to_action_result("browse_scroll", res)
+        except PermissionError as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"BROWSE_SCROLL ERROR: {e}", "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"BROWSE_SCROLL ERROR: {e}", "done_extras": {}, "extra_events": []}
     return run
 
 

@@ -110,7 +110,7 @@ const TOOL_NAMES = [
   // Kautilya Computer — persistent per-session file tools (agent_loop_service.py)
   'FILE_WRITE', 'FILE_READ', 'FILE_LIST',
   // Kautilya Computer — live browser tools (agent_loop_service.py)
-  'BROWSE', 'BROWSE_CLICK', 'BROWSE_TYPE',
+  'BROWSE', 'BROWSE_CLICK', 'BROWSE_TYPE', 'BROWSE_SCROLL',
   // Coder and other agent commands
   'IMAGE', 'WEATHER', 'NEWS', 'STOCK', 'PREDICT_STOCK', 'CRYPTO', 'MOVIE', 'QUOTE', 'FACT', 'DEFINE',
   'TRANSLATE', 'CONVERT', 'CURRENCY', 'WIKI', 'HOROSCOPE', 'RECIPE', 'MAP', 'ROUTE',
@@ -692,7 +692,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
   // but it isn't closed yet, stripToolTags drops the whole open tag — leaving
   // the bubble blank until the closing `]` arrives. For long JSON payloads
   // that's many seconds of dead UI. Show a live placeholder during that gap.
-  const _PREAMBLE_TOOL_RE = /\[(INTEGRATION|SEARCH|CALCULATE|RUN_PYTHON|FETCH_URL|CALENDAR_(?:LIST|CREATE|DELETE)|GMAIL_(?:LIST|SEND|READ)|WHATSAPP_SEND|SLACK_POST|HUBSPOT_CREATE_CONTACT|FILE_WRITE|FILE_READ|FILE_LIST|BROWSE_TYPE|BROWSE_CLICK|BROWSE)(?::|\s)/;
+  const _PREAMBLE_TOOL_RE = /\[(INTEGRATION|SEARCH|CALCULATE|RUN_PYTHON|FETCH_URL|CALENDAR_(?:LIST|CREATE|DELETE)|GMAIL_(?:LIST|SEND|READ)|WHATSAPP_SEND|SLACK_POST|HUBSPOT_CREATE_CONTACT|FILE_WRITE|FILE_READ|FILE_LIST|BROWSE_TYPE|BROWSE_CLICK|BROWSE_SCROLL|BROWSE)(?::|\s)/;
   const _toolPrepLabel = (() => {
     if (!isLiveStreaming || !rawContent) return null;
     const m = rawContent.match(_PREAMBLE_TOOL_RE);
@@ -728,6 +728,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
       const fieldMatch = after.match(/\[BROWSE_TYPE:\s*([^\|\n]+?)\s*\|/);
       return fieldMatch ? `Filling ${fieldMatch[1].trim()}…` : 'Typing…';
     }
+    if (tag === 'BROWSE_SCROLL') return 'Scrolling…';
     if (tag.startsWith('CALENDAR_')) return 'Working on calendar…';
     if (tag.startsWith('GMAIL_')) return 'Working on email…';
     if (tag === 'WHATSAPP_SEND') return 'Sending WhatsApp…';

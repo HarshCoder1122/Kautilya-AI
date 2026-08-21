@@ -171,6 +171,7 @@ TOOLS = [
             "[BROWSE: https://example.com/pricing]",
             "[BROWSE_CLICK: link text or #N from the last page]",
             "[BROWSE_TYPE: field label or placeholder | text to type]",
+            "[BROWSE_SCROLL: down|up|top|bottom]",
         ],
         "guide": ("ON-DEMAND ONLY — this launches a REAL Chromium browser process, not a cheap fetch. "
                   "Call it ONLY when the user explicitly wants a specific site actually visited/"
@@ -179,7 +180,7 @@ TOOLS = [
                   "general questions, facts, or 'what's the latest on X', use [SEARCH:] (cheap, no "
                   "browser) or your own knowledge instead — do NOT reach for BROWSE by default. ONE "
                   "persistent tab per session (not a one-off fetch) — cookies and login state carry "
-                  "across every BROWSE/BROWSE_CLICK/BROWSE_TYPE call in this session, so a login done "
+                  "across every BROWSE/BROWSE_CLICK/BROWSE_TYPE/BROWSE_SCROLL call in this session, so a login done "
                   "on turn 1 is STILL logged in on turn 5. BROWSE loads a URL and returns the page "
                   "title, visible text, a numbered list of its links, and a live screenshot; the user "
                   "sees these live in the Computer panel — do not re-paste them in your reply. "
@@ -193,7 +194,12 @@ TOOLS = [
                   "links, and reaches into login/auth iframes and widgets, not just the top-level "
                   "page. BROWSE_TYPE fills a form field on the CURRENT page — identify it by its "
                   "visible label, placeholder text, or just 'email'/'password'/'username' if that's "
-                  "unambiguous; it also reaches into iframes. LOGIN FLOW: BROWSE the login page, "
+                  "unambiguous; it also reaches into iframes. BROWSE_SCROLL: down/up/top/bottom — moves "
+                  "the viewport (down/up ~80% of a screen, top/bottom jump to the very start/end) and "
+                  "re-reads the page afterward, waiting for any lazy-loaded content (infinite feeds, "
+                  "'load more' sections) to actually land first. Use it to reach content or a link/"
+                  "button that isn't in the current text/links yet — don't assume something absent "
+                  "means it doesn't exist on the page, scroll first. LOGIN FLOW: BROWSE the login page, "
                   "BROWSE_TYPE the email/username field, BROWSE_TYPE the password field, BROWSE_CLICK "
                   "the sign-in button — do this for real instead of saying you can't. Some sites still "
                   "block automated browsers outright (CAPTCHA/bot walls) — if that happens, say so "
@@ -216,8 +222,10 @@ TOOLS = [
                   "session — login/cookies persist across calls. BROWSE: url — opens it, shows title/"
                   "text/links/screenshot in the Computer panel. BROWSE_CLICK: link text or #N — clicks "
                   "a link/button on the page you just opened (reaches into auth iframes too). "
-                  "BROWSE_TYPE: field label | text — fills a form field (login, search box). Login "
-                  "flow: BROWSE the page, BROWSE_TYPE each field, BROWSE_CLICK submit. If something "
+                  "BROWSE_TYPE: field label | text — fills a form field (login, search box). "
+                  "BROWSE_SCROLL: down/up/top/bottom — moves the viewport and re-reads the page, use "
+                  "it before assuming something isn't on the page. Login flow: BROWSE the page, "
+                  "BROWSE_TYPE each field, BROWSE_CLICK submit. If something "
                   "looks stuck, check the BROWSER DIAGNOSTICS in the result before clicking again — "
                   "don't guess-click repeatedly. Stop once you have the answer."),
     },

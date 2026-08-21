@@ -835,7 +835,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                 // Live browsing — push the latest page (url/title/screenshot/
                 // links) up so the Computer panel's Browser tab can show ONE
                 // persistent view instead of a card per action.
-                if (onBrowseUpdate && (parsed.tool === 'browse' || parsed.tool === 'browse_click' || parsed.tool === 'browse_type')) {
+                if (onBrowseUpdate && (parsed.tool === 'browse' || parsed.tool === 'browse_click' || parsed.tool === 'browse_type' || parsed.tool === 'browse_scroll')) {
                   onBrowseUpdate(parsed.data);
                 }
                 continue;

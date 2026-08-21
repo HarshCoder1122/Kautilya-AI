@@ -668,6 +668,28 @@ async def _click(uid: str, session_id: str, target: str) -> Dict[str, Any]:
     return await _extract_page(entry, page)
 
 
+async def _scroll(uid: str, session_id: str, direction: str) -> Dict[str, Any]:
+    entry = await _get_session(uid, session_id)
+    page = entry["page"]
+    d = (direction or "").strip().lower()
+    if d in ("top", "start"):
+        await page.evaluate("window.scrollTo(0, 0)")
+    elif d in ("bottom", "end"):
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+    elif d == "up":
+        await page.evaluate("window.scrollBy(0, -window.innerHeight * 0.8)")
+    else:
+        # Default direction is down — by far the common case ("scroll to see
+        # more", infinite-scroll feeds, content below the fold).
+        await page.evaluate("window.scrollBy(0, window.innerHeight * 0.8)")
+    # Same settle as a click — a scroll on an infinite-feed page often
+    # triggers a lazy-load XHR/fetch for the next batch of content, so wait
+    # for that to actually land before re-reading the page.
+    await _settle_after_action(page)
+    _check_url_allowed(page.url)
+    return await _extract_page(entry, page)
+
+
 async def _type(uid: str, session_id: str, field: str, value: str) -> Dict[str, Any]:
     entry = await _get_session(uid, session_id)
     page = entry["page"]
@@ -805,6 +827,10 @@ def navigate(uid: str, session_id: str, url: str, timeout: int = OUTER_TIMEOUT_S
 
 def click(uid: str, session_id: str, target: str, timeout: int = OUTER_TIMEOUT_S) -> Dict[str, Any]:
     return _guarded(lambda: _click(uid or "anon", session_id, target), uid, session_id, timeout)
+
+
+def scroll(uid: str, session_id: str, direction: str, timeout: int = OUTER_TIMEOUT_S) -> Dict[str, Any]:
+    return _guarded(lambda: _scroll(uid or "anon", session_id, direction), uid, session_id, timeout)
 
 
 def type_text(uid: str, session_id: str, field: str, value: str, timeout: int = OUTER_TIMEOUT_S) -> Dict[str, Any]:

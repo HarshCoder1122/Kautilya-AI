@@ -7,7 +7,7 @@ import { BrowseCard } from "./ToolResultCards";
  * Kautilya Computer — two tabs: Files (backend: services/computer_service.py,
  * tools: [FILE_WRITE:] / [FILE_READ:] / [FILE_LIST:] / [RUN_PYTHON:] — still
  * scoped per CHAT session) and Browser (backend: services/browser_service.py,
- * tools: [BROWSE:] / [BROWSE_CLICK:] / [BROWSE_TYPE:] — scoped per USER: one
+ * tools: [BROWSE:] / [BROWSE_CLICK:] / [BROWSE_TYPE:] / [BROWSE_SCROLL:] — scoped per USER: one
  * persistent "computer" that's the same machine regardless of which chat
  * you're in, so a login done in one conversation is still logged in when you
  * open a brand new one).
