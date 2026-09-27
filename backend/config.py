@@ -68,6 +68,8 @@ if not NVIDIA_API_KEY:
 
 # ============== TTS Provider Keys ==============
 REVEALIQ_HF_TOKEN = os.environ.get("REVEALIQ_HF_TOKEN", "")
+# Base URL of the self-hosted TTS engine (see "RevealIQ ASR models/")
+REVEALIQ_TTS_URL = os.environ.get("REVEALIQ_TTS_URL", "https://HarshSharma1212-RevealIQ-ASR.hf.space").rstrip("/")
 CARTESIA_API_KEY = os.environ.get("CARTESIA_API_KEY", "")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 
@@ -112,7 +114,7 @@ GEMINI_API_KEYS = [GEMINI_API_KEY] if GEMINI_API_KEY else []
 # deployed filesystem) and build credentials in-memory. Local dev without that
 # env var falls back to Application Default Credentials (e.g. a
 # GOOGLE_APPLICATION_CREDENTIALS file path, or `gcloud auth application-default login`).
-VERTEX_PROJECT_ID = os.environ.get("VERTEX_PROJECT_ID", "gen-lang-client-0058297446")
+VERTEX_PROJECT_ID = os.environ.get("VERTEX_PROJECT_ID", "")
 # "global" is required for the newest Gemini 3.x model family — the older
 # 2.5 generation is regional (e.g. us-central1) but also reachable via global.
 VERTEX_LOCATION = os.environ.get("VERTEX_LOCATION", "global")
@@ -127,6 +129,9 @@ if VERTEX_CREDENTIALS_JSON:
             scopes=["https://www.googleapis.com/auth/cloud-platform"],
         )
         print("[CONFIG] Vertex AI credentials loaded from GOOGLE_VERTEX_CREDENTIALS_JSON")
+        # No explicit project → use the one the service account belongs to
+        if not VERTEX_PROJECT_ID:
+            VERTEX_PROJECT_ID = _json.loads(VERTEX_CREDENTIALS_JSON).get("project_id", "")
     except Exception as _e:
         print(f"[CONFIG] WARNING: failed to parse GOOGLE_VERTEX_CREDENTIALS_JSON: {_e}")
 if not VERTEX_CREDENTIALS:
@@ -215,10 +220,31 @@ LIVEKIT_URL = os.environ.get("LIVEKIT_URL", "")
 LIVEKIT_API_KEY = os.environ.get("LIVEKIT_API_KEY", "")
 LIVEKIT_API_SECRET = os.environ.get("LIVEKIT_API_SECRET", "")
 
-# SIP URI — hardcoded to match LiveKit Cloud project SIP domain
-# Project URL (meet-2wx5nfq3) is DIFFERENT from SIP domain (4mu6v2usrj9)
-# Do NOT derive from LIVEKIT_URL — they are separate domains
-LIVEKIT_SIP_URI = os.environ.get('LIVEKIT_SIP_URI', '4mu6v2usrj9.sip.livekit.cloud')
+# SIP URI — must match your LiveKit Cloud project's SIP domain
+# (e.g. "<id>.sip.livekit.cloud"). The project URL and the SIP domain are
+# DIFFERENT hosts — do NOT derive this from LIVEKIT_URL.
+LIVEKIT_SIP_URI = os.environ.get('LIVEKIT_SIP_URI', '')
+
+# ============== Firebase ==============
+# Project ID comes from FIREBASE_PROJECT_ID, or is read out of the service
+# account JSON so a single secret is enough for most deployments.
+def _firebase_project_id():
+    pid = os.environ.get("FIREBASE_PROJECT_ID", "").strip()
+    if pid:
+        return pid
+    sa_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "")
+    try:
+        import json
+        return json.loads(sa_json).get("project_id", "") if sa_json else ""
+    except Exception:
+        return ""
+
+FIREBASE_PROJECT_ID = _firebase_project_id()
+# Host that serves Firebase's /__/auth/* handler pages (proxied by static_routes)
+FIREBASE_AUTH_HOST = os.environ.get(
+    "FIREBASE_AUTH_HOST",
+    f"https://{FIREBASE_PROJECT_ID}.firebaseapp.com" if FIREBASE_PROJECT_ID else "",
+).rstrip('/')
 
 # ============== Admin ==============
 ADMIN_SECRET_KEY = os.environ.get("ADMIN_SECRET_KEY", "")

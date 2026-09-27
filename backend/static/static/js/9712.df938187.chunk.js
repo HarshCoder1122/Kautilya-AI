@@ -1,1 +1,0 @@
-"use strict";(self.webpackChunkfrontend=self.webpackChunkfrontend||[]).push([[9712],{79712(e,n,r){r.d(n,{createPieServices:()=>s.f});var s=r(84529);r(1855)}}]);

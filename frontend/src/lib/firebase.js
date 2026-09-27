@@ -75,14 +75,17 @@ const sanitizeConfig = (raw) => {
   return null;
 };
 
-const _fallbackConfig = {
-  apiKey: "REDACTED_FIREBASE_WEB_KEY",
-  authDomain: "ai.revealiq.in",
-  projectId: "jarvis-a6e18",
-  storageBucket: "jarvis-a6e18.firebasestorage.app",
-  messagingSenderId: "872168972424",
-  appId: "1:872168972424:web:2b0b9b82922860a52c3f3d",
-  measurementId: "G-H2FB26YQ9R",
+// Firebase web config comes from REACT_APP_FIREBASE_* at build time (see
+// frontend/.env.example). These values are public by design — access is
+// enforced by Firebase Auth authorised domains and Security Rules.
+const _envConfig = {
+  apiKey: process.env.REACT_APP_FIREBASE_API_KEY || "",
+  authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN || "",
+  projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID || "",
+  storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET || "",
+  messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID || "",
+  appId: process.env.REACT_APP_FIREBASE_APP_ID || "",
+  measurementId: process.env.REACT_APP_FIREBASE_MEASUREMENT_ID || undefined,
 };
 
 const _resolveConfigSync = () => {
@@ -98,17 +101,10 @@ const _resolveConfigSync = () => {
     const sane = sanitizeConfig(envBlob);
     if (sane && sane.apiKey) return sane;
   }
-  if (process.env.REACT_APP_FIREBASE_API_KEY) {
-    return {
-      apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
-      authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN || _fallbackConfig.authDomain,
-      projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID || _fallbackConfig.projectId,
-      storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET || _fallbackConfig.storageBucket,
-      messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID || _fallbackConfig.messagingSenderId,
-      appId: process.env.REACT_APP_FIREBASE_APP_ID || _fallbackConfig.appId,
-    };
+  if (!_envConfig.apiKey) {
+    console.warn("Firebase: REACT_APP_FIREBASE_* env vars are not set — sign-in is disabled. See frontend/.env.example.");
   }
-  return _fallbackConfig;
+  return _envConfig;
 };
 
 const _applyAuthDomainOverride = (config) => {

@@ -10,7 +10,7 @@ import requests
 
 from flask import Blueprint, request, jsonify, Response
 
-from config import GROQ_API_KEY, SARVAM_API_KEY, STATIC_FOLDER, LIVEKIT_URL, CARTESIA_API_KEY, ELEVENLABS_API_KEY, REVEALIQ_HF_TOKEN
+from config import GROQ_API_KEY, SARVAM_API_KEY, STATIC_FOLDER, LIVEKIT_URL, CARTESIA_API_KEY, ELEVENLABS_API_KEY, REVEALIQ_HF_TOKEN, REVEALIQ_TTS_URL
 from services.tts_service import clean_text_for_tts, detect_tts_voice
 from services.auth_service import verify_firebase_token, record_usage
 from middleware.security import get_real_client_ip
@@ -282,7 +282,7 @@ def voice_preview():
         voice_clean = voice.split(":", 1)[1] if ":" in voice else voice
         model = 'kokoro-hi' if ('hi' in voice_clean.lower() or voice_clean.startswith('hf_') or voice_clean.startswith('hm_')) else 'kokoro-en'
         
-        url = 'https://HarshSharma1212-RevealIQ-ASR.hf.space/v1/audio/speech'
+        url = f'{REVEALIQ_TTS_URL}/v1/audio/speech'
         headers = {
             'Content-Type': 'application/json',
         }

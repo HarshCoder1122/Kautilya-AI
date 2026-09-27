@@ -1118,7 +1118,7 @@ async def entrypoint(ctx: JobContext):
                 model_name = "kokoro-hi" if ("hi" in voice_id.lower() or voice_id.startswith(("hf_", "hm_"))) else "kokoro-en"
                 hf_token = os.environ.get("REVEALIQ_HF_TOKEN") or os.environ.get("HF_TOKEN") or "none"
                 tts = RevealIQTTS(
-                    base_url="https://HarshSharma1212-RevealIQ-ASR.hf.space",
+                    base_url=os.environ.get("REVEALIQ_TTS_URL", "https://HarshSharma1212-RevealIQ-ASR.hf.space"),
                     api_key=hf_token,
                     model=model_name,
                     voice=voice_id,

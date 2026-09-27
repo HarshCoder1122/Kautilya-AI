@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 
 tts_bp = Blueprint('tts', __name__)
 
-REVEALIQ_BASE = 'https://HarshSharma1212-RevealIQ-ASR.hf.space'
+from config import REVEALIQ_TTS_URL
+REVEALIQ_BASE = REVEALIQ_TTS_URL
 
 # NOTE: keep-warm pinging moved to services/warmup_service.py (one single-
 # flighted pinger for STT + TTS + voice, instead of one thread per worker per

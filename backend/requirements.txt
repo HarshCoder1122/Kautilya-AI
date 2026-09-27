@@ -47,3 +47,4 @@ mcp-server-fetch
 mcp-server-time
 playwright
 
+psutil

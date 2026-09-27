@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Extensions & Config
-from config import STATIC_FOLDER, FLASK_SECRET_KEY
+from config import STATIC_FOLDER, FLASK_SECRET_KEY, FIREBASE_PROJECT_ID, FIREBASE_AUTH_HOST
 from extensions import db, limit_manager
 
 # Import Blueprints
@@ -315,7 +315,7 @@ def get_firebase_config():
     env_config = {
         "apiKey": os.environ.get("FIREBASE_API_KEY"),
         "authDomain": os.environ.get("FIREBASE_AUTH_DOMAIN"),
-        "projectId": os.environ.get("FIREBASE_PROJECT_ID", "jarvis-a6e18"),
+        "projectId": FIREBASE_PROJECT_ID,
         "storageBucket": os.environ.get("FIREBASE_STORAGE_BUCKET"),
         "messagingSenderId": os.environ.get("FIREBASE_MESSAGING_SENDER_ID"),
         "appId": os.environ.get("FIREBASE_APP_ID")
@@ -342,9 +342,9 @@ def get_firebase_config():
     
     return jsonify({
         "apiKey": env_config["apiKey"] or "",
-        "authDomain": env_config["authDomain"] or "jarvis-a6e18.firebaseapp.com",
-        "projectId": "jarvis-a6e18",
-        "storageBucket": "jarvis-a6e18.appspot.com",
+        "authDomain": env_config["authDomain"] or f"{FIREBASE_PROJECT_ID}.firebaseapp.com",
+        "projectId": FIREBASE_PROJECT_ID,
+        "storageBucket": f"{FIREBASE_PROJECT_ID}.appspot.com",
         "messagingSenderId": env_config["messagingSenderId"] or "",
         "appId": env_config["appId"] or ""
     })
@@ -371,7 +371,9 @@ def firebase_proxy(firebase_path):
 
     query_string = request.query_string.decode('utf-8')
     suffix = f"?{query_string}" if query_string else ""
-    firebase_url = f"https://jarvis-a6e18.firebaseapp.com/__/{firebase_path}{suffix}"
+    if not FIREBASE_AUTH_HOST:
+        return Response("Firebase auth host not configured", status=404)
+    firebase_url = f"{FIREBASE_AUTH_HOST}/__/{firebase_path}{suffix}"
     _STRIP = {
         'host', 'authorization', 'cookie', 'x-firebase-token',
         'x-kautilya-auth', 'x-hf-token',

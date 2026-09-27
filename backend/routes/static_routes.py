@@ -8,7 +8,7 @@ import time
 import requests
 from flask import Blueprint, jsonify, send_from_directory, request, Response
 
-from config import STATIC_FOLDER
+from config import STATIC_FOLDER, FIREBASE_AUTH_HOST
 from services.auth_service import verify_firebase_token
 
 static_bp = Blueprint('static_routes', __name__)
@@ -19,9 +19,9 @@ static_bp = Blueprint('static_routes', __name__)
 # popup hits https://ai.revealiq.in/__/auth/handler (plus /__/auth/iframe.js
 # and /__/firebase/init.json). Those paths are normally served by Firebase
 # Hosting — since our app lives on a Flask + HF Space stack instead, we
-# transparently proxy them to jarvis-a6e18.firebaseapp.com so the OAuth flow
-# works without moving DNS to Firebase Hosting.
-_FIREBASE_HOST = "https://jarvis-a6e18.firebaseapp.com"
+# transparently proxy them to <project-id>.firebaseapp.com (FIREBASE_AUTH_HOST)
+# so the OAuth flow works without moving DNS to Firebase Hosting.
+_FIREBASE_HOST = FIREBASE_AUTH_HOST
 _HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade", "content-encoding",
@@ -30,6 +30,8 @@ _HOP_BY_HOP = {
 
 @static_bp.route('/__/<path:subpath>', methods=['GET', 'POST', 'OPTIONS'])
 def firebase_auth_proxy(subpath):
+    if not _FIREBASE_HOST:
+        return jsonify({"error": "Firebase auth host not configured"}), 404
     upstream_url = f"{_FIREBASE_HOST}/__/{subpath}"
     try:
         upstream = requests.request(
