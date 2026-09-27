@@ -157,7 +157,7 @@ export default function ChatPage({ theme, toggleTheme, user }) {
         session_id: sess.id,
         title: sess.title || 'New Chat',
         preview: sess.preview || '',
-        last_updated: Date.now() / 1000,
+        last_updated: new Date().toISOString(), // same ISO format the backend sends
         _optimistic: true,
       }, ...prev];
     });
