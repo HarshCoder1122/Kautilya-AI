@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from "react";
+import { createPortal } from "react-dom";
 import DOMPurify from "dompurify";
 import { TreeStructure, Copy, Check, Download, ArrowsOutSimple, X, Plus, Minus, ArrowCounterClockwise, Code as CodeIcon } from "@phosphor-icons/react";
 
@@ -249,7 +250,11 @@ function ZoomOverlay({ title, children, onClose, onCopy, copied, onDownloadSvg, 
   };
   const onPointerUp = () => { drag.current = null; };
 
-  return (
+  // Portal to <body>: chat messages keep a `transform` from their fade-up
+  // animation, which turns them into the containing block for `fixed`
+  // children — without the portal this "fullscreen" view was trapped inside
+  // the message column.
+  return createPortal(
     <div className="fixed inset-0 z-[120] bg-black/90 backdrop-blur-sm flex flex-col" data-testid="diagram-zoom">
       <div className="h-12 flex items-center justify-between px-4 border-b border-white/10 bg-[var(--k-surface)] shrink-0">
         <div className="flex items-center gap-2 min-w-0">
@@ -288,7 +293,8 @@ function ZoomOverlay({ title, children, onClose, onCopy, copied, onDownloadSvg, 
           {children}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -483,7 +489,7 @@ export function MermaidDiagram({ code, streaming = false, title = "Diagram" }) {
           onDownloadPng={handleDownloadPng}
         >
           <div
-            className="k-mermaid bg-transparent [&_svg]:h-auto"
+            className="k-mermaid bg-transparent [&_svg]:!max-w-none [&_svg]:!w-[88vw] [&_svg]:!h-[80vh]"
             // eslint-disable-next-line react/no-danger
             dangerouslySetInnerHTML={{ __html: lastGoodRef.current || svg }}
           />

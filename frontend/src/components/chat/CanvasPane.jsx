@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import JSZip from 'jszip';
@@ -977,8 +978,10 @@ function MultiFileWorkspace({ files, title }) {
         </div>
       </div>
 
-      {/* Fullscreen preview overlay */}
-      {fullscreen && previewSrc && (
+      {/* Fullscreen preview overlay — portalled to <body> because .canvas-pane
+          uses `contain: layout`, which would otherwise trap this `fixed`
+          overlay inside the pane instead of covering the viewport. */}
+      {fullscreen && previewSrc && createPortal(
         <div className="fixed inset-0 z-[100] bg-black/95 flex flex-col">
           <div className="h-12 flex items-center justify-between px-4 border-b border-white/10 bg-[var(--k-surface)]">
             <div className="flex items-center gap-2">
@@ -1009,7 +1012,8 @@ function MultiFileWorkspace({ files, title }) {
             className="flex-1 w-full border-none bg-white"
             title="Fullscreen Preview"
           />
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
