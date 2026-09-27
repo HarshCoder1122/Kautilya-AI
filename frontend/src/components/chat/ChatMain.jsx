@@ -176,6 +176,21 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     else messagesEndRef.current?.scrollIntoView({ behavior: isStreaming ? 'auto' : 'smooth', block: 'end' });
   }, [messages, isThinking, isStreaming]);
 
+  // Some content grows AFTER the effect above ran — Mermaid diagrams render
+  // asynchronously, images and tool cards load late. Keep following that
+  // growth while the user is parked at the bottom, instead of leaving the view
+  // short and snapping down on the next token.
+  useEffect(() => {
+    const scroller = getScroller();
+    const content = messagesEndRef.current?.parentElement;
+    if (!scroller || !content || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      if (stickToBottomRef.current) scroller.scrollTop = scroller.scrollHeight;
+    });
+    ro.observe(content);
+    return () => ro.disconnect();
+  }, []); // same lifetime as the scroll listener above
+
   // Tab refocus handling. IMPORTANT: switching away to another app/tab and
   // back must NEVER blank the screen. We only do a SILENT, NON-DESTRUCTIVE
   // catch-up — and ONLY if the user actually left mid-generation. A normal

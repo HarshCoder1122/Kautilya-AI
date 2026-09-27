@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from "react";
 import DOMPurify from "dompurify";
 import { TreeStructure, Copy, Check, Download, ArrowsOutSimple, X, Plus, Minus, ArrowCounterClockwise, Code as CodeIcon } from "@phosphor-icons/react";
 
@@ -23,6 +23,26 @@ function loadMermaid() {
 }
 
 let _renderSeq = 0;
+
+/** Mermaid measures labels by drawing the diagram into a temporary element.
+ * Without a container it appends that element to <body> in normal flow, so
+ * every (re-)render briefly made the page taller by the diagram's height —
+ * flashing the window scrollbar, reflowing the chat and making the screen
+ * jump. Render inside a fixed, off-screen, invisible host instead: fixed
+ * elements never add to the page's scroll height. */
+let _renderHost = null;
+function makeRenderTarget() {
+  if (!_renderHost || !_renderHost.isConnected) {
+    _renderHost = document.createElement("div");
+    _renderHost.setAttribute("aria-hidden", "true");
+    _renderHost.style.cssText =
+      "position:fixed;left:-10000px;top:0;width:1200px;visibility:hidden;pointer-events:none;overflow:hidden;";
+    document.body.appendChild(_renderHost);
+  }
+  const target = document.createElement("div");
+  _renderHost.appendChild(target);
+  return target;
+}
 
 /** Read the active theme's brand/surface colors so diagrams match light/dark. */
 function readPalette() {
@@ -282,8 +302,25 @@ export function MermaidDiagram({ code, streaming = false, title = "Diagram" }) {
   const lastGoodRef = useRef("");
   const paletteKeyRef = useRef(readPalette().key);
   const containerRef = useRef(null);
+  const bodyRef = useRef(null);
+  const maxBodyHeightRef = useRef(0);
 
   const source = (code || "").trim();
+
+  // While streaming, each partial re-render can lay the graph out smaller
+  // than the last one. Never let the box shrink mid-stream (that bounced the
+  // text below it up and down); release the lock once the final render lands.
+  useLayoutEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    if (!streaming) {
+      maxBodyHeightRef.current = 0;
+      el.style.minHeight = "";
+      return;
+    }
+    maxBodyHeightRef.current = Math.max(maxBodyHeightRef.current, el.offsetHeight);
+    el.style.minHeight = `${maxBodyHeightRef.current}px`;
+  }, [svg, status, streaming]);
 
   // Smooth fade-in animation for the FIRST successful render only. While a
   // diagram is streaming, `svg` gets replaced on every debounced re-render
@@ -325,9 +362,18 @@ export function MermaidDiagram({ code, streaming = false, title = "Diagram" }) {
         try { valid = await mermaid.parse(source, { suppressErrors: true }); }
         catch { valid = false; }
         if (cancelled) return;
-        if (!valid) { setStatus(lastGoodRef.current ? "ok" : "error"); return; }
+        // Mid-stream the source is usually just incomplete, not broken — keep
+        // the small "Drawing…" placeholder instead of flashing the raw source.
+        const fallback = lastGoodRef.current ? "ok" : (streaming ? "loading" : "error");
+        if (!valid) { setStatus(fallback); return; }
 
-        const { svg: out } = await mermaid.render(`kmd-${++_renderSeq}`, source);
+        const target = makeRenderTarget();
+        let out;
+        try {
+          ({ svg: out } = await mermaid.render(`kmd-${++_renderSeq}`, source, target));
+        } finally {
+          target.remove();
+        }
         if (cancelled) return;
         // Skip the state update (and the DOM replace it triggers) when the
         // newly-rendered SVG is byte-identical to what's already on screen —
@@ -340,7 +386,7 @@ export function MermaidDiagram({ code, streaming = false, title = "Diagram" }) {
         setSvg(out);
         setStatus("ok");
       } catch {
-        if (!cancelled) setStatus(lastGoodRef.current ? "ok" : "error");
+        if (!cancelled) setStatus(lastGoodRef.current ? "ok" : (streaming ? "loading" : "error"));
       }
     }, streaming ? 550 : 120);
 
@@ -398,12 +444,12 @@ export function MermaidDiagram({ code, streaming = false, title = "Diagram" }) {
       </div>
 
       {/* Body */}
-      <div className="p-4 overflow-x-auto flex justify-center bg-[var(--k-bg)]/40">
+      <div ref={bodyRef} className="p-4 overflow-x-auto flex items-start justify-center bg-[var(--k-bg)]/40">
         {showSvg ? (
           <div
             ref={containerRef}
-            className={`k-mermaid w-full flex justify-center [&_svg]:max-w-full [&_svg]:h-auto cursor-zoom-in transition-all duration-500 ease-out ${
-              isVisible ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-4 scale-95'
+            className={`k-mermaid w-full flex justify-center [&_svg]:max-w-full [&_svg]:h-auto cursor-zoom-in transition-[opacity,transform] duration-500 ease-out ${
+              isVisible ? 'opacity-100 scale-100' : 'opacity-0 scale-[0.98]'
             }`}
             onClick={() => setZoom(true)}
             // eslint-disable-next-line react/no-danger
@@ -539,8 +585,8 @@ export function SvgBlock({ code, title = "Vector graphic", streaming = false }) 
         </div>
       </div>
       <div className="bg-[var(--k-bg)]/40 p-4 flex justify-center overflow-x-auto">
-        <div className={`w-full transition-all duration-500 ease-out ${
-          isVisible ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-4 scale-95'
+        <div className={`w-full transition-[opacity,transform] duration-500 ease-out ${
+          isVisible ? 'opacity-100 scale-100' : 'opacity-0 scale-[0.98]'
         }`}>
           <ShadowSvg
             html={safeSvg}

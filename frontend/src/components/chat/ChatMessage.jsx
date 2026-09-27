@@ -1,5 +1,5 @@
 import { Brain, Code, ChartBar, ArrowSquareOut, Play, Pause, Copy, Check, ArrowsClockwise, SpeakerHigh, StopCircle, CalendarCheck, VideoCamera, Link, Crown, Lightning } from "@phosphor-icons/react";
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useMemo } from "react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -478,6 +478,175 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  // react-markdown uses each renderer below as a React component TYPE. Built
+  // inline, every render (i.e. every streamed/typed token) handed it brand-new
+  // functions, so React unmounted and remounted every code block and diagram
+  // per token — a Mermaid diagram collapsed to its "Drawing…" placeholder and
+  // re-expanded over and over, making the whole chat jump up and down. The
+  // renderers are now created once; per-render values are read from a ref.
+  const mdLiveRef = useRef(null);
+  const markdownComponents = useMemo(() => ({
+    a({ href, children }) {
+      return <LinkCard href={href}>{children}</LinkCard>;
+    },
+
+    // Diagrams (mermaid/svg) must be full-width BLOCKS so the text that
+    // follows them stacks underneath, not beside. react-markdown wraps
+    // fenced code in <pre>; for diagram languages we unwrap it so the
+    // diagram <div> sits directly in the message flow.
+    pre({ node, children }) {
+      try {
+        const codeEl = (node?.children || []).find((c) => c.tagName === 'code');
+        const cls = codeEl?.properties?.className || [];
+        const langClass = (Array.isArray(cls) ? cls : [cls])
+          .find((c) => typeof c === 'string' && c.startsWith('language-'));
+        if (langClass === 'language-mermaid' || langClass === 'language-svg' ||
+            langClass === 'language-question' || langClass === 'language-ask') {
+          return <>{children}</>;
+        }
+      } catch { /* fall through to default <pre> */ }
+      return <pre className="w-full max-w-full min-w-0">{children}</pre>;
+    },
+
+    table({ children }) {
+      return (
+        <div className="overflow-x-auto w-full max-w-full min-w-0 my-6 rounded-xl border border-[var(--k-border)] bg-black/20 shadow-sm">
+          <table className="min-w-full divide-y divide-[var(--k-border)] text-sm">
+            {children}
+          </table>
+        </div>
+      );
+    },
+    thead({ children }) {
+      return <thead className="bg-white/5">{children}</thead>;
+    },
+    tbody({ children }) {
+      return <tbody className="divide-y divide-[var(--k-border)]">{children}</tbody>;
+    },
+    tr({ children }) {
+      return <tr className="hover:bg-white/[0.02] transition-colors">{children}</tr>;
+    },
+    th({ children }) {
+      return <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">{children}</th>;
+    },
+    td({ children }) {
+      return <td className="px-4 py-3 text-foreground whitespace-pre-wrap">{children}</td>;
+    },
+    code({ node, inline, className, children, ...props }) {
+      const live = mdLiveRef.current;
+      const match = /language-(\w+)/.exec(className || '');
+      const lang = match ? match[1] : '';
+      const codeString = String(children).replace(/\n$/, '');
+
+      // Claude-style inline diagrams: a ```mermaid block renders as a
+      // live, theme-matched SVG right inside the bubble; a ```svg block
+      // renders sanitised in a locked sandbox. Both stay out of the
+      // syntax-highlighter path below.
+      if (!inline && lang === 'mermaid') {
+        return <MermaidDiagram code={codeString} streaming={live.isLiveStreaming} />;
+      }
+      // Interactive question blocks are stripped from the message and
+      // rendered as a card docked above the composer (see ChatMain), so
+      // any that slip through to markdown render nothing inline.
+      if (!inline && (lang === 'question' || lang === 'ask')) {
+        return null;
+      }
+      if (!inline && (lang === 'svg' ||
+          (!lang && codeString.includes('\n') && codeString.trim().startsWith('<svg')))) {
+        return <SvgBlock code={codeString} streaming={live.isLiveStreaming} />;
+      }
+
+      // Stray-fragment guard: react-markdown promotes single chars to
+      // "block" code when the model emits a half-finished fence mid-
+      // stream or a 4-space-indented line. Without this, you get a
+      // huge CODE · 1 line card wrapping just `/` or `)`. Treat any
+      // single-line block code with no language tag and short content
+      // as inline — real code blocks always have a language fence or
+      // multiple lines.
+      const isStray = !inline && !lang && !codeString.includes('\n') && codeString.trim().length < 8;
+      if (inline || isStray) {
+        return <code className="bg-accent/50 px-1.5 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
+      }
+
+      if (!className) {
+        return (
+          <pre className="my-2 p-3 bg-accent/20 rounded-lg overflow-x-auto text-xs font-mono whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-relaxed border border-[var(--k-border)]/30 text-foreground/90 w-full max-w-full min-w-0">
+            <code {...props}>{children}</code>
+          </pre>
+        );
+      }
+
+      const lineCount = codeString.split('\n').length;
+      return (
+        <div className="relative group/code my-4 rounded-xl overflow-hidden border border-[var(--k-border)] bg-black/40 w-full max-w-full min-w-0">
+          <div className="flex items-center justify-between px-4 py-2 bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-pink-500/10 border-b border-white/5">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full bg-red-400/70"></span>
+                <span className="w-2.5 h-2.5 rounded-full bg-yellow-400/70"></span>
+                <span className="w-2.5 h-2.5 rounded-full bg-green-400/70"></span>
+              </span>
+              <span className="text-[10px] font-bold uppercase tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-indigo-300 to-pink-300 truncate">
+                {lang || 'code'}
+              </span>
+              <span className="text-[10px] text-muted-foreground/50 hidden sm:inline">· {lineCount} {lineCount === 1 ? 'line' : 'lines'}</span>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                onClick={() => live.handleCopy(codeString)}
+                className="p-1.5 rounded hover:bg-white/10 text-muted-foreground hover:text-foreground transition-all"
+                title="Copy Code"
+              >
+                <Copy className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => live.onOpenArtifact?.({
+                  type: 'code',
+                  title: `${(lang || 'code').toUpperCase()} Implementation`,
+                  code: codeString,
+                  language: lang
+                })}
+                className="p-1.5 rounded hover:bg-white/10 text-muted-foreground hover:text-foreground transition-all"
+                title="Open in Canvas"
+              >
+                <ArrowSquareOut className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+          <div className="overflow-x-auto w-full max-w-full">
+            <SyntaxHighlighter
+              language={lang}
+              style={vscDarkPlus}
+              showLineNumbers={lineCount > 4}
+              wrapLongLines={false}
+              customStyle={{
+                margin: 0,
+                padding: '1rem',
+                fontSize: '0.8rem',
+                lineHeight: '1.55',
+                background: 'transparent',
+                maxWidth: '100%',
+              }}
+              lineNumberStyle={{
+                minWidth: '2.25em',
+                paddingRight: '1em',
+                color: 'rgba(148,163,184,0.35)',
+                userSelect: 'none',
+                borderRight: '1px solid rgba(148,163,184,0.08)',
+                marginRight: '0.75em',
+              }}
+              codeTagProps={{
+                style: { fontFamily: 'inherit' }
+              }}
+            >
+              {codeString}
+            </SyntaxHighlighter>
+          </div>
+        </div>
+      );
+    }
+  }), []);
+
   const stopAudio = () => {
     if (audioRef.current) {
       try {
@@ -683,6 +852,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
   // the message (typical after a screen lock / hard reload mid-generation),
   // show a live "Generating…" pulse so the UI never feels dead.
   const isLiveStreaming = Boolean(message.streaming);
+  mdLiveRef.current = { isLiveStreaming, handleCopy, onOpenArtifact };
   const hasContent = (rawContent && rawContent.length > 0) ||
                      (message.thinking && message.thinking.length > 0) ||
                      (message.toolResults && message.toolResults.length > 0);
@@ -805,166 +975,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false, output: 'html' }]]}
-          components={{
-            a({ href, children }) {
-              return <LinkCard href={href}>{children}</LinkCard>;
-            },
-
-            // Diagrams (mermaid/svg) must be full-width BLOCKS so the text that
-            // follows them stacks underneath, not beside. react-markdown wraps
-            // fenced code in <pre>; for diagram languages we unwrap it so the
-            // diagram <div> sits directly in the message flow.
-            pre({ node, children }) {
-              try {
-                const codeEl = (node?.children || []).find((c) => c.tagName === 'code');
-                const cls = codeEl?.properties?.className || [];
-                const langClass = (Array.isArray(cls) ? cls : [cls])
-                  .find((c) => typeof c === 'string' && c.startsWith('language-'));
-                if (langClass === 'language-mermaid' || langClass === 'language-svg' ||
-                    langClass === 'language-question' || langClass === 'language-ask') {
-                  return <>{children}</>;
-                }
-              } catch { /* fall through to default <pre> */ }
-              return <pre className="w-full max-w-full min-w-0">{children}</pre>;
-            },
-
-            table({ children }) {
-              return (
-                <div className="overflow-x-auto w-full max-w-full min-w-0 my-6 rounded-xl border border-[var(--k-border)] bg-black/20 shadow-sm">
-                  <table className="min-w-full divide-y divide-[var(--k-border)] text-sm">
-                    {children}
-                  </table>
-                </div>
-              );
-            },
-            thead({ children }) {
-              return <thead className="bg-white/5">{children}</thead>;
-            },
-            tbody({ children }) {
-              return <tbody className="divide-y divide-[var(--k-border)]">{children}</tbody>;
-            },
-            tr({ children }) {
-              return <tr className="hover:bg-white/[0.02] transition-colors">{children}</tr>;
-            },
-            th({ children }) {
-              return <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">{children}</th>;
-            },
-            td({ children }) {
-              return <td className="px-4 py-3 text-foreground whitespace-pre-wrap">{children}</td>;
-            },
-            code({ node, inline, className, children, ...props }) {
-              const match = /language-(\w+)/.exec(className || '');
-              const lang = match ? match[1] : '';
-              const codeString = String(children).replace(/\n$/, '');
-
-              // Claude-style inline diagrams: a ```mermaid block renders as a
-              // live, theme-matched SVG right inside the bubble; a ```svg block
-              // renders sanitised in a locked sandbox. Both stay out of the
-              // syntax-highlighter path below.
-              if (!inline && lang === 'mermaid') {
-                return <MermaidDiagram code={codeString} streaming={isLiveStreaming} />;
-              }
-              // Interactive question blocks are stripped from the message and
-              // rendered as a card docked above the composer (see ChatMain), so
-              // any that slip through to markdown render nothing inline.
-              if (!inline && (lang === 'question' || lang === 'ask')) {
-                return null;
-              }
-              if (!inline && (lang === 'svg' ||
-                  (!lang && codeString.includes('\n') && codeString.trim().startsWith('<svg')))) {
-                return <SvgBlock code={codeString} streaming={isLiveStreaming} />;
-              }
-
-              // Stray-fragment guard: react-markdown promotes single chars to
-              // "block" code when the model emits a half-finished fence mid-
-              // stream or a 4-space-indented line. Without this, you get a
-              // huge CODE · 1 line card wrapping just `/` or `)`. Treat any
-              // single-line block code with no language tag and short content
-              // as inline — real code blocks always have a language fence or
-              // multiple lines.
-              const isStray = !inline && !lang && !codeString.includes('\n') && codeString.trim().length < 8;
-              if (inline || isStray) {
-                return <code className="bg-accent/50 px-1.5 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
-              }
-
-              if (!className) {
-                return (
-                  <pre className="my-2 p-3 bg-accent/20 rounded-lg overflow-x-auto text-xs font-mono whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-relaxed border border-[var(--k-border)]/30 text-foreground/90 w-full max-w-full min-w-0">
-                    <code {...props}>{children}</code>
-                  </pre>
-                );
-              }
-
-              const lineCount = codeString.split('\n').length;
-              return (
-                <div className="relative group/code my-4 rounded-xl overflow-hidden border border-[var(--k-border)] bg-black/40 w-full max-w-full min-w-0">
-                  <div className="flex items-center justify-between px-4 py-2 bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-pink-500/10 border-b border-white/5">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="flex items-center gap-1.5">
-                        <span className="w-2.5 h-2.5 rounded-full bg-red-400/70"></span>
-                        <span className="w-2.5 h-2.5 rounded-full bg-yellow-400/70"></span>
-                        <span className="w-2.5 h-2.5 rounded-full bg-green-400/70"></span>
-                      </span>
-                      <span className="text-[10px] font-bold uppercase tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-indigo-300 to-pink-300 truncate">
-                        {lang || 'code'}
-                      </span>
-                      <span className="text-[10px] text-muted-foreground/50 hidden sm:inline">· {lineCount} {lineCount === 1 ? 'line' : 'lines'}</span>
-                    </div>
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button
-                        onClick={() => handleCopy(codeString)}
-                        className="p-1.5 rounded hover:bg-white/10 text-muted-foreground hover:text-foreground transition-all"
-                        title="Copy Code"
-                      >
-                        <Copy className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => onOpenArtifact?.({
-                          type: 'code',
-                          title: `${(lang || 'code').toUpperCase()} Implementation`,
-                          code: codeString,
-                          language: lang
-                        })}
-                        className="p-1.5 rounded hover:bg-white/10 text-muted-foreground hover:text-foreground transition-all"
-                        title="Open in Canvas"
-                      >
-                        <ArrowSquareOut className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                  <div className="overflow-x-auto w-full max-w-full">
-                    <SyntaxHighlighter
-                      language={lang}
-                      style={vscDarkPlus}
-                      showLineNumbers={lineCount > 4}
-                      wrapLongLines={false}
-                      customStyle={{
-                        margin: 0,
-                        padding: '1rem',
-                        fontSize: '0.8rem',
-                        lineHeight: '1.55',
-                        background: 'transparent',
-                        maxWidth: '100%',
-                      }}
-                      lineNumberStyle={{
-                        minWidth: '2.25em',
-                        paddingRight: '1em',
-                        color: 'rgba(148,163,184,0.35)',
-                        userSelect: 'none',
-                        borderRight: '1px solid rgba(148,163,184,0.08)',
-                        marginRight: '0.75em',
-                      }}
-                      codeTagProps={{
-                        style: { fontFamily: 'inherit' }
-                      }}
-                    >
-                      {codeString}
-                    </SyntaxHighlighter>
-                  </div>
-                </div>
-              );
-            }
-          }}
+          components={markdownComponents}
         >
           {displayContent}
         </ReactMarkdown>
