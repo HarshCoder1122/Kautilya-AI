@@ -16,3 +16,7 @@ jarvis.log
 chat_data/
 static/build/
 frontend/
+.env.*
+!.env.example
+*service-account*.json
+*firebase-adminsdk*.json
