@@ -46,8 +46,11 @@ def export_pdf():
                 pdf.ln(5)
 
         buffer = io.BytesIO()
-        pdf_output = pdf.output(dest='S').encode('latin-1')
-        buffer.write(pdf_output)
+        # fpdf2: output() returns a bytearray; older fpdf returned a latin-1 str.
+        out = pdf.output()
+        if isinstance(out, str):
+            out = out.encode('latin-1')
+        buffer.write(bytes(out))
         buffer.seek(0)
         
         return send_file(buffer, as_attachment=True, download_name='content_export.pdf', mimetype='application/pdf')
@@ -96,6 +99,44 @@ def export_docx():
     except Exception as e:
          print(f"DOCX Export failed: {e}")
          return jsonify({"error": str(e)}), 500
+
+
+@export_bp.route('/export/deck', methods=['POST'])
+def export_deck():
+    """Export a deck artifact (the Presentation skill's JSON) to PowerPoint or PDF.
+
+    Body: { "deck": <json string or object>, "format": "pptx"|"pdf",
+            "title": "...", "filename": "..." }
+    The canvas's deck export buttons call this with the live deck spec, so the
+    download matches the on-screen, themed preview exactly.
+    """
+    try:
+        data = request.json or {}
+        deck = data.get('deck')
+        if deck is None:
+            return jsonify({"error": "Missing 'deck' content"}), 400
+        # Accept either a JSON string or an already-parsed object.
+        import json as _json
+        content = deck if isinstance(deck, str) else _json.dumps(deck)
+
+        fmt = (data.get('format') or 'pptx').lower().strip()
+        kind = 'deck_pdf' if fmt in ('pdf', 'deck_pdf') else 'deck'
+        title = (data.get('title') or 'Kautilya Deck').strip() or 'Kautilya Deck'
+        filename = (data.get('filename') or '').strip() or None
+
+        from services.artifact_service import create_artifact
+        try:
+            buf, fname, mimetype = create_artifact(kind, content, title=title, filename=filename)
+        except RuntimeError as dep_err:
+            # Missing optional dependency (python-pptx / fpdf2)
+            return jsonify({"error": str(dep_err)}), 500
+        except ValueError as bad:
+            return jsonify({"error": f"Invalid deck: {bad}"}), 400
+
+        return send_file(buf, as_attachment=True, download_name=fname, mimetype=mimetype)
+    except Exception as e:
+        print(f"Deck export failed: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @export_bp.route('/export/excel', methods=['POST'])

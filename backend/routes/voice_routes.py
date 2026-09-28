@@ -10,11 +10,35 @@ import requests
 
 from flask import Blueprint, request, jsonify, Response
 
-from config import GROQ_API_KEY, SARVAM_API_KEY, STATIC_FOLDER, LIVEKIT_URL, CARTESIA_API_KEY, ELEVENLABS_API_KEY, REVEALIQ_HF_TOKEN
+from config import GROQ_API_KEY, SARVAM_API_KEY, STATIC_FOLDER, LIVEKIT_URL, CARTESIA_API_KEY, ELEVENLABS_API_KEY, REVEALIQ_HF_TOKEN, REVEALIQ_TTS_URL
 from services.tts_service import clean_text_for_tts, detect_tts_voice
 from services.auth_service import verify_firebase_token, record_usage
+from middleware.security import get_real_client_ip
 
 voice_bp = Blueprint('voice', __name__)
+
+# Anti-abuse: these endpoints hit paid third-party APIs (Groq STT, Sarvam TTS)
+# and were callable anonymously with no cap — an open invitation to burn
+# credits. Logged-in users pass freely (tracked via record_usage); anonymous
+# callers get a small per-IP/minute burst cap so the feature still works for
+# guests without becoming a cost faucet.
+import time as _time
+_guest_voice_hits = {}
+
+
+def _guest_voice_ok(per_min=8):
+    """Per-IP burst limit applied ONLY to anonymous callers. Returns True if the
+    request is allowed."""
+    ip = get_real_client_ip(request)
+    now = _time.time()
+    hits = [t for t in _guest_voice_hits.get(ip, []) if now - t < 60]
+    if len(hits) >= per_min:
+        return False
+    hits.append(now)
+    _guest_voice_hits[ip] = hits
+    if len(_guest_voice_hits) > 5000:
+        _guest_voice_hits.clear()
+    return True
 
 
 @voice_bp.route('/voice/transcribe', methods=['POST'])
@@ -26,6 +50,8 @@ def voice_transcribe():
         return jsonify({"error": "No selected file"}), 400
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
+    if not uid and not _guest_voice_ok():
+        return jsonify({"error": "Rate limit exceeded. Please sign in to continue."}), 429
     temp_path = os.path.join(os.getcwd(), f"temp_{uuid.uuid4()}.webm")
     try:
         audio_file.save(temp_path)
@@ -77,6 +103,8 @@ def voice_speak():
         return jsonify({"error": "Sarvam API Key missing"}), 500
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
+    if not uid and not _guest_voice_ok():
+        return jsonify({"error": "Rate limit exceeded. Please sign in to continue."}), 429
     text = clean_text_for_tts(text)
     if not text:
         return jsonify({"error": "No speakable text"}), 400
@@ -123,10 +151,19 @@ def generate_livekit_token():
     if not lk_api_key or not lk_api_secret:
         return jsonify({"error": "LiveKit configuration missing on server."}), 500
 
+    # Require auth: this mints a real LiveKit join token (= billable minutes)
+    # and previously embedded the agent's full system_prompt into the returned
+    # JWT — readable by anyone who guessed an agent_id. Gate it to signed-in
+    # users and only leak the prompt back to the agent's owner.
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Authentication required"}), 401
+
     data = request.get_json(silent=True) or request.args or {}
     participant_name = data.get("participantName", "RevealIQ User")
     agent_id = data.get("agentId", "")
-    
+
     if agent_id:
         room_name = f"voice-{agent_id}--{uuid.uuid4().hex[:4]}"
     else:
@@ -141,20 +178,26 @@ def generate_livekit_token():
             room=room_name,
         ))
     
-    # Add room metadata if agent_id is provided
+    # Add room metadata if agent_id is provided. Only the agent's OWNER gets the
+    # full config (incl. system_prompt) embedded in their token — for everyone
+    # else we pass just the agent_id and let the worker resolve config server-
+    # side, so an agent's prompt never leaks to a non-owner via the JWT.
     if agent_id and db:
         try:
             agent_doc = db.collection('agents').document(agent_id).get()
             if agent_doc.exists:
                 agent_data = agent_doc.to_dict()
                 import json
-                token.with_metadata(json.dumps({
-                    "agent_id": agent_id,
-                    "system_prompt": agent_data.get("system_prompt", ""),
-                    "voice": agent_data.get("voice", "shubh"),
-                    "model": agent_data.get("model", "kautilya-daily"),
-                    "welcome_message": agent_data.get("welcome_message", "")
-                }))
+                if agent_data.get("uid") == uid:
+                    token.with_metadata(json.dumps({
+                        "agent_id": agent_id,
+                        "system_prompt": agent_data.get("system_prompt", ""),
+                        "voice": agent_data.get("voice", "shubh"),
+                        "model": agent_data.get("model", "kautilya-daily"),
+                        "welcome_message": agent_data.get("welcome_message", "")
+                    }))
+                else:
+                    token.with_metadata(json.dumps({"agent_id": agent_id}))
         except Exception as e:
             print(f"[LiveKit] Metadata error: {e}")
 
@@ -193,7 +236,9 @@ def voice_preview():
         
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
-    
+    if not uid and not _guest_voice_ok():
+        return jsonify({"error": "Rate limit exceeded. Please sign in to continue."}), 429
+
     # Simple rate limiting/usage tracking
     if uid:
         record_usage(uid, 'tts_chars', len(text), model=f'preview-{provider}')
@@ -237,7 +282,7 @@ def voice_preview():
         voice_clean = voice.split(":", 1)[1] if ":" in voice else voice
         model = 'kokoro-hi' if ('hi' in voice_clean.lower() or voice_clean.startswith('hf_') or voice_clean.startswith('hm_')) else 'kokoro-en'
         
-        url = 'https://HarshSharma1212-RevealIQ-ASR.hf.space/v1/audio/speech'
+        url = f'{REVEALIQ_TTS_URL}/v1/audio/speech'
         headers = {
             'Content-Type': 'application/json',
         }

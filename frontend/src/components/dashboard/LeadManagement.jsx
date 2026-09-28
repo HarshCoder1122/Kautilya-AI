@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
-import { MagnifyingGlass, FunnelSimple, Export, Phone, EnvelopeSimple, ArrowUp, ArrowDown, Trash } from "@phosphor-icons/react";
-import { leadsAPI } from "../../lib/api";
+import { useNavigate } from "react-router-dom";
+import { MagnifyingGlass, FunnelSimple, Export, Phone, EnvelopeSimple, ArrowUp, ArrowDown, Trash, ChartBar } from "@phosphor-icons/react";
+import { leadsAPI, telephonyAPI } from "../../lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -17,7 +18,20 @@ const statusColors = {
   new: { bg: 'bg-green-500/10', text: 'text-green-400', dot: 'bg-green-400' },
 };
 
+// How the lead reached us: a dialed/received phone call (SIP) vs an in-browser
+// web call vs anything else. Reads call_type first, then the source channel.
+function callChannel(lead) {
+  const t = String(lead.call_type || '').toLowerCase();
+  const src = String(lead.source || '').toLowerCase();
+  if (t === 'phone' || src.includes('sip') || src.includes('phone') || src.includes('telephon'))
+    return { label: 'Phone', icon: '📞', cls: 'bg-[var(--k-brand)]/10 text-[var(--k-brand)]' };
+  if (t === 'web' || src.includes('web'))
+    return { label: 'Web', icon: '🌐', cls: 'bg-[var(--k-green)]/10 text-[var(--k-green)]' };
+  return { label: lead.source || 'Direct', icon: '•', cls: 'bg-muted text-muted-foreground' };
+}
+
 export default function LeadManagement() {
+  const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [sortField, setSortField] = useState('created_at');
@@ -59,6 +73,52 @@ export default function LeadManagement() {
     } catch (error) {
       console.error('Failed to update lead:', error);
     }
+  };
+
+  const [callingId, setCallingId] = useState(null);
+  const handleCallLead = async (lead) => {
+    const number = lead.phone;
+    if (!number || number === 'N/A') {
+      return alert('This lead has no phone number to call.');
+    }
+    if (!lead.agent_id) {
+      return alert('No agent is linked to this lead, so it can\'t be auto-dialed. Open Agent Studio to call manually.');
+    }
+    try {
+      setCallingId(lead.id);
+      const res = await telephonyAPI.outbound({ agent_id: lead.agent_id, to_number: number });
+      alert(`📞 Calling ${number}…\nCall ID: ${res?.call_id || 'pending'}`);
+    } catch (error) {
+      const data = error.response?.data || {};
+      if (error.response?.status === 402 || data.code === 'upgrade_required') {
+        if (window.confirm(`${data.message || 'Free call limit reached.'}\n\nGo to Billing to upgrade?`)) {
+          window.location.href = '/dashboard/billing';
+        }
+        return;
+      }
+      alert(`Call failed: ${data.error || error.message || 'Unknown error'}`);
+    } finally {
+      setCallingId(null);
+    }
+  };
+
+  // Open this person's call in Call Analytics. Prefer a saved call-log id, else
+  // deep-link by phone (CallAnalytics matches on the last 10 digits).
+  const handleViewAnalytics = (lead) => {
+    const callId = lead.call_log_id || lead.log_id;
+    if (callId) return navigate(`/dashboard/calls?call=${encodeURIComponent(callId)}`);
+    const phone = lead.phone && lead.phone !== 'N/A' ? lead.phone : null;
+    if (!phone) return alert('This lead has no call recording to view yet.');
+    navigate(`/dashboard/calls?phone=${encodeURIComponent(phone)}`);
+  };
+
+  const handleEmailLead = (lead) => {
+    if (!lead.email) return alert('This lead has no email address.');
+    const subject = encodeURIComponent('Following up on our call');
+    const body = encodeURIComponent(
+      `Hi ${lead.name || 'there'},\n\n${lead.message || 'Thanks for your time on the call.'}\n\n`
+    );
+    window.location.href = `mailto:${lead.email}?subject=${subject}&body=${body}`;
   };
 
   const filteredLeads = leads
@@ -136,6 +196,7 @@ export default function LeadManagement() {
                 <thead>
                   <tr className="border-b border-[var(--k-border)] bg-muted/30">
                     <th className="text-left px-4 py-3 text-[10px] tracking-[0.15em] uppercase font-semibold text-muted-foreground">Contact</th>
+                    <th className="text-left px-4 py-3 text-[10px] tracking-[0.15em] uppercase font-semibold text-muted-foreground">Type</th>
                     <th className="text-left px-4 py-3 text-[10px] tracking-[0.15em] uppercase font-semibold text-muted-foreground">Company</th>
                     <th className="text-left px-4 py-3 text-[10px] tracking-[0.15em] uppercase font-semibold text-muted-foreground">
                       <button onClick={() => { setSortField('created_at'); setSortDir(d => d === 'asc' ? 'desc' : 'asc'); }} className="flex items-center gap-1 hover:text-foreground transition-colors">
@@ -143,7 +204,6 @@ export default function LeadManagement() {
                       </button>
                     </th>
                     <th className="text-left px-4 py-3 text-[10px] tracking-[0.15em] uppercase font-semibold text-muted-foreground">Status</th>
-                    <th className="text-left px-4 py-3 text-[10px] tracking-[0.15em] uppercase font-semibold text-muted-foreground">Source</th>
                     <th className="text-left px-4 py-3 text-[10px] tracking-[0.15em] uppercase font-semibold text-muted-foreground">Phone</th>
                     <th className="text-right px-4 py-3 text-[10px] tracking-[0.15em] uppercase font-semibold text-muted-foreground">Actions</th>
                   </tr>
@@ -158,6 +218,13 @@ export default function LeadManagement() {
                           <div className="text-sm font-medium text-foreground">{lead.name || 'Unknown'}</div>
                           <div className="text-xs text-muted-foreground">{lead.email || 'No email'}</div>
                         </td>
+                        <td className="px-4 py-3">
+                          {(() => { const c = callChannel(lead); return (
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${c.cls}`}>
+                              <span>{c.icon}</span>{c.label}
+                            </span>
+                          ); })()}
+                        </td>
                         <td className="px-4 py-3 text-sm text-foreground">{lead.company || 'N/A'}</td>
                         <td className="px-4 py-3 text-xs text-muted-foreground">{createdAt}</td>
                         <td className="px-4 py-3">
@@ -166,14 +233,16 @@ export default function LeadManagement() {
                             {lead.status || 'new'}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-xs text-muted-foreground">{lead.source || 'Direct'}</td>
                         <td className="px-4 py-3 text-sm text-foreground">{lead.phone || 'N/A'}</td>
                         <td className="px-4 py-3">
                           <div className="flex items-center justify-end gap-1">
-                            <button data-testid={`call-lead-${lead.id}`} className="p-1.5 rounded-md hover:bg-[var(--k-green)]/10 text-muted-foreground hover:text-[var(--k-green)] transition-colors" title="Call">
-                              <Phone className="w-3.5 h-3.5" />
+                            <button data-testid={`view-lead-${lead.id}`} onClick={() => handleViewAnalytics(lead)} className="p-1.5 rounded-md hover:bg-[var(--k-brand)]/10 text-muted-foreground hover:text-[var(--k-brand)] transition-colors" title="View call analytics">
+                              <ChartBar className="w-3.5 h-3.5" />
                             </button>
-                            <button data-testid={`email-lead-${lead.id}`} className="p-1.5 rounded-md hover:bg-[var(--k-brand)]/10 text-muted-foreground hover:text-[var(--k-brand)] transition-colors" title="Email">
+                            <button data-testid={`call-lead-${lead.id}`} onClick={() => handleCallLead(lead)} disabled={callingId === lead.id} className="p-1.5 rounded-md hover:bg-[var(--k-green)]/10 text-muted-foreground hover:text-[var(--k-green)] transition-colors disabled:opacity-40" title="Call">
+                              <Phone className={`w-3.5 h-3.5 ${callingId === lead.id ? 'animate-pulse' : ''}`} />
+                            </button>
+                            <button data-testid={`email-lead-${lead.id}`} onClick={() => handleEmailLead(lead)} className="p-1.5 rounded-md hover:bg-[var(--k-brand)]/10 text-muted-foreground hover:text-[var(--k-brand)] transition-colors" title="Email">
                               <EnvelopeSimple className="w-3.5 h-3.5" />
                             </button>
                             <button data-testid={`delete-lead-${lead.id}`} onClick={() => handleDeleteLead(lead.id)} className="p-1.5 rounded-md hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-colors" title="Delete">

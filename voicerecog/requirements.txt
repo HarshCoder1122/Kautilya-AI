@@ -1,0 +1,13 @@
+# --- Kautilya RevealIQ STT (Nemotron 3.5 streaming ASR, ONNX INT4) ---
+fastapi
+uvicorn[standard]
+python-multipart
+numpy
+soundfile
+huggingface_hub
+requests
+# onnxruntime-genai is the runtime the onnx-community INT4 export is packaged for
+# (the repo ships genai_config.json + encoder/decoder/joint graphs).
+# Pin >=0.14: Nemotron ASR config support (PR #1997) is only in recent builds,
+# and 0.14.x ships cp312 linux wheels (no cp310 — see Dockerfile).
+onnxruntime-genai==0.14.1

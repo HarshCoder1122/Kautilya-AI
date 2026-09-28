@@ -8,6 +8,8 @@ GET  /api/coder/project/<message_id>?uid=...
 """
 from flask import Blueprint, request, jsonify
 
+from services.auth_service import verify_firebase_token
+
 projects_bp = Blueprint('projects', __name__)
 
 
@@ -17,14 +19,20 @@ def save_project():
     if not db:
         return jsonify({"error": "Firestore unavailable"}), 503
 
+    # Derive uid from the verified token — NEVER from the request body, else
+    # anyone could write into another user's project namespace (IDOR).
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Authentication required"}), 401
+
     data = request.get_json(silent=True) or {}
-    uid = (data.get('uid') or '').strip()
     message_id = (data.get('message_id') or '').strip()
     files = data.get('files') or []
     title = (data.get('title') or 'Untitled Project').strip()
 
-    if not uid or not message_id:
-        return jsonify({"error": "uid and message_id required"}), 400
+    if not message_id:
+        return jsonify({"error": "message_id required"}), 400
     if not isinstance(files, list) or not files:
         return jsonify({"error": "files must be a non-empty list"}), 400
 
@@ -76,9 +84,14 @@ def load_project(message_id):
     if not db:
         return jsonify({"error": "Firestore unavailable"}), 503
 
-    uid = (request.args.get('uid') or '').strip()
-    if not uid or not message_id:
-        return jsonify({"error": "uid and message_id required"}), 400
+    # uid comes from the verified token, not the query string (was an IDOR:
+    # supplying any victim uid read their saved projects).
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Authentication required"}), 401
+    if not message_id:
+        return jsonify({"error": "message_id required"}), 400
 
     try:
         ref = db.collection('users').document(uid).collection('coder_projects').document(message_id)

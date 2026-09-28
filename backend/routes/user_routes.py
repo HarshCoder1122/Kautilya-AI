@@ -5,10 +5,37 @@ Handles /api/user/* endpoints (settings, integrations, account).
 from flask import Blueprint, request, jsonify
 
 from services.auth_service import verify_firebase_token
-from services.memory_service import record_user_session
-from services.email_service import send_welcome_email
+from services.memory_service import record_user_session, _invalidate_user_settings_cache
+from services.email_service import (
+    send_welcome_email, send_pro_upgraded_email,
+    send_pro_demoted_email, send_miss_you_email,
+)
 
 user_bp = Blueprint('user', __name__)
+
+
+@user_bp.route('/admin/send-test-emails', methods=['POST'])
+def admin_send_test_emails():
+    """One-off: fire every lifecycle email (welcome, pro upgraded/demoted,
+    miss-you) to a given address so we can eyeball all templates. Token-gated
+    via the EMAIL_TEST_TOKEN Space secret; returns 403 if the secret is unset."""
+    import os
+    expected = os.environ.get('EMAIL_TEST_TOKEN')
+    body = request.get_json(silent=True) or {}
+    token = request.headers.get('X-Admin-Token') or body.get('token')
+    if not expected or token != expected:
+        return jsonify({"error": "forbidden"}), 403
+    email = (body.get('email') or '').strip()
+    name = body.get('name') or 'Harsh'
+    if not email:
+        return jsonify({"error": "email required"}), 400
+    # The Resend throttle in email_service paces these ~0.6s apart → no 429.
+    send_welcome_email(email, name)
+    send_pro_upgraded_email(email, name)
+    send_pro_demoted_email(email, name)
+    send_miss_you_email(email, name)
+    return jsonify({"status": "queued", "email": email,
+                    "sent": ["welcome", "pro_upgraded", "pro_demoted", "miss_you"]})
 
 
 @user_bp.route('/user/welcome-check', methods=['POST'])
@@ -97,20 +124,119 @@ def save_user_settings():
     data = request.get_json()
     if not data: return jsonify({"error": "No data provided"}), 400
     try:
-        settings = {
-            'display_name': data.get('display_name', '')[:100],
-            'preferred_name': data.get('preferred_name', '')[:100],
-            'work_function': data.get('work_function', '')[:100],
-            'personal_preferences': data.get('personal_preferences', '')[:2000],
-            'theme': data.get('theme', 'dark'),
-            'tts_enabled': data.get('tts_enabled', True),
-            'notifications_enabled': data.get('notifications_enabled', True),
-            'updated_at': firestore.SERVER_TIMESTAMP
+        from personalities_spec import (
+            PERSONALITIES_BY_ID, CUSTOM_PERSONALITY_ID,
+            DEFAULT_PERSONALITY_ID, MAX_CUSTOM_PERSONALITY_CHARS,
+        )
+        # Write ONLY the keys the client actually sent. This endpoint is called
+        # from several screens (profile form, personality picker, …) — building a
+        # full dict with ''/True defaults meant a partial save silently wiped
+        # every field that screen didn't know about.
+        settings = {'updated_at': firestore.SERVER_TIMESTAMP}
+        _text_fields = {
+            'display_name': 100,
+            'preferred_name': 100,
+            'work_function': 100,
+            'personal_preferences': 2000,
         }
+        for field, cap in _text_fields.items():
+            if field in data:
+                settings[field] = (data.get(field) or '')[:cap]
+        if 'theme' in data:
+            settings['theme'] = data.get('theme') or 'dark'
+        if 'tts_enabled' in data:
+            settings['tts_enabled'] = bool(data.get('tts_enabled'))
+        if 'notifications_enabled' in data:
+            settings['notifications_enabled'] = bool(data.get('notifications_enabled'))
+
+        # ---- Persona (only written when the client sends it, so partial
+        # settings saves from other screens can't silently reset the voice) ----
+        if 'personality' in data:
+            pid = (data.get('personality') or DEFAULT_PERSONALITY_ID).strip().lower()
+            if pid not in PERSONALITIES_BY_ID and pid != CUSTOM_PERSONALITY_ID:
+                pid = DEFAULT_PERSONALITY_ID  # unknown id → house voice
+            settings['personality'] = pid
+        if 'custom_personality' in data:
+            settings['custom_personality'] = (data.get('custom_personality') or '')[:MAX_CUSTOM_PERSONALITY_CHARS]
+        if 'custom_personality_name' in data:
+            settings['custom_personality_name'] = (data.get('custom_personality_name') or '')[:60]
         db.collection('users').document(uid).collection('settings').document('profile').set(settings, merge=True)
+        _invalidate_user_settings_cache(uid)
         return jsonify({"status": "ok", "message": "Settings saved successfully"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@user_bp.route('/user/personalities', methods=['GET'])
+def list_user_personalities():
+    """Built-in personas for the picker (no prompt text — that stays server-side)."""
+    from personalities_spec import list_personalities, DEFAULT_PERSONALITY_ID
+    return jsonify({
+        "personalities": list_personalities(),
+        "default": DEFAULT_PERSONALITY_ID,
+    })
+
+
+@user_bp.route('/user/personality/generate', methods=['POST'])
+def generate_custom_personality():
+    """Turn a plain-language description into a persona overlay.
+
+    The user says "talk like a sarcastic Mumbai startup founder who hates
+    jargon" and Kautilya writes the actual instruction block. Returned for
+    preview — the client saves it via POST /user/settings, so the user sees
+    what they're getting before it takes effect.
+    """
+    from personalities_spec import (
+        CUSTOM_PERSONALITY_GENERATOR_PROMPT, MAX_CUSTOM_PERSONALITY_CHARS,
+    )
+    from services.llm_service import call_vertex_gemini
+    from services.agent_loop_service import FAST_MODEL
+
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json() or {}
+    description = (data.get('description') or '').strip()
+    if not description:
+        return jsonify({"error": "Describe the personality you want"}), 400
+    if len(description) > 2000:
+        description = description[:2000]
+
+    name = (data.get('name') or '').strip()[:60]
+
+    try:
+        overlay = call_vertex_gemini(
+            [
+                {"role": "system", "content": CUSTOM_PERSONALITY_GENERATOR_PROMPT},
+                {"role": "user", "content": f"Personality I want:\n{description}"},
+            ],
+            model=FAST_MODEL,
+            temperature=0.8,
+            max_tokens=900,
+            stream=False,
+        )
+    except Exception as e:
+        print(f"[Personality] generation failed: {e}")
+        return jsonify({"error": "Could not generate personality right now"}), 503
+
+    if not overlay or not overlay.strip():
+        return jsonify({"error": "Could not generate personality right now"}), 503
+
+    overlay = overlay.strip()
+    # Models like to wrap output in fences despite being told not to.
+    if overlay.startswith('```'):
+        overlay = overlay.split('\n', 1)[-1]
+        if overlay.rstrip().endswith('```'):
+            overlay = overlay.rstrip()[:-3].rstrip()
+    overlay = overlay[:MAX_CUSTOM_PERSONALITY_CHARS]
+
+    if not name:
+        # Derive a short label from the description so the card isn't blank.
+        name = ' '.join(description.split()[:3]).strip('.,!?').title()[:60] or 'Custom'
+
+    return jsonify({"personality": overlay, "name": name})
 
 
 @user_bp.route('/user/integrations', methods=['GET'])
@@ -419,6 +545,7 @@ def user_profile():
         if 'preferences' in data:
             update['personal_preferences'] = str(data['preferences'])[:2000]
         profile_ref.set(update, merge=True)
+        _invalidate_user_settings_cache(uid)
         return jsonify({"status": "ok", "message": "Profile saved"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -792,7 +919,7 @@ def get_analytics_trends():
         "daily_usage": daily_usage,
         "conversion_rate": 0.12,
         "growth": "+15%",
-        "top_models": ["llama-3.3-70b", "deepseek-v4-pro"],
+        "top_models": ["llama-3.3-70b", "kautilya-coder"],
         "summary": "Your AI usage is trending upward by 15% this month."
     })
 

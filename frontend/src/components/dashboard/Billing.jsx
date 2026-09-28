@@ -33,6 +33,8 @@ export default function Billing({ user }) {
       setLoading(true);
       const c = await billingAPI.getConfig();
       setConfig(c);
+      // Cache tier so the chat upgrade card never shows to PRO users.
+      try { localStorage.setItem('k_is_pro', (c?.is_pro || c?.tier === 'pro') ? '1' : '0'); } catch {}
     } catch (e) {
       console.error("Failed to load billing config", e);
     } finally {

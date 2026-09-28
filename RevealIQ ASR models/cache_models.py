@@ -28,5 +28,28 @@ def download_models():
     except Exception as e:
         print(f"Error caching Kokoro Hindi: {e}")
 
+def download_onnx():
+    """Pre-cache the fast ONNX engine's model + voices at build time.
+    int8 model = ~2x faster than fp32 on CPU. NON-FATAL: any failure just means
+    the runtime downloads it on first start (or falls back to PyTorch)."""
+    import os, urllib.request
+    gh = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
+    files = {
+        # int8 quantized (fastest on CPU)
+        "kokoro-int8.onnx": "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/onnx/model_quantized.onnx",
+        "voices-v1.0.bin":  gh + "voices-v1.0.bin",
+    }
+    for fn, url in files.items():
+        try:
+            if os.path.exists(fn) and os.path.getsize(fn) > 0:
+                print(f"ONNX {fn} already present.")
+                continue
+            print(f"Downloading ONNX {fn} ...")
+            urllib.request.urlretrieve(url, fn)
+            print(f"  saved {fn} ({os.path.getsize(fn)//(1024*1024)} MB)")
+        except Exception as e:
+            print(f"  ONNX download skipped {fn}: {e}")
+
 if __name__ == "__main__":
     download_models()
+    download_onnx()

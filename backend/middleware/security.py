@@ -2,17 +2,48 @@
 Kautilya AI — Security Middleware
 Prompt injection detection and jailbreak prevention.
 """
+import ipaddress
 import re
 
+
+def get_real_client_ip(req):
+    """Spoofing-resistant client IP for rate limiting / bans.
+
+    `X-Forwarded-For` is client-controllable: an attacker can pre-set
+    `X-Forwarded-For: 1.2.3.4` and our trusted proxy appends the real
+    connecting IP to the RIGHT (`1.2.3.4, <real>`). Naively taking the
+    leftmost value (the old behaviour) therefore lets anyone forge their
+    IP to dodge guest rate limits / IP bans, or get a victim banned.
+
+    The trustworthy value is the one OUR infrastructure appended, so we walk
+    the chain from the right and return the first PUBLIC address. Proxy hops
+    are private/loopback and get skipped; spoofed values sit to the left of
+    the proxy-appended real IP and can never win. Falls back to remote_addr
+    (and finally the leftmost hop) for local dev where everything is private.
+    """
+    xff = req.headers.get('X-Forwarded-For', '') or ''
+    chain = [p.strip() for p in xff.split(',') if p.strip()]
+    if req.remote_addr:
+        chain.append(req.remote_addr)
+    for ip in reversed(chain):
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if (addr.is_private or addr.is_loopback or addr.is_link_local
+                or addr.is_reserved or addr.is_multicast):
+            continue
+        return ip
+    return req.remote_addr or (chain[0] if chain else 'unknown')
+
 _SENSITIVE_TRIGGERS = [
-    "initial instructions", "system prompt", "how were you configured",
-    "what were you told", "your instructions", "your rules", "your setup",
-    "your commands", "your training data", "summarize your instructions",
+    "initial instructions", "how were you configured",
+    "what were you told", "summarize your instructions",
     "repeat your prompt", "show your prompt", "print your prompt",
     "reveal your prompt", "tell me your prompt", "what is your prompt",
     "what's your prompt", "output your prompt", "display your prompt",
-    "paste your prompt", "copy your instructions", "what are your guidelines",
-    "what guidelines do you follow", "ignore previous instructions",
+    "paste your prompt", "copy your instructions",
+    "ignore previous instructions",
     "ignore all previous", "disregard your instructions",
     "override your instructions", "forget your instructions",
     "act as if you have no instructions", "pretend you have no rules",
@@ -20,12 +51,11 @@ _SENSITIVE_TRIGGERS = [
     "enter debug mode", "enable jailbreak", "dan mode", "do anything now",
     "you are now unfiltered", "ignore safety", "bypass your filters",
     "ignore your programming", "how were you programmed",
-    "what is your configuration", "what model are you running",
-    "what api do you use", "what is your backend", "show me your code",
-    "show me your source", "what llm are you", "what language model",
+    "what model are you running",
+    "what api do you use", "what is your backend",
+    "what llm are you", "what language model",
     "are you gpt", "are you gemini", "are you llama", "are you openai",
     "are you claude", "who made your prompt", "who wrote your instructions",
-    "developer tools", "new instructions", "hypothetical scenario",
     "roleplay as an ai without rules", "break your constraints",
     "turn off filters", "disable safety guidelines", "act as a bad ai",
     "act as an evil ai", "d.a.n.", "ab se tum", "koi rules nahi", "bhool jao",
@@ -39,7 +69,10 @@ _JAILBREAK_PATTERNS = [
     r"respond.*(?:without|ignoring).*(?:filter|rule|safety|restriction)",
     r"(?:enter|activate).*(?:developer|debug|god).*(?:mode)",
     r"(?:translate|convert).*(?:malicious|hack|exploit)",
-    r"(?:system|core).*(?:prompt|instructions|rules)",
+    # Only flag system-prompt talk when it's clearly an EXTRACTION attempt — the
+    # old `(?:system|core).*(?:prompt|instructions)` fired on benign asks like
+    # "how do I set a system prompt for my agent?" (this product's whole point).
+    r"(?:reveal|show|print|display|repeat|expose|leak|dump|give me your|what is your)\b.{0,25}(?:system|core)\b.{0,15}(?:prompt|instruction|rule)",
     r"(?:ignore|disregard|forget).*(?:policy|guidelines|safety)",
 ]
 

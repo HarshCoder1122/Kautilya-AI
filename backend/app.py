@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Extensions & Config
-from config import STATIC_FOLDER
+from config import STATIC_FOLDER, FLASK_SECRET_KEY, FIREBASE_PROJECT_ID, FIREBASE_AUTH_HOST
 from extensions import db, limit_manager
 
 # Import Blueprints
@@ -34,16 +34,24 @@ from routes.webhooks_routes import webhooks_bp
 from routes.openai_compat_routes import openai_compat_bp
 from routes.background_routes import background_bp
 from routes.code_routes import code_bp
+from routes.computer_routes import computer_bp
 from routes.research_routes import research_bp
 from routes.integrations_routes import integrations_bp
 from routes.embed_routes import embed_bp
 from routes.artifact_routes import artifact_bp
+from routes.invoice_routes import invoice_bp
 from routes.tts_routes import tts_bp
+from routes.stt_routes import stt_bp
 from routes.analytics_routes import analytics_bp
 from routes.projects_routes import projects_bp
+from routes.maps_routes import maps_bp
+from routes.skills_routes import skills_bp
 
 app = Flask(__name__, static_folder=STATIC_FOLDER)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24).hex())
+# Reuse the single secret resolved in config — previously app.py re-derived its
+# own os.urandom() default, so config and app disagreed on the key whenever
+# FLASK_SECRET_KEY was unset (each import a different random value).
+app.secret_key = FLASK_SECRET_KEY
 
 # Optional Gzip Compression for Performance
 try:
@@ -70,7 +78,16 @@ _default_origins = [
 _extra = (os.environ.get("ALLOWED_ORIGINS") or "").strip()
 if _extra:
     _default_origins.extend([o.strip() for o in _extra.split(",") if o.strip()])
-CORS(app, resources={r"/api/*": {"origins": _default_origins}}, supports_credentials=False)
+# NOTE: /api/embed/* is the PUBLIC embeddable-widget surface — it runs on
+# customers' own domains, so it must accept any origin (it's protected by a
+# per-agent embed token, not cookies). It MUST come before the pinned /api/*
+# rule so flask-cors matches the more-specific public rule first; otherwise the
+# widget gets CORS-blocked on every third-party site.
+CORS(app, resources={
+    r"/api/embed/*": {"origins": "*"},
+    r"/api/embed.js": {"origins": "*"},
+    r"/api/*": {"origins": _default_origins},
+}, supports_credentials=False)
 
 # Register blueprints
 app.register_blueprint(static_bp)
@@ -87,13 +104,27 @@ app.register_blueprint(webhooks_bp, url_prefix='/api')
 app.register_blueprint(openai_compat_bp, url_prefix='/api')  # routes: /api/v1/...
 app.register_blueprint(background_bp, url_prefix='/api')
 app.register_blueprint(code_bp, url_prefix='/api')
+app.register_blueprint(computer_bp, url_prefix='/api')
 app.register_blueprint(research_bp, url_prefix='/api')
 app.register_blueprint(integrations_bp, url_prefix='/api')
 app.register_blueprint(embed_bp, url_prefix='/api')
 app.register_blueprint(artifact_bp, url_prefix='/api')
+app.register_blueprint(invoice_bp, url_prefix='/api')
 app.register_blueprint(tts_bp, url_prefix='/api')
+app.register_blueprint(stt_bp, url_prefix='/api')
 app.register_blueprint(analytics_bp, url_prefix='/api')
 app.register_blueprint(projects_bp, url_prefix='/api')
+app.register_blueprint(maps_bp, url_prefix='/api')
+app.register_blueprint(skills_bp, url_prefix='/api')
+
+# Keep our free HF Spaces (RevealIQ-ASR for STT/TTS, KautilyaVoice for the
+# LiveKit agent) warm. ONE pinger for the whole deployment — single-flighted
+# across all gunicorn workers (see services/warmup_service.py).
+try:
+    from services.warmup_service import start_warmup_once
+    start_warmup_once()
+except Exception as _warm_e:
+    logger.warning(f"[App] Space warmup not started: {_warm_e}")
 
 # Boot MCP (Model Context Protocol) client — spawns enabled stdio servers
 # from mcp_config.json and registers their tools with the agent loop.
@@ -171,11 +202,34 @@ def _miss_you_scheduler():
             logger.warning(f"[MissYou] Scheduler error: {_e}")
         _sched_time.sleep(24 * 3600)  # run every 24 hours
 
-_sched_threading.Thread(target=_miss_you_scheduler, daemon=True).start()
-logger.info("[App] Miss-you email scheduler started")
+# Elect a SINGLE worker to run the scheduler. gunicorn runs ~12 workers and
+# each used to start its own _miss_you_scheduler thread → every inactive user
+# got emailed up to 12× simultaneously, blowing past Resend's 2 req/s limit
+# (HTTP 429) and dropping welcome emails caught in the burst. An atomic
+# O_EXCL lock file (workers share the container fs) lets exactly one worker win;
+# /tmp is wiped on container restart, so it self-heals.
+def _is_scheduler_leader():
+    import tempfile
+    lock_path = os.environ.get(
+        "SCHEDULER_LOCK_PATH", os.path.join(tempfile.gettempdir(), "kautilya_miss_you.lock"))
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+    except Exception as _e:
+        # If the lock mechanism itself fails, run anyway — a missed scheduler is
+        # worse than a rare duplicate (and the Resend throttle still paces it).
+        logger.warning(f"[App] scheduler lock failed ({_e}); running unguarded")
+        return True
 
-# CORS for special endpoints
-CORS(app, resources={r"/embed/*": {"origins": "*"}, r"/embed.js": {"origins": "*"}})
+if _is_scheduler_leader():
+    _sched_threading.Thread(target=_miss_you_scheduler, daemon=True).start()
+    logger.info(f"[App] Miss-you email scheduler started (leader pid={os.getpid()})")
+else:
+    logger.info("[App] Miss-you scheduler skipped (another worker is leader)")
 
 # Global Security & Cache Headers
 @app.after_request
@@ -186,7 +240,11 @@ def set_security_headers(response):
     # accelerometer / devicemotion / deviceorientation is not allowed" which
     # originates from Razorpay's fraud-detection iframe trying to read sensors.
     response.headers['Permissions-Policy'] = (
-        'accelerometer=(), camera=(), geolocation=(), gyroscope=(), '
+        # geolocation=(self) so the in-chat map can request the user's precise
+        # location (permission popup). Without this the browser blocks
+        # navigator.geolocation outright and the map falls back to coarse
+        # server-side IP geolocation (i.e. the data-center's location).
+        'accelerometer=(), camera=(), geolocation=(self), gyroscope=(), '
         'magnetometer=(), microphone=(self), payment=(self "https://checkout.razorpay.com"), '
         'usb=()'
     )
@@ -257,7 +315,7 @@ def get_firebase_config():
     env_config = {
         "apiKey": os.environ.get("FIREBASE_API_KEY"),
         "authDomain": os.environ.get("FIREBASE_AUTH_DOMAIN"),
-        "projectId": os.environ.get("FIREBASE_PROJECT_ID", "jarvis-a6e18"),
+        "projectId": FIREBASE_PROJECT_ID,
         "storageBucket": os.environ.get("FIREBASE_STORAGE_BUCKET"),
         "messagingSenderId": os.environ.get("FIREBASE_MESSAGING_SENDER_ID"),
         "appId": os.environ.get("FIREBASE_APP_ID")
@@ -284,9 +342,9 @@ def get_firebase_config():
     
     return jsonify({
         "apiKey": env_config["apiKey"] or "",
-        "authDomain": env_config["authDomain"] or "jarvis-a6e18.firebaseapp.com",
-        "projectId": "jarvis-a6e18",
-        "storageBucket": "jarvis-a6e18.appspot.com",
+        "authDomain": env_config["authDomain"] or f"{FIREBASE_PROJECT_ID}.firebaseapp.com",
+        "projectId": FIREBASE_PROJECT_ID,
+        "storageBucket": f"{FIREBASE_PROJECT_ID}.appspot.com",
         "messagingSenderId": env_config["messagingSenderId"] or "",
         "appId": env_config["appId"] or ""
     })
@@ -313,7 +371,9 @@ def firebase_proxy(firebase_path):
 
     query_string = request.query_string.decode('utf-8')
     suffix = f"?{query_string}" if query_string else ""
-    firebase_url = f"https://jarvis-a6e18.firebaseapp.com/__/{firebase_path}{suffix}"
+    if not FIREBASE_AUTH_HOST:
+        return Response("Firebase auth host not configured", status=404)
+    firebase_url = f"{FIREBASE_AUTH_HOST}/__/{firebase_path}{suffix}"
     _STRIP = {
         'host', 'authorization', 'cookie', 'x-firebase-token',
         'x-kautilya-auth', 'x-hf-token',

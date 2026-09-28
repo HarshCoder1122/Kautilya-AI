@@ -1,0 +1,89 @@
+// ============================================================================
+//  KautilyaClaw — OpenClaw config for the Hugging Face Docker Space.
+//  Same as the VPS template EXCEPT: sandbox is OFF (HF has no docker-in-docker).
+//  Safety relies on the channel allowlists below — keep them tight.
+//  ${VARS} are filled from HF Space Secrets via envsubst (entrypoint.sh).
+// ============================================================================
+{
+  agents: {
+    defaults: {
+      model: { primary: "kautilya/kautilya-daily" },
+      // HF Spaces cannot spawn nested Docker containers → sandbox MUST be off.
+      sandbox: { mode: "off" }
+    }
+  },
+
+  // The Control UI is opened at the Space's own public URL, but the gateway
+  // only allows localhost origins by default → "Browser origin not allowed".
+  // Allow the Space origin so the console can connect over WebSocket.
+  gateway: {
+    controlUi: {
+      allowedOrigins: ["https://harshsharma1212-kautilyaclaw.hf.space"]
+    },
+    // HF routes the browser through an internal proxy (10.x); trust it so the
+    // token-authenticated Control UI WebSocket isn't rejected as "untrusted
+    // address" (which was closing the connection before connect).
+    trustedProxies: ["127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+  },
+
+  models: {
+    mode: "replace",
+    providers: {
+      kautilya: {
+        baseUrl: "${KAUTILYA_BASE_URL}",
+        apiKey: "${KAUTILYA_API_KEY}",
+        api: "openai-completions",
+        timeoutSeconds: 300,
+        models: [
+          {
+            id: "kautilya-coder",
+            name: "Kautilya Coder",
+            reasoning: false,
+            input: ["text"],
+            contextWindow: 256000,
+            maxTokens: 32768,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+          },
+          {
+            id: "kautilya-pro",
+            name: "Kautilya Pro",
+            reasoning: true,
+            input: ["text"],
+            contextWindow: 128000,
+            maxTokens: 16384,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+          },
+          {
+            id: "kautilya-daily",
+            name: "Kautilya Daily",
+            reasoning: false,
+            input: ["text"],
+            contextWindow: 64000,
+            maxTokens: 8192,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+          }
+        ]
+      }
+    }
+  },
+
+  channels: {
+    // Telegram: long-polling (no public webhook), no saved login → survives
+    // Space restarts even without persistent storage. Cleanest on HF.
+    telegram: {
+      enabled: true,
+      botToken: "${TELEGRAM_BOT_TOKEN}",
+      dmPolicy: "allowlist",
+      allowFrom: ["${TELEGRAM_ALLOW_FROM}"]
+    },
+
+    // WhatsApp: links via a one-time QR scan (Space → Logs/terminal:
+    //   openclaw channels login whatsapp). The QR login only PERSISTS across
+    //   restarts if the Space has persistent storage enabled (mounted at /data).
+    //   Without it you'll re-scan after each restart.
+    whatsapp: {
+      enabled: true,
+      allowFrom: ["${WHATSAPP_ALLOW_FROM}"]
+    }
+  }
+}

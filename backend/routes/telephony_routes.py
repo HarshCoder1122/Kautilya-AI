@@ -27,6 +27,11 @@ def api_telephony_diagnostic():
     env_checks = {k: bool(os.environ.get(k)) for k in [
         "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "LIVEKIT_SIP_URI",
         "VOBIZ_MASTER_USER", "VOBIZ_MASTER_PASS", "VOBIZ_MASTER_NUMBER",
+        # GOOGLE_VERTEX_CREDENTIALS_JSON powers the voice agent's real-time
+        # conversational LLM (livekit_agent.py's google.LLM) — required.
+        # NVIDIA_API_KEY (embeddings/RAG) and GROQ_API_KEY (Whisper STT) are
+        # still separate, non-chat capabilities this box may also use.
+        "GOOGLE_VERTEX_CREDENTIALS_JSON", "VERTEX_PROJECT_ID",
         "NVIDIA_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY",
         "FIREBASE_SERVICE_ACCOUNT_JSON",
     ]}
@@ -133,45 +138,111 @@ def api_telephony_save():
         return jsonify({"error": str(e)}), 500
 
 
-@telephony_bp.route('/telephony/outbound-call', methods=['POST'])
-def api_agent_call_outbound():
+@telephony_bp.route('/telephony/inbound-url/<agent_id>', methods=['GET'])
+def api_telephony_inbound_url(agent_id):
+    """Return the ready-to-paste Vobiz Answer/Events URLs for INBOUND calls.
+
+    The user pastes the answer_url into the Vobiz portal against their virtual
+    number ("Answer URL", method POST). When someone calls that number, Vobiz
+    hits our webhook, which bridges the call into LiveKit SIP and the mapped
+    agent picks it up. The WEBHOOK_SECRET is appended server-side so the
+    frontend never needs to know it."""
     from extensions import db
     token_data = verify_firebase_token()
     uid = token_data.get('uid') if token_data else None
     if not uid: return jsonify({"error": "Unauthorized"}), 401
-    
+    if not db: return jsonify({"error": "Database not available"}), 503
+    try:
+        doc = db.collection('agents').document(agent_id).get()
+        if not doc.exists or (doc.to_dict() or {}).get('uid') != uid:
+            return jsonify({"error": "Agent not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    base_url = request.host_url.rstrip('/').replace('http://', 'https://')
+    answer_url = f"{base_url}/api/webhooks/vobiz/answer/{agent_id}"
+    events_url = f"{base_url}/api/webhooks/vobiz/events"
+    secret = (os.environ.get("WEBHOOK_SECRET") or "").strip()
+    if secret:
+        answer_url += f"?secret={secret}"
+        events_url += f"?secret={secret}"
+    return jsonify({"answer_url": answer_url, "events_url": events_url, "method": "POST"})
+
+
+@telephony_bp.route('/telephony/outbound-call', methods=['POST'])
+def api_agent_call_outbound():
+    from extensions import db, limit_manager
+    from config import FREE_OUTBOUND_CALL_LIMIT
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid: return jsonify({"error": "Unauthorized"}), 401
+
     data = request.get_json() or {}
     agent_id = data.get('agent_id')
     to_number = data.get('to_number')
     if not agent_id: return jsonify({"error": "Agent ID required"}), 400
     if not to_number: return jsonify({"error": "Destination number required"}), 400
-    
+
+    # Mobile-call gate: free users get FREE_OUTBOUND_CALL_LIMIT lifetime test
+    # calls, then PRO is required. (Browser/web calls stay free — different
+    # route.) PRO is unlimited. Checked here but only CONSUMED after a
+    # successful dial, so a failed dial doesn't burn the user's free quota.
+    is_pro = bool(limit_manager.is_pro_user(uid))
+    allowed, call_info = limit_manager.check_outbound_call_allowed(
+        uid, is_pro=is_pro, free_limit=FREE_OUTBOUND_CALL_LIMIT)
+    if not allowed:
+        return jsonify({
+            "error": "Free mobile-call limit reached",
+            "code": "upgrade_required",
+            "upgrade": True,
+            "used": call_info["used"],
+            "limit": call_info["limit"],
+            "message": (f"You've used all {call_info['limit']} free test calls. "
+                        f"Upgrade to PRO for unlimited outbound mobile calling."),
+        }), 402
+
     try:
         agent_doc = db.collection('agents').document(agent_id).get()
         if not agent_doc.exists or agent_doc.to_dict().get('uid') != uid:
             return jsonify({"error": "Agent not found"}), 404
         agent = agent_doc.to_dict()
 
-        # TEST CALLS: User wants test calls to go through THEIR/MASTER Vobiz config
-        # instead of the user's saved one (unless it's a campaign).
-        # We'll use the master config if available.
+        # TEST CALLS: Studio "Instant Telephony" calls always prefer the MASTER
+        # Vobiz creds from ENV so a brand-new agent can be dialed without the
+        # user first configuring their own provider. The creds are resolved in
+        # config.py across every env-var name we've ever shipped, so a name
+        # mismatch no longer silently disables this path.
         from config import VOBIZ_MASTER_USER, VOBIZ_MASTER_PASS, VOBIZ_MASTER_NUMBER
-        
+
+        config = None
         if VOBIZ_MASTER_USER and VOBIZ_MASTER_PASS:
             provider_type = 'vobiz'
             config = {
                 "username": VOBIZ_MASTER_USER,
                 "password": VOBIZ_MASTER_PASS,
                 "caller_id": VOBIZ_MASTER_NUMBER,
-                "type": "vobiz"
+                "type": "vobiz",
             }
+            print(f"[Outbound] Using MASTER Vobiz creds for test call to {to_number}")
         else:
-            # Fallback to user's own config if master isn't set
-            provider_type = (agent.get('telephony_provider') or 'exotel').lower()
-            config = load_provider_config(db, uid, provider_type)
+            # Master not set → fall back to whichever provider the user saved.
+            # Try the agent's preferred provider first, then the other one, so a
+            # user who only saved Vobiz (or only Exotel) still gets dialed.
+            preferred = (agent.get('telephony_provider') or 'exotel').lower()
+            for provider_type in (preferred, 'vobiz' if preferred == 'exotel' else 'exotel'):
+                config = load_provider_config(db, uid, provider_type)
+                if config:
+                    print(f"[Outbound] Master not set — using user '{provider_type}' provider")
+                    break
 
         if not config:
-            return jsonify({"error": f"Master Vobiz not set and user provider {provider_type} not configured"}), 400
+            return jsonify({
+                "error": ("Master Vobiz creds are not set on the server and you "
+                          "have not saved any telephony provider. Set VOBIZ_MASTER_USER / "
+                          "VOBIZ_MASTER_PASS / VOBIZ_MASTER_NUMBER in the deployment env, "
+                          "or add Exotel/Vobiz credentials under Settings → Telephony."),
+                "code": "telephony_not_configured",
+            }), 400
 
         # Pre-call CRM lookup: enrich the agent's system_prompt with whatever
         # the connected CRM knows about this number. Soft-fail: missing CRM
@@ -195,16 +266,36 @@ def api_agent_call_outbound():
         except Exception as e:
             print(f"[Pre-call] CRM lookup soft-failed: {e}")
 
-        base_url = request.host_url.rstrip('/')
+        # Webhook callbacks MUST use a publicly-reachable URL. Behind the HF
+        # Spaces proxy (and the ai.revealiq.in custom domain in front of it),
+        # request.host_url can resolve to an internal/wrong host that the
+        # telephony provider cannot reach — so Vobiz/Exotel never hit the
+        # answer webhook, never get the <Dial> SIP instruction, and the call
+        # sits in dead air until it times out (LiveKit receives nothing).
+        # Prefer the configured/auto-detected PUBLIC_BASE_URL (same source the
+        # campaign worker uses); fall back to request.host_url only if unset.
+        from config import PUBLIC_BASE_URL
+        base_url = (PUBLIC_BASE_URL or request.host_url).rstrip('/')
         # Ensure base_url is HTTPS in production
         if not base_url.startswith('http'):
             base_url = f"https://{base_url}"
         elif 'localhost' not in base_url and '127.0.0.1' not in base_url:
             base_url = base_url.replace('http://', 'https://')
+        print(f"[Outbound] Using callback base_url: {base_url}")
 
-        result = dial_outbound(uid, agent_id, agent, config, to_number, base_url, db=db)
+        result = dial_outbound(uid, agent_id, agent, config, to_number, base_url, db=db,
+                               provider=provider_type)
         if result.get('ok'):
-            return jsonify({"status": "ok", "call_id": result.get('call_id'), "provider": result.get('provider')})
+            # Consume one free call only on a successful dial. PRO is unlimited
+            # (increment is a no-op cost-wise but we skip it to keep the counter
+            # meaningful as "free calls used").
+            calls_remaining = None
+            if not is_pro:
+                limit_manager.increment_outbound_call_count(uid)
+                calls_remaining = max(0, (call_info["remaining"] or 0) - 1)
+            return jsonify({"status": "ok", "call_id": result.get('call_id'),
+                            "provider": result.get('provider'),
+                            "is_pro": is_pro, "calls_remaining": calls_remaining})
         return jsonify({"error": result.get('error') or "Dial failed"}), 500
     except Exception as e:
         print(f"[Outbound] Error: {e}")

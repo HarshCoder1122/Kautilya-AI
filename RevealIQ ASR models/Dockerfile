@@ -23,6 +23,8 @@ RUN useradd -m -u 1000 user
 RUN mkdir -p $HF_HOME && chown -R user:user $HOME
 
 # Copy the requirements file and install dependencies as ROOT
+# (kokoro-onnx + onnxruntime included → fast ONNX engine; runtime still falls
+#  back to the PyTorch pipeline if the ONNX model files are missing.)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

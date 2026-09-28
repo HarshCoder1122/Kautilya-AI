@@ -1,5 +1,5 @@
-import { Brain, Code, ChartBar, ArrowSquareOut, Play, Pause, Copy, Check, ArrowsClockwise, SpeakerHigh, StopCircle, CalendarCheck, VideoCamera, Link } from "@phosphor-icons/react";
-import React, { useState, useRef, useEffect } from "react";
+import { Brain, Code, ChartBar, ArrowSquareOut, Play, Pause, Copy, Check, ArrowsClockwise, SpeakerHigh, StopCircle, CalendarCheck, VideoCamera, Link, Crown, Lightning } from "@phosphor-icons/react";
+import React, { useState, useRef, useEffect, useMemo } from "react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -11,6 +11,8 @@ import { ToolResultCards } from "./ToolResultCards";
 import { ttsAPI } from "../../lib/api";
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { MermaidDiagram, SvgBlock } from "./MermaidDiagram";
+import { extractQuestionBlock } from "../../lib/questionBlock";
 
 const CALENDAR_RE = /https?:\/\/(calendar\.google\.com|meet\.google\.com|zoom\.us|teams\.microsoft\.com)[^\s\)\]"<]*/g;
 
@@ -104,7 +106,11 @@ const TOOL_NAMES = [
   'GMAIL_LIST', 'GMAIL_SEND', 'GMAIL_READ',
   'RUN_PYTHON', 'FETCH_URL',
   'WHATSAPP_SEND', 'SLACK_POST', 'HUBSPOT_CREATE_CONTACT',
-  'INTEGRATION',
+  'INTEGRATION', 'MAP_SEARCH', 'ROUTE_PLAN', 'GST_INVOICE',
+  // Kautilya Computer — persistent per-session file tools (agent_loop_service.py)
+  'FILE_WRITE', 'FILE_READ', 'FILE_LIST',
+  // Kautilya Computer — live browser tools (agent_loop_service.py)
+  'BROWSE', 'BROWSE_CLICK', 'BROWSE_TYPE', 'BROWSE_SCROLL',
   // Coder and other agent commands
   'IMAGE', 'WEATHER', 'NEWS', 'STOCK', 'PREDICT_STOCK', 'CRYPTO', 'MOVIE', 'QUOTE', 'FACT', 'DEFINE',
   'TRANSLATE', 'CONVERT', 'CURRENCY', 'WIKI', 'HOROSCOPE', 'RECIPE', 'MAP', 'ROUTE',
@@ -372,7 +378,11 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
 
   const { sources: extractedSources, cleanText } = extractSources(message.responseText || normalizedContent || '');
   const agent = message.agentType ? agentBadge[message.agentType] : null;
-  const rawContent = cleanText
+  // Strip any ```question/```ask block — it's rendered as a card docked above
+  // the composer (by ChatMain), never inline, so the raw JSON must not leak
+  // into the message even when the model emits the fence mid-line.
+  const { cleaned: contentSansQuestion } = extractQuestionBlock(cleanText);
+  const rawContent = contentSansQuestion
     .replace(/<think>[\s\S]*?<\/think>/g, '')
     .trim();
 
@@ -468,6 +478,175 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  // react-markdown uses each renderer below as a React component TYPE. Built
+  // inline, every render (i.e. every streamed/typed token) handed it brand-new
+  // functions, so React unmounted and remounted every code block and diagram
+  // per token — a Mermaid diagram collapsed to its "Drawing…" placeholder and
+  // re-expanded over and over, making the whole chat jump up and down. The
+  // renderers are now created once; per-render values are read from a ref.
+  const mdLiveRef = useRef(null);
+  const markdownComponents = useMemo(() => ({
+    a({ href, children }) {
+      return <LinkCard href={href}>{children}</LinkCard>;
+    },
+
+    // Diagrams (mermaid/svg) must be full-width BLOCKS so the text that
+    // follows them stacks underneath, not beside. react-markdown wraps
+    // fenced code in <pre>; for diagram languages we unwrap it so the
+    // diagram <div> sits directly in the message flow.
+    pre({ node, children }) {
+      try {
+        const codeEl = (node?.children || []).find((c) => c.tagName === 'code');
+        const cls = codeEl?.properties?.className || [];
+        const langClass = (Array.isArray(cls) ? cls : [cls])
+          .find((c) => typeof c === 'string' && c.startsWith('language-'));
+        if (langClass === 'language-mermaid' || langClass === 'language-svg' ||
+            langClass === 'language-question' || langClass === 'language-ask') {
+          return <>{children}</>;
+        }
+      } catch { /* fall through to default <pre> */ }
+      return <pre className="w-full max-w-full min-w-0">{children}</pre>;
+    },
+
+    table({ children }) {
+      return (
+        <div className="overflow-x-auto w-full max-w-full min-w-0 my-6 rounded-xl border border-[var(--k-border)] bg-black/20 shadow-sm">
+          <table className="min-w-full divide-y divide-[var(--k-border)] text-sm">
+            {children}
+          </table>
+        </div>
+      );
+    },
+    thead({ children }) {
+      return <thead className="bg-white/5">{children}</thead>;
+    },
+    tbody({ children }) {
+      return <tbody className="divide-y divide-[var(--k-border)]">{children}</tbody>;
+    },
+    tr({ children }) {
+      return <tr className="hover:bg-white/[0.02] transition-colors">{children}</tr>;
+    },
+    th({ children }) {
+      return <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">{children}</th>;
+    },
+    td({ children }) {
+      return <td className="px-4 py-3 text-foreground whitespace-pre-wrap">{children}</td>;
+    },
+    code({ node, inline, className, children, ...props }) {
+      const live = mdLiveRef.current;
+      const match = /language-(\w+)/.exec(className || '');
+      const lang = match ? match[1] : '';
+      const codeString = String(children).replace(/\n$/, '');
+
+      // Claude-style inline diagrams: a ```mermaid block renders as a
+      // live, theme-matched SVG right inside the bubble; a ```svg block
+      // renders sanitised in a locked sandbox. Both stay out of the
+      // syntax-highlighter path below.
+      if (!inline && lang === 'mermaid') {
+        return <MermaidDiagram code={codeString} streaming={live.isLiveStreaming} />;
+      }
+      // Interactive question blocks are stripped from the message and
+      // rendered as a card docked above the composer (see ChatMain), so
+      // any that slip through to markdown render nothing inline.
+      if (!inline && (lang === 'question' || lang === 'ask')) {
+        return null;
+      }
+      if (!inline && (lang === 'svg' ||
+          (!lang && codeString.includes('\n') && codeString.trim().startsWith('<svg')))) {
+        return <SvgBlock code={codeString} streaming={live.isLiveStreaming} />;
+      }
+
+      // Stray-fragment guard: react-markdown promotes single chars to
+      // "block" code when the model emits a half-finished fence mid-
+      // stream or a 4-space-indented line. Without this, you get a
+      // huge CODE · 1 line card wrapping just `/` or `)`. Treat any
+      // single-line block code with no language tag and short content
+      // as inline — real code blocks always have a language fence or
+      // multiple lines.
+      const isStray = !inline && !lang && !codeString.includes('\n') && codeString.trim().length < 8;
+      if (inline || isStray) {
+        return <code className="bg-accent/50 px-1.5 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
+      }
+
+      if (!className) {
+        return (
+          <pre className="my-2 p-3 bg-accent/20 rounded-lg overflow-x-auto text-xs font-mono whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-relaxed border border-[var(--k-border)]/30 text-foreground/90 w-full max-w-full min-w-0">
+            <code {...props}>{children}</code>
+          </pre>
+        );
+      }
+
+      const lineCount = codeString.split('\n').length;
+      return (
+        <div className="relative group/code my-4 rounded-xl overflow-hidden border border-[var(--k-border)] bg-black/40 w-full max-w-full min-w-0">
+          <div className="flex items-center justify-between px-4 py-2 bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-pink-500/10 border-b border-white/5">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full bg-red-400/70"></span>
+                <span className="w-2.5 h-2.5 rounded-full bg-yellow-400/70"></span>
+                <span className="w-2.5 h-2.5 rounded-full bg-green-400/70"></span>
+              </span>
+              <span className="text-[10px] font-bold uppercase tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-indigo-300 to-pink-300 truncate">
+                {lang || 'code'}
+              </span>
+              <span className="text-[10px] text-muted-foreground/50 hidden sm:inline">· {lineCount} {lineCount === 1 ? 'line' : 'lines'}</span>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                onClick={() => live.handleCopy(codeString)}
+                className="p-1.5 rounded hover:bg-white/10 text-muted-foreground hover:text-foreground transition-all"
+                title="Copy Code"
+              >
+                <Copy className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => live.onOpenArtifact?.({
+                  type: 'code',
+                  title: `${(lang || 'code').toUpperCase()} Implementation`,
+                  code: codeString,
+                  language: lang
+                })}
+                className="p-1.5 rounded hover:bg-white/10 text-muted-foreground hover:text-foreground transition-all"
+                title="Open in Canvas"
+              >
+                <ArrowSquareOut className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+          <div className="overflow-x-auto w-full max-w-full">
+            <SyntaxHighlighter
+              language={lang}
+              style={vscDarkPlus}
+              showLineNumbers={lineCount > 4}
+              wrapLongLines={false}
+              customStyle={{
+                margin: 0,
+                padding: '1rem',
+                fontSize: '0.8rem',
+                lineHeight: '1.55',
+                background: 'transparent',
+                maxWidth: '100%',
+              }}
+              lineNumberStyle={{
+                minWidth: '2.25em',
+                paddingRight: '1em',
+                color: 'rgba(148,163,184,0.35)',
+                userSelect: 'none',
+                borderRight: '1px solid rgba(148,163,184,0.08)',
+                marginRight: '0.75em',
+              }}
+              codeTagProps={{
+                style: { fontFamily: 'inherit' }
+              }}
+            >
+              {codeString}
+            </SyntaxHighlighter>
+          </div>
+        </div>
+      );
+    }
+  }), []);
+
   const stopAudio = () => {
     if (audioRef.current) {
       try {
@@ -516,8 +695,38 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
 
       const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
       audioRef.current = ctx;
-      let nextTime = ctx.currentTime + 0.05;
+      try { await ctx.resume(); } catch {}
+
+      // ── Jitter buffer ──────────────────────────────────────────────────
+      // The server synthesises sentence-by-sentence, so PCM arrives in bursts
+      // with gaps between sentences. The old 50ms lead under-ran on those
+      // gaps → the audible "break" on desktop. We prime ~300ms before starting,
+      // then schedule every arriving frame into the FUTURE (nextTime keeps
+      // accumulating), so a synthesis gap is covered by already-scheduled audio
+      // instead of becoming silence. A resync guard handles rare true underruns.
+      const PRIME_SAMPLES = Math.floor(0.30 * SAMPLE_RATE);
+      let nextTime = 0;
+      let started = false;
+      let pending = [];
+      let pendingSamples = 0;
       let leftover = null;
+
+      const scheduleFrame = (float32) => {
+        const buf = ctx.createBuffer(1, float32.length, SAMPLE_RATE);
+        buf.getChannelData(0).set(float32);
+        const src = ctx.createBufferSource();
+        src.buffer = buf; src.connect(ctx.destination);
+        if (nextTime < ctx.currentTime + 0.02) nextTime = ctx.currentTime + 0.12; // resync
+        src.start(nextTime);
+        nextTime += buf.duration;
+      };
+      const startPlayback = () => {
+        started = true;
+        nextTime = ctx.currentTime + 0.08;
+        for (const f of pending) scheduleFrame(f);
+        pending = []; pendingSamples = 0;
+      };
+
       const reader = response.body.getReader();
       setIsSynthesizing(false);
       setIsPlaying(true);
@@ -538,16 +747,20 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
           const int16 = new Int16Array(combined.buffer, combined.byteOffset, len / 2);
           const float32 = new Float32Array(int16.length);
           for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0;
-          const buf = ctx.createBuffer(1, float32.length, SAMPLE_RATE);
-          buf.getChannelData(0).set(float32);
-          const src = ctx.createBufferSource();
-          src.buffer = buf; src.connect(ctx.destination);
-          const t = Math.max(nextTime, ctx.currentTime + 0.01);
-          src.start(t); nextTime = t + buf.duration;
+
+          if (started) {
+            scheduleFrame(float32);
+          } else {
+            pending.push(float32); pendingSamples += float32.length;
+            if (pendingSamples >= PRIME_SAMPLES) startPlayback();
+          }
         }
+        // Clip shorter than the prime window — flush what we have.
+        if (!started && pending.length) startPlayback();
       } finally {
         reader.cancel().catch(() => {});
-        setTimeout(() => { try { ctx.close(); } catch {} audioRef.current = null; setIsPlaying(false); }, (nextTime - ctx.currentTime + 0.5) * 1000);
+        const tail = Math.max(0.3, (nextTime - ctx.currentTime) + 0.3);
+        setTimeout(() => { try { ctx.close(); } catch {} audioRef.current = null; setIsPlaying(false); }, tail * 1000);
       }
     } catch (error) {
       console.warn('Streaming TTS failed, falling back to browser speech:', error);
@@ -639,6 +852,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
   // the message (typical after a screen lock / hard reload mid-generation),
   // show a live "Generating…" pulse so the UI never feels dead.
   const isLiveStreaming = Boolean(message.streaming);
+  mdLiveRef.current = { isLiveStreaming, handleCopy, onOpenArtifact };
   const hasContent = (rawContent && rawContent.length > 0) ||
                      (message.thinking && message.thinking.length > 0) ||
                      (message.toolResults && message.toolResults.length > 0);
@@ -648,7 +862,7 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
   // but it isn't closed yet, stripToolTags drops the whole open tag — leaving
   // the bubble blank until the closing `]` arrives. For long JSON payloads
   // that's many seconds of dead UI. Show a live placeholder during that gap.
-  const _PREAMBLE_TOOL_RE = /\[(INTEGRATION|SEARCH|CALCULATE|RUN_PYTHON|FETCH_URL|CALENDAR_(?:LIST|CREATE|DELETE)|GMAIL_(?:LIST|SEND|READ)|WHATSAPP_SEND|SLACK_POST|HUBSPOT_CREATE_CONTACT)(?::|\s)/;
+  const _PREAMBLE_TOOL_RE = /\[(INTEGRATION|SEARCH|CALCULATE|RUN_PYTHON|FETCH_URL|CALENDAR_(?:LIST|CREATE|DELETE)|GMAIL_(?:LIST|SEND|READ)|WHATSAPP_SEND|SLACK_POST|HUBSPOT_CREATE_CONTACT|FILE_WRITE|FILE_READ|FILE_LIST|BROWSE_TYPE|BROWSE_CLICK|BROWSE_SCROLL|BROWSE)(?::|\s)/;
   const _toolPrepLabel = (() => {
     if (!isLiveStreaming || !rawContent) return null;
     const m = rawContent.match(_PREAMBLE_TOOL_RE);
@@ -669,6 +883,22 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
     if (tag === 'CALCULATE') return 'Calculating…';
     if (tag === 'RUN_PYTHON') return 'Running Python…';
     if (tag === 'FETCH_URL') return 'Fetching URL…';
+    if (tag === 'FILE_WRITE') {
+      const nameMatch = after.match(/\[FILE_WRITE:\s*([^\|\n]+?)\s*\|/);
+      return nameMatch ? `Writing ${nameMatch[1].trim()}…` : 'Writing file…';
+    }
+    if (tag === 'FILE_READ') return 'Reading file…';
+    if (tag === 'FILE_LIST') return 'Listing files…';
+    if (tag === 'BROWSE') {
+      const urlMatch = after.match(/\[BROWSE:\s*(\S+)/);
+      return urlMatch ? `Browsing ${urlMatch[1].replace(/^https?:\/\//, '').slice(0, 40)}…` : 'Browsing…';
+    }
+    if (tag === 'BROWSE_CLICK') return 'Clicking through…';
+    if (tag === 'BROWSE_TYPE') {
+      const fieldMatch = after.match(/\[BROWSE_TYPE:\s*([^\|\n]+?)\s*\|/);
+      return fieldMatch ? `Filling ${fieldMatch[1].trim()}…` : 'Typing…';
+    }
+    if (tag === 'BROWSE_SCROLL') return 'Scrolling…';
     if (tag.startsWith('CALENDAR_')) return 'Working on calendar…';
     if (tag.startsWith('GMAIL_')) return 'Working on email…';
     if (tag === 'WHATSAPP_SEND') return 'Sending WhatsApp…';
@@ -745,134 +975,39 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false, output: 'html' }]]}
-          components={{
-            a({ href, children }) {
-              return <LinkCard href={href}>{children}</LinkCard>;
-            },
-
-            table({ children }) {
-              return (
-                <div className="overflow-x-auto w-full max-w-full min-w-0 my-6 rounded-xl border border-[var(--k-border)] bg-black/20 shadow-sm">
-                  <table className="min-w-full divide-y divide-[var(--k-border)] text-sm">
-                    {children}
-                  </table>
-                </div>
-              );
-            },
-            thead({ children }) {
-              return <thead className="bg-white/5">{children}</thead>;
-            },
-            tbody({ children }) {
-              return <tbody className="divide-y divide-[var(--k-border)]">{children}</tbody>;
-            },
-            tr({ children }) {
-              return <tr className="hover:bg-white/[0.02] transition-colors">{children}</tr>;
-            },
-            th({ children }) {
-              return <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">{children}</th>;
-            },
-            td({ children }) {
-              return <td className="px-4 py-3 text-foreground whitespace-pre-wrap">{children}</td>;
-            },
-            code({ node, inline, className, children, ...props }) {
-              const match = /language-(\w+)/.exec(className || '');
-              const lang = match ? match[1] : '';
-              const codeString = String(children).replace(/\n$/, '');
-
-              // Stray-fragment guard: react-markdown promotes single chars to
-              // "block" code when the model emits a half-finished fence mid-
-              // stream or a 4-space-indented line. Without this, you get a
-              // huge CODE · 1 line card wrapping just `/` or `)`. Treat any
-              // single-line block code with no language tag and short content
-              // as inline — real code blocks always have a language fence or
-              // multiple lines.
-              const isStray = !inline && !lang && !codeString.includes('\n') && codeString.trim().length < 8;
-              if (inline || isStray) {
-                return <code className="bg-accent/50 px-1.5 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
-              }
-
-              if (!className) {
-                return (
-                  <pre className="my-2 p-3 bg-accent/20 rounded-lg overflow-x-auto text-xs font-mono whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-relaxed border border-[var(--k-border)]/30 text-foreground/90 w-full max-w-full min-w-0">
-                    <code {...props}>{children}</code>
-                  </pre>
-                );
-              }
-
-              const lineCount = codeString.split('\n').length;
-              return (
-                <div className="relative group/code my-4 rounded-xl overflow-hidden border border-[var(--k-border)] bg-black/40 w-full max-w-full min-w-0">
-                  <div className="flex items-center justify-between px-4 py-2 bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-pink-500/10 border-b border-white/5">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="flex items-center gap-1.5">
-                        <span className="w-2.5 h-2.5 rounded-full bg-red-400/70"></span>
-                        <span className="w-2.5 h-2.5 rounded-full bg-yellow-400/70"></span>
-                        <span className="w-2.5 h-2.5 rounded-full bg-green-400/70"></span>
-                      </span>
-                      <span className="text-[10px] font-bold uppercase tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-indigo-300 to-pink-300 truncate">
-                        {lang || 'code'}
-                      </span>
-                      <span className="text-[10px] text-muted-foreground/50 hidden sm:inline">· {lineCount} {lineCount === 1 ? 'line' : 'lines'}</span>
-                    </div>
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button
-                        onClick={() => handleCopy(codeString)}
-                        className="p-1.5 rounded hover:bg-white/10 text-muted-foreground hover:text-foreground transition-all"
-                        title="Copy Code"
-                      >
-                        <Copy className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => onOpenArtifact?.({
-                          type: 'code',
-                          title: `${(lang || 'code').toUpperCase()} Implementation`,
-                          code: codeString,
-                          language: lang
-                        })}
-                        className="p-1.5 rounded hover:bg-white/10 text-muted-foreground hover:text-foreground transition-all"
-                        title="Open in Canvas"
-                      >
-                        <ArrowSquareOut className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                  <div className="overflow-x-auto w-full max-w-full">
-                    <SyntaxHighlighter
-                      language={lang}
-                      style={vscDarkPlus}
-                      showLineNumbers={lineCount > 4}
-                      wrapLongLines={false}
-                      customStyle={{
-                        margin: 0,
-                        padding: '1rem',
-                        fontSize: '0.8rem',
-                        lineHeight: '1.55',
-                        background: 'transparent',
-                        maxWidth: '100%',
-                      }}
-                      lineNumberStyle={{
-                        minWidth: '2.25em',
-                        paddingRight: '1em',
-                        color: 'rgba(148,163,184,0.35)',
-                        userSelect: 'none',
-                        borderRight: '1px solid rgba(148,163,184,0.08)',
-                        marginRight: '0.75em',
-                      }}
-                      codeTagProps={{
-                        style: { fontFamily: 'inherit' }
-                      }}
-                    >
-                      {codeString}
-                    </SyntaxHighlighter>
-                  </div>
-                </div>
-              );
-            }
-          }}
+          components={markdownComponents}
         >
           {displayContent}
         </ReactMarkdown>
       </div>
+
+      {/* Full-capacity → Upgrade-to-PRO card (backend emits event:"capacity",
+          upgrade:true for free users when all LLM lanes are saturated). Never
+          shown to known-PRO users — belt-and-suspenders in case the backend
+          is_pro lookup flaked under load. */}
+      {message.upgrade && (typeof localStorage === 'undefined' || localStorage.getItem('k_is_pro') !== '1') && (
+        <div className="mt-3 rounded-xl border border-amber-400/30 bg-gradient-to-br from-amber-400/10 to-[var(--k-brand)]/10 p-4">
+          <div className="flex items-start gap-3">
+            <div className="shrink-0 mt-0.5 w-9 h-9 rounded-lg bg-amber-400/15 flex items-center justify-center">
+              <Lightning className="w-5 h-5 text-amber-400" weight="fill" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-semibold text-foreground">We're at full capacity</div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                Free access is throttled right now. <span className="font-medium text-foreground">Kautilya PRO</span> requests
+                skip the queue on a reserved lane — no waiting, priority compute.
+              </div>
+              <a
+                href="/dashboard/billing"
+                className="inline-flex items-center gap-1.5 mt-3 px-3.5 py-2 rounded-lg bg-gradient-to-r from-amber-400 to-[var(--k-brand)] text-black text-xs font-bold hover:opacity-90 transition-opacity"
+              >
+                <Crown className="w-4 h-4" weight="fill" />
+                Upgrade to PRO
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* AI-generated disclosure label (Google Play + IT Rules 2021 compliance) */}
       {!isLiveStreaming && displayContent && (
@@ -914,6 +1049,35 @@ export function ChatMessage({ message, onOpenArtifact, onRegenerate }) {
           >
             <ArrowsClockwise className="w-4 h-4" weight="bold" />
           </button>
+        </div>
+      )}
+
+      {/* Truth Lens — cross-model verification badge */}
+      {!isLiveStreaming && message.truthLens && (
+        <div className="mt-3" data-testid="truth-lens">
+          {message.truthLens.verdict === 'verified' ? (
+            <span
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-emerald-500/25 bg-emerald-500/10 text-emerald-500 text-[10px] font-bold tracking-wide uppercase"
+              title={`A second, independent AI model cross-examined this answer and found no factual errors (confidence ${message.truthLens.confidence}%).`}
+            >
+              <Check className="w-3 h-3" weight="bold" />
+              Cross-model verified
+            </span>
+          ) : (
+            <div className="inline-flex flex-col gap-1 px-3 py-2 rounded-lg border border-amber-500/25 bg-amber-500/10">
+              <span className="inline-flex items-center gap-1.5 text-amber-500 text-[10px] font-bold tracking-wide uppercase">
+                <Brain className="w-3 h-3" weight="bold" />
+                Verify independently
+              </span>
+              {(message.truthLens.flags || []).length > 0 && (
+                <ul className="text-[11px] text-muted-foreground space-y-0.5">
+                  {message.truthLens.flags.map((f, i) => (
+                    <li key={i}>• {f}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
         </div>
       )}
 

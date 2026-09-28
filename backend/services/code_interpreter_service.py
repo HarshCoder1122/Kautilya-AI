@@ -332,9 +332,22 @@ def _apply_posix_limits():  # called in child process on POSIX only
 
 
 def run_python(code: str, timeout: int = DEFAULT_TIMEOUT,
-               files: List[Dict[str, str]] | None = None) -> Dict[str, Any]:
+               files: List[Dict[str, str]] | None = None,
+               workdir: str | None = None) -> Dict[str, Any]:
     """
     Execute user Python code.
+
+    By default (workdir=None) this is fully stateless: a fresh tempdir is
+    created and destroyed for this single call — used by the standalone
+    /api/code/run endpoint.
+
+    When `workdir` is given (services/computer_service.py's persistent
+    per-session sandbox), that directory is used as both the sandbox root
+    AND the process cwd instead of a throwaway tempdir, and it is NOT
+    deleted afterwards — so files written by a previous call (or by
+    [FILE_WRITE:]) are visible to this run, and files this run creates
+    persist for the next one.
+
     Returns: {
       stdout: str, stderr: str, exit_code: int, duration_ms: int,
       figures: [base64_png, ...], timed_out: bool,
@@ -374,7 +387,11 @@ def run_python(code: str, timeout: int = DEFAULT_TIMEOUT,
             except Exception:
                 pass
 
-    workdir = tempfile.mkdtemp(prefix='kt_ci_')
+    persistent = workdir is not None
+    if persistent:
+        os.makedirs(workdir, exist_ok=True)
+    else:
+        workdir = tempfile.mkdtemp(prefix='kt_ci_')
     workdir_abs = os.path.realpath(workdir)
 
     preamble = SANDBOX_PREAMBLE.format(
@@ -390,7 +407,12 @@ def run_python(code: str, timeout: int = DEFAULT_TIMEOUT,
     )
     script = textwrap.dedent(preamble)
 
-    data_dir = os.path.join(workdir, 'data')
+    # Persistent (Computer) sessions run with cwd = workdir itself, so a
+    # relative path written by [FILE_WRITE:] on an earlier turn is visible
+    # to this run under the same name. Stateless one-shot calls keep the
+    # original nested data/ dir so uploaded `files` don't collide with
+    # anything the script itself writes.
+    data_dir = workdir if persistent else os.path.join(workdir, 'data')
     os.makedirs(data_dir, exist_ok=True)
 
     # Materialize attached files
@@ -409,7 +431,9 @@ def run_python(code: str, timeout: int = DEFAULT_TIMEOUT,
             except Exception as e:
                 print(f"[CodeInterp] failed to stage {name}: {e}")
 
-    fig_dir = os.path.join(workdir, 'figs')
+    # Hidden name in persistent mode so it doesn't show up in [FILE_LIST:]
+    # (computer_service._HIDDEN_DIRS filters this exact name).
+    fig_dir = os.path.join(workdir, '.kt_figs' if persistent else 'figs')
     os.makedirs(fig_dir, exist_ok=True)
 
     mpl_cache_dir = os.path.join(gemini_dir, 'matplotlib_cache')
@@ -471,7 +495,8 @@ def run_python(code: str, timeout: int = DEFAULT_TIMEOUT,
             proc.kill()
             stdout, stderr = proc.communicate()
     except Exception as e:
-        shutil.rmtree(workdir, ignore_errors=True)
+        if not persistent:
+            shutil.rmtree(workdir, ignore_errors=True)
         return {
             'stdout': '', 'stderr': f'Interpreter host error: {e}',
             'exit_code': -1, 'duration_ms': int((time.time() - start) * 1000),
@@ -499,7 +524,8 @@ def run_python(code: str, timeout: int = DEFAULT_TIMEOUT,
     if len(stderr) > MAX_STDOUT:
         stderr = stderr[:MAX_STDOUT] + '\n…(truncated)'
 
-    shutil.rmtree(workdir, ignore_errors=True)
+    if not persistent:
+        shutil.rmtree(workdir, ignore_errors=True)
 
     return {
         'stdout': clean_stdout,

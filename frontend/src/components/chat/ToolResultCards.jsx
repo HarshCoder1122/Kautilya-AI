@@ -6,8 +6,10 @@
  *   {"event":"tool_result","tool":"<name>","data":{...}}
  * ChatMain accumulates them into msg.toolResults; this component renders them.
  */
-import { Envelope, CalendarCheck, MapPin, VideoCamera, Code, Image as ImageIcon, Terminal, MagnifyingGlass } from "@phosphor-icons/react";
+import { Envelope, CalendarCheck, MapPin, VideoCamera, Code, Image as ImageIcon, Terminal, MagnifyingGlass, FilePlus, FileText, FolderOpen, Compass, ArrowSquareOut } from "@phosphor-icons/react";
 import { useState } from "react";
+import { MapCard } from "./MapCard";
+import { RouteCard } from "./RouteCard";
 
 export function ToolResultCards({ results }) {
   if (!Array.isArray(results) || results.length === 0) return null;
@@ -25,6 +27,15 @@ function ToolResultCard({ tool, data }) {
     case "calendar_list": return <CalendarListCard {...data} />;
     case "python_run":   return <PythonRunCard {...data} />;
     case "search":       return <SearchCard {...data} />;
+    case "map":          return data && data.mode === "route" ? <RouteCard {...data} /> : <MapCard {...data} />;
+    case "file_write":   return <FileWriteCard {...data} />;
+    case "file_read":    return <FileReadCard {...data} />;
+    case "file_list":    return <FileListCard {...data} />;
+    // browse / browse_click / browse_type deliberately DON'T render inline —
+    // that was a screenshot card per action flooding the chat transcript.
+    // The same data now lives in the Computer panel's Browser tab (a single
+    // persistent live view, see ComputerPanel.jsx) — this component just
+    // exports <BrowseCard> for that panel to reuse.
     default:             return null;
   }
 }
@@ -146,6 +157,103 @@ function PythonRunCard({ code = "", stdout = "", stderr = "", images = [], ok = 
   );
 }
 
+// ============= KAUTILYA COMPUTER (persistent session files) =============
+function FileWriteCard({ path = "", bytes = 0 }) {
+  return (
+    <CardShell icon={FilePlus} accent="sky" label="Computer · file saved">
+      <div className="flex items-center justify-between gap-3 text-sm">
+        <span className="font-mono text-foreground line-clamp-1">{path}</span>
+        <span className="text-[10px] text-muted-foreground shrink-0">{formatBytes(bytes)}</span>
+      </div>
+    </CardShell>
+  );
+}
+
+function FileReadCard({ name = "", content = "", truncated = false }) {
+  const [expanded, setExpanded] = useState(false);
+  const preview = content.length > 400 && !expanded ? content.slice(0, 400) + "…" : content;
+  return (
+    <CardShell icon={FileText} accent="violet" label={`Computer · ${name}`}>
+      <pre className="text-[12px] bg-[var(--k-surface-elevated)]/60 rounded-md p-2.5 w-full max-w-full overflow-x-auto border border-[var(--k-border)]/40 whitespace-pre-wrap k-mono max-h-[320px] overflow-y-auto">{preview}</pre>
+      {(content.length > 400 || truncated) && (
+        <button
+          onClick={() => setExpanded(e => !e)}
+          className="text-[11px] text-[var(--k-brand)] hover:underline mt-2"
+        >
+          {expanded ? "Show less" : "Show full file"}
+        </button>
+      )}
+      {truncated && <div className="text-[10px] text-muted-foreground mt-1">File is larger than shown — truncated.</div>}
+    </CardShell>
+  );
+}
+
+function FileListCard({ files = [] }) {
+  if (!files.length) {
+    return (
+      <CardShell icon={FolderOpen} accent="brand" label="Computer · workspace">
+        <p className="text-sm text-muted-foreground">No files yet in this session's workspace.</p>
+      </CardShell>
+    );
+  }
+  return (
+    <CardShell icon={FolderOpen} accent="brand" label={`Computer · ${files.length} file${files.length > 1 ? "s" : ""}`}>
+      <div className="divide-y divide-[var(--k-border)]/60">
+        {files.map((f, i) => (
+          <div key={i} className="py-1.5 first:pt-0 last:pb-0 flex items-center justify-between gap-3 text-sm">
+            <span className="font-mono text-foreground line-clamp-1">{f.path}</span>
+            <span className="text-[10px] text-muted-foreground shrink-0">{formatBytes(f.bytes)}</span>
+          </div>
+        ))}
+      </div>
+    </CardShell>
+  );
+}
+
+// ============= KAUTILYA COMPUTER (live browsing) =============
+export function BrowseCard({ url = "", title = "", screenshot_b64 = "", links = [] }) {
+  const [showLinks, setShowLinks] = useState(false);
+  return (
+    <CardShell icon={Compass} accent="sky" label={`Browsing · ${hostFromUrl(url)}`}>
+      <a href={url} target="_blank" rel="noopener noreferrer"
+         className="flex items-center gap-1.5 text-sm font-medium text-foreground hover:text-[var(--k-brand)] transition-colors mb-2">
+        <span className="line-clamp-1">{title || url}</span>
+        <ArrowSquareOut className="w-3.5 h-3.5 shrink-0 opacity-60" />
+      </a>
+      {screenshot_b64 && (
+        <a href={url} target="_blank" rel="noopener noreferrer" className="block mb-3">
+          <img
+            src={`data:image/jpeg;base64,${screenshot_b64}`}
+            alt={title || url}
+            className="w-full rounded-md border border-[var(--k-border)]/60"
+          />
+        </a>
+      )}
+      {links.length > 0 && (
+        <>
+          <button
+            onClick={() => setShowLinks(s => !s)}
+            className="text-[11px] text-[var(--k-brand)] hover:underline"
+          >
+            {showLinks ? "Hide links" : `Show ${links.length} link${links.length > 1 ? "s" : ""} on this page`}
+          </button>
+          {showLinks && (
+            <div className="mt-2 divide-y divide-[var(--k-border)]/60 max-h-[220px] overflow-y-auto">
+              {links.map((l, i) => (
+                <a key={i} href={l.href} target="_blank" rel="noopener noreferrer"
+                   className="flex items-center gap-2 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
+                  <span className="text-[10px] text-muted-foreground/60 w-4 shrink-0">{i + 1}</span>
+                  <span className="line-clamp-1">{l.text}</span>
+                </a>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </CardShell>
+  );
+}
+
 // ============= SEARCH =============
 function SearchCard({ results = [], query = "" }) {
   if (!results.length) return null;
@@ -221,4 +329,10 @@ function formatEventTime(start, end) {
 }
 function hostFromUrl(url) {
   try { return new URL(url).hostname.replace("www.", ""); } catch { return ""; }
+}
+function formatBytes(n) {
+  if (!n && n !== 0) return "";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }

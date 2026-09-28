@@ -40,6 +40,13 @@ class LimitManager:
         # data_dir is kept for backward compatibility in imports, but ignored.
         self.db = None
         self._pro_cache = SimpleCache(ttl=300)      # Cache pro status for 5 mins
+        # Sticky PRO memory: once a user is CONFIRMED pro we remember it for a
+        # long window so a transient Firestore blip — or a lookup the caller
+        # times out on under load — can never silently flip a paying user back
+        # to "free". That flip is what both drops them off the reserved NVIDIA
+        # lane AND wrongly shows the "Upgrade to PRO" capacity upsell. Only ever
+        # holds True; cleared explicitly on remove_pro_user.
+        self._pro_sticky = SimpleCache(ttl=86400, max_size=5000)
         self._ban_cache = SimpleCache(ttl=300)      # Cache ban status for 5 mins
         self._credits_cache = SimpleCache(ttl=60)   # Cache credits for 1 min
         
@@ -122,10 +129,15 @@ class LimitManager:
             doc = self.db.collection('pro_users').document(user_id).get()
             is_pro = doc.exists
             self._pro_cache.set(user_id, is_pro)
+            if is_pro:
+                self._pro_sticky.set(user_id, True)
             return is_pro
         except Exception as e:
             print(f"[LimitManager] Firestore check pro failed: {e}")
-            return False
+            # Transient error → don't downgrade a user we've previously
+            # confirmed PRO. Falling back to False here is exactly what leaked
+            # the upsell to paying users when Firestore was slow under load.
+            return bool(self._pro_sticky.get(user_id))
 
     def add_pro_user(self, user_id):
         if not user_id or not self.db: return
@@ -139,6 +151,7 @@ class LimitManager:
                 "granted_at": datetime.now().isoformat()
             })
             self._pro_cache.set(user_id, True)
+            self._pro_sticky.set(user_id, True)
             print(f"[LimitManager] Added User {user_id} to PRO tier.")
             if not was_pro:
                 self._notify_tier_change(user_id, "upgraded")
@@ -152,6 +165,7 @@ class LimitManager:
             was_pro = existing.exists
             self.db.collection('pro_users').document(user_id).delete()
             self._pro_cache.set(user_id, False)
+            self._pro_sticky.invalidate(user_id)  # genuine downgrade — drop the sticky PRO flag
             print(f"[LimitManager] Removed User {user_id} from PRO tier.")
             if was_pro:
                 self._notify_tier_change(user_id, "demoted")
@@ -213,19 +227,22 @@ class LimitManager:
         return record
 
     def _save_daily_usage(self, user_id, record):
-        """Save the updated daily usage to Firestore."""
+        """Save the updated daily usage to Firestore asynchronously."""
         self.usage_data[user_id] = record
         if self.db:
-            try:
-                today = record['date']
-                self.db.collection('api_usage').document(user_id).collection('daily').document(today).set({
-                    'chat_count': record.get('chat_count', 0),
-                    'image_count': record.get('image_count', 0),
-                    'api_count':   record.get('api_count', 0),
-                    'updated_at': datetime.now().isoformat()
-                }, merge=True)
-            except Exception as e:
-                print(f"[LimitManager] Firestore save daily usage failed: {e}")
+            import threading
+            def _go():
+                try:
+                    today = record['date']
+                    self.db.collection('api_usage').document(user_id).collection('daily').document(today).set({
+                        'chat_count': record.get('chat_count', 0),
+                        'image_count': record.get('image_count', 0),
+                        'api_count':   record.get('api_count', 0),
+                        'updated_at': datetime.now().isoformat()
+                    }, merge=True)
+                except Exception as e:
+                    print(f"[LimitManager] Firestore save daily usage failed: {e}")
+            threading.Thread(target=_go, daemon=True).start()
 
     # ================= DEVELOPER API LIMITS =================
     def check_developer_api_call(self, user_id, is_pro=False):
@@ -302,6 +319,50 @@ class LimitManager:
         record = self._get_daily_usage(user_id)
         record['chat_count'] += 1
         self._save_daily_usage(user_id, record)
+
+    # ============ OUTBOUND MOBILE-CALL LIMITS (test calls) ============
+    # Browser/web calls (LiveKit) are free for everyone. Placing an outbound
+    # call to a real MOBILE number costs telephony minutes, so free users get a
+    # small lifetime trial (default 5 calls); after that it's PRO-only. PRO is
+    # unlimited. Counter lives in `outbound_call_usage/<uid>.count`.
+    def get_outbound_call_count(self, user_id):
+        if not user_id or not self.db:
+            return 0
+        try:
+            doc = self.db.collection('outbound_call_usage').document(user_id).get()
+            if doc.exists:
+                return int(doc.to_dict().get('count', 0) or 0)
+        except Exception as e:
+            print(f"[LimitManager] get outbound call count failed: {e}")
+        return 0
+
+    def check_outbound_call_allowed(self, user_id, is_pro=False, free_limit=5):
+        """May this user place an outbound mobile call right now?
+        PRO → always (unlimited). Free → until `free_limit` lifetime calls used.
+        Returns (allowed, info) with info = {is_pro, used, limit, remaining}.
+        Does NOT consume — call increment_outbound_call_count() after a
+        successful dial so failed dials don't burn the user's free quota."""
+        if is_pro:
+            return True, {"is_pro": True, "used": 0, "limit": None, "remaining": None}
+        if not user_id:
+            return False, {"is_pro": False, "used": 0, "limit": free_limit, "remaining": 0}
+        used = self.get_outbound_call_count(user_id)
+        remaining = max(0, free_limit - used)
+        return (used < free_limit), {"is_pro": False, "used": used,
+                                     "limit": free_limit, "remaining": remaining}
+
+    def increment_outbound_call_count(self, user_id):
+        if not user_id or not self.db:
+            return
+        try:
+            from firebase_admin import firestore as _fs
+            self.db.collection('outbound_call_usage').document(user_id).set({
+                "uid": user_id,
+                "count": _fs.Increment(1),
+                "updated_at": datetime.now().isoformat(),
+            }, merge=True)
+        except Exception as e:
+            print(f"[LimitManager] increment outbound call failed: {e}")
 
     # ================= CONTEXT LIMITS =================
     def check_context_limit(self, messages, model_mode, limit_tokens=50000, is_pro=False):

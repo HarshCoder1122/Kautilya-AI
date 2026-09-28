@@ -158,27 +158,37 @@ def log_usage_event(uid, resource_type, amount, model=None):
 
 
 def check_api_rate_limit(uid, resource_type, is_pro=False, amount=1, model=None):
-    """SECURITY FIX: Fails CLOSED — returns False on error."""
+    """SECURITY FIX: Fails CLOSED — returns False on error.
+
+    The check-then-increment runs inside a Firestore transaction so concurrent
+    requests (across gunicorn workers) can't both read an under-limit value and
+    each increment past the cap — the old read-then-write let users overshoot
+    their quota under load (TOCTOU)."""
     from extensions import db
     if not db:
         return False
     from datetime import datetime
+    from firebase_admin import firestore
     today = datetime.now().strftime("%Y-%m-%d")
     tier = "pro" if is_pro else "free"
     limit = API_RATE_LIMITS[tier].get(resource_type, 100000)
+    usage_ref = db.collection('api_usage').document(uid).collection('daily').document(today)
+
+    @firestore.transactional
+    def _consume(txn):
+        snap = usage_ref.get(transaction=txn)
+        current = (snap.to_dict() or {}).get(resource_type, 0) if snap.exists else 0
+        if current >= limit:
+            return False
+        txn.set(usage_ref, {resource_type: current + amount}, merge=True)
+        return True
+
     for attempt in range(2):
         try:
-            usage_ref = db.collection('api_usage').document(uid).collection('daily').document(today)
-            usage_doc = usage_ref.get()
-            current = usage_doc.to_dict().get(resource_type, 0) if usage_doc.exists else 0
-            if current >= limit:
-                return False
-            if usage_doc.exists:
-                usage_ref.update({resource_type: current + amount})
-            else:
-                usage_ref.set({resource_type: amount})
-            log_usage_event(uid, resource_type, amount, model)
-            return True
+            allowed = _consume(db.transaction())
+            if allowed:
+                log_usage_event(uid, resource_type, amount, model)
+            return allowed
         except Exception as e:
             print(f"[API Rate] Error (attempt {attempt + 1}): {e}")
             if attempt == 0:

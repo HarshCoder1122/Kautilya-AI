@@ -8,18 +8,14 @@ it were an OpenAI-compatible provider.
 Auth: `Authorization: Bearer kautilya-...` — the same API keys issued
 by /api/keys/create. The master KAUTILYA_API_KEY also works.
 
-Under the hood requests are forwarded to NVIDIA NIM with the appropriate
-Kautilya model mapping and thinking-toggle logic:
+Under the hood requests are forwarded to Google Vertex AI (Gemini) with the
+appropriate Kautilya model mapping and thinking-toggle logic — see
+_MODEL_LABELS in services/agent_loop_service.py for the live tier→model map.
 
-    kautilya-coder  → deepseek-ai/deepseek-v4-pro
-    kautilya-pro    → nvidia/nemotron-3-super-120b-a12b
-    kautilya-daily  → (falls back to Groq llama-3.3-70b-versatile)
-
-Requests may also pass the raw NVIDIA model id directly.
+Requests may also pass the raw Gemini model id directly.
 The `max_thinking` toggle can be requested via:
   - `extra_body.max_thinking: true`
-  - `extra_body.chat_template_kwargs.enable_thinking: true`  (nemotron)
-  - `extra_body.chat_template_kwargs.thinking: true`         (deepseek)
+  - top-level `reasoning_effort: "high"`
 """
 import json
 import time
@@ -27,10 +23,10 @@ import uuid
 
 from flask import Blueprint, request, jsonify, Response
 
-from config import NVIDIA_API_KEY, NVIDIA_API_KEYS
 from services.auth_service import verify_api_key, record_usage
-from services.llm_service import call_groq, call_nvidia
+from services.llm_service import call_vertex_gemini
 from system_prompts import DAILY_SYSTEM_PROMPT, PRO_SYSTEM_PROMPT, CODER_SYSTEM_PROMPT_PRO
+from middleware.security import block_sensitive_query
 
 
 # Light-touch identity guard for the OpenAI-compatible API.
@@ -188,12 +184,29 @@ openai_compat_bp = Blueprint('openai_compat', __name__)
 
 
 # ---------- model registry ----------
-# These are the same backing models the dashboard chat uses (agent_loop_service.py).
+# Derived from agent_loop_service._MODEL_LABELS — THE single source of truth
+# for tier -> model id — instead of a hand-maintained copy that could silently
+# drift from what the dashboard chat actually calls. 'kautilya-fast' has no
+# _MODEL_LABELS entry (it's a lighter latency-optimized branch in
+# agent_loop_service) so it's still listed explicitly here.
+from services.agent_loop_service import (
+    _MODEL_LABELS as _KAUTILYA_TIER_MODELS,
+    FAST_MODEL as _KAUTILYA_FAST_MODEL,
+    _FALLBACK_MODEL as _KAUTILYA_TIER_FALLBACKS,
+)
 KAUTILYA_MODEL_MAP = {
-    "kautilya-fast":    "llama-3.3-70b-versatile",            # Groq direct — sub-500ms TTFT
-    "kautilya-coder":   "qwen/qwen3-coder-480b-a35b-instruct",
-    "kautilya-pro":     "nvidia/nemotron-3-super-120b-a12b",
-    "kautilya-daily":   "mistralai/mistral-medium-3.5-128b",
+    "kautilya-fast":    _KAUTILYA_FAST_MODEL,                 # Gemini Flash-Lite — sub-500ms TTFT
+    "kautilya-coder":   _KAUTILYA_TIER_MODELS['coder'][1],
+    "kautilya-pro":     _KAUTILYA_TIER_MODELS['pro'][1],
+    "kautilya-daily":   _KAUTILYA_TIER_MODELS['daily'][1],
+}
+# Stable GA fallback per requested_model, used if the primary (often preview)
+# model errors — mirrors agent_loop_service's own resilience fallback.
+_KAUTILYA_FALLBACK_MODEL = {
+    "kautilya-fast":    _KAUTILYA_TIER_FALLBACKS['fast'],
+    "kautilya-coder":   _KAUTILYA_TIER_FALLBACKS['coder'],
+    "kautilya-pro":     _KAUTILYA_TIER_FALLBACKS['pro'],
+    "kautilya-daily":   _KAUTILYA_TIER_FALLBACKS['daily'],
 }
 
 # Per-model context windows. Match each upstream model's actual capability so
@@ -208,6 +221,21 @@ KAUTILYA_MODEL_CONTEXT = {
     "kautilya-daily":   {"free":  32_000, "pro":  64_000},
 }
 
+# Hard per-model output cap (keep in sync with PUBLIC_MODELS.max_output_tokens).
+# We RESERVE this slice of the context window for the reply before trimming the
+# input, so a long Cline/Cursor history can never push input + output past the
+# model's real limit — which is what made the upstream start erroring once the
+# conversation grew ("requested more tokens than the model can handle").
+KAUTILYA_MODEL_MAX_OUTPUT = {
+    "kautilya-fast":   4_096,
+    "kautilya-coder": 32_768,
+    "kautilya-pro":   16_384,
+    "kautilya-daily":  8_192,
+}
+# Headroom for char//4 token-estimate drift and the tool/JSON schema overhead
+# that isn't counted in the message char estimate.
+CONTEXT_SAFETY_MARGIN = 2_000
+
 # Non-standard capability flags that LiteLLM / OpenRouter-style clients
 # (and Cline's "openai-compatible" provider when set to auto-detect) read
 # to decide whether to enable tool-use, vision, etc. The OpenAI spec
@@ -221,18 +249,19 @@ PUBLIC_MODELS = [
      "supports_function_calling": True,
      "supports_tool_choice": True,
      "supports_parallel_function_calling": True,
-     "supports_vision": False,
+     "supports_vision": True,
      "supports_system_messages": True,
      "supports_prompt_cache": False},
     {"id": "kautilya-coder",  "object": "model", "owned_by": "kautilya",
-     "description": "Frontier code generation. Tool use supported.",
+     "description": "Frontier code generation. Tool use + extended thinking supported.",
      "context_window": 256_000,
      "max_output_tokens": 32_768,
      "supports_function_calling": True,
      "supports_tool_choice": True,
      "supports_parallel_function_calling": True,
-     "supports_vision": False,
+     "supports_vision": True,
      "supports_system_messages": True,
+     "supports_reasoning": True,
      "supports_prompt_cache": False},
     {"id": "kautilya-pro",    "object": "model", "owned_by": "kautilya",
      "description": "Strategic reasoning + extended thinking.",
@@ -241,7 +270,7 @@ PUBLIC_MODELS = [
      "supports_function_calling": True,
      "supports_tool_choice": True,
      "supports_parallel_function_calling": True,
-     "supports_vision": False,
+     "supports_vision": True,
      "supports_system_messages": True,
      "supports_reasoning": True,
      "supports_prompt_cache": False},
@@ -252,7 +281,7 @@ PUBLIC_MODELS = [
      "supports_function_calling": True,
      "supports_tool_choice": True,
      "supports_parallel_function_calling": True,
-     "supports_vision": False,
+     "supports_vision": True,
      "supports_system_messages": True,
      "supports_prompt_cache": False},
 ]
@@ -319,21 +348,88 @@ def chat_completions():
     # The Pro/Coder windows now match the underlying model's real native
     # context — Cline/Cursor users were losing context to a hard 64k cap.
     tier_key = "pro" if is_pro else "free"
-    max_context_tokens = KAUTILYA_MODEL_CONTEXT.get(requested_model, {}).get(tier_key, 32_000)
-    messages = _trim_to_context_window(messages, max_tokens=max_context_tokens)
+    context_window = KAUTILYA_MODEL_CONTEXT.get(requested_model, {}).get(tier_key, 32_000)
+
+    # Resolve how many OUTPUT tokens this turn wants (clamped to what the model
+    # can actually emit), and reserve that slice BEFORE trimming the input so
+    # input + output always fits the model's hard limit.
+    model_max_output = KAUTILYA_MODEL_MAX_OUTPUT.get(requested_model, 4_096)
+    _requested_output = body.get('max_completion_tokens') or body.get('max_tokens') or (
+        16384 if requested_model == "kautilya-coder" else 4096
+    )
+    try:
+        _requested_output = int(_requested_output)
+    except (TypeError, ValueError):
+        _requested_output = model_max_output
+    output_budget = max(512, min(_requested_output, model_max_output))
+
+    # Leave room for the reserved output + safety margin when trimming history.
+    input_budget = max(4_000, context_window - output_budget - CONTEXT_SAFETY_MARGIN)
+    messages = _trim_to_context_window(messages, max_tokens=input_budget)
+
+    # Final output cap = whatever room actually remains after the trimmed input.
+    # This is the max_tokens we send upstream (used further below).
+    _actual_input_tokens = _estimate_tokens_from_messages(messages)
+    max_tokens = max(512, min(output_budget, context_window - _actual_input_tokens - CONTEXT_SAFETY_MARGIN))
 
     stream = bool(body.get('stream', False))
+    # OpenAI stream_options: when the client asks for include_usage (Cline,
+    # Cursor, the OpenAI SDK with stream_options set) we must emit a final
+    # empty-choices chunk carrying the usage object. We ALSO attach usage to
+    # the finish chunk unconditionally — clients that didn't ask read it from
+    # there (OpenRouter-style) and spec-strict clients ignore the extra key.
+    include_usage = bool((body.get('stream_options') or {}).get('include_usage'))
+
+    # Identity / prompt-extraction guard — the same control the dashboard chat
+    # uses, now applied to the public API too (it previously had none, so API
+    # callers could freely probe "what model/backend/api are you"). Reads the
+    # last user turn; on a hit we return the canned Kautilya refusal as a
+    # normal OpenAI completion instead of letting the probe reach the model.
+    _last_user_text = ""
+    for _m in reversed(messages):
+        if _m.get("role") == "user":
+            _c = _m.get("content")
+            if isinstance(_c, str):
+                _last_user_text = _c
+            elif isinstance(_c, list):
+                _last_user_text = " ".join(
+                    p.get("text", "") for p in _c
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+            break
+    # Coding agents (Cline, Cursor, Continue) ALWAYS send a big system prompt
+    # and usually a `tools` array, and their user turns routinely contain code
+    # or phrases like "system prompt" / "your instructions" that trip the
+    # consumer-grade jailbreak heuristics. Firing the guard there returns the
+    # canned refusal AS the model's answer and corrupts the IDE session. So we
+    # only run the identity/extraction guard for bare, probe-shaped calls
+    # (no system message, no tools) — real tool agents are trusted to pass.
+    _is_tool_agent = bool(body.get('tools')) or any(
+        isinstance(m, dict) and m.get("role") == "system" for m in messages
+    )
+    _guard = None if _is_tool_agent else block_sensitive_query(_last_user_text, uid=uid)
+    if _guard:
+        if stream:
+            def _refuse_sse():
+                cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+                created = int(time.time())
+                yield _openai_stream_chunk(cid, created, requested_model,
+                                           {"role": "assistant", "content": _guard})
+                yield _openai_stream_chunk(cid, created, requested_model, {}, finish_reason="stop")
+                yield "data: [DONE]\n\n"
+            return Response(_refuse_sse(), mimetype='text/event-stream',
+                            headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+        return jsonify(_openai_completion_envelope(requested_model, _guard, finish_reason="stop"))
+
     # Cline + Continue often pass temperature=0 for deterministic tool-use.
     # Honour exactly what they sent (including 0) rather than treating
     # falsy as missing.
     temperature = body['temperature'] if 'temperature' in body else 0.7
     top_p = body['top_p'] if 'top_p' in body else 0.95
-    # OpenAI spec: prefer max_completion_tokens (newer field), fall back to
-    # max_tokens. If neither is provided, the coder model is asked for a
-    # generous default — Cline expects long code blocks back.
-    max_tokens = body.get('max_completion_tokens') or body.get('max_tokens') or (
-        16384 if requested_model == "kautilya-coder" else 4096
-    )
+    # NOTE: `max_tokens` was already resolved AND clamped against the context
+    # window above (reserving output room so input + output never exceeds the
+    # model's hard limit). Don't recompute it here or we'd reintroduce the
+    # overflow that made long Cline sessions start erroring.
     tools = body.get('tools')
     tool_choice = body.get('tool_choice')
     # Validate the tool envelope so upstream doesn't reject the whole call.
@@ -359,7 +455,7 @@ def chat_completions():
     )
     if isinstance(reasoning_effort, str):
         reasoning_effort = reasoning_effort.strip().lower() or None
-    # `max_thinking` is the on/off switch we pass to call_nvidia. Treat
+    # `max_thinking` is the on/off switch we pass to call_vertex_gemini. Treat
     # high effort OR an explicit toggle as "on"; anything else (low / none /
     # unspecified) means "answer at earliest" so external clients aren't
     # silently paying for reasoning latency they didn't ask for.
@@ -374,146 +470,30 @@ def chat_completions():
 
     print(f"[OpenAI Compat] {requested_model} → {upstream_model} | stream={stream} | uid={uid}")
 
-    # ---- Groq path for daily / llama models ----
-    if 'llama' in upstream_model.lower() and 'nemotron' not in upstream_model.lower():
-        gen = call_groq(messages, stream=stream, model=upstream_model,
-                        temperature=temperature, max_tokens=max_tokens,
-                        tools=tools, tool_choice=tool_choice)
-        if gen is None:
-            print(f"[OpenAI Compat] Groq returned None for {upstream_model}")
-            return jsonify({"error": {"message": "Upstream unavailable — Groq keys exhausted or model error", "type": "upstream_error"}}), 503
-        if not stream:
-            # gen can be a str (plain content) or dict (when tools are used)
-            if isinstance(gen, str):
-                content = gen
-                tool_calls_out = None
-            elif isinstance(gen, dict):
-                content = gen.get("content") or ""
-                tool_calls_out = gen.get("tool_calls")
-            else:
-                content = ""
-                tool_calls_out = None
-            envelope = _openai_completion_envelope(requested_model, content, tool_calls=tool_calls_out)
-            print(f"[OpenAI Compat] Non-stream response: {len(content)} chars")
-            return jsonify(envelope)
-
-        def sse():
-            cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
-            created = int(time.time())
-            first = True
-            full = ""
-            had_tool_calls = False
-            length_capped = False
-            for chunk in gen:
-                if isinstance(chunk, str):
-                    piece = chunk
-                    if not piece:
-                        continue
-                    full += piece
-                    delta = {"content": piece}
-                elif isinstance(chunk, dict):
-                    if chunk.get("_finish_reason") == "length":
-                        length_capped = True
-                        continue
-                    if chunk.get("tool_calls"):
-                        normalized = []
-                        for i, tc in enumerate(chunk["tool_calls"]):
-                            if not isinstance(tc, dict):
-                                continue
-                            out = dict(tc)
-                            if "index" not in out:
-                                out["index"] = tc.get("index", i)
-                            fn = out.get("function") or {}
-                            if isinstance(fn, dict):
-                                args = fn.get("arguments")
-                                if args is not None and not isinstance(args, str):
-                                    try:
-                                        fn["arguments"] = json.dumps(args)
-                                    except Exception:
-                                        fn["arguments"] = str(args)
-                                out["function"] = fn
-                            if "type" not in out:
-                                out["type"] = "function"
-                            normalized.append(out)
-                        if not normalized:
-                            continue
-                        delta = {"tool_calls": normalized}
-                        had_tool_calls = True
-                    elif chunk.get("chunk"):
-                        piece = chunk["chunk"]
-                        full += piece
-                        delta = {"content": piece}
-                    else:
-                        continue
-                else:
-                    continue
-                if first:
-                    delta["role"] = "assistant"
-                    first = False
-                yield _openai_stream_chunk(cid, created, requested_model, delta)
-            finish_r = "tool_calls" if had_tool_calls else ("length" if length_capped else "stop")
-            yield _openai_stream_chunk(cid, created, requested_model, {}, finish_reason=finish_r)
-            yield "data: [DONE]\n\n"
-            if uid and full:
-                try:
-                    record_usage(uid, 'llm_tokens', max(1, (len(full) + sum(len(str(m.get('content',''))) for m in messages)) // 4), model=requested_model)
-                except Exception:
-                    pass
-
-        return Response(sse(), mimetype='text/event-stream',
-                        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
-
-    # ---- NVIDIA path (qwen-coder / nemotron / mistral-daily) ----
-    if not NVIDIA_API_KEYS:
-        return jsonify({"error": {"message": "NVIDIA backend not configured", "type": "upstream_error"}}), 503
-
-    # Same path the dashboard chat uses — call_nvidia handles streaming with
-    # proper thinking/content separation for nemotron/qwen, and reasoning_effort
-    # for Mistral (kautilya-daily). Daily tier always uses lowest effort so
-    # Cline/Cursor stay snappy.
-    is_daily = 'mistral' in upstream_model.lower()
-    # Qwen3-Coder is NOT a reasoning model — it doesn't accept
-    # reasoning_effort or chat_template_kwargs.thinking. Passing either
-    # makes NVIDIA reject the whole request with a 400 ("invalid field"),
-    # which Cline surfaces as "model not capable". Treat the coder model as
-    # a plain non-reasoning chat model regardless of the OpenAI-style
-    # reasoning_effort the client sent.
-    is_qwen_coder = 'qwen' in upstream_model.lower() and 'coder' in upstream_model.lower()
-    rb = reasoning_budget if (max_thinking and not is_daily and not is_qwen_coder) else 0
-    # Map OpenAI-style reasoning_effort to the upstream value:
-    #   high → enable thinking path (handled via max_thinking above)
-    #   low / medium / none / unspecified → fastest path, no reasoning tokens
-    if is_qwen_coder:
-        upstream_effort = None  # never send reasoning_effort to a coder model
-        thinking_on = False
-        expose_thinking_flag = False
-    elif is_daily:
-        # Mistral only accepts 'none' or 'high'.
-        upstream_effort = 'high' if max_thinking else 'none'
-        thinking_on = False  # max_thinking on Mistral is handled via reasoning_effort
-        # When the caller asked for high reasoning we DO want to expose the
-        # reasoning_content deltas back to them so the UI can render a
-        # thinking panel — otherwise the 'high' effort is invisible.
-        expose_thinking_flag = bool(max_thinking)
-    else:
-        # For nemotron / glm we use max_thinking to decide; pass effort hint
-        # through only when explicitly low/medium so the model can dial it down.
-        if max_thinking:
-            upstream_effort = None  # default high path via reasoning_budget
-        elif reasoning_effort in ('low', 'medium', 'none'):
-            upstream_effort = reasoning_effort
-        else:
-            upstream_effort = 'low'  # default: answer at earliest
-        thinking_on = max_thinking
-        expose_thinking_flag = True
-    gen = call_nvidia(
+    # ---- Vertex AI (Gemini) path — every Kautilya tier now runs here ----
+    # Daily tier always answers at lowest effort so Cline/Cursor stay snappy;
+    # thinking is opt-in via extra_body.max_thinking / reasoning_effort=high,
+    # same toggle for every tier now (no more per-model-family branching —
+    # that was only needed for NVIDIA NIM's mix of chat-template dialects).
+    is_daily = requested_model == 'kautilya-daily'
+    rb = reasoning_budget if (max_thinking and not is_daily) else 0
+    gen = call_vertex_gemini(
         messages, stream=True, max_tokens=max_tokens,
         model=upstream_model, tools=tools, tool_choice=tool_choice,
         temperature=temperature, top_p=top_p,
-        max_thinking=thinking_on, reasoning_budget=rb,
-        expose_thinking=expose_thinking_flag,
-        reasoning_effort=upstream_effort,
+        max_thinking=max_thinking, reasoning_budget=rb,
+        expose_thinking=bool(max_thinking),
     )
+    if gen is None and upstream_model != _KAUTILYA_FALLBACK_MODEL.get(requested_model):
+        fallback_model = _KAUTILYA_FALLBACK_MODEL.get(requested_model, _KAUTILYA_FAST_MODEL)
+        print(f"[OpenAI Compat] {upstream_model} unavailable — retrying on {fallback_model}")
+        gen = call_vertex_gemini(
+            messages, stream=True, max_tokens=max_tokens,
+            model=fallback_model, tools=tools, tool_choice=tool_choice,
+            temperature=temperature, top_p=top_p,
+            max_thinking=max_thinking, reasoning_budget=rb,
+            expose_thinking=bool(max_thinking),
+        )
     if gen is None:
         return jsonify({"error": {"message": "Upstream unavailable", "type": "upstream_error"}}), 503
 
@@ -523,11 +503,15 @@ def chat_completions():
         full_thinking = ""
         tool_calls_out = None
         length_capped = False
+        upstream_usage = None
         for ev in gen:
             if not isinstance(ev, dict):
                 continue
             if ev.get("_finish_reason") == "length":
                 length_capped = True
+                continue
+            if ev.get("_usage"):
+                upstream_usage = ev["_usage"]
                 continue
             if ev.get("chunk"):
                 full_content += ev["chunk"]
@@ -559,19 +543,20 @@ def chat_completions():
                         if a is not None:
                             slot["function"]["arguments"] += a if isinstance(a, str) else json.dumps(a)
         finish_r = "tool_calls" if tool_calls_out else ("length" if length_capped else "stop")
+        usage = _usage_payload(upstream_usage, messages, len(full_content) + len(full_thinking))
         envelope = _openai_completion_envelope(requested_model, full_content,
                                                tool_calls=tool_calls_out,
                                                reasoning=full_thinking or None,
-                                               finish_reason=finish_r)
+                                               finish_reason=finish_r,
+                                               usage=usage)
         if uid:
             try:
-                approx = max(1, (len(full_content) + len(full_thinking) + sum(len(str(m.get('content',''))) for m in messages)) // 4)
-                record_usage(uid, 'llm_tokens', approx, model=requested_model)
+                record_usage(uid, 'llm_tokens', usage["total_tokens"], model=requested_model)
             except Exception:
                 pass
         return jsonify(envelope)
 
-    # Streaming: convert call_nvidia events → OpenAI SSE chunks.
+    # Streaming: convert call_vertex_gemini events → OpenAI SSE chunks.
     def sse():
         cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
@@ -581,6 +566,7 @@ def chat_completions():
         finish = "stop"
         had_tool_calls = False
         length_capped = False
+        upstream_usage = None
         for ev in gen:
             if not isinstance(ev, dict):
                 continue
@@ -590,6 +576,10 @@ def chat_completions():
             # ended naturally.
             if ev.get("_finish_reason") == "length":
                 length_capped = True
+                continue
+            # Real token counts captured from the provider's final chunk.
+            if ev.get("_usage"):
+                upstream_usage = ev["_usage"]
                 continue
             delta = {}
             if ev.get("thinking"):
@@ -642,12 +632,14 @@ def chat_completions():
             finish = "length"
         elif had_tool_calls:
             finish = "tool_calls"
-        yield _openai_stream_chunk(cid, created, requested_model, {}, finish_reason=finish)
+        usage = _usage_payload(upstream_usage, messages, len(full_text) + len(full_think))
+        yield _openai_stream_chunk(cid, created, requested_model, {}, finish_reason=finish, usage=usage)
+        if include_usage:
+            yield _usage_stream_chunk(cid, created, requested_model, usage)
         yield "data: [DONE]\n\n"
-        if uid and (full_text or full_think):
+        if uid and (full_text or full_think or had_tool_calls):
             try:
-                approx = max(1, (len(full_text) + len(full_think) + sum(len(str(m.get('content',''))) for m in messages)) // 4)
-                record_usage(uid, 'llm_tokens', approx, model=requested_model)
+                record_usage(uid, 'llm_tokens', usage["total_tokens"], model=requested_model)
             except Exception:
                 pass
 
@@ -656,6 +648,56 @@ def chat_completions():
 
 
 # ---------- helpers ----------
+def _estimate_tokens_from_messages(messages):
+    """chars//4 token estimate over an OpenAI message list (incl. tool_calls)."""
+    chars = 0
+    for m in messages or []:
+        c = m.get("content") or ""
+        if isinstance(c, str):
+            chars += len(c)
+        elif isinstance(c, list):
+            for p in c:
+                if isinstance(p, dict):
+                    chars += len(str(p.get("text", "")))
+        if m.get("tool_calls"):
+            try:
+                chars += len(json.dumps(m["tool_calls"]))
+            except Exception:
+                pass
+    return max(1, chars // 4)
+
+
+def _usage_payload(upstream_usage, messages, completion_chars):
+    """OpenAI usage object: real provider counts when the upstream sent them,
+    chars//4 estimate otherwise. Cline / Cursor / Continue read this to render
+    the context-window meter — without it they show 0 tokens forever."""
+    if isinstance(upstream_usage, dict) and (upstream_usage.get("total_tokens") or upstream_usage.get("prompt_tokens")):
+        try:
+            pt = int(upstream_usage.get("prompt_tokens") or 0)
+            ct = int(upstream_usage.get("completion_tokens") or 0)
+            tt = int(upstream_usage.get("total_tokens") or (pt + ct))
+            return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
+        except (TypeError, ValueError):
+            pass
+    pt = _estimate_tokens_from_messages(messages)
+    ct = max(0, int(completion_chars) // 4)
+    return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}
+
+
+def _usage_stream_chunk(cid, created, model, usage):
+    """The dedicated final usage chunk per OpenAI's stream_options spec:
+    empty choices array, usage attached."""
+    obj = {
+        "id": cid,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [],
+        "usage": usage,
+    }
+    return f"data: {json.dumps(obj)}\n\n"
+
+
 def _normalize_tool_calls(tool_calls):
     """Coerce upstream tool-call output into the strict OpenAI shape Cline /
     Cursor / LangChain / LiteLLM expect: each entry has `id`, `type:
@@ -692,7 +734,7 @@ def _normalize_tool_calls(tool_calls):
     return out or None
 
 
-def _openai_completion_envelope(model, content, tool_calls=None, reasoning=None, finish_reason=None):
+def _openai_completion_envelope(model, content, tool_calls=None, reasoning=None, finish_reason=None, usage=None):
     tool_calls = _normalize_tool_calls(tool_calls)
     msg = {"role": "assistant", "content": content if content else None}
     if tool_calls:
@@ -711,11 +753,11 @@ def _openai_completion_envelope(model, content, tool_calls=None, reasoning=None,
             "message": msg,
             "finish_reason": finish_reason,
         }],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "usage": usage or _usage_payload(None, [], len(content or "")),
     }
 
 
-def _openai_stream_chunk(cid, created, model, delta, finish_reason=None):
+def _openai_stream_chunk(cid, created, model, delta, finish_reason=None, usage=None):
     obj = {
         "id": cid,
         "object": "chat.completion.chunk",
@@ -723,4 +765,6 @@ def _openai_stream_chunk(cid, created, model, delta, finish_reason=None):
         "model": model,
         "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
     }
+    if usage is not None:
+        obj["usage"] = usage
     return f"data: {json.dumps(obj)}\n\n"

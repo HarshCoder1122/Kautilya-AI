@@ -16,7 +16,7 @@ const http = require('http');
 
 const app = express();
 const PORT = process.env.PORT || 8000;
-const BACKEND_URL = process.env.BACKEND_URL || 'https://harshsharma1212-kautilyabackend.hf.space';
+const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5000';
 const HF_TOKEN = process.env.HF_TOKEN || '';
 
 // ── Gzip/brotli compression on everything ─────────────────────────────
@@ -119,20 +119,23 @@ app.use(createProxyMiddleware({
 }));
 
 // ── Proxy /__/* → Firebase Auth handler (so custom authDomain works) ──
-const FIREBASE_PROJECT_ID = process.env.REACT_APP_FIREBASE_PROJECT_ID || 'jarvis-a6e18';
-const FIREBASE_TARGET = `https://${FIREBASE_PROJECT_ID}.firebaseapp.com`;
+const FIREBASE_PROJECT_ID = process.env.REACT_APP_FIREBASE_PROJECT_ID || '';
 
-app.use(createProxyMiddleware({
-  target: FIREBASE_TARGET,
-  changeOrigin: true,
-  pathFilter: ['/__/**'],
-  on: {
-    error: (err, req, res) => {
-      console.error('[Firebase Proxy] Error:', err.message);
-      if (!res.headersSent) res.status(502).json({ error: 'Firebase Auth proxy failed' });
+if (FIREBASE_PROJECT_ID) {
+  app.use(createProxyMiddleware({
+    target: `https://${FIREBASE_PROJECT_ID}.firebaseapp.com`,
+    changeOrigin: true,
+    pathFilter: ['/__/**'],
+    on: {
+      error: (err, req, res) => {
+        console.error('[Firebase Proxy] Error:', err.message);
+        if (!res.headersSent) res.status(502).json({ error: 'Firebase Auth proxy failed' });
+      },
     },
-  },
-}));
+  }));
+} else {
+  console.warn('[Kautilya] REACT_APP_FIREBASE_PROJECT_ID not set — /__/* auth proxy disabled');
+}
 
 // ── Static React build with proper cache headers ──────────────────────
 // - index.html + sw.js: NEVER cache (so kill-switch + new builds propagate)

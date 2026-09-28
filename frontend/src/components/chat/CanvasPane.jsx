@@ -1,14 +1,17 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import JSZip from 'jszip';
-import { X, Code, ChartBar, FileText, Copy, Download, ArrowsOutSimple, Check, FolderOpen, Eye, File, ArrowSquareOut, Archive, CaretUp, CaretDown, MagnifyingGlass, Table } from "@phosphor-icons/react";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { X, Code, ChartBar, FileText, Copy, Download, ArrowsOutSimple, Check, FolderOpen, Eye, File, ArrowSquareOut, Archive, CaretUp, CaretDown, CaretLeft, CaretRight, MagnifyingGlass, Table, Presentation } from "@phosphor-icons/react";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Area, AreaChart } from "recharts";
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { coderProjectsAPI, artifactsAPI } from '@/lib/api';
+import { coderProjectsAPI, artifactsAPI, deckAPI } from '@/lib/api';
+import { renderDeckHTML, parseDeck, THEMES, THEME_IDS } from '@/lib/deck';
+import { MermaidDiagram, SvgBlock } from './MermaidDiagram';
 
 /** Parse `<file ...>...</file>` blocks from model output.
  *
@@ -151,6 +154,63 @@ function inferLang(filename) {
   return map[ext] || 'text';
 }
 
+/** Wrap a single code-snippet artifact into a one-element files array so it can
+ *  flow through MultiFileWorkspace — which gives it the live preview toggle,
+ *  fullscreen, open-in-new-tab, copy and download controls for free. The name
+ *  is chosen so the preview builders detect an entrypoint (index.html for HTML,
+ *  App.jsx/App.tsx for React) and render it instead of showing "no preview". */
+function syntheticFilesFromCode(content) {
+  const code = content?.code || '';
+  const lang = (content?.language || '').toLowerCase();
+  const looksHtml = /<!doctype html>|<html[\s>]/i.test(code);
+  const looksJsx = /<[A-Za-z][^>]*>/.test(code) &&
+                   /\b(import|export|function|const)\b/.test(code) &&
+                   /return\s*\(?\s*</.test(code);
+  let name;
+  if (looksHtml || lang === 'html') name = 'index.html';
+  else if (lang === 'tsx') name = 'App.tsx';
+  else if (lang === 'jsx' || ((lang === 'javascript' || lang === 'js' || !lang) && looksJsx)) name = 'App.jsx';
+  else if (lang === 'css') name = 'styles.css';
+  else if (lang === 'json') name = 'data.json';
+  else if (lang === 'python' || lang === 'py') name = 'main.py';
+  else if (lang === 'typescript' || lang === 'ts') name = 'index.ts';
+  else if (lang === 'javascript' || lang === 'js') name = 'index.js';
+  else name = 'snippet.' + (lang ? lang.replace(/[^a-z0-9]/g, '') : 'txt');
+  return [{ name, language: lang || inferLang(name), content: code }];
+}
+
+// Google-Fonts link the previews share (Inter + Plus Jakarta Sans).
+const PREVIEW_FONTS_LINK =
+  '<link rel="preconnect" href="https://fonts.googleapis.com">' +
+  '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>' +
+  '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">';
+
+/** Make an HTML document preview render the way the model intended: ensure
+ *  Tailwind + web fonts are present. We only inject Tailwind when the markup
+ *  clearly uses utility classes but forgot the CDN (so we never double-load a
+ *  framework the author already included). Fonts are added when absent. */
+function injectPreviewAssets(src) {
+  if (!src) return src;
+  const hasTailwind = /cdn\.tailwindcss\.com|tailwindcss/i.test(src);
+  const hasFonts = /fonts\.googleapis\.com/i.test(src);
+  const usesTwClasses = /class=["'][^"']*\b(flex|grid|hidden|rounded|shadow|gap-\d|p-\d|px-\d|py-\d|m-\d|mx-|my-|text-(?:xs|sm|base|lg|xl|\d)|bg-[a-z]|border|w-\d|h-\d|items-|justify-)/i.test(src);
+
+  let head = '';
+  if (!hasTailwind && usesTwClasses) head += '<script src="https://cdn.tailwindcss.com"></script>';
+  if (!hasFonts) {
+    head += PREVIEW_FONTS_LINK;
+    // Only set a default font when the author didn't pick one themselves.
+    if (!/font-family/i.test(src)) {
+      head += "<style>:root{font-family:Inter,'Plus Jakarta Sans',system-ui,-apple-system,sans-serif}</style>";
+    }
+  }
+  if (!head) return src;
+
+  if (/<head[^>]*>/i.test(src)) return src.replace(/<head[^>]*>/i, (m) => m + head);
+  if (/<html[^>]*>/i.test(src)) return src.replace(/<html[^>]*>/i, (m) => m + '<head>' + head + '</head>');
+  return head + src;
+}
+
 function buildHtmlPreview(files) {
   // Prefer index.html; fall back to any .html file.
   const html = files.find(f => f.name === 'index.html')
@@ -180,7 +240,7 @@ function buildHtmlPreview(files) {
   if (!/<html[\s>]/i.test(src)) {
     src = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Preview</title></head><body>${src}</body></html>`;
   }
-  return src;
+  return injectPreviewAssets(src);
 }
 
 /** Build a self-contained HTML page that mounts a React/JSX/TSX project in
@@ -237,11 +297,14 @@ function buildReactPreview(files) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>React Preview</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>window.tailwind=window.tailwind||{};window.tailwind.config={theme:{extend:{fontFamily:{sans:['Inter','Plus Jakarta Sans','ui-sans-serif','system-ui','sans-serif'],display:['Plus Jakarta Sans','Inter','sans-serif']}}}};</script>
+${PREVIEW_FONTS_LINK}
 <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
 <style>
-  html,body,#root{margin:0;padding:0;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
+  html,body,#root{margin:0;padding:0;min-height:100vh;font-family:Inter,'Plus Jakarta Sans',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
   #__preview_error{position:fixed;inset:0;background:#1e1e22;color:#ff8a8a;padding:24px;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow:auto;display:none;z-index:9999;}
 ${cssCombined}
 </style>
@@ -398,6 +461,21 @@ function cleanDocumentContent(raw) {
 
 /** Custom ReactMarkdown components for document-style rendering. */
 const DOC_COMPONENTS = {
+  // react-markdown wraps fenced code in <pre>; unwrap it for diagram
+  // languages so MermaidDiagram/SvgBlock's own block-level <div> doesn't end
+  // up nested inside a <pre> (invalid + broke the layout/centering).
+  pre: ({ node, children }) => {
+    try {
+      const codeEl = (node?.children || []).find((c) => c.tagName === 'code');
+      const cls = codeEl?.properties?.className || [];
+      const langClass = (Array.isArray(cls) ? cls : [cls])
+        .find((c) => typeof c === 'string' && c.startsWith('language-'));
+      if (langClass === 'language-mermaid' || langClass === 'language-svg') {
+        return <>{children}</>;
+      }
+    } catch { /* fall through to default <pre> */ }
+    return <pre className="bg-[var(--k-surface)] border border-[var(--k-border)] rounded-md p-3 sm:p-4 overflow-x-auto my-4 text-sm font-mono max-w-full">{children}</pre>;
+  },
   h1: ({ children }) => <h1 className="k-heading text-3xl md:text-4xl font-bold mb-6 mt-2 text-foreground tracking-tight">{children}</h1>,
   h2: ({ children }) => <h2 className="k-heading text-2xl font-semibold mb-4 mt-10 text-foreground border-b border-[var(--k-border)] pb-2">{children}</h2>,
   h3: ({ children }) => <h3 className="k-heading text-xl font-semibold mb-3 mt-8 text-foreground">{children}</h3>,
@@ -421,9 +499,28 @@ const DOC_COMPONENTS = {
   thead: ({ children }) => <thead className="bg-[var(--k-surface)]">{children}</thead>,
   th: ({ children }) => <th className="px-4 py-2 text-left font-semibold border-b border-[var(--k-border)]">{children}</th>,
   td: ({ children }) => <td className="px-4 py-2 border-b border-[var(--k-border)]">{children}</td>,
-  code: ({ inline, children }) => inline
-    ? <code className="bg-accent/50 px-1.5 py-0.5 rounded text-[0.85em] font-mono break-all">{children}</code>
-    : <pre className="bg-[var(--k-surface)] border border-[var(--k-border)] rounded-md p-3 sm:p-4 overflow-x-auto my-4 text-sm font-mono max-w-full"><code className="whitespace-pre">{children}</code></pre>,
+  code: ({ inline, className, children }) => {
+    const match = /language-(\w+)/.exec(className || '');
+    const lang = match ? match[1] : '';
+    const codeString = String(children).replace(/\n$/, '');
+    // Same live-diagram treatment as the chat bubble (ChatMessage.jsx) — a
+    // document artifact is just markdown too, so a ```mermaid/```svg block
+    // in a generated report was previously falling through to the plain
+    // <pre><code> branch below and showing as raw fenced text instead of a
+    // rendered diagram.
+    if (!inline && lang === 'mermaid') {
+      return <MermaidDiagram code={codeString} />;
+    }
+    if (!inline && (lang === 'svg' || (!lang && codeString.includes('\n') && codeString.trim().startsWith('<svg')))) {
+      return <SvgBlock code={codeString} />;
+    }
+    // Non-diagram code: the outer `pre` override above already supplies the
+    // styled <pre> wrapper, so just return the <code> — returning our own
+    // <pre> here too would double-wrap (<pre><pre><code>...).
+    return inline
+      ? <code className="bg-accent/50 px-1.5 py-0.5 rounded text-[0.85em] font-mono break-all">{children}</code>
+      : <code className="whitespace-pre">{children}</code>;
+  },
   hr: () => <hr className="my-8 border-[var(--k-border)]" />,
   strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
 };
@@ -742,6 +839,16 @@ function MultiFileWorkspace({ files, title }) {
   const previewSrc = htmlPreview || reactPreview;
   const previewKind = htmlPreview ? 'html' : (reactPreview ? 'react' : null);
 
+  // Default to the live preview the first time one becomes available — the
+  // whole point of the canvas is to SHOW the built UI, not its source.
+  const autoPreviewed = useRef(false);
+  useEffect(() => {
+    if (previewSrc && !autoPreviewed.current) {
+      autoPreviewed.current = true;
+      setViewMode('preview');
+    }
+  }, [previewSrc]);
+
   const handleCopy = () => {
     if (currentFile) {
       navigator.clipboard.writeText(currentFile.content).catch(() => {});
@@ -827,7 +934,8 @@ function MultiFileWorkspace({ files, title }) {
       </div>
 
       <div className="flex flex-1 min-h-0">
-        {/* File tree */}
+        {/* File tree — only when there's more than one file. */}
+        {files.length > 1 && (
         <div className="w-44 border-r border-[var(--k-border)] bg-[var(--k-surface)] flex-shrink-0 overflow-y-auto">
           {files.map(f => (
             <button
@@ -844,6 +952,7 @@ function MultiFileWorkspace({ files, title }) {
             </button>
           ))}
         </div>
+        )}
 
         {/* Editor / Preview */}
         <div className="flex-1 min-w-0 overflow-hidden">
@@ -869,8 +978,10 @@ function MultiFileWorkspace({ files, title }) {
         </div>
       </div>
 
-      {/* Fullscreen preview overlay */}
-      {fullscreen && previewSrc && (
+      {/* Fullscreen preview overlay — portalled to <body> because .canvas-pane
+          uses `contain: layout`, which would otherwise trap this `fixed`
+          overlay inside the pane instead of covering the viewport. */}
+      {fullscreen && previewSrc && createPortal(
         <div className="fixed inset-0 z-[100] bg-black/95 flex flex-col">
           <div className="h-12 flex items-center justify-between px-4 border-b border-white/10 bg-[var(--k-surface)]">
             <div className="flex items-center gap-2">
@@ -901,8 +1012,129 @@ function MultiFileWorkspace({ files, title }) {
             className="flex-1 w-full border-none bg-white"
             title="Fullscreen Preview"
           />
-        </div>
+        </div>,
+        document.body
       )}
+    </div>
+  );
+}
+
+/** Live, themeable presentation workspace. Renders the deck spec to a
+ *  self-contained HTML slideshow in an iframe (same renderer used for the
+ *  Present window + standalone download), with a theme switcher, depth toggle,
+ *  in-canvas navigation, and PowerPoint / PDF / HTML export. */
+function DeckWorkspace({ content }) {
+  const spec = useMemo(() => parseDeck(content?.code), [content?.code]);
+  const [theme, setTheme] = useState(() => (spec?.theme && THEMES[spec.theme]) ? spec.theme : 'midnight');
+  const [depth, setDepth] = useState(() => (spec?.depth === 'flat' ? 'flat' : '3d'));
+  const [exporting, setExporting] = useState(null);
+  const iframeRef = useRef(null);
+
+  // Adopt the model's chosen theme/depth when a new deck arrives.
+  useEffect(() => {
+    if (spec?.theme && THEMES[spec.theme]) setTheme(spec.theme);
+    if (spec?.depth) setDepth(spec.depth === 'flat' ? 'flat' : '3d');
+  }, [content?.code]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const html = useMemo(() => (spec ? renderDeckHTML(spec, { theme, depth }) : ''), [spec, theme, depth]);
+  const post = (deckCmd, extra = {}) =>
+    iframeRef.current?.contentWindow?.postMessage({ deckCmd, ...extra }, '*');
+
+  const safeName = (content?.title || spec?.title || 'presentation').replace(/[^\w-]+/g, '_').slice(0, 48) || 'presentation';
+
+  const triggerDownload = (blob, ext) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `${safeName}.${ext}`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const doExport = async (format) => {
+    if (!spec || exporting) return;
+    setExporting(format);
+    try {
+      // Send the spec with the user's current theme/depth so the export matches
+      // exactly what's on screen (not just what the model originally picked).
+      const blob = await deckAPI.export({
+        deck: { ...spec, theme, depth },
+        format,
+        title: content?.title || spec.title || 'Presentation',
+      });
+      triggerDownload(blob, format === 'pdf' ? 'pdf' : 'pptx');
+    } catch (e) {
+      console.error('[Deck] export failed:', e?.message || e);
+    } finally {
+      setExporting(null);
+    }
+  };
+
+  const downloadHTML = () => triggerDownload(new Blob([html], { type: 'text/html' }), 'html');
+
+  const present = () => {
+    const el = iframeRef.current;
+    if (el?.requestFullscreen) el.requestFullscreen().catch(() => {});
+    setTimeout(() => post('fullscreen'), 60);
+  };
+
+  if (!spec) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center p-8">
+        <Presentation className="w-8 h-8 text-muted-foreground" />
+        <p className="text-sm text-muted-foreground">This deck couldn't be parsed yet — it may still be generating.</p>
+      </div>
+    );
+  }
+
+  const btn = "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-[var(--k-border)] bg-[var(--k-surface)] hover:bg-accent text-xs font-semibold text-muted-foreground hover:text-foreground transition-all disabled:opacity-50";
+
+  return (
+    <div className="flex flex-col h-full min-h-0">
+      {/* Toolbar */}
+      <div className="flex items-center gap-2 flex-wrap px-3 py-2 border-b border-[var(--k-border)] bg-[var(--k-surface)]">
+        <div className="flex items-center gap-1.5">
+          {THEME_IDS.map((id) => (
+            <button
+              key={id}
+              onClick={() => setTheme(id)}
+              title={THEMES[id].name}
+              className={`w-5 h-5 rounded-full border transition-all ${theme === id ? 'ring-2 ring-offset-1 ring-offset-[var(--k-surface)] ring-[var(--k-brand)] scale-110' : 'border-[var(--k-border)] hover:scale-105'}`}
+              style={{ background: `linear-gradient(135deg, ${THEMES[id].accent}, ${THEMES[id].accent2})` }}
+            />
+          ))}
+        </div>
+        <div className="w-px h-4 bg-[var(--k-border)]" />
+        <button onClick={() => setDepth((d) => (d === '3d' ? 'flat' : '3d'))} className={btn} title="Toggle visual depth">
+          {depth === '3d' ? '3D' : 'Flat'}
+        </button>
+
+        <div className="flex-1 min-w-[8px]" />
+
+        <button onClick={() => post('prev')} className={btn} title="Previous slide"><CaretLeft className="w-3.5 h-3.5" /></button>
+        <button onClick={() => post('next')} className={btn} title="Next slide"><CaretRight className="w-3.5 h-3.5" /></button>
+        <button onClick={present} className={btn} title="Present (fullscreen)"><ArrowsOutSimple className="w-3.5 h-3.5" /><span className="hidden sm:inline">Present</span></button>
+        <button onClick={() => doExport('pptx')} disabled={!!exporting} className={btn} title="Download PowerPoint">
+          <Presentation className="w-3.5 h-3.5 text-orange-500" /><span>{exporting === 'pptx' ? '…' : 'PPTX'}</span>
+        </button>
+        <button onClick={() => doExport('pdf')} disabled={!!exporting} className={btn} title="Download PDF">
+          <FileText className="w-3.5 h-3.5 text-rose-500" /><span>{exporting === 'pdf' ? '…' : 'PDF'}</span>
+        </button>
+        <button onClick={downloadHTML} className={btn} title="Download standalone HTML">
+          <Download className="w-3.5 h-3.5" /><span className="hidden sm:inline">HTML</span>
+        </button>
+      </div>
+
+      {/* Stage */}
+      <div className="flex-1 min-h-0 bg-[#0a0a0c] flex items-center justify-center p-3">
+        <iframe
+          ref={iframeRef}
+          srcDoc={html}
+          title="Presentation"
+          allow="fullscreen"
+          sandbox="allow-scripts allow-popups allow-modals"
+          className="w-full h-full border-none rounded-lg shadow-2xl bg-black"
+        />
+      </div>
     </div>
   );
 }
@@ -929,6 +1161,15 @@ export function CanvasPane({ content, onClose, activeMode }) {
     return parsedBlocks;
   }, [parsedBlocks, restoredFiles]);
   const isMultiFile = fileBlocks.length > 0;
+  const isDeck = content?.type === 'deck';
+
+  // A single code snippet (type === 'code', no <file> blocks) is wrapped into a
+  // one-file workspace so it gets the SAME live preview + fullscreen + new-tab +
+  // copy + download controls as a full project — and nothing else clutters it.
+  const singleCodeFiles = useMemo(() => {
+    if (isMultiFile || content?.type !== 'code' || !content?.code) return null;
+    return syntheticFilesFromCode(content);
+  }, [isMultiFile, content?.type, content?.code, content?.language]);
 
   // Auto-save coder projects to Firestore (keyed by message_id) so files
   // survive across page reloads even if the underlying message text is
@@ -987,16 +1228,32 @@ export function CanvasPane({ content, onClose, activeMode }) {
 
   const handleDownload = async (kindOverride) => {
     if (!content?.code) return;
-    const kind = (typeof kindOverride === 'string' ? kindOverride : null) || 
-                 ((content?.type === 'excel' || content?.type === 'spreadsheet') ? 'excel' : 
-                  content?.type === 'csv' ? 'csv' : 
-                  activeTab === 'code' ? 'code' : 'markdown');
+    // Default download for a DOCUMENT artifact is a real PDF — not raw .md.
+    // (The doc tab also has explicit PDF/DOCX buttons.) Spreadsheets/CSV keep
+    // their native formats; the raw code view downloads as source.
+    const kind = (typeof kindOverride === 'string' ? kindOverride : null) ||
+                 ((content?.type === 'excel' || content?.type === 'spreadsheet') ? 'excel' :
+                  content?.type === 'csv' ? 'csv' :
+                  activeTab === 'code' ? 'code' : 'pdf');
 
     if (['excel', 'csv', 'pdf', 'docx'].includes(kind)) {
+      // For document exports, strip backend tags (<think>/<artifact>) and the
+      // __sources__ blob, and fold any sources into a readable bibliography so
+      // the PDF/DOCX matches the on-screen document and is self-contained.
+      let payload = content.code;
+      if (kind === 'pdf' || kind === 'docx') {
+        const { body, sources } = cleanDocumentContent(content.code);
+        payload = body || content.code;
+        if (sources?.length && !/\n#+\s*sources/i.test(payload)) {
+          payload += '\n\n## Sources\n' + sources
+            .map((s, i) => `${i + 1}. ${s.title || s.url} — ${s.url}`)
+            .join('\n');
+        }
+      }
       try {
         const blob = await artifactsAPI.create({
           kind,
-          content: content.code,
+          content: payload,
           title: content.title || 'Kautilya Export',
           filename: content.filename
         });
@@ -1005,8 +1262,13 @@ export function CanvasPane({ content, onClose, activeMode }) {
         const a = document.createElement('a');
         a.href = url;
         const ext = kind === 'excel' ? 'xlsx' : kind;
-        const name = content.filename || `${(content.title || 'kautilya-export').replace(/[^a-z0-9]/gi, '-').toLowerCase()}.${ext}`;
-        a.download = name;
+        // Force the export kind's extension. The model's artifact `filename`
+        // often carries a wrong extension (e.g. .md), which would otherwise
+        // save a real DOCX/PDF/XLSX blob under that wrong name.
+        const base = (content.filename || content.title || 'kautilya-export')
+          .replace(/\.[a-z0-9]+$/i, '')
+          .replace(/[^a-z0-9._-]+/gi, '-');
+        a.download = `${base}.${ext}`;
         a.click();
         URL.revokeObjectURL(url);
       } catch (err) {
@@ -1052,38 +1314,49 @@ export function CanvasPane({ content, onClose, activeMode }) {
   const salesByRegion = dynamicData?.salesByRegion || [];
   const funnelData = dynamicData?.conversionFunnel || [];
 
+  // Canvas shows ONLY the view that matches what was actually made — no empty
+  // "document / dashboard / preview" tabs hanging around to confuse the user.
+  // (code artifacts are handled separately via singleCodeFiles → workspace.)
+  const docView = (content?.type === 'excel' || content?.type === 'spreadsheet' || content?.type === 'csv')
+    ? 'spreadsheet'
+    : content?.type === 'dashboard' ? 'dashboard' : 'document';
+
   return (
     <div className="canvas-pane flex flex-col bg-[var(--k-bg)]" data-testid="canvas-pane">
       {/* Header */}
       <div className="h-14 min-h-[56px] flex items-center justify-between px-4 border-b border-[var(--k-border)] bg-[var(--k-surface)]">
         <div className="flex items-center gap-3 overflow-hidden">
           <div className="w-8 h-8 rounded-lg bg-[var(--k-brand)]/10 flex items-center justify-center text-[var(--k-brand)] flex-shrink-0">
-            {isMultiFile ? <FolderOpen className="w-4 h-4" /> : activeTab === 'code' ? <Code className="w-4 h-4" /> : activeTab === 'dashboard' ? <ChartBar className="w-4 h-4" /> : activeTab === 'spreadsheet' ? <Table className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
+            {isDeck ? <Presentation className="w-4 h-4" /> : isMultiFile ? <FolderOpen className="w-4 h-4" /> : singleCodeFiles ? <Code className="w-4 h-4" /> : docView === 'dashboard' ? <ChartBar className="w-4 h-4" /> : docView === 'spreadsheet' ? <Table className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
           </div>
           <div className="flex flex-col overflow-hidden">
             <span className="text-sm font-semibold truncate text-foreground leading-tight">
               {content?.title || 'Canvas'}
             </span>
             <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">
-              {isMultiFile ? `${fileBlocks.length} Files` : `${activeTab} View`}
+              {isDeck ? 'Presentation' : isMultiFile ? `${fileBlocks.length} Files` : singleCodeFiles ? `${content?.language || 'Code'} · Code` : `${docView} View`}
             </span>
           </div>
         </div>
         <div className="flex items-center gap-1">
-          <button
-            onClick={handleCopy}
-            className="p-2 rounded-md hover:bg-accent transition-all duration-200"
-            title="Copy content"
-          >
-            {copied ? <Check className="w-4 h-4 text-[var(--k-green)]" /> : <Copy className="w-4 h-4 text-muted-foreground" />}
-          </button>
-          <button
-            onClick={handleDownload}
-            className="p-2 rounded-md hover:bg-accent transition-all duration-200"
-            title="Download"
-          >
-            <Download className="w-4 h-4 text-muted-foreground" />
-          </button>
+          {!isDeck && (
+            <>
+              <button
+                onClick={handleCopy}
+                className="p-2 rounded-md hover:bg-accent transition-all duration-200"
+                title="Copy content"
+              >
+                {copied ? <Check className="w-4 h-4 text-[var(--k-green)]" /> : <Copy className="w-4 h-4 text-muted-foreground" />}
+              </button>
+              <button
+                onClick={handleDownload}
+                className="p-2 rounded-md hover:bg-accent transition-all duration-200"
+                title="Download"
+              >
+                <Download className="w-4 h-4 text-muted-foreground" />
+              </button>
+            </>
+          )}
           <div className="w-px h-4 bg-[var(--k-border)] mx-1" />
           <button onClick={onClose} className="p-2 rounded-md hover:bg-accent transition-all duration-200 group">
             <X className="w-5 h-5 text-muted-foreground group-hover:text-foreground" />
@@ -1091,33 +1364,20 @@ export function CanvasPane({ content, onClose, activeMode }) {
         </div>
       </div>
 
-      {isMultiFile ? (
+      {isDeck ? (
+        <div className="flex-1 min-h-0">
+          <DeckWorkspace content={content} />
+        </div>
+      ) : isMultiFile ? (
         <div className="flex-1 min-h-0">
           <MultiFileWorkspace files={fileBlocks} title={content?.title || 'Project'} />
         </div>
-      ) : (
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
-        <div className="px-4 bg-[var(--k-surface)] border-b border-[var(--k-border)]">
-          <TabsList className="bg-transparent h-10 p-0 gap-6">
-            {['document', 'spreadsheet', 'code', 'dashboard', 'preview']
-              .filter((tab) => {
-                if (tab === 'spreadsheet') {
-                  return content?.type === 'excel' || content?.type === 'spreadsheet' || content?.type === 'csv';
-                }
-                return true;
-              })
-              .map((tab) => (
-                <TabsTrigger
-                  key={tab}
-                  value={tab}
-                  className="bg-transparent data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:text-[var(--k-brand)] text-muted-foreground px-0 pb-3 rounded-none border-b-2 border-transparent data-[state=active]:border-[var(--k-brand)] text-[11px] font-bold uppercase tracking-wider transition-all"
-                >
-                  {tab}
-                </TabsTrigger>
-              ))}
-          </TabsList>
+      ) : singleCodeFiles ? (
+        <div className="flex-1 min-h-0">
+          <MultiFileWorkspace files={singleCodeFiles} title={content?.title || 'Code'} />
         </div>
-
+      ) : (
+      <Tabs value={docView} className="flex-1 flex flex-col overflow-hidden">
         <TabsContent value="spreadsheet" className="flex-1 overflow-hidden m-0">
           <SpreadsheetView code={content?.code} />
         </TabsContent>
@@ -1196,25 +1456,6 @@ export function CanvasPane({ content, onClose, activeMode }) {
               </div>
             </div>
           </ScrollArea>
-        </TabsContent>
-
-        <TabsContent value="code" className="flex-1 overflow-hidden m-0">
-          <div className="h-full bg-[#1e1e1e]">
-            <SyntaxHighlighter
-              language={content?.language || 'javascript'}
-              style={vscDarkPlus}
-              customStyle={{
-                margin: 0,
-                padding: '1.5rem',
-                fontSize: '0.85rem',
-                height: '100%',
-                background: 'transparent',
-              }}
-              showLineNumbers
-            >
-              {content?.code || "// No code available"}
-            </SyntaxHighlighter>
-          </div>
         </TabsContent>
 
         <TabsContent value="dashboard" className="flex-1 overflow-hidden m-0">
@@ -1298,23 +1539,6 @@ export function CanvasPane({ content, onClose, activeMode }) {
               )}
             </div>
           </ScrollArea>
-        </TabsContent>
-
-        <TabsContent value="preview" className="flex-1 overflow-hidden m-0 bg-white">
-          {content?.code?.includes('<!DOCTYPE html>') || content?.code?.includes('<html') ? (
-            <iframe
-              srcDoc={content.code}
-              title="Preview"
-              className="w-full h-full border-none"
-              sandbox="allow-scripts"
-            />
-          ) : (
-            <div className="flex flex-col items-center justify-center h-full text-center p-10 bg-[var(--k-bg)]">
-              <ArrowsOutSimple className="w-16 h-16 text-muted-foreground/10 mb-6" />
-              <h3 className="text-lg font-semibold mb-2">No Preview Available</h3>
-              <p className="text-sm text-muted-foreground max-w-[280px]">Standard code snippets cannot be previewed. Generate HTML/CSS to enable the live preview.</p>
-            </div>
-          )}
         </TabsContent>
       </Tabs>
       )}

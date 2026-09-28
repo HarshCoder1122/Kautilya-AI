@@ -136,13 +136,15 @@ def try_canned_reply(message):
     return _GREETING_REPLIES.get(norm)
 
 
-def cache_get(message, model):
+def cache_get(message, model, uid=None):
     """Tier 2: read from the short-query LRU.
+    UID is included in the key so each user has an independent cache slot —
+    without it, user A's non-personalized response would be served to user B.
     Returns the cached response, or None on miss / expiry / out-of-range."""
     norm = _normalize(message)
     if not norm or len(norm) > _MAX_QUERY_LEN:
         return None
-    key = (norm, model or "auto")
+    key = (uid or "anon", norm, model or "auto")
     with _lru_lock:
         item = _lru.get(key)
         if not item:
@@ -155,9 +157,10 @@ def cache_get(message, model):
         return response
 
 
-def cache_put(message, model, response):
+def cache_put(message, model, response, uid=None):
     """Tier 2: store a fresh response. Only writes for short queries and
-    short responses — long-form generation isn't a good cache target."""
+    short responses — long-form generation isn't a good cache target.
+    UID is included in the key to keep each user's cache independent."""
     if not message or not response:
         return
     norm = _normalize(message)
@@ -165,7 +168,7 @@ def cache_put(message, model, response):
         return
     if len(response) > _MAX_RESPONSE_LEN:
         return
-    key = (norm, model or "auto")
+    key = (uid or "anon", norm, model or "auto")
     with _lru_lock:
         _lru[key] = (response, time.time())
         _lru.move_to_end(key)

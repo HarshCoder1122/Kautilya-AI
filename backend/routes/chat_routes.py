@@ -13,27 +13,83 @@ import threading
 from flask import Blueprint, request, jsonify, Response
 
 from config import SYSTEM_PROMPT, CODER_SYSTEM_PROMPT, PRO_SYSTEM_PROMPT, RESEARCH_SYSTEM_PROMPT
+from skills_spec import render_skill_overlay, is_valid_skill
 from services.auth_service import verify_firebase_token, record_usage
 from services.memory_service import (
-    get_user_chat_dir, get_user_memory, save_user_memory,
+    get_user_chat_dir, get_user_memory, save_user_memory, get_user_settings,
     extract_memories, build_personalized_prompt, build_cli_system_prompt,
-    process_uploaded_file, record_user_session
+    process_uploaded_file, record_user_session,
+    begin_text_capture, end_text_capture,
 )
 from services.agent_loop_service import get_llm_response, normalize_model_choice
 from services.research_service import deep_research_stream
+from services.llm_service import set_request_pro, build_capacity_event
 from services.fast_response_cache import (
     try_canned_reply, cache_get as fast_cache_get, cache_put as fast_cache_put,
 )
 from middleware.rate_limiter import check_message_rate_limit
-from middleware.security import block_sensitive_query
+from middleware.security import block_sensitive_query, get_real_client_ip
 
 chat_bp = Blueprint('chat', __name__)
+
+# ── Active-Skill overlay plumbing ──────────────────────────────────────────
+# When the user turns a Skill ON in the composer, the request carries `skill`.
+# We splice that skill's overlay into the system message (messages[0]) for the
+# turn, wrapped in markers so it's idempotent: re-syncing strips any prior
+# overlay first, so toggling skills mid-session never accumulates or leaks.
+_SKILL_OVERLAY_START = "\n\n<<<KAUTILYA_SKILL_OVERLAY>>>"
+_SKILL_OVERLAY_END = "<<<END_KAUTILYA_SKILL_OVERLAY>>>"
+
+
+def _strip_skill_overlay(text):
+    """Remove any previously-spliced skill overlay from a system prompt."""
+    if not text or _SKILL_OVERLAY_START not in text:
+        return text
+    s = text.find(_SKILL_OVERLAY_START)
+    e = text.find(_SKILL_OVERLAY_END)
+    if e != -1:
+        return (text[:s] + text[e + len(_SKILL_OVERLAY_END):]).rstrip()
+    return text[:s].rstrip()
+
+
+def _sync_skill_overlay(conv, skill_id, model):
+    """Make messages[0] reflect the CURRENT active skill (or none).
+
+    Works for both freshly-built and Firestore-restored conversations, and for a
+    skill switched on/off mid-session. Always strips the old overlay before
+    (maybe) adding the new one, so it can't stack.
+    """
+    msgs = conv.get('messages') or []
+    if not msgs or msgs[0].get('role') != 'system':
+        return
+    base = _strip_skill_overlay(msgs[0].get('content') or '')
+    if skill_id and is_valid_skill(skill_id):
+        tier = 'full' if model in ('pro', 'coder') else 'daily'
+        overlay = render_skill_overlay(skill_id, tier)
+        if overlay:
+            base = f"{base}{_SKILL_OVERLAY_START}\n{overlay}\n{_SKILL_OVERLAY_END}"
+    msgs[0]['content'] = base
+    conv['active_skill'] = skill_id if (skill_id and is_valid_skill(skill_id)) else None
+
 
 # In-memory conversation store — user-scoped dict: conversations[uid][session_id] = conv
 conversations = {}
 CONVERSATION_TTL = 3600
 MAX_HISTORY = 20
 MAX_INMEM_CONVERSATIONS_PER_USER = 20
+
+# Active generations registry: maps "uid:session_id" -> threading.Event. The
+# Stop button hits /jarvis/stop, which SETS the event; the LLM worker thread
+# checks it every chunk and halts (closing the upstream connection) so we stop
+# burning tokens. This is DISTINCT from a plain client disconnect (tab close /
+# navigate), which deliberately keeps generating so "you can leave, we'll save
+# it" still works — only an explicit Stop cancels.
+import threading as _threading
+_active_stop_events = {}
+_active_stop_lock = _threading.Lock()
+
+def _gen_key(uid, session_id):
+    return f"{uid or 'guest'}:{session_id}"
 
 # Shared thread pool for parallel Firestore reads + fire-and-forget writes.
 # Sized for I/O-bound work — most threads spend their time waiting on Firestore.
@@ -118,6 +174,46 @@ def _enforce_user_limit(uid):
         del user_convs[sid]
 
 
+def _ingest_uploaded_documents(uid, session_id, captured):
+    """Index uploaded documents so they survive past the turn they arrived on.
+
+    Small documents are ingested inline — no embedding calls, so it costs
+    nothing. Large ones are embedded on a background thread: this turn is
+    already grounded by the truncated text in the message itself, and blocking
+    TTFT for several seconds of embedding would be a bad trade.
+    """
+    if not captured or not session_id:
+        return
+    try:
+        from services.document_service import ingest_document, INLINE_FULL_TEXT_LIMIT
+    except Exception as e:
+        print(f"[Chat] document_service unavailable: {e}")
+        return
+
+    big = []
+    for item in captured:
+        text = item.get('text') or ''
+        if len(text) <= INLINE_FULL_TEXT_LIMIT:
+            try:
+                ingest_document(uid, session_id, item.get('filename'), text, kind=item.get('kind'))
+            except Exception as e:
+                print(f"[Chat] inline ingest failed for {item.get('filename')}: {e}")
+        else:
+            big.append(item)
+
+    if not big:
+        return
+
+    def _worker():
+        for it in big:
+            try:
+                ingest_document(uid, session_id, it.get('filename'), it.get('text'), kind=it.get('kind'))
+            except Exception as e:
+                print(f"[Chat] background ingest failed for {it.get('filename')}: {e}")
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 def _generate_chat_title(uid, session_id, user_msg, assistant_msg):
     """Background job: ask a tiny LLM for a 3-5 word title and save it to the
     conversation doc so the sidebar shows something meaningful instead of the
@@ -136,7 +232,8 @@ def _generate_chat_title(uid, session_id, user_msg, assistant_msg):
                 if existing and len(existing) > 0 and len(existing) < 60 and not existing.startswith('New Chat'):
                     return  # leave intact
 
-            from services.llm_service import call_groq
+            from services.llm_service import call_vertex_gemini
+            from services.agent_loop_service import FAST_MODEL
             um = (user_msg or '')[:600] if isinstance(user_msg, str) else str(user_msg)[:600]
             am = (assistant_msg or '')[:600]
             prompt = (
@@ -145,9 +242,9 @@ def _generate_chat_title(uid, session_id, user_msg, assistant_msg):
                 "Examples: 'React date picker bug', 'Marketing budget Q3', 'Sanskrit grammar help'.\n\n"
                 f"User: {um}\n\nAssistant: {am}\n\nTitle:"
             )
-            raw = call_groq(
+            raw = call_vertex_gemini(
                 [{"role": "user", "content": prompt}],
-                model='llama-3.3-70b-versatile',
+                model=FAST_MODEL,
                 temperature=0.3, max_tokens=20, stream=False,
             )
             if not raw or not isinstance(raw, str):
@@ -259,7 +356,9 @@ def jarvis_stream():
     # Max Thinking toggle — enables reasoning_content streaming on pro/coder models.
     _mt_raw = data.get('max_thinking', form.get('max_thinking', args.get('max_thinking', False)))
     max_thinking = str(_mt_raw).lower() in ('1', 'true', 'yes', 'on')
-    
+    # Active Skill (composer → Skills). Empty string / unknown id = no skill.
+    active_skill = (data.get('skill') or form.get('skill') or args.get('skill') or '').strip()
+
     # Correctly handle files list
     files = []
     if request.files:
@@ -274,29 +373,53 @@ def jarvis_stream():
     uid = token_data.get('uid') if token_data else None
     user_email = token_data.get('email') if token_data else None
     user_name = token_data.get('name') or token_data.get('display_name') if token_data else None
-    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr) or "unknown"
-    if ',' in client_ip:
-        client_ip = client_ip.split(',')[0].strip()
+    # Spoofing-resistant: take the proxy-appended real IP, not a client-forged
+    # leftmost X-Forwarded-For value (which would let anyone dodge guest limits
+    # / IP bans or get a victim banned). See get_real_client_ip.
+    client_ip = get_real_client_ip(request)
+    _t("auth(verify_token)", _t_req_start)
 
-    # Security: banned check
+    # Security + tier resolution run CONCURRENTLY. On a cold worker these were
+    # ~2 sequential Firestore reads (is_banned: uid+ip) plus is_pro_user, each
+    # gating the model call. Overlap them, and run the regex injection check
+    # while they resolve, so the LLM isn't blocked on serial round-trips.
     identifier = uid or client_ip
-    if limit_manager.is_banned(identifier, client_ip):
-        return jsonify({"error": "Access denied"}), 403
+    f_banned = _chat_executor.submit(limit_manager.is_banned, identifier, client_ip)
+    f_pro = _chat_executor.submit(limit_manager.is_pro_user, uid) if uid else None
+    # Speculatively prefetch the user's memories + settings NOW so the ~227ms
+    # read overlaps auth/ban/pro AND the Firestore conversation restore below,
+    # instead of stacking serially after them (the dominant pre-model cost on
+    # multi-worker deployments where the session isn't in this worker's memory).
+    # Both are 60s-cached, so an unused prefetch just warms the cache.
+    f_mem = _chat_executor.submit(get_user_memory, uid) if uid else None
+    f_set = _chat_executor.submit(get_user_settings, uid) if uid else None
 
-    # Prompt injection check
+    # Prompt injection check (pure regex — free while the futures resolve)
     block_msg = block_sensitive_query(message, uid)
     if block_msg:
         def blocked():
             yield f"data: {json.dumps({'chunk': block_msg})}\n\n"
         return Response(blocked(), mimetype='text/event-stream')
 
+    try:
+        _is_banned = f_banned.result(timeout=5)
+    except Exception:
+        _is_banned = False
+    if _is_banned:
+        return jsonify({"error": "Access denied"}), 403
+
     # Rate limit check
-    tier = "pro" if (uid and limit_manager.is_pro_user(uid)) else ("free" if uid else "guest")
+    try:
+        is_pro = bool(f_pro.result(timeout=5)) if f_pro else False
+    except Exception:
+        is_pro = False
+    tier = "pro" if is_pro else ("free" if uid else "guest")
     allowed, err_msg = check_message_rate_limit(identifier, tier)
     if not allowed:
         def rate_err():
             yield f"data: {json.dumps({'chunk': err_msg})}\n\n"
         return Response(rate_err(), mimetype='text/event-stream')
+    _t("gate(ban+pro+ratelimit)", _t_req_start)
 
     # ───────────────────────── Fast-response cache ─────────────────────────
     # Trivial chat ("hi", "ok", "thanks", "who are you", repeated short
@@ -308,11 +431,12 @@ def jarvis_stream():
     fast_eligible = (
         message
         and not files
+        and not active_skill   # an active Skill must always reach the model
         and model in ('auto', 'daily')
     )
     fast_reply = None
     if fast_eligible:
-        fast_reply = try_canned_reply(message) or fast_cache_get(message, model)
+        fast_reply = try_canned_reply(message) or fast_cache_get(message, model, uid=uid)
     if fast_reply:
         # Persist both sides of the exchange so chat history stays correct.
         try:
@@ -340,32 +464,47 @@ def jarvis_stream():
         # Firestore-restored session — rebuild in-memory conv with history
         restored_messages = conv['messages_to_restore']
         conv = None  # trigger full build below
+    elif conv:
+        # Refresh system prompt every 30 min so newly-saved memories and
+        # profile changes (name, preferences) are picked up mid-session.
+        age = time.time() - conv.get('created_at', 0)
+        if age > 1800 and uid:
+            try:
+                fresh_memories = get_user_memory(uid) or []
+                fresh_settings = {}
+                if db:
+                    sdoc = db.collection('users').document(uid).collection('settings').document('profile').get()
+                    fresh_settings = sdoc.to_dict() if sdoc.exists else {}
+                if model == 'coder':
+                    new_sys = build_personalized_prompt(CODER_SYSTEM_PROMPT, user_name, fresh_memories, user_email, fresh_settings, uid=uid)
+                elif model == 'pro':
+                    new_sys = build_personalized_prompt(PRO_SYSTEM_PROMPT, user_name, fresh_memories, user_email, fresh_settings, uid=uid)
+                elif model == 'research':
+                    new_sys = build_personalized_prompt(RESEARCH_SYSTEM_PROMPT, user_name, fresh_memories, user_email, fresh_settings, uid=uid)
+                else:
+                    new_sys = build_personalized_prompt(SYSTEM_PROMPT, user_name, fresh_memories, user_email, fresh_settings, uid=uid)
+                if conv['messages'] and conv['messages'][0].get('role') == 'system':
+                    conv['messages'][0]['content'] = new_sys
+                conv['created_at'] = time.time()  # reset timer
+            except Exception as e:
+                print(f"[Conv] System prompt refresh failed: {e}")
 
     if not conv:
         _cleanup_expired_conversations()
-        # PARALLEL FETCH — these two Firestore reads used to be sequential
-        # (~300-600ms total). Now they run concurrently in ~200ms max.
+        # Consume the memory/settings futures fired at request start — by now
+        # they've resolved IN PARALLEL with auth/ban/pro/conversation-restore,
+        # so this collection is typically ~0ms instead of a fresh 227ms read.
         _t_setup = time.time()
         if uid:
-            def _fetch_settings():
-                if not db:
-                    return {}
-                try:
-                    sdoc = db.collection('users').document(uid).collection('settings').document('profile').get()
-                    return sdoc.to_dict() if sdoc.exists else {}
-                except Exception:
-                    return {}
-            f_mem = _chat_executor.submit(get_user_memory, uid)
-            f_set = _chat_executor.submit(_fetch_settings)
-            user_memories = f_mem.result(timeout=2.5) or []
-            settings = f_set.result(timeout=2.5) or {}
+            user_memories = (f_mem.result(timeout=2.5) if f_mem else []) or []
+            settings = (f_set.result(timeout=2.5) if f_set else {}) or {}
         else:
             user_memories = []
             settings = {}
         _t("setup-firestore-reads", _t_setup)
 
         if model == 'coder':
-            sys_prompt = build_cli_system_prompt(CODER_SYSTEM_PROMPT)
+            sys_prompt = build_personalized_prompt(CODER_SYSTEM_PROMPT, user_name, user_memories, user_email, settings, uid=uid)
         elif model == 'pro':
             sys_prompt = build_personalized_prompt(PRO_SYSTEM_PROMPT, user_name, user_memories, user_email, settings, uid=uid)
         elif model == 'research':
@@ -401,17 +540,38 @@ def jarvis_stream():
     # images) — flatten either way so the LLM gets a clean multipart payload.
     user_content_parts = []
     if files:
-        for f in files:
-            processed = process_uploaded_file(f)
-            if not processed:
-                continue
-            if isinstance(processed, list):
-                user_content_parts.extend(processed)
-            else:
-                user_content_parts.append(processed)
+        # Capture the UNtruncated extracted text on the way past, so the whole
+        # document can be indexed even though the chat payload only carries the
+        # first MAX_TEXT_CHARS of it.
+        begin_text_capture()
+        try:
+            for f in files:
+                processed = process_uploaded_file(f)
+                if not processed:
+                    continue
+                if isinstance(processed, list):
+                    user_content_parts.extend(processed)
+                else:
+                    user_content_parts.append(processed)
+        finally:
+            captured = end_text_capture()
+        _ingest_uploaded_documents(uid, session_id, captured)
 
     if message:
         user_content_parts.insert(0, {"type": "text", "text": message})
+
+    # Follow-up turns: the document is no longer in the message history, so pull
+    # the passages that answer THIS question out of the indexed document. Only
+    # on turns without fresh uploads — a fresh upload already carries its text.
+    if not files and message and session_id:
+        try:
+            from services.document_service import build_document_context
+            doc_ctx = build_document_context(uid, session_id, message)
+            if doc_ctx:
+                user_content_parts.insert(0, {"type": "text", "text": doc_ctx})
+                print(f"[Chat] Injected document context ({len(doc_ctx)} chars) for session {session_id}")
+        except Exception as e:
+            print(f"[Chat] document context failed: {e}")
 
     if not user_content_parts:
         return jsonify({"error": "No message"}), 400
@@ -426,9 +586,12 @@ def jarvis_stream():
         research_flush_ts = [time.time()]
 
         def _run_research():
+            set_request_pro(is_pro)  # own thread → set PRO here for reserved-key routing
             try:
-                for event in deep_research_stream(message):
-                    if event.get("event") == "chunk":
+                for event in deep_research_stream(message, is_pro=is_pro):
+                    # Accumulate any event carrying text (report chunks AND the
+                    # capacity message) so the saved transcript isn't blank.
+                    if event.get("chunk"):
                         research_content_holder[0] += event.get("chunk", "")
                         # Flush every 1.5s so it's visible after reopen
                         if research_msg_id and time.time() - research_flush_ts[0] >= 1.5:
@@ -441,7 +604,8 @@ def jarvis_stream():
                                 pass
                     research_queue.put(json.dumps(event))
             except Exception as e:
-                research_queue.put(json.dumps({'event': 'chunk', 'chunk': f'[error: {e}]'}))
+                print(f"[Research] stream error: {e}")
+                research_queue.put(json.dumps({'event': 'chunk', 'chunk': '\n\n[Sorry — research hit a snag. Please try again.]'}))
             finally:
                 research_queue.put(None)
                 full_research = research_content_holder[0]
@@ -501,6 +665,13 @@ def jarvis_stream():
         except Exception as _e:
             print(f"[Memory] inline identity capture failed: {_e}")
 
+    # Reflect the user's active Skill into the system prompt for THIS turn
+    # (idempotent: strips any prior overlay, then adds the current one or none).
+    try:
+        _sync_skill_overlay(conv, active_skill, model)
+    except Exception as _skill_err:
+        print(f"[Skills] overlay sync failed (non-fatal): {_skill_err}")
+
     conv['messages'].append({"role": "user", "content": user_message})
     # Fire-and-forget — saving the user message used to add 200-500ms before
     # we could even start the LLM call. The stream's flush loop will catch
@@ -510,6 +681,7 @@ def jarvis_stream():
     # Trim history
     if len(conv['messages']) > MAX_HISTORY * 2:
         conv['messages'] = [conv['messages'][0]] + conv['messages'][-(MAX_HISTORY * 2):]
+    _t("conv-ready(pre-stream)", _t_req_start)
 
     def stream():
         """
@@ -524,6 +696,15 @@ def jarvis_stream():
         """
         chunk_queue = queue.Queue()
         full_response_holder = [""]  # list so the thread can mutate via closure
+        # Cancellation: the Stop button (POST /jarvis/stop) sets this event; the
+        # worker loop below checks it each chunk and halts generation.
+        stop_event = _threading.Event()
+        _stop_key = _gen_key(uid, session_id)
+        with _active_stop_lock:
+            _prev = _active_stop_events.get(_stop_key)
+            if _prev:
+                _prev.set()  # cancel any stale generation for this same session
+            _active_stop_events[_stop_key] = stop_event
         # Collected structured side-data — persisted alongside the text so
         # tool-result cards / ReAct steps / citations don't vanish on reload.
         side_data = {
@@ -579,13 +760,23 @@ def jarvis_stream():
                 print(f"[Stream] partial flush failed: {e}")
 
         def _run_llm():
+            # This runs in its OWN thread, so set the PRO flag here (not in the
+            # request thread) — that's the context the LLM calls actually run in,
+            # so reserved-key routing applies to this user's generation.
+            set_request_pro(is_pro)
             try:
                 gen = get_llm_response(
                     conv['messages'], uid=uid, model=model,
-                    user_ip=client_ip, max_thinking=max_thinking
+                    user_ip=client_ip, max_thinking=max_thinking,
+                    session_id=session_id,
                 )
                 if gen is None:
-                    chunk_queue.put(json.dumps({'chunk': 'Service temporarily unavailable.'}))
+                    # Total upstream failure → tell the user we're at capacity and
+                    # (for free users) surface the PRO upsell card. Also fold the
+                    # text into the saved response so a reload isn't blank.
+                    cap = build_capacity_event(is_pro)
+                    full_response_holder[0] += cap.get("chunk", "")
+                    chunk_queue.put(json.dumps(cap))
                     return
 
                 def _capture(parsed):
@@ -630,6 +821,16 @@ def jarvis_stream():
                         side_data['agent_type'] = parsed.get('agent') or side_data['agent_type']
 
                 for item in gen:
+                    # Stop pressed → halt: close the upstream generator (stops the
+                    # LLM HTTP stream so no more tokens are billed) and bail. The
+                    # finally block still saves whatever was produced so far.
+                    if stop_event.is_set():
+                        print(f"[LLM Thread] Stop requested — halting generation for {session_id[:8]}")
+                        try:
+                            gen.close()
+                        except Exception:
+                            pass
+                        break
                     if isinstance(item, str):
                         try:
                             parsed = json.loads(item)
@@ -644,9 +845,13 @@ def jarvis_stream():
                     _maybe_flush_partial()
             except Exception as e:
                 print(f"[LLM Thread] Error: {e}")
-                chunk_queue.put(json.dumps({'chunk': f'[Error: {e}]'}))
+                chunk_queue.put(json.dumps({'chunk': '\n\n[Sorry — something went wrong. Please try again.]'}))
             finally:
                 chunk_queue.put(None)  # sentinel: stream finished
+                # Deregister our cancel event so the map doesn't leak.
+                with _active_stop_lock:
+                    if _active_stop_events.get(_stop_key) is stop_event:
+                        del _active_stop_events[_stop_key]
 
                 # ---- Persist to Firestore (runs even if client disconnected) ----
                 full_response = full_response_holder[0]
@@ -676,7 +881,7 @@ def jarvis_stream():
                         # the lengths qualify, we just hand it the pair.
                         try:
                             if message and isinstance(message, str) and model in ('auto', 'daily'):
-                                fast_cache_put(message, model, full_response)
+                                fast_cache_put(message, model, full_response, uid=uid)
                         except Exception:
                             pass
                         # AI-generated 3-4 word title for the sidebar (background job)
@@ -751,6 +956,27 @@ def jarvis_stream():
         'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'
     })
 
+
+@chat_bp.route('/jarvis/stop', methods=['POST'])
+def jarvis_stop():
+    """Hard-stop the in-flight generation for a session so the LLM thread halts
+    and stops billing tokens. Called by the Stop button (which also aborts the
+    SSE fetch). Idempotent: returns stopped=false if nothing was running."""
+    data = request.get_json(silent=True) or {}
+    session_id = data.get('session_id') or data.get('sessionId') or ''
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not session_id:
+        return jsonify({"ok": False, "error": "session_id required"}), 400
+    with _active_stop_lock:
+        ev = _active_stop_events.get(_gen_key(uid, session_id))
+    if ev:
+        ev.set()
+        print(f"[Stop] Cancel requested for session {session_id[:8]} (uid={uid or 'guest'})")
+        return jsonify({"ok": True, "stopped": True})
+    return jsonify({"ok": True, "stopped": False})
+
+
 @chat_bp.route('/jarvis/command', methods=['POST'])
 def jarvis_command():
     """Wrapper for jarvis_stream to support the dashboard's /command endpoint."""
@@ -799,7 +1025,8 @@ def chat_legacy():
                     full_response += chunk
         return jsonify({"status": "success", "response": full_response})
     except Exception as e:
-        return jsonify({"status": "error", "response": f"Internal error: {str(e)}"}), 500
+        print(f"[chat_legacy] error: {e}")
+        return jsonify({"status": "error", "response": "Internal error. Please try again."}), 500
 
 
 @chat_bp.route('/jarvis/history', methods=['GET'])
@@ -813,18 +1040,47 @@ def get_all_history():
     if not db:
         return jsonify({"chats": []})
     try:
-        docs = db.collection('users').document(uid).collection('conversations') \
-                .order_by('last_updated', direction=firestore.Query.DESCENDING).limit(50).stream()
+        # Paginated history. Default page is generous (100) so users with many
+        # chats keep seeing well beyond the old 50-row cap; the sidebar can
+        # fetch older pages with ?before=<ISO last_updated cursor>.
+        try:
+            limit = min(max(int(request.args.get('limit', 100)), 1), 300)
+        except Exception:
+            limit = 100
+        before = request.args.get('before')
+
+        q = db.collection('users').document(uid).collection('conversations') \
+              .order_by('last_updated', direction=firestore.Query.DESCENDING)
+        if before:
+            try:
+                from datetime import datetime
+                dt = datetime.fromisoformat(before.replace('Z', '+00:00'))
+                q = q.start_after({'last_updated': dt})
+            except Exception as ce:
+                print(f"[History] bad before-cursor '{before}': {ce}")
+        docs = q.limit(limit).stream()
+
         chats = []
+        fetched = 0
+        next_before = None
         for doc in docs:
+            fetched += 1
+            data = doc.to_dict()
+            lu = data.get('last_updated')
+            if lu:
+                try:
+                    lu = lu.isoformat()
+                except Exception:
+                    lu = None
+            data['session_id'] = doc.id
+            if lu:
+                data['last_updated'] = lu
+                next_before = lu  # cursor = the oldest row we returned
             if doc.id.startswith('cli-'):
                 continue
-            data = doc.to_dict()
-            data['session_id'] = doc.id
-            if 'last_updated' in data and data['last_updated']:
-                data['last_updated'] = data['last_updated'].isoformat()
             chats.append(data)
-        return jsonify({"chats": chats})
+        # Only advertise another page when this one came back full.
+        return jsonify({"chats": chats, "next_before": next_before if fetched >= limit else None})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -911,6 +1167,202 @@ def delete_chat_history(session_id):
         if user_id in conversations and session_id in conversations[user_id]:
             del conversations[user_id][session_id]
         return jsonify({"status": "ok", "session_id": session_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def _share_text(content):
+    """Coerce a stored message body (string, JSON-string of blocks, or a list of
+    content blocks) down to plain display text for a public share snapshot.
+    Keeps the shared doc small and the read-only viewer simple."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        s = content.strip()
+        if s[:1] in ('[', '{'):
+            try:
+                content = json.loads(s)
+            except Exception:
+                return content
+        else:
+            return content
+    if isinstance(content, list):
+        parts = []
+        for blk in content:
+            if isinstance(blk, str):
+                parts.append(blk)
+            elif isinstance(blk, dict):
+                if blk.get('type') in (None, 'text') and blk.get('text'):
+                    parts.append(str(blk['text']))
+        return "\n".join(p for p in parts if p).strip()
+    if isinstance(content, dict):
+        return str(content.get('text') or content.get('content') or '')
+    return str(content)
+
+
+@chat_bp.route('/jarvis/share/<session_id>', methods=['POST'])
+def create_share(session_id):
+    """Snapshot a conversation into a PUBLIC read-only share doc and return its
+    link. We copy the messages (user/assistant text only — no system prompt, no
+    tool internals) so the link keeps working even if the user later edits or
+    deletes the original chat, and so the viewer never needs access to the
+    owner's private data. Re-sharing the same session reuses the same link."""
+    from extensions import db
+    from firebase_admin import firestore
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
+    if not db:
+        return jsonify({"error": "Database unavailable"}), 503
+    try:
+        conv_ref = db.collection('users').document(uid).collection('conversations').document(session_id)
+        conv_doc = conv_ref.get()
+        conv_data = conv_doc.to_dict() if conv_doc.exists else {}
+
+        def _pj(v):
+            """Parse a JSON-string side-field back into its object, else passthrough."""
+            if not isinstance(v, str):
+                return v
+            s = v.strip()
+            if s[:1] in ('[', '{'):
+                try:
+                    return json.loads(s)
+                except Exception:
+                    return v
+            return v
+
+        snapshot = []
+        docs = conv_ref.collection('messages').order_by('timestamp').stream()
+        for d in docs:
+            data = d.to_dict()
+            role = data.get('role')
+            if role not in ('user', 'assistant'):
+                continue
+            if data.get('streaming'):
+                continue
+            # Keep content in its ORIGINAL shape (markdown string with mermaid/code,
+            # or a list of blocks incl. images) so the shared viewer renders it
+            # exactly like the in-app chat — not a flattened text bubble.
+            content = _pj(data.get('content'))
+            if content in (None, '', []):
+                continue
+            msg = {"id": d.id, "role": role, "content": content}
+            # Carry the same rich side-data the live message had so tool cards,
+            # citations, reasoning and artifacts all re-render in the viewer.
+            for k in ('tool_results', 'react_steps', 'citations', 'artifact'):
+                val = data.get(k)
+                if val is not None:
+                    msg[k] = _pj(val)
+            if data.get('agent_type'):
+                msg['agent_type'] = data.get('agent_type')
+            if data.get('thinking'):
+                msg['thinking'] = data.get('thinking')
+            snapshot.append(msg)
+            if len(snapshot) >= 400:
+                break
+
+        if not snapshot:
+            return jsonify({"error": "Nothing to share yet — send a message first."}), 400
+
+        # Firestore caps a document at ~1MB. If the rich snapshot is too large,
+        # shed the heaviest fields first (tool/react), then citations/artifacts,
+        # then trim oldest messages — so the share always saves.
+        def _too_big(obj):
+            try:
+                return len(json.dumps(obj, default=str)) > 900000
+            except Exception:
+                return False
+        if _too_big(snapshot):
+            for m in snapshot:
+                m.pop('tool_results', None)
+                m.pop('react_steps', None)
+        if _too_big(snapshot):
+            for m in snapshot:
+                m.pop('citations', None)
+                m.pop('artifact', None)
+        while len(snapshot) > 1 and _too_big(snapshot):
+            snapshot.pop(0)
+
+        # Owner display name (best-effort) for the "shared by" byline.
+        owner_name = ""
+        try:
+            sdoc = db.collection('users').document(uid).collection('settings').document('profile').get()
+            if sdoc.exists:
+                owner_name = (sdoc.to_dict() or {}).get('name') or ""
+        except Exception:
+            owner_name = ""
+
+        share_id = conv_data.get('share_id') or ('s_' + uuid.uuid4().hex[:16])
+        db.collection('shared_chats').document(share_id).set({
+            "share_id": share_id,
+            "uid": uid,
+            "session_id": session_id,
+            "title": (conv_data.get('title') or "Shared chat")[:200],
+            "messages": snapshot,
+            "message_count": len(snapshot),
+            "shared_by": owner_name[:80],
+            "revoked": False,
+            "created_at": firestore.SERVER_TIMESTAMP,
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        })
+        conv_ref.set({"share_id": share_id, "shared": True}, merge=True)
+        return jsonify({"share_id": share_id, "url": f"/share/{share_id}", "ok": True})
+    except Exception as e:
+        print(f"[Share] create failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@chat_bp.route('/jarvis/share/<share_id>', methods=['DELETE'])
+def revoke_share(share_id):
+    """Revoke a share link. Only the owner can revoke; the public page then 410s."""
+    from extensions import db
+    token_data = verify_firebase_token()
+    uid = token_data.get('uid') if token_data else None
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
+    if not db:
+        return jsonify({"error": "Database unavailable"}), 503
+    try:
+        ref = db.collection('shared_chats').document(share_id)
+        doc = ref.get()
+        if doc.exists and (doc.to_dict() or {}).get('uid') == uid:
+            ref.set({"revoked": True}, merge=True)
+            sid = (doc.to_dict() or {}).get('session_id')
+            if sid:
+                db.collection('users').document(uid).collection('conversations').document(sid) \
+                  .set({"shared": False}, merge=True)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@chat_bp.route('/shared/<share_id>', methods=['GET'])
+def get_shared_chat(share_id):
+    """PUBLIC (no auth): return a shared conversation snapshot for the read-only
+    /share/<id> viewer. 404 if missing, 410 if the owner revoked it."""
+    from extensions import db
+    if not db:
+        return jsonify({"error": "unavailable"}), 503
+    try:
+        doc = db.collection('shared_chats').document(share_id).get()
+        if not doc.exists:
+            return jsonify({"error": "not_found"}), 404
+        data = doc.to_dict() or {}
+        if data.get('revoked'):
+            return jsonify({"error": "revoked"}), 410
+        created = data.get('created_at')
+        try:
+            created = created.isoformat() if created else None
+        except Exception:
+            created = None
+        return jsonify({
+            "title": data.get('title') or "Shared chat",
+            "messages": data.get('messages') or [],
+            "message_count": data.get('message_count') or len(data.get('messages') or []),
+            "shared_by": data.get('shared_by') or "",
+            "created_at": created,
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

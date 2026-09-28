@@ -80,6 +80,12 @@
     --k-text-secondary: #A1A1AA;
     --k-border: rgba(255, 255, 255, 0.10);
   }
+  .maplibregl-popup-content {
+    @apply bg-transparent! shadow-none! p-0! rounded-none!;
+  }
+  .maplibregl-popup-tip {
+    @apply hidden!;
+  }
 }
 
 @layer base {
@@ -199,7 +205,7 @@
     transform: translateX(-100%);
     transition: transform 0.3s ease-in-out;
   }
-  
+
   .chat-sidebar.open {
     transform: translateX(0);
   }
@@ -284,4 +290,8 @@ select option:checked {
 :root:not(.dark) select option:checked {
   background-color: var(--k-brand);
   color: #fff;
+}
+
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
 }

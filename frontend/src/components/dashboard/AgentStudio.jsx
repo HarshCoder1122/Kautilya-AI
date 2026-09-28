@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Plus, PencilSimple, Trash, SpeakerHigh, Brain, Lightning, CheckCircle, Phone, X, UploadSimple, LinkSimple, FileText, ChatCircleText, Clock, Globe, CaretLeft, Microphone } from "@phosphor-icons/react";
+import { Plus, PencilSimple, Trash, SpeakerHigh, Brain, Lightning, CheckCircle, Phone, X, UploadSimple, LinkSimple, FileText, ChatCircleText, Clock, Globe, CaretLeft, Microphone, Eye, BookOpen } from "@phosphor-icons/react";
 import { LiveKitVoice } from "@/components/chat/LiveKitVoice";
 import { agentsAPI, telephonyAPI, ttsAPI, integrationsAPI } from "../../lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -298,6 +298,9 @@ function AgentDetail({ agent, onClose, onUpdate }) {
   const [kbUrl, setKbUrl] = useState("");
   const [kbLoading, setKbLoading] = useState(false);
   const [crawlMaxPages, setCrawlMaxPages] = useState(50);
+  const [eyeViewOpen, setEyeViewOpen] = useState(false);
+  const [eyeViewData, setEyeViewData] = useState(null);
+  const [eyeViewLoading, setEyeViewLoading] = useState(false);
   const [logs, setLogs] = useState([]);
   const [logsLoading, setLogsLoading] = useState(false);
   const [testMessages, setTestMessages] = useState([]);
@@ -308,8 +311,17 @@ function AgentDetail({ agent, onClose, onUpdate }) {
     hubspot: false,
     zoho: false,
     google_calendar: false,
+    gmail: false,
     whatsapp: false,
     slack: false
+  });
+
+  // Per-agent integration allow-list. Undefined = enabled (default-on), so
+  // existing agents keep working; toggling a switch off opts that agent out.
+  const integrationOn = (key) => editedAgent.integrations?.[key] !== false;
+  const toggleIntegration = (key, val) => setEditedAgent({
+    ...editedAgent,
+    integrations: { ...(editedAgent.integrations || {}), [key]: val },
   });
 
 	  useEffect(() => {
@@ -327,6 +339,7 @@ function AgentDetail({ agent, onClose, onUpdate }) {
         hubspot: false,
         zoho: false,
         google_calendar: false,
+        gmail: false,
         whatsapp: false,
         slack: false
       };
@@ -362,9 +375,24 @@ function AgentDetail({ agent, onClose, onUpdate }) {
     try {
       setIsTesting(true);
       const result = await telephonyAPI.outbound({ to: testNumber, agent_id: agent.agent_id });
-      alert(`✅ Call initiated to ${testNumber}!\nCall ID: ${result?.call_id || 'pending'}`);
+      // Surface remaining free quota so the user knows when PRO kicks in.
+      const left = result?.calls_remaining;
+      const remainingMsg = (left != null)
+        ? `\n\nYou have ${left} free test call${left === 1 ? '' : 's'} left.`
+        : '';
+      alert(`✅ Call initiated to ${testNumber}!\nCall ID: ${result?.call_id || 'pending'}${remainingMsg}`);
     } catch (error) {
-      const msg = error.response?.data?.error || error.message || 'Call failed';
+      const status = error.response?.status;
+      const data = error.response?.data || {};
+      // Free-call quota exhausted → PRO upsell.
+      if (status === 402 || data.code === 'upgrade_required') {
+        const go = window.confirm(
+          `${data.message || "You've used all your free test calls. Upgrade to PRO for unlimited outbound mobile calling."}\n\nGo to Billing to upgrade now?`
+        );
+        if (go) window.location.href = '/dashboard/billing';
+        return;
+      }
+      const msg = data.error || error.message || 'Call failed';
       if (msg.includes('telephony') || msg.includes('provider') || msg.includes('config') || msg.includes('Vobiz') || msg.includes('Exotel')) {
         alert(`📞 Telephony not configured.\n\nTo enable calls:\n1. Go to Dashboard → Settings → Telephony\n2. Add your Exotel or Vobiz credentials\n3. Then retry the call.\n\nError: ${msg}`);
       } else {
@@ -472,6 +500,20 @@ function AgentDetail({ agent, onClose, onUpdate }) {
       setKbFiles(prev => prev.filter(file => file.id !== fileId));
     } catch (error) {
       alert(error.response?.data?.error || 'Delete failed');
+    }
+  };
+
+  const handleEyeView = async (fileId) => {
+    try {
+      setEyeViewLoading(true);
+      setEyeViewOpen(true);
+      const data = await agentsAPI.getKBContent(agent.agent_id, fileId);
+      setEyeViewData(data);
+    } catch (error) {
+      console.error('Failed to load eye view:', error);
+      alert('Failed to load content view');
+    } finally {
+      setEyeViewLoading(false);
     }
   };
 
@@ -713,6 +755,29 @@ function AgentDetail({ agent, onClose, onUpdate }) {
                 </div>
               </div>
             </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Silence Timeout (sec)</label>
+                <input
+                  type="number" min="0" max="120"
+                  value={editedAgent.silence_nudge_seconds ?? 15}
+                  onChange={(e) => setEditedAgent({ ...editedAgent, silence_nudge_seconds: parseInt(e.target.value || '0', 10) })}
+                  className="w-full px-3 py-2.5 text-sm bg-[var(--k-surface-elevated)] border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none"
+                />
+                <p className="text-[10px] text-muted-foreground">Caller silent this long → agent checks in ("Are you there?"). 0 = off.</p>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Call Disconnect (sec)</label>
+                <input
+                  type="number" min="0" max="600"
+                  value={editedAgent.silence_disconnect_seconds ?? 30}
+                  onChange={(e) => setEditedAgent({ ...editedAgent, silence_disconnect_seconds: parseInt(e.target.value || '0', 10) })}
+                  className="w-full px-3 py-2.5 text-sm bg-[var(--k-surface-elevated)] border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none"
+                />
+                <p className="text-[10px] text-muted-foreground">Still silent after check-in → call auto-ends. 0 = off.</p>
+              </div>
+            </div>
           </TabsContent>
 
           <TabsContent value="knowledge" className="space-y-6 animate-fade-up">
@@ -775,29 +840,123 @@ function AgentDetail({ agent, onClose, onUpdate }) {
             </div>
 
             <div className="space-y-3">
-              <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Current Knowledge</div>
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Current Knowledge</div>
+                <div className="text-[10px] text-muted-foreground">
+                  {kbFiles.length} file{kbFiles.length !== 1 ? 's' : ''}
+                </div>
+              </div>
               {kbFiles.length === 0 ? (
                 <div className="p-8 rounded-xl border border-dashed border-[var(--k-border)] text-center text-sm text-muted-foreground">
                   No knowledge files added yet.
                 </div>
               ) : (
                 kbFiles.map(file => (
-                  <div key={file.id} className="flex items-center gap-3 p-3 rounded-xl border border-[var(--k-border)] bg-accent/10">
+                  <div key={file.id} className="flex items-center gap-3 p-3 rounded-xl border border-[var(--k-border)] bg-accent/10 hover:bg-accent/20 transition-colors">
                     <FileText className="w-5 h-5 text-[var(--k-brand)]" />
                     <div className="flex-1 min-w-0">
                       <div className="text-sm text-foreground truncate">{file.name}</div>
-                      <div className="text-[10px] text-muted-foreground">{Math.round((file.size || 0) / 1024)} KB</div>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-[10px] text-muted-foreground">{Math.round((file.size || 0) / 1024)} KB</span>
+                        {file.has_embeddings && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                            {file.embedding_count} embeddings
+                          </span>
+                        )}
+                        {file.embedding_model && file.embedding_model !== "none" && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--k-brand)]/10 text-[var(--k-brand)] border border-[var(--k-brand)]/20">
+                            NVIDIA NIM
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <button
-                      onClick={() => handleDeleteKb(file.id)}
-                      className="p-2 rounded-md hover:bg-rose-500/10 text-muted-foreground hover:text-rose-400"
-                    >
-                      <Trash className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => handleEyeView(file.id)}
+                        className="p-2 rounded-md hover:bg-[var(--k-brand)]/10 text-muted-foreground hover:text-[var(--k-brand)] transition-all"
+                        title="View indexed content"
+                      >
+                        <Eye className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteKb(file.id)}
+                        className="p-2 rounded-md hover:bg-rose-500/10 text-muted-foreground hover:text-rose-400 transition-all"
+                        title="Delete knowledge file"
+                      >
+                        <Trash className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                 ))
               )}
             </div>
+
+            {/* Eye View Modal */}
+            {eyeViewOpen && (
+              <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => setEyeViewOpen(false)}>
+                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-2xl max-h-[80vh] bg-[var(--k-surface)] rounded-xl border border-[var(--k-border)] overflow-hidden flex flex-col">
+                  <div className="flex items-center justify-between p-4 border-b border-[var(--k-border)]">
+                    <div className="flex items-center gap-2">
+                      <Eye className="w-5 h-5 text-[var(--k-brand)]" />
+                      <h3 className="text-sm font-bold text-foreground">Indexed Content View</h3>
+                    </div>
+                    <button onClick={() => setEyeViewOpen(false)} className="p-1.5 rounded-full hover:bg-accent text-muted-foreground transition-colors">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-4">
+                    {eyeViewLoading ? (
+                      <div className="flex items-center justify-center py-8">
+                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[var(--k-brand)]"></div>
+                      </div>
+                    ) : eyeViewData ? (
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <span className="font-medium">{eyeViewData.name}</span>
+                          {eyeViewData.embedding_model && eyeViewData.embedding_model !== "none" && (
+                            <span className="px-1.5 py-0.5 rounded-full bg-[var(--k-brand)]/10 text-[var(--k-brand)] border border-[var(--k-brand)]/20">
+                              {eyeViewData.embedding_model}
+                            </span>
+                          )}
+                          {eyeViewData.has_embeddings && (
+                            <span className="px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                              {eyeViewData.embedding_count} chunks
+                            </span>
+                          )}
+                        </div>
+                        
+                        {eyeViewData.embedded_chunks && eyeViewData.embedded_chunks.length > 0 ? (
+                          <div className="space-y-3">
+                            <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Embedded Chunks</div>
+                            {eyeViewData.embedded_chunks.map((chunk, index) => (
+                              <div key={chunk.id || index} className="p-3 rounded-lg border border-[var(--k-border)] bg-accent/10">
+                                <div className="text-[10px] text-muted-foreground mb-1">Chunk {chunk.chunk_index !== undefined ? chunk.chunk_index + 1 : index + 1}</div>
+                                <div className="text-xs text-foreground leading-relaxed">{chunk.text_preview}</div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="p-4 rounded-lg border border-dashed border-[var(--k-border)] text-center text-sm text-muted-foreground">
+                            No embedded chunks available for this file.
+                          </div>
+                        )}
+
+                        {eyeViewData.content && (
+                          <div className="space-y-2">
+                            <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Full Content</div>
+                            <div className="p-3 rounded-lg border border-[var(--k-border)] bg-accent/10 max-h-48 overflow-y-auto">
+                              <pre className="text-xs text-foreground whitespace-pre-wrap break-words">{eyeViewData.content}</pre>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-center text-sm text-muted-foreground py-8">Failed to load content</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </TabsContent>
 
           <TabsContent value="test" className="space-y-6 animate-fade-up">
@@ -907,7 +1066,8 @@ function AgentDetail({ agent, onClose, onUpdate }) {
             <div className="p-4 rounded-xl border border-[var(--k-border)] bg-accent/5">
               <h4 className="text-sm font-semibold text-foreground mb-1">Integration Capabilities</h4>
               <p className="text-xs text-muted-foreground">
-                Your agent can automatically perform tasks using your connected tools. Hook them up under settings to enable them.
+                Toggle which connected tools <span className="font-semibold text-foreground">this agent</span> is allowed to use after a call.
+                Switch one off and this agent will skip it (other agents are unaffected). Tools you haven't connected won't run regardless.
               </p>
             </div>
             
@@ -923,93 +1083,52 @@ function AgentDetail({ agent, onClose, onUpdate }) {
               </div>
               
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {/* CRM Leads sync */}
-                <div className="p-4 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] flex flex-col justify-between h-36">
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-bold text-foreground">CRM Leads Sync</span>
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        (integrationsStatus.hubspot || integrationsStatus.zoho) 
-                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
-                          : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
-                      }`}>
-                        {(integrationsStatus.hubspot || integrationsStatus.zoho) ? 'Active' : 'Inactive'}
-                      </span>
+                {[
+                  { key: 'crm', title: 'CRM Leads Sync', connected: integrationsStatus.hubspot || integrationsStatus.zoho,
+                    desc: 'Queries client details in HubSpot or Zoho during the call and logs an interaction note afterwards.',
+                    connect: 'Connect HubSpot/Zoho CRM' },
+                  { key: 'google_calendar', title: 'Google Calendar', connected: integrationsStatus.google_calendar,
+                    desc: 'Books follow-up meetings and sends clash-free calendar invites directly to callers.',
+                    connect: 'Connect Google Calendar' },
+                  { key: 'gmail', title: 'Email Follow-ups', connected: integrationsStatus.gmail,
+                    desc: 'Auto-sends a follow-up email to the lead from your own connected Gmail after the call.',
+                    connect: 'Connect Gmail' },
+                  { key: 'whatsapp', title: 'WhatsApp Reporting', connected: integrationsStatus.whatsapp,
+                    desc: 'Sends post-call summaries and booking confirmations using WhatsApp Business templates.',
+                    connect: 'Connect WhatsApp API' },
+                  { key: 'slack', title: 'Slack Alerts', connected: integrationsStatus.slack,
+                    desc: 'Posts call outcomes to your Slack channel for urgent human handoffs and alerts.',
+                    connect: 'Connect Slack webhook' },
+                ].map((it) => {
+                  const on = integrationOn(it.key);
+                  return (
+                    <div key={it.key} className={`p-4 rounded-xl border bg-[var(--k-surface)] flex flex-col justify-between h-40 transition-opacity ${on ? 'border-[var(--k-border)]' : 'border-[var(--k-border)] opacity-60'}`}>
+                      <div>
+                        <div className="flex items-center justify-between mb-2 gap-2">
+                          <span className="text-xs font-bold text-foreground">{it.title}</span>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              it.connected
+                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
+                            }`}>
+                              {it.connected ? 'Connected' : 'Not connected'}
+                            </span>
+                            <Switch checked={on} onCheckedChange={(v) => toggleIntegration(it.key, v)} />
+                          </div>
+                        </div>
+                        <p className="text-[11px] text-muted-foreground leading-relaxed">{it.desc}</p>
+                      </div>
+                      {!it.connected ? (
+                        <button onClick={() => navigate('/dashboard/integrations')} className="text-[10px] font-bold text-[var(--k-brand)] hover:underline text-left">{it.connect}</button>
+                      ) : (
+                        <span className={`text-[10px] font-medium ${on ? 'text-emerald-400' : 'text-muted-foreground'}`}>
+                          {on ? 'This agent will use it' : 'Disabled for this agent'}
+                        </span>
+                      )}
                     </div>
-                    <p className="text-[11px] text-muted-foreground leading-relaxed">
-                      Automatically queries client details in HubSpot or Zoho CRM during a call/chat, creates new contacts, and updates interaction notes.
-                    </p>
-                  </div>
-                  {!((integrationsStatus.hubspot || integrationsStatus.zoho)) && (
-                    <button onClick={() => navigate('/dashboard/integrations')} className="text-[10px] font-bold text-[var(--k-brand)] hover:underline text-left">Connect HubSpot/Zoho CRM</button>
-                  )}
-                </div>
-
-                {/* Google Calendar */}
-                <div className="p-4 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] flex flex-col justify-between h-36">
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-bold text-foreground">Google Calendar</span>
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        integrationsStatus.google_calendar 
-                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
-                          : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
-                      }`}>
-                        {integrationsStatus.google_calendar ? 'Active' : 'Inactive'}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-muted-foreground leading-relaxed">
-                      Allows the voice/chat agent to book calendar events, check schedule slots, and send calendar invites directly to callers.
-                    </p>
-                  </div>
-                  {!integrationsStatus.google_calendar && (
-                    <button onClick={() => navigate('/dashboard/integrations')} className="text-[10px] font-bold text-[var(--k-brand)] hover:underline text-left">Connect Google Calendar</button>
-                  )}
-                </div>
-
-                {/* WhatsApp Follow-ups */}
-                <div className="p-4 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] flex flex-col justify-between h-36">
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-bold text-foreground">WhatsApp Reporting</span>
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        integrationsStatus.whatsapp 
-                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
-                          : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
-                      }`}>
-                        {integrationsStatus.whatsapp ? 'Active' : 'Inactive'}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-muted-foreground leading-relaxed">
-                      Sends post-call summaries, booking confirmations, or automated customer support follow-up messages using WhatsApp Business templates.
-                    </p>
-                  </div>
-                  {!integrationsStatus.whatsapp && (
-                    <button onClick={() => navigate('/dashboard/integrations')} className="text-[10px] font-bold text-[var(--k-brand)] hover:underline text-left">Connect WhatsApp API</button>
-                  )}
-                </div>
-
-                {/* Slack Notifications */}
-                <div className="p-4 rounded-xl border border-[var(--k-border)] bg-[var(--k-surface)] flex flex-col justify-between h-36">
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-bold text-foreground">Slack Alerts</span>
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        integrationsStatus.slack 
-                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
-                          : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
-                      }`}>
-                        {integrationsStatus.slack ? 'Active' : 'Inactive'}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-muted-foreground leading-relaxed">
-                      Enables the agent to post internal notifications to Slack channels for urgent human handoffs or important call outcome alerts.
-                    </p>
-                  </div>
-                  {!integrationsStatus.slack && (
-                    <button onClick={() => navigate('/dashboard/integrations')} className="text-[10px] font-bold text-[var(--k-brand)] hover:underline text-left">Connect Slack webhook</button>
-                  )}
-                </div>
+                  );
+                })}
               </div>
             </div>
           </TabsContent>
@@ -1071,6 +1190,8 @@ function CreateAgentForm({ onClose, onSuccess }) {
     language: 'hi-IN',
     agent_type: 'inbound',
     temperature: 0.7,
+    silence_nudge_seconds: 15,
+    silence_disconnect_seconds: 30,
   });
 
   const handleSubmit = async (e) => {
@@ -1183,6 +1304,30 @@ function CreateAgentForm({ onClose, onSuccess }) {
               </>
             )}
           </select>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="space-y-1.5">
+          <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Silence Timeout (sec)</label>
+          <input
+            data-testid="new-agent-silence-nudge"
+            type="number" min="0" max="120"
+            value={formData.silence_nudge_seconds}
+            onChange={(e) => setFormData({ ...formData, silence_nudge_seconds: parseInt(e.target.value || '0', 10) })}
+            className="w-full px-4 py-3 text-sm bg-accent/20 border border-[var(--k-border)] rounded-xl text-foreground focus:ring-1 focus:ring-[var(--k-brand)]"
+          />
+          <p className="text-[10px] text-muted-foreground">Caller silent this long → agent checks in ("Are you there?"). 0 = off.</p>
+        </div>
+        <div className="space-y-1.5">
+          <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Call Disconnect (sec)</label>
+          <input
+            data-testid="new-agent-silence-disconnect"
+            type="number" min="0" max="600"
+            value={formData.silence_disconnect_seconds}
+            onChange={(e) => setFormData({ ...formData, silence_disconnect_seconds: parseInt(e.target.value || '0', 10) })}
+            className="w-full px-4 py-3 text-sm bg-accent/20 border border-[var(--k-border)] rounded-xl text-foreground focus:ring-1 focus:ring-[var(--k-brand)]"
+          />
+          <p className="text-[10px] text-muted-foreground">Still silent after check-in → call auto-ends. 0 = off.</p>
         </div>
       </div>
       <div className="flex justify-end gap-3 pt-6">

@@ -1,9 +1,11 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { User, Key, Bell, Shield, Palette, CaretRight, CheckCircle, Warning, GoogleLogo, Crown, Database, Trash, Eye, EnvelopeSimple } from "@phosphor-icons/react";
+import { User, Key, Bell, Shield, Palette, CaretRight, CheckCircle, Warning, GoogleLogo, Crown, Database, Trash, Eye, EnvelopeSimple, Phone } from "@phosphor-icons/react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { billingAPI, userAPI, getAuthHeaders } from "../../lib/api";
 import ApiKeySettings from "./ApiKeySettings";
+import TelephonySettings from "./TelephonySettings";
+import PersonalitySettings from "./PersonalitySettings";
 
 export default function UserSettings({ user }) {
   const navigate = useNavigate();
@@ -34,6 +36,7 @@ export default function UserSettings({ user }) {
     try {
       const config = await billingAPI.getConfig();
       setBillingConfig(config);
+      try { localStorage.setItem('k_is_pro', (config?.is_pro || config?.tier === 'pro') ? '1' : '0'); } catch {}
     } catch (error) {
       console.error("Failed to load billing status:", error);
     }
@@ -118,6 +121,7 @@ export default function UserSettings({ user }) {
   const tabs = [
     { id: 'profile', label: 'Profile', icon: User },
     { id: 'apikeys', label: 'API Keys', icon: Key },
+    { id: 'telephony', label: 'Telephony', icon: Phone },
     { id: 'preferences', label: 'Preferences', icon: Palette },
     { id: 'security', label: 'Security', icon: Shield },
     { id: 'mydata', label: 'My Data', icon: Database },
@@ -309,8 +313,14 @@ export default function UserSettings({ user }) {
 
               {activeTab === 'apikeys' && <ApiKeySettings />}
 
+              {activeTab === 'telephony' && <TelephonySettings />}
+
               {activeTab === 'preferences' && (
-                <div className="space-y-6 animate-fade-up">
+                <div className="space-y-8 animate-fade-up">
+                   <PersonalitySettings />
+
+                   <div className="h-px bg-[var(--k-border)]" />
+
                    <h3 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Interface Preferences</h3>
                    <div className="space-y-4">
                       <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--k-border)]">

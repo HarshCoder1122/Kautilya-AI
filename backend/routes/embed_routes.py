@@ -22,7 +22,7 @@ from flask import Blueprint, request, jsonify, Response, send_from_directory
 
 from config import STATIC_FOLDER
 from services.auth_service import verify_firebase_token
-from services.llm_service import call_groq, call_nvidia
+from services.llm_service import call_vertex_gemini
 
 embed_bp = Blueprint('embed', __name__)
 
@@ -142,15 +142,17 @@ def public_agent_chat(agent_id):
     max_tokens = int(agent.get('max_tokens') or 1024)
 
     # Pick backend by model id
-    if 'kautilya-coder' in model or 'deepseek' in model:
-        gen = call_nvidia(messages, stream=True, model='deepseek-ai/deepseek-v4-pro',
-                          temperature=temperature, max_tokens=max_tokens, expose_thinking=False)
-    elif 'kautilya-pro' in model or 'nemotron' in model:
-        gen = call_nvidia(messages, stream=True, model='nvidia/nemotron-3-super-120b-a12b',
-                          temperature=temperature, max_tokens=max_tokens, expose_thinking=False)
+    from services.agent_loop_service import _MODEL_LABELS, FAST_MODEL
+    if 'kautilya-coder' in model or 'deepseek' in model or 'kimi' in model:
+        upstream_model = _MODEL_LABELS['coder'][1]
+    elif 'kautilya-pro' in model or 'glm' in model:
+        upstream_model = _MODEL_LABELS['pro'][1]
+    elif 'kautilya-daily' in model or 'nemotron' in model:
+        upstream_model = _MODEL_LABELS['daily'][1]
     else:
-        gen = call_groq(messages, stream=True, model='llama-3.3-70b-versatile',
-                        temperature=temperature, max_tokens=max_tokens)
+        upstream_model = FAST_MODEL
+    gen = call_vertex_gemini(messages, stream=True, model=upstream_model,
+                             temperature=temperature, max_tokens=max_tokens, expose_thinking=False)
 
     if gen is None:
         return _with_cors(jsonify({"error": "LLM unavailable"})), 503
@@ -214,7 +216,8 @@ def public_lead_capture(agent_id):
     try:
         db.collection('leads').document(lead_id).set(lead)
     except Exception as e:
-        return _with_cors(jsonify({"error": str(e)})), 500
+        print(f"[Embed] lead capture error: {e}")
+        return _with_cors(jsonify({"error": "Could not save lead. Please try again."})), 500
 
     # Best-effort webhook fan-out (Slack/Zapier) if configured on the agent.
     try:

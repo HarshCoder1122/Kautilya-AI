@@ -1,9 +1,13 @@
 import { useState, useRef, useEffect } from "react";
-import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning, Columns, CaretDown, X, Microphone, MicrophoneSlash, Phone, StopCircle, File, Image, Camera, HardDrive, Cpu, Brain, Diamond } from "@phosphor-icons/react";
+import { SidebarSimple, ArrowRight, Paperclip, Code, MagnifyingGlass, Lightning, Columns, CaretDown, X, Microphone, MicrophoneSlash, Phone, StopCircle, File, Image, Camera, HardDrive, HardDrives, Cpu, Brain, Diamond, Lock, ShareNetwork, Copy, Check, Sparkle, Presentation, Layout, FileMagnifyingGlass, GitBranch, ChartBar } from "@phosphor-icons/react";
 import { ChatMessage } from "@/components/chat/ChatMessage";
+import { QuestionPrompt } from "@/components/chat/QuestionPrompt";
+import { extractQuestionBlock, parseQuestion } from "../../lib/questionBlock";
 import { ThinkingTokens } from "@/components/chat/ThinkingTokens";
 import { LiveKitVoice } from "@/components/chat/LiveKitVoice";
-import { chatAPI, getAuthHeaders, integrationsAPI } from "../../lib/api";
+import { chatAPI, getAuthHeaders, integrationsAPI, skillsAPI } from "../../lib/api";
+import { extractArtifact, mergeProjectCode } from "../../lib/artifacts";
+import { hydrateHistoryMessage } from "../../lib/hydrateMessage";
 // ReActSteps is rendered inside ChatMessage — no need to import here
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -38,15 +42,11 @@ const modes = [
   { id: 'code',     label: 'Code',         icon: Code,            desc: 'Frontier code generation' },
 ];
 
-function parseAttrs(s) {
-  const out = {};
-  const re = /([a-zA-Z_:][\w:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
-  let m;
-  while ((m = re.exec(s)) !== null) {
-    out[m[1].toLowerCase()] = m[2] ?? m[3] ?? m[4] ?? '';
-  }
-  return out;
-}
+// Map a skill's catalog `icon` string (from skills_spec.py) → a phosphor icon.
+const SKILL_ICONS = {
+  Presentation, Layout, FileSearch: FileMagnifyingGlass, GitBranch, BarChart3: ChartBar,
+};
+const skillIcon = (name) => SKILL_ICONS[name] || Sparkle;
 
 // Cache key for the per-session message mirror. We keep one slot per session
 // in sessionStorage so unmounting (route change, tab close) doesn't blank the
@@ -72,12 +72,16 @@ const _writeStreamCache = (sid, messages, streaming) => {
   } catch { /* quota / private mode — soft-fail */ }
 };
 
-export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSidebar, canvasOpen, onToggleCanvas, onOpenCanvas, activeMode, onSetMode, theme, toggleTheme, sessionId, onSessionChange, onNewSession, onStreamComplete }) {
+export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSidebar, canvasOpen, onToggleCanvas, onOpenCanvas, computerOpen, onToggleComputer, onComputerActivity, onBrowseUpdate, activeMode, onSetMode, theme, toggleTheme, sessionId, onSessionChange, onNewSession, onStreamComplete }) {
   // Restore previous in-progress messages synchronously so a remount (after
   // navigating to dashboard / switching tabs) never shows a blank screen.
   const [messages, setMessages] = useState(() => _readStreamCache(sessionId)?.messages || []);
   const [inputValue, setInputValue] = useState("");
   const [selectedFiles, setSelectedFiles] = useState([]);
+  // Deep-research depth: quick | standard | exhaustive (drives backend breadth).
+  const [researchDepth, setResearchDepth] = useState('standard');
+  // Deep-research output shape: research (analyst report) | prd (Product Requirements Doc).
+  const [researchMode, setResearchMode] = useState('research');
   const [isThinking, setIsThinking] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -93,52 +97,136 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   const [mcpSearch, setMcpSearch] = useState("");
   const [mcpStatus, setMcpStatus] = useState(null);
   const [loadingMcp, setLoadingMcp] = useState(false);
+  // Skills: catalog dialog + the currently-active skill (persisted per browser).
+  const [showSkillsDialog, setShowSkillsDialog] = useState(false);
+  const [skillsCatalog, setSkillsCatalog] = useState(null);
+  const [loadingSkills, setLoadingSkills] = useState(false);
+  const [skillsSearch, setSkillsSearch] = useState("");
+  const [activeSkill, setActiveSkill] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('kautilya_active_skill') || 'null'); }
+    catch { return null; }
+  });
+  // Question card the user dismissed via Skip (keyed by the asking message id),
+  // so the dock stays hidden without sending any "skip" message.
+  const [dismissedQuestionId, setDismissedQuestionId] = useState(null);
+  // Public share-link dialog: holds { url, shareId } once a link is created.
+  const [shareInfo, setShareInfo] = useState(null);
+  const [sharing, setSharing] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
   const { toast } = useToast();
   const messagesEndRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   // Track sessions we just created so we don't reload empty history
   const pendingSessionRef = useRef(null);
+  // The session currently on screen — used to discard stale async results
+  // (a poll/history-load that resolves AFTER the user switched chats must not
+  // overwrite the new chat's messages).
+  const activeSessionRef = useRef(sessionId);
   // Track whether we left mid-stream (user navigated away during generation)
   const leftMidStreamRef = useRef(false);
   const staleTimerRef = useRef(null);
   const abortControllerRef = useRef(null);
+  const streamSessionRef = useRef(null); // session id of the in-flight generation (for Stop)
 
-  // Auto-scroll: instant during streaming (smooth would jitter as tokens arrive
-  // faster than the animation finishes), smooth only on quiescent updates.
-  // Skip entirely if the user has scrolled up to read backscroll.
+  // ── Auto-scroll: only follow the stream while the user is AT the bottom ──
+  // The real scroll element is the Radix ScrollArea viewport (an ancestor of
+  // messagesEndRef), NOT messagesEndRef.parentElement — measuring the wrong
+  // node is what made auto-scroll drag the user down even after they scrolled
+  // up. We locate the viewport, track the user's position with a live scroll
+  // listener, and only snap to bottom when they're already parked there. A
+  // floating "scroll to bottom" button appears whenever they're scrolled up.
   const stickToBottomRef = useRef(true);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const BOTTOM_THRESHOLD = 120; // px from bottom that still counts as "at bottom"
+
+  const getScroller = () =>
+    messagesEndRef.current?.closest('[data-radix-scroll-area-viewport]') || null;
+
+  const scrollToBottom = (behavior = 'smooth') => {
+    stickToBottomRef.current = true;
+    setShowScrollBtn(false);
+    const scroller = getScroller();
+    if (scroller) scroller.scrollTo({ top: scroller.scrollHeight, behavior });
+    else messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+  };
+
+  // Live position tracking — the user can scroll ANYWHERE with no fight: this
+  // just records whether they're at the bottom (→ keep following) or not
+  // (→ stop following, show the jump-to-bottom button).
   useEffect(() => {
-    const el = messagesEndRef.current;
-    if (!el) return;
-    const scroller = el.parentElement;
-    if (scroller) {
+    const scroller = getScroller();
+    if (!scroller) return;
+    const onScroll = () => {
       const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-      if (distance > 120) {
-        stickToBottomRef.current = false;
-        return;
-      }
-      stickToBottomRef.current = true;
-    }
-    el.scrollIntoView({ behavior: isStreaming ? "auto" : "smooth", block: "end" });
+      const atBottom = distance <= BOTTOM_THRESHOLD;
+      stickToBottomRef.current = atBottom;
+      setShowScrollBtn(!atBottom);
+    };
+    scroller.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+    return () => scroller.removeEventListener('scroll', onScroll);
+  }, []); // viewport persists for the chat's lifetime — attach once
+
+  // New content arrived → follow it ONLY if the user is still at the bottom.
+  useEffect(() => {
+    if (!stickToBottomRef.current) return;
+    const scroller = getScroller();
+    if (scroller) scroller.scrollTo({ top: scroller.scrollHeight, behavior: isStreaming ? 'auto' : 'smooth' });
+    else messagesEndRef.current?.scrollIntoView({ behavior: isStreaming ? 'auto' : 'smooth', block: 'end' });
   }, [messages, isThinking, isStreaming]);
 
-  // Reload history when user returns to the tab after leaving mid-stream
+  // Some content grows AFTER the effect above ran — Mermaid diagrams render
+  // asynchronously, images and tool cards load late. Keep following that
+  // growth while the user is parked at the bottom, instead of leaving the view
+  // short and snapping down on the next token.
+  useEffect(() => {
+    const scroller = getScroller();
+    const content = messagesEndRef.current?.parentElement;
+    if (!scroller || !content || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      if (stickToBottomRef.current) scroller.scrollTop = scroller.scrollHeight;
+    });
+    ro.observe(content);
+    return () => ro.disconnect();
+  }, []); // same lifetime as the scroll listener above
+
+  // Tab refocus handling. IMPORTANT: switching away to another app/tab and
+  // back must NEVER blank the screen. We only do a SILENT, NON-DESTRUCTIVE
+  // catch-up — and ONLY if the user actually left mid-generation. A normal
+  // "switch to VS Code and back" does nothing: the React state is already on
+  // screen, so there's nothing to reload.
   useEffect(() => {
     const handleVisibility = () => {
-      if (document.visibilityState === 'visible' && leftMidStreamRef.current && sessionId) {
+      if (document.visibilityState === 'visible' && leftMidStreamRef.current && sessionId && !isStreaming) {
         leftMidStreamRef.current = false;
-        // Small delay to let the backend thread finish saving
-        setTimeout(() => loadHistory(sessionId), 1200);
+        // merge:true → fill in any content finished while we were away, but
+        // never replace the on-screen messages with an empty/shorter snapshot.
+        // silent:true → no "Thinking…" flash over the existing conversation.
+        setTimeout(() => loadHistory(sessionId, { merge: true, silent: true }), 800);
       }
       if (document.visibilityState === 'hidden') {
-        // Record we left the tab
+        // Record we left the tab ONLY if a generation was in flight.
         leftMidStreamRef.current = isStreaming || isThinking;
       }
     };
     document.addEventListener('visibilitychange', handleVisibility);
     return () => document.removeEventListener('visibilitychange', handleVisibility);
   }, [sessionId, isStreaming, isThinking]);
+
+  // On unmount (navigating away from the chat route), abort the in-flight
+  // stream so we don't leave an orphaned fetch reader that throws a network
+  // error after the component is gone. The backend keeps generating and
+  // persists to Firestore independently, so returning to this session
+  // restores the full reply via the sessionId effect + streaming poll.
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+    };
+  }, []);
 
   // Fetch MCP status when the dialog opens
   useEffect(() => {
@@ -164,8 +252,40 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     fetchMcpStatus();
   }, [showMcpDialog, toast]);
 
+  // Load the Skills catalog when the dialog opens (cached 5 min in api.js).
+  useEffect(() => {
+    if (!showSkillsDialog || skillsCatalog) return;
+    let cancelled = false;
+    setLoadingSkills(true);
+    skillsAPI.list()
+      .then((data) => { if (!cancelled) setSkillsCatalog(data); })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error("Failed to load skills:", err);
+        toast({ variant: "destructive", title: "Couldn't load Skills", description: err.message || "Try again." });
+      })
+      .finally(() => { if (!cancelled) setLoadingSkills(false); });
+    return () => { cancelled = true; };
+  }, [showSkillsDialog, skillsCatalog, toast]);
+
+  // Persist the active skill so it survives reloads.
+  useEffect(() => {
+    try {
+      if (activeSkill) localStorage.setItem('kautilya_active_skill', JSON.stringify(activeSkill));
+      else localStorage.removeItem('kautilya_active_skill');
+    } catch { /* ignore quota / private-mode errors */ }
+  }, [activeSkill]);
+
+  // Toggle a skill on/off from a catalog card.
+  const toggleSkill = (skill) => {
+    setActiveSkill((cur) => (cur && cur.id === skill.id) ? null : {
+      id: skill.id, name: skill.name, icon: skill.icon, accent: skill.accent,
+    });
+  };
+
   // Load history when sessionId changes
   useEffect(() => {
+    activeSessionRef.current = sessionId;
     if (!sessionId) {
       setMessages([]);
       return;
@@ -214,44 +334,39 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     return () => clearTimeout(staleTimerRef.current);
   }, [isThinking, isStreaming]);
 
-  // Hydrate a Firestore-saved message back into the live message shape used
-  // by ChatMessage. Tool-result cards / ReAct steps / citations are stored
-  // as JSON strings on the backend so they survive serialization — we
-  // re-parse them here so they render exactly like they did during streaming.
-  const hydrateHistoryMessage = (m) => {
-    const safeParse = (v) => {
-      if (v == null) return v;
-      if (typeof v !== 'string') return v;
-      try { return JSON.parse(v); } catch (e) { return v; }
-    };
-    const toolResults = safeParse(m.tool_results);
-    const reactStepsRaw = safeParse(m.react_steps);
-    const citations = safeParse(m.citations);
-    const artifact = safeParse(m.artifact);
-    return {
-      ...m,
-      id: m.id || `msg-${Math.random()}`,
-      timestamp: m.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      toolResults: Array.isArray(toolResults) ? toolResults : undefined,
-      reactSteps: Array.isArray(reactStepsRaw) ? reactStepsRaw : undefined,
-      citations: Array.isArray(citations) ? citations : undefined,
-      agentType: m.agent_type || m.agentType,
-      hasArtifact: !!artifact,
-      artifactType: artifact?.type,
-      artifactTitle: artifact?.title,
-      // Restore thinking/reasoning from Firestore so the collapsed
-      // "Process Analysis" block re-appears when reloading old chats.
-      thinking: m.thinking || undefined,
-      thinkingDone: !!m.thinking,
-    };
+  // Hydrate a Firestore-saved message back into the live message shape used by
+  // ChatMessage. Shared with the public SharedChatPage (see lib/hydrateMessage)
+  // so reloaded history and shared chats render identically.
+
+  // Adopt a server snapshot only if it's at least as "rich" as what's already
+  // on screen — i.e. it has no fewer messages and no less total text. This is
+  // what guarantees a tab refocus / background poll can never blank or shrink
+  // the visible conversation.
+  const _textLen = (arr) => (arr || []).reduce(
+    (n, m) => n + (typeof m.content === 'string' ? m.content.length : 0), 0);
+  const _adoptIfRicher = (prev, incoming) => {
+    if (!incoming || incoming.length === 0) return prev;
+    if (incoming.length < prev.length) return prev;
+    if (incoming.length === prev.length && _textLen(incoming) < _textLen(prev)) return prev;
+    return incoming;
   };
 
-  const loadHistory = async (sid) => {
+  const loadHistory = async (sid, { merge = false, silent = false } = {}) => {
     try {
-      setIsThinking(true);
+      if (!silent) setIsThinking(true);
       const data = await chatAPI.getConversation(sid);
+      // Discard if the user switched chats while this was in flight.
+      if (sid !== activeSessionRef.current) return;
       if (data && data.messages && data.messages.length > 0) {
-        setMessages(data.messages.map(m => hydrateHistoryMessage(m)));
+        const incoming = data.messages.map(m => hydrateHistoryMessage(m));
+        if (merge) {
+          // Non-destructive: never wipe or shrink the on-screen conversation
+          // with a stale/empty server snapshot (the tab-refocus path).
+          setMessages(prev => _adoptIfRicher(prev, incoming));
+        } else {
+          // Session switch / explicit load — authoritative full replace.
+          setMessages(incoming);
+        }
         // If the server is still generating the last assistant message
         // (user closed/reloaded the app mid-stream), poll for live updates
         // until the streaming flag flips off. Keep "thinking" UI active so
@@ -265,7 +380,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     } catch (error) {
       console.error('Failed to load conversation history:', error);
     } finally {
-      setIsThinking(false);
+      if (!silent) setIsThinking(false);
     }
   };
 
@@ -278,10 +393,15 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     // Tight 1.2s polling — partial Firestore writes land every 1.5s
     for (let i = 0; i < 250; i++) { // 250 * 1.2s = 5 min hard cap
       await new Promise(r => setTimeout(r, 1200));
+      // Stop polling a chat the user has navigated away from.
+      if (sid !== activeSessionRef.current) break;
       try {
         const data = await chatAPI.getConversation(sid);
         if (!data || !data.messages) continue;
-        setMessages(data.messages.map(m => hydrateHistoryMessage(m)));
+        if (sid !== activeSessionRef.current) break;
+        // Non-destructive — a transiently-empty/stale read must never wipe
+        // the live message the user is watching grow.
+        setMessages(prev => _adoptIfRicher(prev, data.messages.map(m => hydrateHistoryMessage(m))));
         const lastMsg = data.messages[data.messages.length - 1];
         const lastContent = typeof lastMsg?.content === 'string' ? lastMsg.content : '';
         // Keep thinking bubble visible while server has nothing to show yet
@@ -319,6 +439,47 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
 
   const removeFile = (index) => {
     setSelectedFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  // Grow the composer upward as the user types more lines (capped, then it
+  // scrolls internally). Called on every value change — typed or programmatic.
+  const INPUT_MAX_H = 240;
+  const autoResizeInput = () => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, INPUT_MAX_H)}px`;
+    el.style.overflowY = el.scrollHeight > INPUT_MAX_H ? 'auto' : 'hidden';
+  };
+
+  // Keep height in sync when inputValue changes from anywhere (suggestions,
+  // voice transcription, send-clear, etc.), not just direct typing.
+  useEffect(() => {
+    autoResizeInput();
+  }, [inputValue]);
+
+  // Paste images / files straight from the clipboard into the composer — no
+  // need to save-then-attach. Pasted blobs often have no filename, so we
+  // synthesize one so previews and upload work.
+  const handlePaste = (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const pasted = [];
+    for (const item of items) {
+      if (item.kind === 'file') {
+        let file = item.getAsFile();
+        if (!file) continue;
+        if (!file.name) {
+          const ext = (file.type && file.type.split('/')[1]) || 'png';
+          file = new File([file], `pasted-${Date.now()}.${ext}`, { type: file.type || 'application/octet-stream' });
+        }
+        pasted.push(file);
+      }
+    }
+    if (pasted.length) {
+      e.preventDefault(); // don't also paste the binary/filename as text
+      setSelectedFiles(prev => [...prev, ...pasted]);
+    }
   };
 
   // Voice recording
@@ -384,16 +545,26 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
   };
 
   const handleStopGeneration = () => {
+    // Tell the backend to halt the LLM thread (stops burning tokens) BEFORE we
+    // drop the connection — a bare fetch-abort leaves the worker thread running.
+    chatAPI.stopGeneration(streamSessionRef.current);
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
+    leftMidStreamRef.current = false; // explicit stop ≠ "left mid-stream"; don't auto-reload
     setIsStreaming(false);
     setIsThinking(false);
   };
 
-  const handleSend = async () => {
-    if (!inputValue.trim() && selectedFiles.length === 0) return;
+  const handleSend = async (overrideText) => {
+    // Accept a direct text argument (interactive-question answers call
+    // handleSend(text)) so we don't rely on setInputValue + a stale-closure
+    // read of inputValue — that was leaving the answer sitting in the box
+    // unsent until the user pressed Enter. onClick/Enter pass no string, so
+    // they keep using the typed inputValue.
+    const text = typeof overrideText === 'string' ? overrideText : inputValue;
+    if (!text.trim() && selectedFiles.length === 0) return;
     if (isStreaming) return;
 
     // Materialize image previews so they survive in the message bubble after send
@@ -415,20 +586,26 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     const userMsg = {
       id: `msg-${Date.now()}`,
       role: 'user',
-      content: inputValue,
+      content: text,
       files: fileMetas,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
     setMessages(prev => [...prev, userMsg]);
+    // Sending a new message always re-engages auto-follow + snaps to bottom,
+    // even if the user had scrolled up.
+    stickToBottomRef.current = true;
+    setShowScrollBtn(false);
+    requestAnimationFrame(() => scrollToBottom('auto'));
 
     const currentFiles = [...selectedFiles];
-    const currentInput = inputValue;
+    const currentInput = text;
     setInputValue('');
     setSelectedFiles([]);
     setIsThinking(true);
 
     // Create new session if needed — mark it as pending so useEffect won't reload empty history
     const currentSessionId = sessionId || `session-${Date.now()}`;
+    streamSessionRef.current = currentSessionId; // so Stop can cancel this exact run
     const isNewSession = !sessionId;
     if (isNewSession && onSessionChange) {
       pendingSessionRef.current = currentSessionId;
@@ -448,7 +625,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       abortControllerRef.current = new AbortController();
 
       const response = activeMode === 'research'
-        ? await chatAPI.streamResearch(currentInput, currentSessionId, { signal: abortControllerRef.current.signal })
+        ? await chatAPI.streamResearch(currentInput, currentSessionId, { signal: abortControllerRef.current.signal, depth: researchDepth, mode: researchMode })
         : await chatAPI.streamMessage(currentInput, currentSessionId, model, currentFiles, {
           // Only respect the user's explicit "Max Thinking" toggle. Code
           // mode used to force this true, but Qwen3-Coder is NOT a
@@ -457,6 +634,7 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
           // use and that NVIDIA deducted from output. Net effect: 12k
           // fewer tokens for actual code → mid-file cutoffs.
           maxThinking: maxThinking,
+          skill: activeSkill?.id || '',
           signal: abortControllerRef.current.signal,
         });
 
@@ -515,21 +693,13 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
       };
 
       const updateContent = () => {
-        const visible = fullContent;
-        // Multi-file workspace: detect either <file>...</file> blocks OR the
-        // common "**filename.ext**\n```lang\n...\n```" pattern that
-        // Claude/Emergent-style coder responses emit. We require 2+ filename
-        // headers OR any explicit <file> tag so single code snippets still
-        // render as a normal artifact rather than a multi-file project.
-        const hasFileTags = /<file[\s>]/i.test(fullContent);
-        const filenameHeaderRe = /(^|\n)[ \t]*(?:\*\*|`|#{1,6}\s+|(?:[Ff]ile|[Ff]ilename|[Pp]ath)\s*[:=]\s*)?[\w./@-]+\.(?:jsx|tsx|js|ts|html|css|py|json|md|vue|svelte|go|rs|java|cpp|c|h|sh|yml|yaml|toml|env)(?:\*\*|`)?[ \t]*\n[ \t]*```/g;
-        const headerHits = (fullContent.match(filenameHeaderRe) || []).length;
-        if (hasFileTags || headerHits >= 2) {
-          // Visible body uses the typewriter-smoothed slice; the canvas/
-          // artifact gets fullContent so file tree is always current.
-          const cleanContent = visible.replace(/<file[\s\S]*?<\/file>/gi, '').replace(/<file[\s\S]*/gi, '').trim();
+        // Single shared parser (also used on history reload) — detects
+        // multi-file coder projects and <artifact> documents/code/sheets.
+        const art = extractArtifact(fullContent);
+
+        if (art.hasArtifact && art.artifactType === 'multifile') {
           updateAssistant({
-            content: cleanContent || 'Here are the project files:',
+            content: art.cleanContent,
             thinkingDone: true,
             isSynthesizing: false,
             hasArtifact: true,
@@ -538,60 +708,40 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
             artifactCode: fullContent,
           });
           if (onOpenCanvas) {
-            if (!canvasOpened) canvasOpened = true;
-            onOpenCanvas({ type: 'multifile', code: fullContent, title: 'Project Files', messageId: aiMsg.id });
+            canvasOpened = true;
+            // auto:true → push live content but DON'T force-reopen the canvas
+            // if the user has already closed it for this message.
+            // Merge files across the recent project turns so a "continue"/edit
+            // turn that only re-sends some files still shows the WHOLE project.
+            onOpenCanvas({ type: 'multifile', code: mergeProjectCode(messages, null, fullContent), title: 'Project Files', messageId: aiMsg.id }, { auto: true });
           }
           return;
         }
 
-        const tagMatch = fullContent.match(/<artifact(\s+[^>]+)?>/i);
-        let artifactData = null;
-        if (tagMatch) {
-          const openTag = tagMatch[0];
-          const attrs = parseAttrs(tagMatch[1] || '');
-          const startIndex = tagMatch.index + openTag.length;
-          const closeIndex = fullContent.indexOf('</artifact>', startIndex);
-          const code = closeIndex >= 0
-            ? fullContent.slice(startIndex, closeIndex)
-            : fullContent.slice(startIndex);
-
-          artifactData = {
-            type: attrs.type || 'document',
-            title: attrs.title || 'Analysis',
-            filename: attrs.filename || '',
-            subtype: attrs.subtype || '',
-            code: code.trim(),
-            isClosed: closeIndex >= 0
-          };
-        }
-
-        const cleanContent = visible
-          .replace(/<artifact[\s\S]*?<\/artifact>/gi, '')
-          .replace(/<artifact[\s\S]*/gi, '')
-          .trim();
-
         updateAssistant({
-          content: cleanContent || (artifactData ? 'Here is the generated artifact:' : ''),
+          content: art.cleanContent || (art.hasArtifact ? 'Here is the generated artifact:' : ''),
           thinkingDone: true,
           isSynthesizing: false,
-          artifactType: artifactData?.type,
-          artifactTitle: artifactData?.title,
-          artifactFilename: artifactData?.filename,
-          artifactSubtype: artifactData?.subtype,
-          artifactCode: artifactData?.code,
-          hasArtifact: !!artifactData,
+          artifactType: art.artifactType,
+          artifactTitle: art.artifactTitle,
+          artifactFilename: art.artifactFilename,
+          artifactSubtype: art.artifactSubtype,
+          artifactLanguage: art.artifactLanguage,
+          artifactCode: art.artifactCode,
+          hasArtifact: art.hasArtifact,
         });
 
-        // Open or update canvas in real-time
-        if (artifactData && onOpenCanvas) {
+        // Open or update canvas in real-time (respects a user close — see above)
+        if (art.hasArtifact && onOpenCanvas) {
           onOpenCanvas({
-            type: artifactData.type,
-            code: artifactData.code,
-            title: artifactData.title,
-            filename: artifactData.filename,
-            subtype: artifactData.subtype,
+            type: art.artifactType,
+            code: art.artifactCode,
+            title: art.artifactTitle,
+            filename: art.artifactFilename,
+            subtype: art.artifactSubtype,
+            language: art.artifactLanguage,
             messageId: aiMsg.id,
-          });
+          }, { auto: true });
           canvasOpened = true;
         }
       };
@@ -674,6 +824,17 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                 updateAssistant({ isSynthesizing: true });
                 continue;
               }
+              // Truth Lens — cross-model verification verdict for this answer
+              if (parsed.event === 'truth_lens') {
+                updateAssistant({
+                  truthLens: {
+                    verdict: parsed.verdict,
+                    confidence: parsed.confidence,
+                    flags: parsed.flags || [],
+                  },
+                });
+                continue;
+              }
               // Structured tool output (gmail list, calendar, python sandbox, etc.)
               if (parsed.event === 'tool_result') {
                 setMessages(prev => prev.map(msg => {
@@ -682,6 +843,16 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                   toolResults.push({ tool: parsed.tool, data: parsed.data });
                   return { ...msg, toolResults };
                 }));
+                // First sign of Computer activity this stream — surface the panel.
+                if (onComputerActivity && (parsed.tool === 'file_write' || parsed.tool === 'file_read' || parsed.tool === 'file_list')) {
+                  onComputerActivity();
+                }
+                // Live browsing — push the latest page (url/title/screenshot/
+                // links) up so the Computer panel's Browser tab can show ONE
+                // persistent view instead of a card per action.
+                if (onBrowseUpdate && (parsed.tool === 'browse' || parsed.tool === 'browse_click' || parsed.tool === 'browse_type' || parsed.tool === 'browse_scroll')) {
+                  onBrowseUpdate(parsed.data);
+                }
                 continue;
               }
               if (parsed.event === 'artifact') {
@@ -698,21 +869,45 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                     type: parsed.artifactType || 'document',
                     code: fullContent,
                     title: parsed.artifactTitle || 'Deep Research',
-                  });
+                    messageId: aiMsg.id,
+                  }, { auto: true });
                 }
                 continue;
               }
               if (parsed.thinking) {
                 markFirstChunk();
-                setMessages(prev => prev.map(msg => (
-                  msg.id === aiMsg.id
-                    ? { ...msg, thinking: `${msg.thinking || ''}${parsed.thinking}`, thinkingDone: false }
-                    : msg
-                )));
+                setMessages(prev => prev.map(msg => {
+                  if (msg.id !== aiMsg.id) return msg;
+                  // A prior thinking segment already closed (e.g. the fake
+                  // "Reading your question…" placeholder handed off to the
+                  // model's real reasoning trace) — start the new segment
+                  // fresh instead of appending, so the placeholder text
+                  // doesn't linger glued to real reasoning with no separator.
+                  const base = msg.thinkingDone ? '' : (msg.thinking || '');
+                  return { ...msg, thinking: `${base}${parsed.thinking}`, thinkingDone: false };
+                }));
                 continue;
               }
               if (parsed.thinking_done) {
                 updateAssistant({ thinkingDone: true });
+                continue;
+              }
+              if (parsed.event === 'capacity') {
+                // Backend hit full LLM capacity. Show the text, and (for free
+                // users) flag the message so an "Upgrade to PRO" card renders.
+                markFirstChunk();
+                const knownPro = (typeof localStorage !== 'undefined' && localStorage.getItem('k_is_pro') === '1');
+                if (knownPro) {
+                  // Client knows it's PRO → never show the upsell, even if the
+                  // backend is_pro lookup flaked under load and sent the free
+                  // variant. Suppress BOTH the card AND the upsell text.
+                  fullContent += "\n\n⚠️ Our AI is momentarily overloaded. Please try again in a few seconds.";
+                  updateContent();
+                  updateAssistant({ upgrade: false, capacity: true, thinkingDone: true });
+                } else {
+                  if (parsed.chunk) { fullContent += parsed.chunk; updateContent(); }
+                  updateAssistant({ upgrade: parsed.upgrade !== false, capacity: true, thinkingDone: true });
+                }
                 continue;
               }
               if (parsed.chunk) {
@@ -757,7 +952,14 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
         setTimeout(() => onStreamComplete(), 800);
       }
     } catch (error) {
-      updateAssistant({ streaming: false });
+      // updateAssistant is defined inside the try block so not in scope here.
+      // Clear the streaming flag on the in-flight assistant message but KEEP
+      // its partial text on screen — we may be about to recover it.
+      setMessages(prev => prev.map(msg =>
+        msg.streaming ? { ...msg, streaming: false } : msg
+      ));
+
+      // User pressed Stop — fully benign, nothing to recover.
       if (error.name === 'AbortError') {
         console.log('Stream aborted by user');
         setIsThinking(false);
@@ -766,6 +968,30 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
         return;
       }
 
+      // Connection dropped because the user LEFT THE SCREEN (backgrounded the
+      // tab/PWA, locked the phone, switched apps, flaky mobile network) — this
+      // is NOT a server failure. The backend runs the LLM on an independent
+      // thread and persists the full reply to Firestore regardless of whether
+      // our socket is alive, so showing a red "network error" bubble is both
+      // wrong and alarming. Instead, silently reconnect: poll the saved
+      // generation, which merges in whatever the server finished and stops
+      // once `streaming` flips false. The dropped fetch surfaces as a
+      // TypeError ("Failed to fetch") or a network-flavoured message.
+      const isConnectionDrop = (
+        error.name === 'TypeError' ||
+        /network|failed to fetch|load failed|connection|stream|aborted|terminated/i.test(error.message || '')
+      );
+      if (isConnectionDrop && currentSessionId) {
+        console.warn('[Stream] Connection interrupted — recovering from server:', error.message);
+        setIsThinking(false);
+        leftMidStreamRef.current = true; // tab-return path also re-syncs
+        // Backend is still generating; pull the persisted message to completion.
+        pollStreamingMessage(currentSessionId);
+        return;
+      }
+
+      // Genuine failure (4xx/5xx surfaced before streaming, or no session to
+      // recover from) — surface it so the user can retry.
       console.error('Failed to send message:', error);
       setIsThinking(false);
       setIsStreaming(false);
@@ -788,10 +1014,59 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
     }
   };
 
+  // Create (or refresh) a public, login-free share link for this conversation
+  // and copy it to the clipboard. Anyone with the link can read it — no account.
+  const handleShare = async () => {
+    if (!sessionId || messages.length === 0) {
+      toast({ title: "Nothing to share yet", description: "Send a message first, then share the chat." });
+      return;
+    }
+    setSharing(true);
+    try {
+      const res = await chatAPI.share(sessionId);
+      const url = `${window.location.origin}${res.url || `/share/${res.share_id}`}`;
+      setShareInfo({ url, shareId: res.share_id });
+      try {
+        await navigator.clipboard.writeText(url);
+        setShareCopied(true);
+        setTimeout(() => setShareCopied(false), 2000);
+      } catch { /* clipboard blocked — the dialog still shows the link */ }
+    } catch (e) {
+      toast({ title: "Couldn't create share link", description: e?.response?.data?.error || "Please try again.", variant: "destructive" });
+    } finally {
+      setSharing(false);
+    }
+  };
+
+  const copyShareUrl = async () => {
+    if (!shareInfo?.url) return;
+    try {
+      await navigator.clipboard.writeText(shareInfo.url);
+      setShareCopied(true);
+      setTimeout(() => setShareCopied(false), 2000);
+    } catch { /* ignore */ }
+  };
+
+  const revokeShare = async () => {
+    if (!shareInfo?.shareId) return;
+    try {
+      await chatAPI.revokeShare(shareInfo.shareId);
+      setShareInfo(null);
+      toast({ title: "Share link disabled", description: "The link no longer opens this chat." });
+    } catch {
+      toast({ title: "Couldn't disable the link", variant: "destructive" });
+    }
+  };
+
   const currentMode = modes.find(m => m.id === activeMode);
+  // Lock the model for the lifetime of a chat: once a session has any messages
+  // (or is mid-generation), the mode selector is frozen. The model only
+  // changes when the user starts a NEW chat. Prevents mid-conversation model
+  // switches that confuse context + tool behavior.
+  const modeLocked = (messages.length > 0) || isStreaming || isThinking;
 
   return (
-    <div className="chat-main" data-testid="chat-main">
+    <div className="chat-main relative" data-testid="chat-main">
       {/* Top Bar */}
       <div className="h-12 min-h-[48px] flex items-center justify-between px-4 border-b border-[var(--k-border)]">
         <div className="flex items-center gap-2">
@@ -814,31 +1089,40 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
             </button>
           )}
 
-          {/* Mode Selector */}
+          {/* Mode Selector — locked once the chat has started (new chat to switch) */}
           <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button data-testid="mode-selector-btn" className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-accent transition-colors duration-200 text-sm font-medium text-foreground">
+            <DropdownMenuTrigger asChild disabled={modeLocked}>
+              <button
+                data-testid="mode-selector-btn"
+                disabled={modeLocked}
+                title={modeLocked ? "Model is locked for this chat — start a new chat to switch" : "Switch model"}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-md transition-colors duration-200 text-sm font-medium text-foreground ${
+                  modeLocked ? "opacity-60 cursor-not-allowed" : "hover:bg-accent"
+                }`}
+              >
                 {currentMode && <currentMode.icon className="w-4 h-4 text-[var(--k-brand)]" weight="duotone" />}
                 <span>{currentMode?.label}</span>
-                <CaretDown className="w-3 h-3 text-muted-foreground" />
+                {modeLocked ? <Lock className="w-3 h-3 text-muted-foreground" /> : <CaretDown className="w-3 h-3 text-muted-foreground" />}
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-56">
-              {modes.map(mode => (
-                <DropdownMenuItem
-                  key={mode.id}
-                  data-testid={`mode-${mode.id}`}
-                  onClick={() => onSetMode(mode.id)}
-                  className="flex items-center gap-3 py-2"
-                >
-                  <mode.icon className={`w-4 h-4 ${activeMode === mode.id ? 'text-[var(--k-brand)]' : 'text-muted-foreground'}`} weight="duotone" />
-                  <div>
-                    <div className="text-sm font-medium">{mode.label}</div>
-                    <div className="text-xs text-muted-foreground">{mode.desc}</div>
-                  </div>
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
+            {!modeLocked && (
+              <DropdownMenuContent align="start" className="w-56">
+                {modes.map(mode => (
+                  <DropdownMenuItem
+                    key={mode.id}
+                    data-testid={`mode-${mode.id}`}
+                    onClick={() => onSetMode(mode.id)}
+                    className="flex items-center gap-3 py-2"
+                  >
+                    <mode.icon className={`w-4 h-4 ${activeMode === mode.id ? 'text-[var(--k-brand)]' : 'text-muted-foreground'}`} weight="duotone" />
+                    <div>
+                      <div className="text-sm font-medium">{mode.label}</div>
+                      <div className="text-xs text-muted-foreground">{mode.desc}</div>
+                    </div>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            )}
           </DropdownMenu>
         </div>
 
@@ -873,6 +1157,18 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
             <span className="hidden sm:inline">Live</span>
           </button>
 
+          {/* Share — generates a public, login-free read-only link to this chat */}
+          <button
+            data-testid="share-chat-btn"
+            onClick={handleShare}
+            disabled={sharing || messages.length === 0}
+            title={messages.length === 0 ? "Send a message first to share" : "Share this chat (public link, no login needed)"}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium hover:bg-accent text-muted-foreground transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <ShareNetwork className={`w-3.5 h-3.5 ${sharing ? 'animate-pulse' : ''}`} weight="duotone" />
+            <span className="hidden sm:inline">{sharing ? '…' : 'Share'}</span>
+          </button>
+
           <button
             data-testid="toggle-canvas-btn"
             onClick={onToggleCanvas}
@@ -884,8 +1180,61 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
             <Columns className="w-3.5 h-3.5" weight="duotone" />
             <span>Canvas</span>
           </button>
+
+          {onToggleComputer && (
+            <button
+              data-testid="toggle-computer-btn"
+              onClick={onToggleComputer}
+              title="Kautilya Computer — this session's file workspace"
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200 ${computerOpen
+                  ? 'bg-sky-500 text-white'
+                  : 'hover:bg-accent text-muted-foreground'
+                }`}
+            >
+              <HardDrives className="w-3.5 h-3.5" weight="duotone" />
+              <span className="hidden sm:inline">Computer</span>
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Share-link dialog */}
+      <Dialog open={!!shareInfo} onOpenChange={(o) => { if (!o) setShareInfo(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ShareNetwork className="w-5 h-5 text-[var(--k-brand)]" weight="duotone" />
+              Share this chat
+            </DialogTitle>
+            <DialogDescription>
+              Anyone with this link can view this conversation — <strong>no login or account needed</strong>. It's a read-only snapshot; new messages won't appear unless you share again.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              readOnly
+              value={shareInfo?.url || ''}
+              onFocus={(e) => e.target.select()}
+              className="flex-1 px-3 py-2 rounded-lg bg-muted border border-[var(--k-border)] text-xs text-foreground font-mono truncate"
+            />
+            <button
+              onClick={copyShareUrl}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[var(--k-brand)] text-white text-xs font-bold whitespace-nowrap"
+            >
+              {shareCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+              {shareCopied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+          <div className="flex items-center justify-between mt-3">
+            <button onClick={revokeShare} className="text-xs text-red-400 hover:text-red-300 font-medium">
+              Disable link
+            </button>
+            <a href={shareInfo?.url} target="_blank" rel="noopener noreferrer" className="text-xs text-muted-foreground hover:text-foreground font-medium">
+              Open preview ↗
+            </a>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* LiveKit full-duplex voice overlay */}
       {isLiveVoice && (
@@ -950,10 +1299,13 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
               }}
               onOpenArtifact={(artifactOverride) => onOpenCanvas(artifactOverride || {
                 type: msg.artifactType,
-                code: msg.artifactCode || "",
+                code: msg.artifactType === 'multifile'
+                  ? mergeProjectCode(messages, msg.id, null)
+                  : (msg.artifactCode || ""),
                 title: msg.artifactTitle || 'AI Analysis',
                 filename: msg.artifactFilename || "",
                 subtype: msg.artifactSubtype || "",
+                language: msg.artifactLanguage || "",
                 messageId: msg.id,
               })}
             />
@@ -985,6 +1337,19 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
           <div ref={messagesEndRef} />
         </div>
       </ScrollArea>
+
+      {/* Jump-to-bottom button — shown only when the user has scrolled up.
+          Clicking re-engages auto-follow. */}
+      {showScrollBtn && (
+        <button
+          onClick={() => scrollToBottom('smooth')}
+          aria-label="Scroll to latest"
+          title="Scroll to latest"
+          className="absolute left-1/2 -translate-x-1/2 bottom-28 z-20 w-9 h-9 rounded-full bg-[var(--k-surface)] border border-[var(--k-border)] shadow-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-all duration-200 animate-fade-up"
+        >
+          <CaretDown className="w-5 h-5" weight="bold" />
+        </button>
+      )}
 
       {/* Input Area */}
       <div className="border-t border-[var(--k-border)] p-4">
@@ -1034,6 +1399,52 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
             <div className="flex items-center gap-2 mb-2 px-3 py-1.5 rounded-md bg-rose-500/10 border border-rose-500/20 text-xs text-rose-400">
               <div className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
               <span>Recording… click Stop Voice to finish</span>
+            </div>
+          )}
+
+          {/* Interactive question — docked right above the composer (Claude-style)
+              when the latest assistant turn asks one. Picking an option / typing
+              a custom reply sends it as the next message. */}
+          {(() => {
+            const last = messages[messages.length - 1];
+            if (!last || last.role !== 'assistant' || last.streaming || isStreaming) return null;
+            if (dismissedQuestionId === last.id) return null;   // user pressed Skip
+            const content = last.responseText || (typeof last.content === 'string' ? last.content : '');
+            const { code } = extractQuestionBlock(content);
+            if (!code || !parseQuestion(code)) return null;
+            return (
+              <QuestionPrompt
+                code={code}
+                interactive
+                onAnswer={(text) => {
+                  if (!text || isStreaming) return;
+                  handleSend(text);   // send immediately — no Enter needed
+                }}
+                onSkip={() => setDismissedQuestionId(last.id)}
+              />
+            );
+          })()}
+
+          {/* Active Skill chip — shows which expertise pack is engaged; click ✕ to turn off. */}
+          {activeSkill && (
+            <div className="flex items-center gap-2 mb-2">
+              <button
+                onClick={() => setShowSkillsDialog(true)}
+                className="group inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 rounded-full border border-fuchsia-400/30 bg-fuchsia-400/10 text-xs font-semibold text-fuchsia-200 hover:bg-fuchsia-400/15 transition-colors"
+                title="Manage Skills"
+              >
+                {(() => { const I = skillIcon(activeSkill.icon); return <I className="w-3.5 h-3.5" weight="duotone" />; })()}
+                <span className="truncate max-w-[160px]">{activeSkill.name}</span>
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={(e) => { e.stopPropagation(); setActiveSkill(null); }}
+                  className="ml-0.5 p-0.5 rounded-full hover:bg-fuchsia-400/25"
+                  title="Turn off skill"
+                >
+                  <X className="w-3 h-3" />
+                </span>
+              </button>
             </div>
           )}
 
@@ -1113,6 +1524,22 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                   Tools & Capabilities
                 </DropdownMenuLabel>
                 <DropdownMenuItem
+                  onSelect={() => setShowSkillsDialog(true)}
+                  className="flex items-center justify-between gap-2.5 px-2.5 py-2 text-sm rounded-lg cursor-pointer hover:bg-accent text-foreground transition-colors duration-150"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Sparkle className="w-4 h-4 text-fuchsia-400" weight="duotone" />
+                    <span>Skills</span>
+                  </div>
+                  {activeSkill ? (
+                    <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-fuchsia-400/15 text-fuchsia-300 truncate max-w-[90px]">
+                      {activeSkill.name?.split(' ')[0] || 'On'}
+                    </span>
+                  ) : (
+                    <span className="text-[9px] text-muted-foreground/60">Browse</span>
+                  )}
+                </DropdownMenuItem>
+                <DropdownMenuItem
                   onSelect={() => setShowMcpDialog(true)}
                   className="flex items-center gap-2.5 px-2.5 py-2 text-sm rounded-lg cursor-pointer hover:bg-accent text-foreground transition-colors duration-150"
                 >
@@ -1145,8 +1572,9 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
               ref={inputRef}
               data-testid="chat-input"
               value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
+              onChange={(e) => { setInputValue(e.target.value); autoResizeInput(); }}
               onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
               placeholder={
                 isRecording ? 'Recording voice...'
                   : activeMode === 'research'
@@ -1157,8 +1585,8 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
               }
               rows={1}
               disabled={isRecording}
-              className="flex-1 py-3 px-1 bg-transparent resize-none focus:outline-none text-sm text-foreground placeholder:text-muted-foreground max-h-32 disabled:opacity-60"
-              style={{ minHeight: '44px' }}
+              className="flex-1 py-3 px-1 bg-transparent resize-none focus:outline-none text-sm text-foreground placeholder:text-muted-foreground disabled:opacity-60"
+              style={{ minHeight: '44px', maxHeight: '240px' }}
             />
             {(isThinking || isStreaming) ? (
               <button
@@ -1189,16 +1617,79 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
                 <button
                   key={mode.id}
                   data-testid={`quick-mode-${mode.id}`}
+                  disabled={modeLocked}
+                  title={modeLocked ? "Model is locked for this chat — start a new chat to switch" : mode.desc}
                   onClick={() => onSetMode(mode.id)}
-                  className={`flex items-center gap-1 text-[11px] transition-colors ${activeMode === mode.id
+                  className={`flex items-center gap-1 text-[11px] transition-colors ${
+                    activeMode === mode.id
                       ? 'text-[var(--k-brand)] font-medium'
                       : 'text-muted-foreground hover:text-foreground'
-                    }`}
+                  } ${
+                    modeLocked
+                      ? activeMode === mode.id
+                        ? 'opacity-85 cursor-not-allowed'
+                        : 'opacity-35 cursor-not-allowed'
+                      : ''
+                  }`}
                 >
                   <mode.icon className="w-3 h-3" weight="duotone" />
                   {mode.label}
                 </button>
               ))}
+            </div>
+            <div className="flex items-center gap-2">
+              {/* Reassure the user they can leave — work continues server-side. */}
+              {isStreaming && (
+                <span className="hidden sm:inline-flex items-center gap-1.5 text-[10px] text-emerald-400/90" title="This keeps running on our servers even if you close the tab. Your result is saved and reappears when you return.">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  Running — you can leave, we'll save it
+                </span>
+              )}
+              {/* Deep-research output shape: analyst report vs. PRD */}
+              {activeMode === 'research' && !isStreaming && (
+                <div className="flex items-center rounded-md border border-[var(--k-border)] overflow-hidden">
+                  {[
+                    { id: 'research', label: 'Report' },
+                    { id: 'prd', label: 'PRD' },
+                  ].map(m => (
+                    <button
+                      key={m.id}
+                      onClick={() => setResearchMode(m.id)}
+                      title={m.id === 'prd'
+                        ? 'Product Requirements Document — problem, user stories, requirements, success metrics'
+                        : 'Analyst-style research report — findings, analysis, outlook'}
+                      className={`px-2 py-0.5 text-[10px] font-medium transition-colors ${researchMode === m.id
+                        ? 'bg-sky-500 text-white'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-accent'}`}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {/* Deep-research depth selector */}
+              {activeMode === 'research' && !isStreaming && (
+                <div className="flex items-center rounded-md border border-[var(--k-border)] overflow-hidden">
+                  {[
+                    { id: 'quick', label: 'Quick' },
+                    { id: 'standard', label: 'Standard' },
+                    { id: 'exhaustive', label: 'Exhaustive' },
+                  ].map(d => (
+                    <button
+                      key={d.id}
+                      onClick={() => setResearchDepth(d.id)}
+                      title={d.id === 'quick' ? 'Fast — fewer sources, single pass'
+                        : d.id === 'exhaustive' ? 'Widest source net + second pass — most thorough'
+                        : 'Balanced multi-round research'}
+                      className={`px-2 py-0.5 text-[10px] font-medium transition-colors ${researchDepth === d.id
+                        ? 'bg-[var(--k-brand)] text-white'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-accent'}`}
+                    >
+                      {d.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -1411,6 +1902,145 @@ export function ChatMain({ sidebarCollapsed, onExpandSidebar, onOpenMobileSideba
           })()}
         </DialogContent>
       </Dialog>
+
+      {/* ───────────────────────── Skills dialog ───────────────────────── */}
+      <Dialog open={showSkillsDialog} onOpenChange={setShowSkillsDialog}>
+        <DialogContent className="sm:max-w-[760px] max-h-[86vh] flex flex-col p-6 overflow-hidden bg-[var(--k-surface-elevated)] border-[var(--k-border)] rounded-xl shadow-2xl">
+          <DialogHeader className="pb-4 border-b border-[var(--k-border)]">
+            <DialogTitle className="text-xl font-semibold tracking-tight text-foreground flex items-center gap-2">
+              <Sparkle className="w-5 h-5 text-fuchsia-400" weight="duotone" />
+              Skills
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground mt-1">
+              Turn on an expertise pack and Kautilya becomes a specialist for it — themed presentations, design-grade UIs, cited research and more. One skill at a time; toggle it off any time.
+            </DialogDescription>
+          </DialogHeader>
+
+          {loadingSkills && !skillsCatalog ? (
+            <div className="flex-1 flex flex-col items-center justify-center py-12 gap-3">
+              <div className="w-8 h-8 rounded-full border-2 border-[var(--k-brand)] border-t-transparent animate-spin" />
+              <span className="text-xs text-muted-foreground">Loading Skills…</span>
+            </div>
+          ) : !skillsCatalog ? (
+            <div className="flex-1 flex flex-col items-center justify-center py-12 gap-3">
+              <span className="text-xs text-rose-400">Couldn't load the Skills catalog.</span>
+              <button
+                onClick={() => { setSkillsCatalog(null); skillsAPI.list({ force: true }).then(setSkillsCatalog).catch(() => {}); }}
+                className="px-3 py-1.5 rounded-lg bg-[var(--k-brand)] hover:bg-[var(--k-brand-hover)] text-xs text-white transition-colors"
+              >
+                Retry
+              </button>
+            </div>
+          ) : (() => {
+            const q = skillsSearch.trim().toLowerCase();
+            const match = (s) => !q ||
+              s.name.toLowerCase().includes(q) ||
+              (s.tagline || '').toLowerCase().includes(q) ||
+              (s.blurb || '').toLowerCase().includes(q) ||
+              (s.examples || []).some((e) => e.toLowerCase().includes(q));
+            const groups = (skillsCatalog.categories || [])
+              .map((c) => ({ ...c, skills: c.skills.filter(match) }))
+              .filter((c) => c.skills.length > 0);
+            const totalMatch = groups.reduce((n, c) => n + c.skills.length, 0);
+
+            return (
+              <>
+                <div className="px-1 pb-3 flex items-center gap-3 border-b border-[var(--k-border)]/50">
+                  <input
+                    type="text"
+                    value={skillsSearch}
+                    onChange={(e) => setSkillsSearch(e.target.value)}
+                    placeholder="Search skills — presentations, design, research…"
+                    className="flex-1 pl-3 pr-3 py-2 text-xs bg-[var(--k-surface)] border border-[var(--k-border)] rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-[var(--k-brand)] placeholder:text-muted-foreground"
+                  />
+                  <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                    {q ? `${totalMatch} match` : `${skillsCatalog.total} skills`}
+                  </span>
+                </div>
+
+                <div className="flex-1 mt-3 pr-2 overflow-y-auto min-h-0 max-h-[60vh] scrollbar-thin scrollbar-thumb-muted-foreground/30">
+                  <div className="space-y-6">
+                    {groups.length === 0 && (
+                      <div className="text-center py-12 text-xs text-muted-foreground">No skills found for "{skillsSearch}".</div>
+                    )}
+                    {groups.map((cat) => (
+                      <div key={cat.category}>
+                        <div className="text-[10px] uppercase font-bold tracking-[0.18em] text-muted-foreground/70 mb-3 px-1">
+                          {cat.category} <span className="text-muted-foreground/40 normal-case font-medium">· {cat.skills.length}</span>
+                        </div>
+                        <div className="space-y-3">
+                          {cat.skills.map((s) => {
+                            const Icon = skillIcon(s.icon);
+                            const on = activeSkill && activeSkill.id === s.id;
+                            return (
+                              <div
+                                key={s.id}
+                                className={`p-4 rounded-xl border transition-all duration-200 ${on
+                                  ? 'border-fuchsia-400/40 bg-fuchsia-400/[0.06] shadow-[0_0_0_1px_rgba(232,121,249,0.15)]'
+                                  : 'border-[var(--k-border)] bg-[var(--k-surface)] hover:bg-[var(--k-surface-elevated)]'}`}
+                              >
+                                <div className="flex items-start gap-3.5">
+                                  <div
+                                    className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+                                    style={{ background: `${s.accent}1a`, color: s.accent }}
+                                  >
+                                    <Icon className="w-5 h-5" weight="duotone" />
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className="text-sm font-semibold text-foreground">{s.name}</span>
+                                      {(s.badges || []).map((b) => (
+                                        <span key={b} className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-[var(--k-brand)]/15 text-[var(--k-brand)]">{b}</span>
+                                      ))}
+                                      {on && <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-emerald-400/15 text-emerald-400 flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />Active</span>}
+                                    </div>
+                                    <p className="text-xs text-fuchsia-300/80 mt-0.5">{s.tagline}</p>
+                                    <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">{s.blurb}</p>
+                                    {(s.examples || []).length > 0 && (
+                                      <div className="flex flex-wrap gap-1.5 mt-2.5">
+                                        {s.examples.slice(0, 3).map((ex) => (
+                                          <span key={ex} className="text-[10px] px-2 py-0.5 rounded-md bg-[var(--k-surface-elevated)] border border-[var(--k-border)] text-muted-foreground">“{ex}”</span>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <button
+                                    onClick={() => toggleSkill(s)}
+                                    className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${on
+                                      ? 'bg-[var(--k-surface-elevated)] border border-[var(--k-border)] text-muted-foreground hover:text-foreground'
+                                      : 'bg-[var(--k-brand)] text-white hover:bg-[var(--k-brand-hover)]'}`}
+                                  >
+                                    {on ? 'Turn off' : 'Activate'}
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {activeSkill && (
+                  <div className="pt-3 mt-1 border-t border-[var(--k-border)] flex items-center justify-between">
+                    <span className="text-[11px] text-muted-foreground">
+                      <span className="text-fuchsia-300 font-semibold">{activeSkill.name}</span> is active — your next messages use it.
+                    </span>
+                    <button
+                      onClick={() => setShowSkillsDialog(false)}
+                      className="px-3 py-1.5 rounded-lg bg-[var(--k-brand)] hover:bg-[var(--k-brand-hover)] text-xs text-white font-semibold transition-colors"
+                    >
+                      Done
+                    </button>
+                  </div>
+                )}
+              </>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
+
       <Toaster />
     </div>
   );

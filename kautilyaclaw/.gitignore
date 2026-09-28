@@ -1,0 +1,5 @@
+# KautilyaClaw — never commit secrets or rendered config
+.env
+openclaw.json
+*.log
+.openclaw/

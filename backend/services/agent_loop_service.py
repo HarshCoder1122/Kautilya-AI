@@ -2,13 +2,30 @@
 Kautilya AI — Agent Loop Service
 Agentic loop: Think → Act → Observe → Answer.
 """
+import os
 import re
 import json
 import time
 import concurrent.futures
 from typing import Dict, Optional, List
 
-from services.llm_service import call_groq, call_nvidia
+from services.llm_service import call_vertex_gemini
+
+
+# Answer-size classifier (a tiny Groq call that predicts S/M/L/XL to size the
+# token budget) is OFF by default. It added an extra Groq round-trip on the hot
+# path — and because it was prewarmed in the background AND called synchronously,
+# a race made it fire TWICE on fast turns, each saving a tiny classification
+# into the LLM cache. The char-bucket heuristic (_estimate_tokens) is used
+# instead. Set ANSWER_SIZE_CLASSIFIER=1 to re-enable.
+_ANSWER_SIZE_CLASSIFIER_ENABLED = os.environ.get("ANSWER_SIZE_CLASSIFIER", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _envint(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except Exception:
+        return default
 
 
 MODEL_ALIASES = {
@@ -16,9 +33,21 @@ MODEL_ALIASES = {
     "llama": "daily",
     "llama-3.3-70b-versatile": "daily",
     "kautilya-pro": "pro",
-    "nemotron": "pro",
-    "nvidia/nemotron-3-super-120b-a12b": "pro",
+    "glm": "pro",
+    "z-ai/glm-5.1": "pro",
+    "z-ai/glm-5.2": "pro",
+    "nemotron": "daily",
+    "nvidia/nemotron-3-super-120b-a12b": "daily",
+    "nvidia/nemotron-3-ultra-550b-a55b": "daily",
     "kautilya-coder": "coder",
+    "deepseek": "coder",
+    "deepseek-v4-flash": "coder",
+    "deepseek-ai/deepseek-v4-flash": "coder",
+    # Legacy aliases from retired coder backends — keep mapping to coder so
+    # old clients don't break.
+    "kimi": "coder",
+    "kimi-k2.6": "coder",
+    "moonshotai/kimi-k2.6": "coder",
     "qwen": "coder",
     "qwen-3": "coder",
     "qwen-3-coder-480b-a35b-instruct": "coder",
@@ -27,12 +56,50 @@ MODEL_ALIASES = {
 }
 
 
-def normalize_model_choice(model, default="auto"):
-    """Normalize UI/API aliases into the internal routing ids."""
+# Authoritative tier -> (display label, Vertex AI Gemini model id) registry.
+# This is THE single source of truth for which model each tier actually
+# calls — routes/openai_compat_routes.py's KAUTILYA_MODEL_MAP and
+# services/research_service.py's SYNTH_MODEL/SYNTH_FALLBACK_MODEL both derive
+# their defaults from this dict instead of hardcoding their own copies, so a
+# model swap here can no longer silently desync chat vs. the OpenAI-compatible
+# proxy vs. deep research.
+#
+# All chat/completion traffic runs on Google Vertex AI Gemini (NVIDIA NIM and
+# Groq text-completion were fully retired here — see services/llm_service.py
+# ::call_vertex_gemini). Coder/Pro get the most powerful model available
+# (gemini-3.1-pro-preview); Daily gets the newest well-behaved flash model.
+# ("gemini-3.7-flash" was tried and rejected: it ignores thinking_budget=0
+# and silently burns ~45 hidden reasoning tokens on every call, which can
+# starve short-budget answers — gemini-3.6-flash has no such bug.)
+_MODEL_LABELS = {
+    'coder': ('Kautilya Coder', 'gemini-3.1-pro-preview'),
+    'pro':   ('Kautilya Pro', 'gemini-3.1-pro-preview'),
+    'daily': ('Kautilya Daily', 'gemini-3.6-flash'),
+}
+DAILY_MODEL = _MODEL_LABELS['daily'][1]
+# Kautilya Fast tier (latency-sensitive: voice agents, quick utility calls).
+FAST_MODEL = 'gemini-3.5-flash-lite'
+# Stable GA fallbacks if a preview model 404s / degrades / gets retired —
+# mirrors the old NVIDIA multi-key retry's resilience, one rung simpler
+# since there's a single provider now.
+_FALLBACK_MODEL = {
+    'coder': 'gemini-2.5-pro',
+    'pro': 'gemini-2.5-pro',
+    'daily': 'gemini-2.5-flash',
+    'fast': 'gemini-2.5-flash-lite',
+}
+
+
+def normalize_model_choice(model, default="daily"):
+    """Normalize UI/API aliases into the internal routing ids.
+    Bypass orchestrator for 'auto' mode to directly use the daily model.
+    """
     raw = str(model or default).strip().lower()
-    if raw in ("auto", "daily", "pro", "coder", "research", "fast"):
+    if raw == "auto":
+        return "daily"
+    if raw in ("daily", "pro", "coder", "research", "fast"):
         return raw
-    return MODEL_ALIASES.get(raw, "auto")
+    return MODEL_ALIASES.get(raw, "daily")
 
 
 # Shared executor to reduce overhead
@@ -49,7 +116,74 @@ def _ttime(label, start):
         pass
 
 
-def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=None, tool_choice=None, max_thinking=False):
+class _ThinkSplitter:
+    """Split streamed text into 'content' vs 'thinking' segments, robust to
+    `<think>` / `</think>` markers that arrive SPLIT across chunk boundaries.
+
+    Reasoning models served over NVIDIA NIM often emit their chain-of-thought
+    inline as `<think>…</think>` and stream it token-by-token, so a single SSE
+    chunk may carry only `<think` with the closing `>` landing in the next
+    chunk. The old `"<think>" in chunk` check then never fired and the ENTIRE
+    reasoning leaked into the visible answer — most noticeable with longer
+    reasoning (e.g. Hindi), which is exactly the "thinking printed as a normal
+    message" bug. This buffers the boundary so the marker is recognised no
+    matter how the provider chunks it.
+
+    feed(text) yields ('content'|'thinking'|'thinking_done', payload) tuples;
+    call flush() once the stream ends to drain the buffer and close an open
+    thinking block.
+    """
+    OPEN = "<think>"
+    CLOSE = "</think>"
+
+    def __init__(self):
+        self._buf = ""
+        self._in_think = False
+
+    @staticmethod
+    def _holdback(buf, marker):
+        """Length of the longest suffix of `buf` that is a prefix of `marker`
+        — i.e. a possible partial marker we must not emit yet."""
+        for h in range(min(len(buf), len(marker) - 1), 0, -1):
+            if buf[-h:] == marker[:h]:
+                return h
+        return 0
+
+    def feed(self, text):
+        self._buf += text
+        while self._buf:
+            marker = self.CLOSE if self._in_think else self.OPEN
+            kind = "thinking" if self._in_think else "content"
+            idx = self._buf.find(marker)
+            if idx != -1:
+                if idx > 0:
+                    yield (kind, self._buf[:idx])
+                self._buf = self._buf[idx + len(marker):]
+                if self._in_think:
+                    self._in_think = False
+                    yield ("thinking_done", None)
+                else:
+                    self._in_think = True
+                continue
+            # No full marker present — emit all but a possible partial-marker tail.
+            hold = self._holdback(self._buf, marker)
+            if hold < len(self._buf):
+                emit = self._buf[:len(self._buf) - hold]
+                if emit:
+                    yield (kind, emit)
+                self._buf = self._buf[len(self._buf) - hold:]
+            break
+
+    def flush(self):
+        if self._buf:
+            yield ("thinking" if self._in_think else "content", self._buf)
+            self._buf = ""
+        if self._in_think:
+            self._in_think = False
+            yield ("thinking_done", None)
+
+
+def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=None, tool_choice=None, max_thinking=False, session_id=None):
     """
     Agentic Loop: Thoughts -> Actions -> Observations -> Final Answer.
     Yields chunks of text OR special status JSONs.
@@ -73,7 +207,7 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     # the cache — so the synchronous _adaptive_max_tokens call below is
     # free. If the user is on Pro/coder and we hit this twice (turn 2+),
     # the cache hit makes the second call instant.
-    if last_user_msg:
+    if last_user_msg and _ANSWER_SIZE_CLASSIFIER_ENABLED:
         _executor.submit(_classify_answer_size, last_user_msg, model_choice)
 
     # Fetch context in parallel
@@ -121,15 +255,20 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     _skip_rag = len(last_user_msg.strip()) < 20
     future_loc = _executor.submit(fetch_loc)
     future_rag = None if _skip_rag else _executor.submit(fetch_rag)
+    # Wait for both fetches concurrently with a total budget of 150ms
+    futures = [future_loc]
+    if future_rag is not None:
+        futures.append(future_rag)
+    concurrent.futures.wait(futures, timeout=0.15)
     try:
-        location_context = future_loc.result(timeout=0.15)
+        location_context = future_loc.result(timeout=0) if future_loc.done() else ""
     except:
-        pass
+        location_context = ""
     if future_rag is not None:
         try:
-            rag_context = future_rag.result(timeout=0.25)
+            rag_context = future_rag.result(timeout=0) if future_rag.done() else ""
         except:
-            pass
+            rag_context = ""
 
     current_messages = [m.copy() for m in messages]
     if location_context or rag_context:
@@ -250,6 +389,26 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         except Exception as _e:
             print(f"[Agent] integration tool prompt injection failed: {_e}")
 
+    # Capability questions ("what can you do?", "which integrations?", "kya kar
+    # sakte ho?"): don't inject the call-syntax list (that tempts an unwanted
+    # call) — but DO tell the model which integrations the user has actually
+    # connected so it answers from fact instead of guessing/hallucinating.
+    if uid and _is_meta:
+        try:
+            from services.integration_tools import available_tools
+            specs = available_tools(uid)
+            if specs:
+                cap = ["\n\nCONNECTED INTEGRATIONS the user has enabled (mention these by name "
+                       "when asked what you can do; this is a capability question, so answer in "
+                       "PLAIN TEXT and do NOT call any tool now):"]
+                for s in specs:
+                    fn = s["function"]
+                    cap.append(f"- {fn['name']}: {(fn.get('description') or '')[:90]}")
+                if current_messages and current_messages[0].get("role") == "system":
+                    current_messages[0]["content"] = str(current_messages[0].get("content", "")) + "\n".join(cap)
+        except Exception as _e:
+            print(f"[Agent] meta capability injection failed: {_e}")
+
     # MCP tools: always advertise — gating by intent keywords misses queries like
     # "find me the latest paper on X" (no keyword match yet a web-search MCP would
     # answer it). Token cost is bounded since most deployments enable <10 servers.
@@ -340,17 +499,11 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
 
     response_gen = None
 
-    # Model display names for UI status
-    # NVIDIA NIM model IDs - verified available on https://build.nvidia.com
-    _MODEL_LABELS = {
-        'coder': ('Kautilya Coder', 'qwen/qwen3-coder-480b-a35b-instruct'),
-        'pro':   ('Kautilya Pro', 'z-ai/glm-5.1'),
-        'daily': ('Kautilya Daily', 'mistralai/mistral-medium-3.5-128b'),
-    }
-    DAILY_MODEL = 'mistralai/mistral-medium-3.5-128b'
+    # _MODEL_LABELS / DAILY_MODEL are now module-level (see top of file) —
+    # this used to redefine local copies here every call.
 
     def _wrap_with_placeholder_thinking(inner_gen):
-        """Show a 'thinking' placeholder while Mistral's TTFT is pending.
+        """Show a 'thinking' placeholder while the upstream model's TTFT is pending.
 
         The inner generator (an HTTP SSE stream from NVIDIA) blocks the calling
         thread during time-to-first-token.  Previously this meant the
@@ -420,6 +573,17 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             is_content = (
                 isinstance(item, dict) and ("chunk" in item or "tool_calls" in item)
             ) or isinstance(item, str)
+            is_real_thinking = isinstance(item, dict) and "thinking" in item
+
+            # The model's OWN reasoning has started arriving — close out the
+            # fake placeholder phrase first so it doesn't run straight into
+            # real reasoning text with no separator (e.g. "Reading your
+            # question… The user wants to…" reading as one garbled line).
+            # A fresh thinking_done/re-open lets the UI collapse-and-restart
+            # the "Thinking…" bubble cleanly for the real trace.
+            if is_real_thinking and placeholder_shown and not thinking_closed:
+                yield {"thinking_done": True}
+                thinking_closed = True
 
             if is_content and not thinking_closed:
                 if placeholder_shown:
@@ -431,56 +595,64 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             yield {"thinking_done": True}
 
     def _call_daily(msgs, **kw):
-        """Daily tier: NVIDIA Mistral Medium 3.5.
+        """Daily tier: Gemini (fast flash model), via Vertex AI.
 
         Honors the user's Max Thinking toggle:
-          • ON  → reasoning_effort='high', thinking deltas streamed back to
-            the UI as a collapsible "Thinking…" panel.
-          • OFF → reasoning_effort='none' (fastest TTFT — Mistral skips
-            reasoning entirely).
-        Mistral only accepts 'none' or 'high' (no medium), so the toggle
-        maps cleanly to the binary the upstream understands.
+          • ON  → thinking_budget set, reasoning deltas streamed back to the
+            UI as a collapsible "Thinking…" panel.
+          • OFF → thinking_budget=0 (fastest TTFT — no reasoning tokens).
 
-        Groq Llama is still the last-resort fallback if NVIDIA is unreachable.
-        Output is wrapped with a placeholder-thinking stream so the UI shows
-        the thinking bubble during Mistral's time-to-first-token wait.
+        Falls back to a stable GA Gemini model if the primary (newest) one
+        errors or is temporarily unavailable. Output is wrapped with a
+        placeholder-thinking stream so the UI shows the thinking bubble
+        during the time-to-first-token wait.
         """
-        from config import NVIDIA_API_KEYS
-        # Closure-captured toggle from the outer agent_loop call. The kwargs
-        # form is the override path for explicit callers.
         mt = bool(kw.get('max_thinking', max_thinking))
-        effort = 'high' if mt else 'none'
-        if NVIDIA_API_KEYS:
-            r = call_nvidia(msgs, stream=True, model=DAILY_MODEL,
-                            temperature=kw.get('temperature', 0.6),
-                            top_p=kw.get('top_p', 1.0),
-                            max_tokens=kw.get('max_tokens', 16384),
-                            tools=kw.get('tools'), tool_choice=kw.get('tool_choice'),
-                            expose_thinking=mt,
-                            reasoning_effort=effort)
-            if r:
-                return _wrap_with_placeholder_thinking(r)
-        groq_gen = call_groq(msgs, stream=True, model='llama-3.3-70b-versatile',
-                             temperature=kw.get('temperature', 0.6),
-                             max_tokens=kw.get('max_tokens', 16384),
-                             tools=kw.get('tools'), tool_choice=kw.get('tool_choice'))
-        return _wrap_with_placeholder_thinking(groq_gen) if groq_gen else None
+        r = call_vertex_gemini(msgs, stream=True, model=DAILY_MODEL,
+                               temperature=kw.get('temperature', 0.6),
+                               top_p=kw.get('top_p', 1.0),
+                               max_tokens=kw.get('max_tokens', 16384),
+                               tools=kw.get('tools'), tool_choice=kw.get('tool_choice'),
+                               expose_thinking=mt,
+                               max_thinking=mt)
+        if r:
+            return _wrap_with_placeholder_thinking(r)
+        r = call_vertex_gemini(msgs, stream=True, model=_FALLBACK_MODEL['daily'],
+                               temperature=kw.get('temperature', 0.6),
+                               max_tokens=kw.get('max_tokens', 16384),
+                               tools=kw.get('tools'), tool_choice=kw.get('tool_choice'),
+                               expose_thinking=mt, max_thinking=mt)
+        return _wrap_with_placeholder_thinking(r) if r else None
 
     # Turn budget — Claude-like multi-turn loop.
     #
     # Claude doesn't try to predict total work from the first message; it
     # runs many short turns, each with its own fresh budget, and trusts the
-    # outer loop. We mirror that:
-    #   - Coder mode gets 25 turns (real coding tasks routinely chain
-    #     read_file → grep → read_file → edit → run_tests → fix → re-run,
-    #     and our previous 8-turn cap was strangling them halfway through).
-    #   - Daily/Pro keep 12 turns (was 8; bumped because tool-heavy
-    #     workflows like "search → write doc → send email" hit the cap on
-    #     genuinely sequential chains too).
+    # outer loop. We mirror that. Deliberately NOT literally unbounded
+    # (`while True` with no cap) — a genuinely runaway loop (stuck browsing,
+    # a tool that keeps failing the same way) would otherwise burn NVIDIA
+    # API cost/time indefinitely with no backstop at all. These are high
+    # enough that no realistic multi-step task (a long browsing/login
+    # session, a big multi-file coding task) should ever hit the ceiling —
+    # raise further via env if one genuinely does.
+    #   - Coder: 200 turns (real coding tasks chain read→grep→edit→
+    #     run_tests→fix→re-run; browsing/login flows chain BROWSE→
+    #     BROWSE_TYPE→BROWSE_CLICK repeatedly too).
+    #   - Daily/Pro: 80 turns (tool-heavy workflows like "search → write doc
+    #     → send email" or a shorter browsing task).
     # Parallel tool execution still collapses N concurrent tools into one
     # turn each, so the wall-clock cost of a higher cap is small in the
-    # common case, and the cap only bites on sequential chains.
-    MAX_TURNS = 25 if model_choice == 'coder' else 12
+    # common case, and the cap only bites on long sequential chains.
+    MAX_TURNS = _envint('AGENT_MAX_TURNS_CODER', 200) if model_choice == 'coder' else _envint('AGENT_MAX_TURNS_DEFAULT', 80)
+    # MAX_TURNS caps TOOL-CHAINING (read→grep→edit→run…) to stop runaway tool
+    # loops. But pure OUTPUT continuation — a big multi-file <file> project or a
+    # long document that keeps hitting the token cap — is benign and must be
+    # allowed to FINISH instead of clipping mid-project. So output continuations
+    # get a much higher ceiling. (Filesystem tools are disabled in cloud chat,
+    # so a coder emitting <file> blocks only ever consumes continuation turns —
+    # this is exactly the "project stopped at turn 12" case.)
+    CONTINUATION_MAX_TURNS = max(MAX_TURNS, 40)
+    tool_turns = 0  # counts only turns that actually executed tools
     # Track whether the previous turn was a synthesis turn (i.e. it
     # consumed a tool-result OBSERVATION). Synthesis turns need MORE
     # headroom than the initial turn because the model has to read N
@@ -493,8 +665,8 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
     # that ceiling.
     coder_budget = 24576
     CODER_MAX_BUDGET = 32768
-    for turn in range(MAX_TURNS):
-        print(f"[Agent] Turn {turn+1}/{MAX_TURNS} (mode={model_choice}, synthesis={was_synthesis})")
+    for turn in range(CONTINUATION_MAX_TURNS):
+        print(f"[Agent] Turn {turn+1}/{CONTINUATION_MAX_TURNS} (mode={model_choice}, synthesis={was_synthesis}, tool_turns={tool_turns}/{MAX_TURNS})")
 
         # Per-turn budget. For coder mode we DON'T use the chat-size
         # classifier — it's tuned for prose answers and consistently
@@ -533,110 +705,80 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         effective_max_thinking = bool(max_thinking)
         reasoning_budget = _estimate_reasoning_budget(max_tokens, effective_max_thinking)
 
+        if has_image:
+            # Gemini is natively multimodal on every tier now — no separate
+            # vision model/branch needed. Just surface a status event and
+            # fall through to the tier's normal dispatch below, which sees
+            # the image parts already sitting in current_messages. This also
+            # fixes the old "image forces a model switch, losing tier
+            # context" behavior: the model that reasons about the request
+            # now also sees the image, instead of handing it to a smaller
+            # vision-only fallback.
+            yield json.dumps({"event": "status", "message": "👁️ Analyzing image…"})
+
         if model_choice == 'coder':
-            from config import NVIDIA_API_KEYS
             label, model_id = _MODEL_LABELS['coder']
-            # Qwen3-Coder is a NON-reasoning model. Passing max_thinking /
-            # reasoning_budget to it either (a) makes NVIDIA inject
-            # `chat_template_kwargs.thinking` which Qwen3-Coder doesn't
-            # honour but still deducts from max_tokens, or (b) makes NVIDIA
-            # 400 the request entirely. Either way: zero benefit, eats
-            # output budget. So we hard-disable thinking for coder.
-            if not NVIDIA_API_KEYS:
-                yield json.dumps({"event": "status", "message": f"⚡ {label} requires NVIDIA API key — using fast model…"})
+            yield json.dumps({"event": "status", "message": f"🧠 Connecting to {label}…"})
+            response_gen = call_vertex_gemini(current_messages, stream=True, max_tokens=max_tokens,
+                                              model=model_id, tools=tools, tool_choice=tool_choice,
+                                              temperature=1.0, top_p=0.95,
+                                              max_thinking=effective_max_thinking, reasoning_budget=reasoning_budget,
+                                              expose_thinking=True)
+            if not response_gen:
+                yield json.dumps({"event": "status", "message": f"⚡ Retrying {label}…"})
+                response_gen = call_vertex_gemini(current_messages, stream=True, max_tokens=max_tokens,
+                                                  model=_FALLBACK_MODEL['coder'], tools=tools, tool_choice=tool_choice,
+                                                  temperature=1.0, top_p=0.95,
+                                                  max_thinking=effective_max_thinking, reasoning_budget=reasoning_budget,
+                                                  expose_thinking=True)
+            if not response_gen:
+                yield json.dumps({"event": "status", "message": f"⚡ {label} unavailable — using fast model…"})
                 response_gen = _call_daily(current_messages, max_tokens=max_tokens,
                                            tools=tools, tool_choice=tool_choice)
-            else:
-                yield json.dumps({"event": "status", "message": f"🧠 Connecting to {label}…"})
-                response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
-                                           model=model_id, tools=tools, tool_choice=tool_choice,
-                                           temperature=1.0, top_p=0.95,
-                                           max_thinking=False, reasoning_budget=0,
-                                           expose_thinking=False)
-                if not response_gen:
-                    yield json.dumps({"event": "status", "message": f"⚡ Retrying {label}…"})
-                    response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
-                                               model=model_id, temperature=1.0, top_p=0.95,
-                                               max_thinking=False, reasoning_budget=0,
-                                               expose_thinking=False)
-                if not response_gen:
-                    yield json.dumps({"event": "status", "message": f"⚡ {label} unavailable — using fast model…"})
-                    response_gen = _call_daily(current_messages, max_tokens=max_tokens,
-                                               tools=tools, tool_choice=tool_choice)
 
         elif model_choice == 'pro':
-            from config import NVIDIA_API_KEYS
             label, model_id = _MODEL_LABELS['pro']
-            if not NVIDIA_API_KEYS:
-                yield json.dumps({"event": "status", "message": f"⚡ {label} requires NVIDIA API key — using fast model…"})
+            yield json.dumps({"event": "status", "message": f"💎 Connecting to {label}…"})
+            response_gen = call_vertex_gemini(current_messages, stream=True, max_tokens=max_tokens,
+                                              model=model_id, tools=tools, tool_choice=tool_choice,
+                                              temperature=1.0, top_p=0.95, max_thinking=effective_max_thinking,
+                                              reasoning_budget=reasoning_budget)
+            if not response_gen:
+                yield json.dumps({"event": "status", "message": f"⚡ Retrying {label}…"})
+                response_gen = call_vertex_gemini(current_messages, stream=True, max_tokens=max_tokens,
+                                                  model=_FALLBACK_MODEL['pro'], tools=tools, tool_choice=tool_choice,
+                                                  temperature=1.0, top_p=0.95,
+                                                  max_thinking=effective_max_thinking, reasoning_budget=reasoning_budget)
+            if not response_gen:
+                yield json.dumps({"event": "status", "message": f"⚡ {label} unavailable — using fast model…"})
+                print(f"[FALLBACK] {label} failed/unavailable. Switching to Daily.")
                 response_gen = _call_daily(current_messages, max_tokens=max_tokens,
                                            tools=tools, tool_choice=tool_choice)
-            else:
-                yield json.dumps({"event": "status", "message": f"💎 Connecting to {label}…"})
-                response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
-                                           model=model_id, tools=tools, tool_choice=tool_choice,
-                                           temperature=1.0, top_p=0.95, max_thinking=effective_max_thinking,
-                                           reasoning_budget=reasoning_budget)
-                if not response_gen:
-                    yield json.dumps({"event": "status", "message": f"⚡ Retrying {label}…"})
-                    response_gen = call_nvidia(current_messages, stream=True, max_tokens=max_tokens,
-                                               model=model_id, temperature=1.0, top_p=0.95,
-                                               max_thinking=effective_max_thinking, reasoning_budget=reasoning_budget)
-                if not response_gen:
-                    yield json.dumps({"event": "status", "message": f"⚡ {label} unavailable — using fast model…"})
-                    print(f"[FALLBACK] {label} failed/unavailable. Switching to Daily.")
-                    response_gen = _call_daily(current_messages, max_tokens=max_tokens,
-                                               tools=tools, tool_choice=tool_choice)
 
         elif model_choice == 'fast':
-            # Kautilya Fast: direct Groq, no NVIDIA overhead, no thinking,
-            # no placeholder wrapper. Sub-500ms TTFT for voice agents and
-            # any latency-sensitive workflow.
-            response_gen = call_groq(current_messages, stream=True,
-                                     model='llama-3.3-70b-versatile',
-                                     temperature=0.5,
-                                     max_tokens=min(max_tokens, 4096),
-                                     tools=tools, tool_choice=tool_choice)
+            # Kautilya Fast: Gemini Flash-Lite, no thinking, no placeholder
+            # wrapper — lowest TTFT for voice agents and any latency-
+            # sensitive workflow.
+            response_gen = call_vertex_gemini(current_messages, stream=True,
+                                              model=FAST_MODEL,
+                                              temperature=0.5,
+                                              max_tokens=min(max_tokens, 4096),
+                                              tools=tools, tool_choice=tool_choice,
+                                              max_thinking=False, expose_thinking=False)
             if not response_gen:
                 response_gen = _call_daily(current_messages, max_tokens=min(max_tokens, 4096),
                                            tools=tools, tool_choice=tool_choice)
 
-        elif has_image:
-            # Vision: prefer Gemini 2.5 Flash (most reliable for OCR / chart reading),
-            # fall back to Groq llama-4-scout (current vision-capable Groq model).
-            yield json.dumps({"event": "status", "message": "👁️ Analyzing image…"})
-            from services.llm_service import call_gemini_vision
-            try:
-                gemini_text = call_gemini_vision(current_messages, temperature=0.6, max_tokens=max_tokens)
-            except Exception as e:
-                print(f"[Vision] Gemini exception: {e}")
-                gemini_text = None
-            if gemini_text:
-                # Wrap the single string as a generator so the downstream
-                # streaming loop handles it uniformly.
-                def _wrap(t=gemini_text):
-                    yield {"chunk": t}
-                response_gen = _wrap()
-            else:
-                print("[Vision] Gemini unavailable — falling back to Groq llama-4-scout")
-                response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
-                                         model='meta-llama/llama-4-scout-17b-16e-instruct',
-                                         temperature=0.6)
-                if not response_gen:
-                    response_gen = call_groq(current_messages, stream=True, max_tokens=max_tokens,
-                                             model='meta-llama/llama-4-maverick-17b-128e-instruct',
-                                             temperature=0.6)
-                if not response_gen:
-                    response_gen = _call_daily(current_messages, max_tokens=max_tokens)
         else:
-            # Daily = NVIDIA Mistral Medium 3.5 (low reasoning), Groq llama as fallback
+            # Daily = Gemini flash tier (low reasoning by default)
             response_gen = _call_daily(current_messages, max_tokens=max_tokens,
                                        tools=tools, tool_choice=tool_choice)
 
         # Final fallback: try anything
         if not response_gen:
             yield json.dumps({"event": "status", "message": "🔄 Trying backup service…"})
-            response_gen = call_nvidia(current_messages, max_tokens=max_tokens)
+            response_gen = call_vertex_gemini(current_messages, max_tokens=max_tokens,
+                                              model=_FALLBACK_MODEL['daily'], stream=True)
 
         if not response_gen:
             yield json.dumps({"event": "status", "message": None})
@@ -647,8 +789,12 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         yield json.dumps({"event": "status", "message": None})
 
         accumulated_response = ""
-        in_thinking_tag = False
         length_truncated = False
+        # Split-safe <think>…</think> parser — recognises the markers even when
+        # the provider streams them split across chunks (the old per-chunk
+        # `"<think>" in chunk` check missed those and leaked reasoning into the
+        # visible answer).
+        think_splitter = _ThinkSplitter()
 
         try:
             for item in response_gen:
@@ -668,49 +814,29 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                     chunk = item.get("chunk", "")
                 else:
                     chunk = item
-                
+
                 if not chunk:
                     continue
 
-                # --- Thinking Tag Logic (Opus Grade) ---
-                if "<think>" in chunk:
-                    parts = chunk.split("<think>", 1)
-                    if parts[0]:
-                        yield json.dumps({"chunk": parts[0]})
-                        accumulated_response += parts[0]
-                    in_thinking_tag = True
-                    if parts[1]:
-                        if "</think>" in parts[1]:
-                            think_parts = parts[1].split("</think>", 1)
-                            yield json.dumps({"thinking": think_parts[0]})
-                            in_thinking_tag = False
-                            yield json.dumps({"thinking_done": True})
-                            if think_parts[1]:
-                                yield json.dumps({"chunk": think_parts[1]})
-                                accumulated_response += think_parts[1]
-                        else:
-                            yield json.dumps({"thinking": parts[1]})
-                    continue
+                # --- Split-safe inline <think> tag handling ---
+                for kind, payload in think_splitter.feed(chunk):
+                    if kind == "content":
+                        accumulated_response += payload
+                        yield json.dumps({"chunk": payload})
+                    elif kind == "thinking":
+                        yield json.dumps({"thinking": payload})
+                    else:  # thinking_done
+                        yield json.dumps({"thinking_done": True})
 
-                if "</think>" in chunk and in_thinking_tag:
-                    parts = chunk.split("</think>", 1)
-                    if parts[0]:
-                        yield json.dumps({"thinking": parts[0]})
-                    in_thinking_tag = False
+            # Drain any buffered tail and close an open thinking block.
+            for kind, payload in think_splitter.flush():
+                if kind == "content":
+                    accumulated_response += payload
+                    yield json.dumps({"chunk": payload})
+                elif kind == "thinking":
+                    yield json.dumps({"thinking": payload})
+                else:  # thinking_done
                     yield json.dumps({"thinking_done": True})
-                    if parts[1]:
-                        yield json.dumps({"chunk": parts[1]})
-                        accumulated_response += parts[1]
-                    continue
-
-                if in_thinking_tag:
-                    yield json.dumps({"thinking": chunk})
-                else:
-                    accumulated_response += chunk
-                    yield json.dumps({"chunk": chunk})
-
-            if in_thinking_tag:
-                yield json.dumps({"thinking_done": True})
             # stream complete
         except Exception as e:
             print(f"[Agent] Generator streaming error: {e}")
@@ -766,9 +892,24 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
                 # sanitized text for what gets persisted and fed to the next
                 # turn.
                 accumulated_response = sanitized_response
-        planned_actions = _plan_actions(accumulated_response, uid, start_id=action_counter + 1)
+        planned_actions = _plan_actions(accumulated_response, uid, start_id=action_counter + 1, session_id=session_id)
+
+        # Tool-step budget exhausted: stop chaining tools and force ONE clean
+        # final answer (no more tool tags) rather than looping forever.
+        if planned_actions and tool_turns >= MAX_TURNS:
+            current_messages.append({"role": "assistant", "content": accumulated_response})
+            current_messages.append({"role": "user", "content": (
+                "[SYSTEM] You've reached the maximum number of tool steps. Do NOT emit any "
+                "more tool tags. Write your best final answer now using the information you "
+                "already have."
+            )})
+            if tool_turns < MAX_TURNS + 2:
+                tool_turns += 1
+                continue
+            return
 
         if planned_actions:
+            tool_turns += 1
             # Announce every action up-front so the timeline renders immediately.
             for act in planned_actions:
                 yield json.dumps({
@@ -842,15 +983,25 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
         # (1) Truncation just occurred — we already bumped the budget above;
         #     fire another turn so the bigger budget is actually used.
         # (2) Orphan preamble — model promised action without emitting a tag.
-        if truncation_detected and turn < MAX_TURNS - 1:
+        if truncation_detected and turn < CONTINUATION_MAX_TURNS - 1:
             current_messages.append({"role": "assistant", "content": accumulated_response})
             if tag_truncation_detected:
-                nudge = (
-                    "[SYSTEM] Your previous response was cut off mid tool tag. "
-                    "Re-emit the complete [INTEGRATION: …] tag with valid JSON, OR — if it "
-                    "was a long document — send it in smaller chunks via multiple "
-                    "append_google_doc calls instead of one mega call."
-                )
+                if '[FILE_WRITE:' in accumulated_response and '[FILE_WRITE:' not in sanitized_response:
+                    nudge = (
+                        "[SYSTEM] Your previous [FILE_WRITE:] was cut off mid-file — it was "
+                        "DISCARDED, nothing was saved. Re-emit it, but keep this file under "
+                        "roughly 150-200 lines so it fits in one turn. If the project genuinely "
+                        "needs more, split it into SEPARATE files (e.g. index.html, style.css, "
+                        "script.js) with separate [FILE_WRITE:] calls across turns instead of one "
+                        "giant file."
+                    )
+                else:
+                    nudge = (
+                        "[SYSTEM] Your previous response was cut off mid tool tag. "
+                        "Re-emit the complete [INTEGRATION: …] tag with valid JSON, OR — if it "
+                        "was a long document — send it in smaller chunks via multiple "
+                        "append_google_doc calls instead of one mega call."
+                    )
             else:
                 # Pure prose truncation: continue from where the model left off
                 # so the user sees a seamless answer rather than a redo.
@@ -882,6 +1033,18 @@ def agent_loop(messages, uid=None, model_choice='daily', user_ip=None, tools=Non
             continue
 
         # No tool actions detected and no orphan preamble — we're done.
+        # Truth Lens: cross-examine pure-knowledge answers with an
+        # independent model family and stream the verdict badge. Runs after
+        # the full answer has already reached the user (zero answer latency)
+        # and fails silent — it can only add information, never break a reply.
+        try:
+            from services.truth_lens import should_verify, verify
+            if should_verify(model_choice, accumulated_response, turn):
+                lens = verify(last_user_msg, accumulated_response)
+                if lens:
+                    yield json.dumps(lens)
+        except Exception as _e:
+            print(f"[TruthLens] hook error (silent): {_e}")
         return
 
 # ──────────────────────────────────────────────────────────────────────
@@ -913,9 +1076,24 @@ def _looks_like_orphan_preamble(text):
         # Long responses are real answers, not orphan preambles.
         return False
     # If any tool tag already exists, the loop handled it elsewhere.
-    if re.search(r'\[(INTEGRATION|SEARCH|CALCULATE|RUN_PYTHON|FETCH_URL|CALENDAR_|GMAIL_|WHATSAPP_SEND|SLACK_POST|HUBSPOT_CREATE_CONTACT)', t):
+    if re.search(r'\[(INTEGRATION|SEARCH|CALCULATE|RUN_PYTHON|FETCH_URL|CALENDAR_|GMAIL_|WHATSAPP_SEND|SLACK_POST|HUBSPOT_CREATE_CONTACT|FILE_WRITE|FILE_READ|FILE_LIST|BROWSE|BROWSE_CLICK|BROWSE_TYPE|BROWSE_SCROLL)', t):
         return False
     tl = t.lower()
+    # If the model is ASKING THE USER for info (a question anywhere in the
+    # text, or an interactive ```question/```ask card), it's waiting on the
+    # user — NOT dangling a tool call. Re-firing a turn here just makes it ask
+    # again → the "asking for details twice" duplication bug. A "…and I'll
+    # draft it" promise alongside a real question is fine; don't treat it as an
+    # orphan preamble.
+    if '?' in t or '```question' in tl or '```ask' in tl:
+        return False
+    if any(p in tl for p in (
+        'could you', 'can you share', 'can you tell', 'please share',
+        'please provide', 'let me know', 'i need a few', 'i still need',
+        'share whatever', "what's your", 'what is your', 'do you want',
+        'would you like', 'batao', 'bata do', 'chahiye',
+    )):
+        return False
     # Verb phrases that promise imminent action.
     promise_patterns = [
         r'\b(let me|i(?:\'ll| will)|i am going to|i\'m going to)\b',
@@ -999,48 +1177,87 @@ def _find_json_end(text, start):
     return -1
 
 
+def _complete_integration_tag_end(text, idx):
+    """If a well-formed `[INTEGRATION: tool | {json}]` starts at idx, return
+    the index just past its closing `]`. Otherwise -1 (truncated/malformed)."""
+    json_start = text.find('{', idx)
+    if json_start == -1:
+        return -1
+    end = _find_json_end(text, json_start)
+    if end == -1:
+        return -1
+    tail = text[end + 1:]
+    m = re.match(r'\s*\]', tail)
+    if not m:
+        return -1
+    return end + 1 + m.end()
+
+
+def _complete_file_write_tag_end(text, idx):
+    """If a well-formed `[FILE_WRITE: name | ```...```]` starts at idx, return
+    the index just past its closing `]`. Otherwise -1 (truncated/malformed).
+    A large file body (a full multi-file project crammed into one write) is
+    the realistic way this gets cut off mid-tag by the token cap — the same
+    failure mode [INTEGRATION:] already guards against, just with a fenced
+    body instead of a JSON payload."""
+    m = re.match(r'\[FILE_WRITE:\s*[^\|\n]+?\s*\|\s*```(?:\w+)?\s*[\s\S]*?```\s*\]', text[idx:])
+    if not m:
+        return -1
+    return idx + m.end()
+
+
+# Tag prefix -> function(text, idx_of_prefix) -> end index of the complete
+# tag, or -1 if truncated/malformed. Add an entry here whenever a NEW tool
+# tag can carry a large enough payload to plausibly get cut off mid-tag by
+# the token cap (short single-line tags like [FILE_READ: name] don't need
+# one — a few characters realistically never straddles a truncation point).
+_TRUNCATION_GUARDED_TAGS = {
+    "[INTEGRATION:": _complete_integration_tag_end,
+    "[FILE_WRITE:": _complete_file_write_tag_end,
+}
+
+
 def _strip_truncated_tool_tags(text):
-    """Remove silently-truncated `[INTEGRATION: ...` tags from text that will
-    be shown to the user. Models occasionally run out of max_tokens mid-JSON;
-    without this, the raw tag (including the entire prompt-style payload)
-    bleeds into the chat bubble."""
-    if not text or "[INTEGRATION:" not in text:
+    """Remove silently-truncated tool tags (see `_TRUNCATION_GUARDED_TAGS`)
+    from text that will be shown to the user. Models occasionally run out of
+    max_tokens mid-tag (mid-JSON for [INTEGRATION:], mid-file for
+    [FILE_WRITE:]); without this, the raw tag — including the entire
+    prompt-style payload or half-written file — bleeds into the chat bubble
+    verbatim instead of being caught by the truncation-retry path."""
+    if not text or not any(p in text for p in _TRUNCATION_GUARDED_TAGS):
         return text
     out = []
     i = 0
     while i < len(text):
-        idx = text.find("[INTEGRATION:", i)
+        # Find whichever guarded tag prefix appears soonest.
+        idx, prefix, checker = -1, None, None
+        for p, fn in _TRUNCATION_GUARDED_TAGS.items():
+            pidx = text.find(p, i)
+            if pidx != -1 and (idx == -1 or pidx < idx):
+                idx, prefix, checker = pidx, p, fn
         if idx == -1:
             out.append(text[i:])
             break
-        # Look ahead for a closing `]` on the same tag, with JSON awareness.
-        json_start = text.find('{', idx)
-        if json_start != -1:
-            end = _find_json_end(text, json_start)
-            if end != -1:
-                tail = text[end + 1:]
-                m = re.match(r'\s*\]', tail)
-                if m:
-                    # Complete tag — keep it; the parser will execute it.
-                    out.append(text[i:end + 1 + m.end()])
-                    i = end + 1 + m.end()
-                    continue
-        # Truncated or malformed — drop everything from `[INTEGRATION:` on.
-        # We deliberately stop at the first newline that's followed by a
-        # non-JSON-looking line so we don't eat unrelated trailing content,
-        # but in practice the truncation runs to end-of-text, so drop the rest.
+        end = checker(text, idx)
+        if end != -1:
+            # Complete tag — keep it verbatim; the parser will execute it.
+            out.append(text[i:end])
+            i = end
+            continue
+        # Truncated or malformed — drop everything from the tag prefix on.
+        # In practice the truncation runs to end-of-text, so we deliberately
+        # don't try to resync mid-payload; a stray later `]` just gets
+        # skipped past as the safest conservative behavior.
         out.append(text[i:idx])
-        # Conservative: only strip to end-of-text if no `]` ever appears after.
         rest = text[idx:]
         if ']' not in rest:
             break
-        # If a stray `]` exists later, skip up to and including it.
         close = rest.find(']')
         i = idx + close + 1
     return ''.join(out).rstrip()
 
 
-def _plan_actions(text, uid, start_id=1):
+def _plan_actions(text, uid, start_id=1, session_id=None):
     """Scan an LLM response for tool tags and produce a parallelizable plan.
     Multiple tags (including repeats of the same tool) are all included.
     Order in the list = order they appear in the text = order shown in the UI.
@@ -1075,6 +1292,38 @@ def _plan_actions(text, uid, start_id=1):
             continue
         actions.append(_mk("calculator", expr, _runner_calc(expr),
                            "Continue with your answer using the calculation above.",
+                           m.start()))
+
+    # 2.5 [MAP_SEARCH: keyword]  — nearby places on an in-chat Mappls map.
+    for m in re.finditer(r'\[MAP_SEARCH:\s*(.*?)\]', text):
+        raw = m.group(1).strip()
+        if _is_placeholder_arg(raw):
+            continue
+        # Accept "keyword" or "keyword | area"; area is optional free text.
+        kw = (raw.split('|')[0].strip() or 'restaurant')
+        actions.append(_mk("map", kw, _runner_map_search(kw),
+                           "An interactive map with nearby results is now shown to the user "
+                           "(it uses their live location). Give a brief 1-line intro in the "
+                           "user's language. Do NOT list the places yourself — the map shows them.",
+                           m.start()))
+
+    # 2.6 [ROUTE_PLAN: origin | destination]  — journey route on the in-chat map.
+    for m in re.finditer(r'\[ROUTE_PLAN:\s*(.*?)\]', text, re.DOTALL):
+        raw = m.group(1).strip()
+        if _is_placeholder_arg(raw):
+            continue
+        parts = [p.strip() for p in raw.split('|')]
+        if len(parts) >= 2:
+            origin, destination = parts[0], parts[1]
+        else:
+            origin, destination = '', parts[0]   # origin omitted → user's live location
+        if not destination or _is_placeholder_arg(destination):
+            continue
+        actions.append(_mk("map", f"Route → {destination}",
+                           _runner_route_plan(origin, destination),
+                           "A live route map with distance + ETA is now shown to the user. "
+                           "Give a brief 1-line intro in the user's language; do NOT recite "
+                           "turn-by-turn steps.",
                            m.start()))
 
     # 3. [CALENDAR_CREATE: title | start | end | description?]
@@ -1167,8 +1416,110 @@ def _plan_actions(text, uid, start_id=1):
         code = m.group(1).strip()
         preview = code[:80] + ("…" if len(code) > 80 else "")
         actions.append(_mk("python", preview,
-                           _runner_python(code),
+                           _runner_python(uid, session_id, code),
                            "Code, output, and any charts are already shown. Give a one-line interpretation.",
+                           m.start()))
+
+    # 11.5 [FILE_WRITE: name | ```content```]  — Kautilya Computer, persistent per-session file.
+    fw_iter = list(re.finditer(
+        r'\[FILE_WRITE:\s*([^\|\n]+?)\s*\|\s*```(?:\w+)?\s*([\s\S]*?)```\s*\]', text))
+    if not fw_iter:
+        m = re.search(r'\[FILE_WRITE:\s*([^\|\n]+?)\s*\|\s*([\s\S]+?)\]\s*$', text.strip())
+        if m:
+            fw_iter = [m]
+    for m in fw_iter:
+        fname = m.group(1).strip()
+        content = m.group(2)
+        # Strip exactly one leading/trailing newline the fence commonly adds,
+        # keep everything else (indentation etc.) byte-for-byte.
+        if content.startswith('\n'):
+            content = content[1:]
+        if content.endswith('\n'):
+            content = content[:-1]
+        if _is_placeholder_arg(fname):
+            continue
+        actions.append(_mk("file_write", fname,
+                           _runner_file_write(uid, session_id, fname, content),
+                           "The file is saved to the session workspace. Give a one-line confirmation "
+                           "— do NOT re-paste its contents.",
+                           m.start()))
+
+    # 11.6 [FILE_READ: name]
+    for m in re.finditer(r'\[FILE_READ:\s*(.*?)\]', text):
+        fname = m.group(1).strip()
+        if _is_placeholder_arg(fname):
+            continue
+        actions.append(_mk("file_read", fname,
+                           _runner_file_read(uid, session_id, fname),
+                           "Use the file content above to continue (e.g. to find the bug, then "
+                           "[FILE_WRITE:] the fix). Don't dump the whole file back to the user unless asked.",
+                           m.start()))
+
+    # 11.7 [FILE_LIST:]
+    for m in re.finditer(r'\[FILE_LIST:\s*\]', text):
+        actions.append(_mk("file_list", "workspace files",
+                           _runner_file_list(uid, session_id),
+                           "The file list is already shown to the user as a card — don't re-list it in prose.",
+                           m.start()))
+
+    # 11.8 [BROWSE: url]  — Kautilya Computer, live browser (session-scoped tab).
+    for m in re.finditer(r'\[BROWSE:\s*(.*?)\]', text):
+        url = m.group(1).strip()
+        if _is_placeholder_arg(url):
+            continue
+        actions.append(_mk("browse", url,
+                           _runner_browse(uid, session_id, url),
+                           "The page's title, text, links and a screenshot are already shown as a "
+                           "card — don't re-paste them. Answer using what you read, or "
+                           "[BROWSE_CLICK:] a link from it if you need to go further.",
+                           m.start()))
+
+    # 11.9 [BROWSE_CLICK: link text or #N]
+    for m in re.finditer(r'\[BROWSE_CLICK:\s*(.*?)\]', text):
+        target = m.group(1).strip()
+        if _is_placeholder_arg(target):
+            continue
+        actions.append(_mk("browse_click", target,
+                           _runner_browse_click(uid, session_id, target),
+                           "The new page's title, text, links and a screenshot are already shown as "
+                           "a card — don't re-paste them. Answer using what you read, or click again "
+                           "if you need to go further.",
+                           m.start()))
+
+    # 11.10 [BROWSE_TYPE: field label | text to type]  — fill a form field (login, search box, etc.)
+    for m in re.finditer(r'\[BROWSE_TYPE:\s*([^\|\n]+?)\s*\|\s*([\s\S]+?)\]', text):
+        field = m.group(1).strip()
+        value = m.group(2).strip()
+        if _is_placeholder_arg(field):
+            continue
+        actions.append(_mk("browse_type", f"{field} → {'•' * min(len(value), 8) if 'pass' in field.lower() else value[:40]}",
+                           _runner_browse_type(uid, session_id, field, value),
+                           "The field is filled — the updated page is already shown as a card. "
+                           "[BROWSE_CLICK:] the submit/login button next, or fill another field.",
+                           m.start()))
+
+    # 11.11 [BROWSE_SCROLL: down|up|top|bottom]  — move the viewport, then re-read the page.
+    for m in re.finditer(r'\[BROWSE_SCROLL:\s*(.*?)\]', text):
+        direction = m.group(1).strip()
+        if _is_placeholder_arg(direction):
+            continue
+        actions.append(_mk("browse_scroll", direction or "down",
+                           _runner_browse_scroll(uid, session_id, direction),
+                           "The page after scrolling is already shown as a card — don't re-paste it. "
+                           "Answer using what you read, or scroll/click again if you need to go further.",
+                           m.start()))
+
+    # 12. [GST_INVOICE: ```json {...} ```]  — India GST invoice; maths server-side.
+    inv_iter = list(re.finditer(r'\[GST_INVOICE:\s*```(?:json)?\s*([\s\S]*?)```\s*\]', text))
+    if not inv_iter:
+        mm = re.search(r'\[GST_INVOICE:\s*(\{[\s\S]+\})\s*\]', text)
+        if mm:
+            inv_iter = [mm]
+    for m in inv_iter:
+        payload = m.group(1).strip()
+        actions.append(_mk("invoice", "GST invoice",
+                           _runner_invoice(uid, payload),
+                           "Output the invoice's <artifact> block from the observation VERBATIM — do not change any numbers.",
                            m.start()))
 
     # 12. [INTEGRATION: tool_name | {json}]
@@ -1279,7 +1630,17 @@ def _safe_math_eval(expr: str):
                 return node.value
             raise ValueError("only numeric constants allowed")
         if isinstance(node, ast.BinOp) and isinstance(node.op, allowed_bin):
-            return _BINOPS[type(node.op)](_ev(node.left), _ev(node.right))
+            left = _ev(node.left)
+            right = _ev(node.right)
+            # Cap exponent/shift magnitude: `9**9**9` or `1<<10**9` would peg a
+            # CPU / exhaust memory computing a giant int inside the web worker.
+            if isinstance(node.op, (ast.Pow, ast.LShift)):
+                try:
+                    if abs(right) > 1000:
+                        raise ValueError("exponent/shift too large")
+                except TypeError:
+                    pass
+            return _BINOPS[type(node.op)](left, right)
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, allowed_unary):
             v = _ev(node.operand)
             return +v if isinstance(node.op, ast.UAdd) else -v
@@ -1323,6 +1684,48 @@ def _runner_calc(expr):
             return {"ok": False, "preview": f"Error: {e}",
                     "observation": f"CALCULATION ERROR: {e}",
                     "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_map_search(keyword):
+    """Emit a 'map' tool_result card. The nearby search + rendering happen in
+    the frontend MapCard, which asks the browser for the user's PRECISE
+    location (permission popup) and calls /api/maps/nearby — so the runner is
+    location-agnostic and just declares the map + its search keyword."""
+    def run():
+        import uuid as _uuid
+        kw = (keyword or 'restaurant').strip() or 'restaurant'
+        # map_id ties the client-resolved results (places + precise location)
+        # to this card so they can be persisted in Firestore and restored
+        # verbatim when the chat is reopened — no second location popup.
+        map_id = _uuid.uuid4().hex[:20]
+        extra = [{"event": "tool_result", "tool": "map",
+                  "data": {"keyword": kw, "radius": 3000, "map_id": map_id}}]
+        return {"ok": True, "preview": f"Map: nearby {kw}",
+                "observation": (f"MAP SHOWN: an interactive map of nearby '{kw}' is now "
+                                "displayed to the user using their current location. "
+                                "Acknowledge in one short, friendly line — do not list places."),
+                "done_extras": {}, "extra_events": extra}
+    return run
+
+
+def _runner_route_plan(origin, destination):
+    """Emit a 'route' map card. The frontend RouteCard geocodes the endpoints
+    (origin = the user's live location when omitted) and draws the journey."""
+    def run():
+        import uuid as _uuid
+        dest = (destination or '').strip()
+        orig = (origin or '').strip()
+        map_id = _uuid.uuid4().hex[:20]
+        extra = [{"event": "tool_result", "tool": "map",
+                  "data": {"mode": "route", "origin": orig, "destination": dest,
+                           "map_id": map_id}}]
+        return {"ok": True, "preview": f"Route to {dest}",
+                "observation": (f"ROUTE MAP SHOWN: an interactive map plotting the journey "
+                                f"{('from ' + orig + ' ') if orig else ''}to '{dest}' is now "
+                                "displayed with distance and ETA. Acknowledge in one short line — "
+                                "do not recite turn-by-turn directions."),
+                "done_extras": {}, "extra_events": extra}
     return run
 
 
@@ -1474,10 +1877,29 @@ def _runner_hubspot(uid, email, first, last, co, ph):
     return run
 
 
-def _runner_python(code):
+def _runner_python(uid, session_id, code):
     def run():
         try:
-            res = _python_run(code)
+            if session_id:
+                # Session-aware path: runs inside this chat's persistent
+                # Computer workspace (services/computer_service.py) so files
+                # from a prior [FILE_WRITE:] / run are on disk, and anything
+                # this run creates persists for the next turn.
+                from services.computer_service import run_python as _computer_run_python
+                raw = _computer_run_python(uid or 'anon', session_id, code, timeout=15)
+                res = {
+                    "stdout": raw.get("stdout", ""),
+                    "stderr": raw.get("stderr", ""),
+                    "images": [f"data:image/png;base64,{b}" for b in raw.get("figures", [])],
+                    "ok": raw.get("exit_code") == 0 and not raw.get("timed_out"),
+                    "exit_code": raw.get("exit_code"),
+                }
+                if raw.get("timed_out"):
+                    res["stderr"] = res["stderr"] or "Execution exceeded the time limit."
+            else:
+                # No session (e.g. legacy/API caller) — fall back to the
+                # original fully-stateless sandbox.
+                res = _python_run(code)
             extra = [{"event": "tool_result", "tool": "python_run",
                       "data": {"code": code, "stdout": res["stdout"],
                                "stderr": res["stderr"], "images": res["images"],
@@ -1489,12 +1911,280 @@ def _runner_python(code):
                         "observation": f"PYTHON EXECUTED OK.\nStdout (first 1500 chars):\n{short}",
                         "done_extras": {}, "extra_events": extra}
             return {"ok": False, "preview": (res["stderr"] or "error")[:80],
-                    "observation": f"PYTHON ERROR (exit {res['exit_code']}):\n{res['stderr'][:1500]}",
+                    "observation": f"PYTHON ERROR (exit {res.get('exit_code')}):\n{(res['stderr'] or '')[:1500]}",
                     "done_extras": {}, "extra_events": extra}
         except Exception as e:
             return {"ok": False, "preview": str(e)[:100],
                     "observation": f"PYTHON RUNNER ERROR: {e}",
                     "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_file_write(uid, session_id, name, content):
+    def run():
+        if not session_id:
+            return {"ok": False, "preview": "no session",
+                    "observation": "FILE_WRITE ERROR: no active session to write to.",
+                    "done_extras": {}, "extra_events": []}
+        try:
+            from services.computer_service import write_file
+            res = write_file(uid or 'anon', session_id, name, content)
+            if not res.get("ok"):
+                return {"ok": False, "preview": res.get("error", "write failed")[:100],
+                        "observation": f"FILE_WRITE ERROR: {res.get('error')}",
+                        "done_extras": {}, "extra_events": []}
+            extra = [{"event": "tool_result", "tool": "file_write",
+                      "data": {"path": res["path"], "bytes": res["bytes"]}}]
+            return {"ok": True, "preview": f"Wrote {res['path']} ({res['bytes']} bytes)",
+                    "observation": f"FILE_WRITE OK: '{res['path']}' saved ({res['bytes']} bytes) to the session workspace.",
+                    "done_extras": {"files_changed": [res["path"]]}, "extra_events": extra}
+        except PermissionError as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"FILE_WRITE ERROR: {e}", "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"FILE_WRITE ERROR: {e}", "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_file_read(uid, session_id, name):
+    def run():
+        if not session_id:
+            return {"ok": False, "preview": "no session",
+                    "observation": "FILE_READ ERROR: no active session to read from.",
+                    "done_extras": {}, "extra_events": []}
+        try:
+            from services.computer_service import read_file
+            res = read_file(uid or 'anon', session_id, name)
+            if not res.get("ok"):
+                return {"ok": False, "preview": res.get("error", "read failed")[:100],
+                        "observation": f"FILE_READ ERROR: {res.get('error')}",
+                        "done_extras": {}, "extra_events": []}
+            extra = [{"event": "tool_result", "tool": "file_read",
+                      "data": {"name": name, "content": res["content"], "truncated": res["truncated"]}}]
+            trunc_note = " (truncated)" if res["truncated"] else ""
+            return {"ok": True, "preview": f"Read {name}{trunc_note}",
+                    "observation": f"FILE_READ '{name}'{trunc_note}:\n```\n{res['content']}\n```",
+                    "done_extras": {}, "extra_events": extra}
+        except PermissionError as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"FILE_READ ERROR: {e}", "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"FILE_READ ERROR: {e}", "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_file_list(uid, session_id):
+    def run():
+        if not session_id:
+            return {"ok": False, "preview": "no session",
+                    "observation": "FILE_LIST ERROR: no active session.",
+                    "done_extras": {}, "extra_events": []}
+        try:
+            from services.computer_service import list_files
+            files = list_files(uid or 'anon', session_id)
+            extra = [{"event": "tool_result", "tool": "file_list", "data": {"files": files}}]
+            if not files:
+                return {"ok": True, "preview": "empty", "empty": True,
+                        "observation": "FILE_LIST: the session workspace is empty.",
+                        "done_extras": {}, "extra_events": extra}
+            listing = "\n".join(f"- {f['path']} ({f['bytes']} bytes)" for f in files)
+            return {"ok": True, "preview": f"{len(files)} file(s)",
+                    "observation": f"FILE_LIST:\n{listing}",
+                    "done_extras": {}, "extra_events": extra}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"FILE_LIST ERROR: {e}", "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _browse_result_to_action_result(tool_name, res):
+    """Shared shaping for both BROWSE and BROWSE_CLICK results — same
+    services/browser_service.py return shape either way."""
+    if not res.get("ok"):
+        err = res.get("error", "browse failed")
+        return {"ok": False, "preview": err[:100],
+                "observation": f"{tool_name.upper()} ERROR: {err}",
+                "done_extras": {}, "extra_events": []}
+    title = res.get("title") or res.get("url", "")
+    text = (res.get("text") or "")[:2500]
+    links = res.get("links") or []
+    link_lines = "\n".join(f"{i+1}. {l['text']} → {l['href']}" for i, l in enumerate(links[:20]))
+    extra = [{"event": "tool_result", "tool": tool_name,
+              "data": {"url": res.get("url"), "title": title,
+                       "screenshot_b64": res.get("screenshot_b64"),
+                       "links": links[:20]}}]
+    observation = (
+        f"{tool_name.upper()} → {res.get('url')}\nTITLE: {title}\n\n"
+        f"PAGE TEXT (excerpt):\n{text}\n\n"
+        f"LINKS ON THIS PAGE (use with [BROWSE_CLICK: text] or [BROWSE_CLICK: #N]):\n{link_lines}"
+    )
+    # Real diagnostics instead of guessing: if the page is stuck/broken, this
+    # is usually WHY — a JS exception, a blocked/failed request, or a 4xx/5xx
+    # from an API the page depends on.
+    console_errors = res.get("console_errors") or []
+    failed_requests = res.get("failed_requests") or []
+    if console_errors or failed_requests:
+        diag = ["\n\nBROWSER DIAGNOSTICS (use this to explain WHY something is broken/stuck — "
+                "don't just guess by clicking repeatedly):"]
+        if console_errors:
+            diag.append("Console errors:\n" + "\n".join(f"- {e}" for e in console_errors[-10:]))
+        if failed_requests:
+            diag.append("Network/WebSocket events (failed/4xx/5xx requests, and any WebSocket "
+                        "opened/closed/errored — a WebSocket that opened but never closed with no "
+                        "further activity is a real-time backend the page may be silently waiting "
+                        "on forever):\n" + "\n".join(f"- {e}" for e in failed_requests[-10:]))
+        observation += "\n".join(diag)
+    return {"ok": True, "preview": f"{title[:80]} — {res.get('url', '')[:60]}",
+            "observation": observation, "done_extras": {}, "extra_events": extra}
+
+
+def _runner_browse(uid, session_id, url):
+    def run():
+        if not session_id:
+            return {"ok": False, "preview": "no session",
+                    "observation": "BROWSE ERROR: no active session to browse in.",
+                    "done_extras": {}, "extra_events": []}
+        try:
+            from services.browser_service import navigate
+            res = navigate(uid or 'anon', session_id, url, timeout=30)
+            return _browse_result_to_action_result("browse", res)
+        except PermissionError as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"BROWSE ERROR: {e}", "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"BROWSE ERROR: {e}", "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _browse_error_with_diagnostics(uid, tool_name, err_text, hint=""):
+    """A click/type miss is recoverable (see the ValueError-not-TimeoutError
+    fix in browser_service._click/_type — the session is deliberately left
+    open), so unlike a hard BROWSE error there's still a live page to look
+    at. Pull its current console/network diagnostics into the observation
+    instead of handing back a bare error string — the model can actually
+    see WHY (a JS exception, a blocked request) instead of guess-retrying."""
+    diag_text = ""
+    try:
+        from services.browser_service import get_current_state
+        state = get_current_state(uid or 'anon', timeout=8)
+        if state.get("ok"):
+            console_errors = state.get("console_errors") or []
+            failed_requests = state.get("failed_requests") or []
+            if console_errors or failed_requests:
+                parts = ["\n\nBROWSER DIAGNOSTICS (current page):"]
+                if console_errors:
+                    parts.append("Console errors:\n" + "\n".join(f"- {e}" for e in console_errors[-10:]))
+                if failed_requests:
+                    parts.append("Network/WebSocket events:\n" + "\n".join(f"- {e}" for e in failed_requests[-10:]))
+                diag_text = "\n".join(parts)
+            title = state.get("title") or state.get("url", "")
+            diag_text += f"\n\nCurrent page is still: {title} ({state.get('url', '')})"
+    except Exception:
+        pass
+    return {"ok": False, "preview": err_text[:100],
+            "observation": f"{tool_name.upper()} ERROR: {err_text}{(' — ' + hint) if hint else ''}{diag_text}",
+            "done_extras": {}, "extra_events": []}
+
+
+def _runner_browse_click(uid, session_id, target):
+    def run():
+        if not session_id:
+            return {"ok": False, "preview": "no session",
+                    "observation": "BROWSE_CLICK ERROR: no active session to browse in.",
+                    "done_extras": {}, "extra_events": []}
+        try:
+            from services.browser_service import click
+            res = click(uid or 'anon', session_id, target, timeout=30)
+            return _browse_result_to_action_result("browse_click", res)
+        except PermissionError as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"BROWSE_CLICK ERROR: {e}", "done_extras": {}, "extra_events": []}
+        except ValueError as e:
+            return _browse_error_with_diagnostics(
+                uid, "browse_click", str(e),
+                "re-check the exact visible text from the page's text/links and retry, or try a "
+                "different phrasing — don't guess a number that wasn't actually on the link list")
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"BROWSE_CLICK ERROR: {e}", "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_browse_type(uid, session_id, field, value):
+    def run():
+        if not session_id:
+            return {"ok": False, "preview": "no session",
+                    "observation": "BROWSE_TYPE ERROR: no active session to browse in.",
+                    "done_extras": {}, "extra_events": []}
+        try:
+            from services.browser_service import type_text
+            res = type_text(uid or 'anon', session_id, field, value, timeout=30)
+            return _browse_result_to_action_result("browse_type", res)
+        except PermissionError as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"BROWSE_TYPE ERROR: {e}", "done_extras": {}, "extra_events": []}
+        except ValueError as e:
+            return _browse_error_with_diagnostics(
+                uid, "browse_type", str(e),
+                "re-check the field's exact label/placeholder text from the page's screenshot/text and retry")
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"BROWSE_TYPE ERROR: {e}", "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_browse_scroll(uid, session_id, direction):
+    def run():
+        if not session_id:
+            return {"ok": False, "preview": "no session",
+                    "observation": "BROWSE_SCROLL ERROR: no active session to browse in.",
+                    "done_extras": {}, "extra_events": []}
+        try:
+            from services.browser_service import scroll
+            res = scroll(uid or 'anon', session_id, direction, timeout=30)
+            return _browse_result_to_action_result("browse_scroll", res)
+        except PermissionError as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"BROWSE_SCROLL ERROR: {e}", "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"BROWSE_SCROLL ERROR: {e}", "done_extras": {}, "extra_events": []}
+    return run
+
+
+def _runner_invoice(uid, payload_str):
+    """Build a GST-compliant invoice. The tax maths is done deterministically in
+    invoice_service (never by the model); the runner hands back a ready <artifact>
+    block the model echoes verbatim so it opens in the canvas with PDF/DOCX export."""
+    def run():
+        try:
+            from services.invoice_service import extract_invoice, build_invoice
+            s = (payload_str or '').strip()
+            data = None
+            if s.startswith('{'):
+                try:
+                    data = json.loads(s)
+                except Exception:
+                    data = None
+            if not data or not data.get('items'):
+                data = extract_invoice(s)
+            if not data or not data.get('items'):
+                return {"ok": False, "preview": "No invoice items",
+                        "observation": ("GST_INVOICE ERROR: couldn't determine line items. Ask the user "
+                                        "for item description, quantity, rate, GST% and the buyer/seller details."),
+                        "done_extras": {}, "extra_events": []}
+            data, gst, md = build_invoice(data)
+            obs = ("GST INVOICE COMPUTED — these figures are authoritative, do NOT recompute or alter them. "
+                   "Reply with ONLY this artifact block (verbatim) plus at most one short sentence:\n"
+                   '<artifact type="document" title="Tax Invoice">\n' + md + "\n</artifact>")
+            return {"ok": True, "preview": f"Invoice ₹{gst['payable']:.2f} ready",
+                    "observation": obs, "done_extras": {}, "extra_events": []}
+        except Exception as e:
+            return {"ok": False, "preview": str(e)[:100],
+                    "observation": f"GST_INVOICE ERROR: {e}", "done_extras": {}, "extra_events": []}
     return run
 
 
@@ -1622,10 +2312,7 @@ def _classify_answer_size(user_msg: str, mode: str, timeout_sec: float = 0.2) ->
 
     # LLM classifier
     try:
-        from services.llm_service import call_groq
-        from config import GROQ_API_KEY
-        if not GROQ_API_KEY:
-            return None
+        from services.llm_service import call_vertex_gemini
         sys_prompt = (
             "Predict the size of the assistant's answer to the user request below. "
             "Output EXACTLY one of: S, M, L, XL. No explanation.\n"
@@ -1643,11 +2330,11 @@ def _classify_answer_size(user_msg: str, mode: str, timeout_sec: float = 0.2) ->
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": msg[:800]},
         ]
-        # Run with a tight timeout via thread + future so a slow Groq call
+        # Run with a tight timeout via thread + future so a slow call
         # never freezes the request.
         from concurrent.futures import ThreadPoolExecutor as _TPE
         with _TPE(max_workers=1) as ex:
-            fut = ex.submit(call_groq, msgs, model="llama-3.3-70b-versatile",
+            fut = ex.submit(call_vertex_gemini, msgs, model=FAST_MODEL,
                             temperature=0, max_tokens=4, stream=False)
             out = fut.result(timeout=timeout_sec)
         if isinstance(out, str):
@@ -1668,6 +2355,10 @@ def _adaptive_max_tokens(user_msg: str, mode: str) -> int:
     pre-warm by calling `_classify_answer_size` in a background thread
     during setup; the cache will then make this call instant.
     """
+    # Classifier disabled (default): skip the Groq round-trip entirely and use
+    # the char-bucket heuristic. No extra call, no cache writes.
+    if not _ANSWER_SIZE_CLASSIFIER_ENABLED:
+        return _estimate_tokens(user_msg, mode)
     label = _classify_answer_size(user_msg, mode)
     if label:
         budget = _SIZE_TO_TOKENS[label]
@@ -1685,9 +2376,9 @@ def _estimate_tokens(user_msg, mode):
     Tiered token budget estimator.
 
     Two reasons the cap matters:
-    1. Non-reasoning models (Mistral/Llama) just stop at EOS, so the cap is
+    1. Non-reasoning models (Llama/Kimi) just stop at EOS, so the cap is
        only a safety bound — bigger isn't slower for short answers.
-    2. Reasoning models (GLM, Qwen-thinking, NVIDIA reasoning variants) burn
+    2. Reasoning models (GLM, Nemotron, Qwen-thinking) burn
        thinking tokens up to a budget that `_estimate_reasoning_budget`
        derives FROM this number. So an over-generous 16k cap on a 5-word
        greeting can buy 8k tokens of unnecessary deliberation before the
@@ -1703,6 +2394,19 @@ def _estimate_tokens(user_msg, mode):
                  'thik', 'theek', 'good', 'great'}
     if msg_lower in greetings or msg_len < 6:
         return 512   # one-line reply, no thinking budget needed
+
+    # Visual generation (SVG illustrations, diagrams, charts). The request is
+    # usually SHORT ("draw a frog life cycle") but the OUTPUT is very token-
+    # heavy — and an SVG that gets cut off mid-tag renders as a blank box. So
+    # match the budget to the OUTPUT, not the message length, and give it plenty
+    # of headroom (tokens are on-demand, not a hard cap). This is the real fix
+    # for "SVG blank / cut off".
+    visual_intent_kw = ('svg', 'diagram', 'draw', 'illustrat', 'infographic',
+                        'flowchart', 'flow chart', 'mind map', 'mindmap', 'mermaid',
+                        'sketch', 'visualiz', 'visualis', 'graphic', 'life cycle',
+                        'lifecycle', 'anatomy', 'poster', 'chart')
+    if any(k in msg_lower for k in visual_intent_kw):
+        return 24576
 
     # Long-content intent dominates — research, draft a doc, code generation.
     long_intent_kw = ('report', 'research', 'document', 'article',
@@ -2251,6 +2955,40 @@ def _python_run(code, timeout_sec=15):
         wrapper = textwrap.dedent(f"""
             import os, sys, json, traceback
             os.chdir({workdir!r})
+            # SSRF guard: the env-proxy block (HTTPS_PROXY=127.0.0.1:1) only
+            # affects libraries that honour proxy env vars — raw socket /
+            # urllib / httpx ignore it, so user code could otherwise reach the
+            # cloud metadata endpoint (169.254.169.254) or internal services.
+            # Block any connection that resolves to a private / loopback /
+            # link-local / reserved address at the socket layer.
+            try:
+                import socket as _sock, ipaddress as _ipa
+                def _blocked(host):
+                    try:
+                        infos = _sock.getaddrinfo(host, None)
+                    except Exception:
+                        return False
+                    for fam, _t, _p, _c, sa in infos:
+                        try:
+                            a = _ipa.ip_address(sa[0])
+                        except Exception:
+                            continue
+                        if (a.is_private or a.is_loopback or a.is_link_local
+                                or a.is_reserved or a.is_multicast or a.is_unspecified):
+                            return True
+                    return False
+                _orig_conn = _sock.socket.connect
+                def _guarded_connect(self, address):
+                    try:
+                        host = address[0]
+                    except Exception:
+                        host = None
+                    if host and _blocked(host):
+                        raise OSError("Network access to internal addresses is blocked in the sandbox")
+                    return _orig_conn(self, address)
+                _sock.socket.connect = _guarded_connect
+            except Exception:
+                pass
             try:
                 import matplotlib
                 matplotlib.use('Agg')
@@ -2441,7 +3179,7 @@ def _hubspot_create_contact(uid, email, firstname='', lastname='', company='', p
     return r.json()
 
 
-def get_llm_response(messages, uid=None, model="daily", user_ip=None, tools=None, tool_choice=None, max_thinking=False):
+def get_llm_response(messages, uid=None, model="daily", user_ip=None, tools=None, tool_choice=None, max_thinking=False, session_id=None):
     """Entry point for chat. Routes to fast-path, orchestrator, or agent_loop."""
     model = normalize_model_choice(model)
 
@@ -2458,9 +3196,8 @@ def get_llm_response(messages, uid=None, model="daily", user_ip=None, tools=None
         elif isinstance(luc, list):
             user_input_text = " ".join([p["text"] for p in luc if p.get("type") == "text"])
 
-    # Pro and Coder ALWAYS go through agent_loop for NVIDIA NIM + thinking support
-    if model in ('pro', 'coder'):
-        return agent_loop(messages, uid, model_choice=model, user_ip=user_ip, tools=tools, tool_choice=tool_choice, max_thinking=max_thinking)
-
-    # All models (including daily) go through agent_loop so ReAct tools are processed
-    return agent_loop(messages, uid, model_choice=model, user_ip=user_ip, tools=tools, tool_choice=tool_choice, max_thinking=max_thinking)
+    # All models (including daily/pro/coder) go through agent_loop so ReAct
+    # tools (incl. the persistent Computer file tools) are processed; Pro and
+    # Coder additionally get NVIDIA NIM + thinking support inside agent_loop.
+    return agent_loop(messages, uid, model_choice=model, user_ip=user_ip, tools=tools,
+                       tool_choice=tool_choice, max_thinking=max_thinking, session_id=session_id)

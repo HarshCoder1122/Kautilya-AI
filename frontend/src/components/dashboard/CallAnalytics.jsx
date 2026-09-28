@@ -1,16 +1,10 @@
 import { useState, useEffect } from "react";
-import { Phone, SmileyMelting, Smiley, SmileyNervous, ArrowSquareOut, Clock, Lightning, Play, Headphones, Article, X, Info } from "@phosphor-icons/react";
+import { useSearchParams } from "react-router-dom";
+import { Phone, SmileyMelting, Smiley, SmileyNervous, ArrowSquareOut, Clock, Lightning, Play, Headphones, Article, ArrowLeft, Info, EnvelopeSimple, CalendarBlank, IdentificationCard, ChatCircleDots } from "@phosphor-icons/react";
 import { analyticsAPI, agentsAPI } from "../../lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog";
 
 const sentimentIcons = {
   positive: { icon: Smiley, color: 'text-[var(--k-green)]', bg: 'bg-[var(--k-green)]/10' },
@@ -18,15 +12,77 @@ const sentimentIcons = {
   negative: { icon: SmileyMelting, color: 'text-red-400', bg: 'bg-red-400/10' },
 };
 
-// Safely parse a transcript that may arrive as JSON string, array, or undefined
-function parseTranscript(raw) {
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw;
-  if (typeof raw === 'string') {
-    try { const p = JSON.parse(raw); return Array.isArray(p) ? p : []; } catch { return []; }
+// Normalise a single transcript turn's role to 'agent' | 'customer'
+function normRole(role) {
+  const r = String(role || '').toLowerCase();
+  if (['agent', 'assistant', 'ai', 'bot'].includes(r)) return 'agent';
+  return 'customer';
+}
+
+// Build a renderable transcript from a call log. Prefers the structured
+// `transcript_json` ([{role,text}]); falls back to a JSON string; and finally
+// parses the flat "ROLE: text\nROLE: text" format the voice agent saves.
+function getTranscript(log) {
+  if (!log) return [];
+  const tj = log.transcript_json;
+  if (Array.isArray(tj) && tj.length) {
+    return tj.map(t => ({ role: normRole(t.role), text: t.text || t.content || '' }));
+  }
+  const raw = log.transcript;
+  if (Array.isArray(raw)) return raw.map(t => ({ role: normRole(t.role), text: t.text || t.content || '' }));
+  if (typeof raw === 'string' && raw.trim()) {
+    // Try JSON-array first, then the "ROLE: text" line format.
+    try {
+      const p = JSON.parse(raw);
+      if (Array.isArray(p)) return p.map(t => ({ role: normRole(t.role), text: t.text || t.content || '' }));
+    } catch { /* not JSON — fall through to line parsing */ }
+    const turns = [];
+    for (const line of raw.split('\n')) {
+      const m = line.match(/^\s*([A-Za-z_]+)\s*:\s*(.*)$/);
+      if (m && m[2].trim()) {
+        turns.push({ role: normRole(m[1]), text: m[2].trim() });
+      } else if (turns.length && line.trim()) {
+        turns[turns.length - 1].text += ' ' + line.trim();
+      }
+    }
+    return turns;
   }
   return [];
 }
+
+const sentKey = (s) => {
+  const v = String(s || 'neutral').toLowerCase();
+  if (['positive', 'happy', 'satisfied'].includes(v)) return 'positive';
+  if (['negative', 'frustrated', 'angry'].includes(v)) return 'negative';
+  return 'neutral';
+};
+
+// Phone (dialed/received SIP) vs Web (in-browser) call, from the log's
+// call_type / channel fields.
+const callType = (log) => {
+  const t = String(log?.call_type || '').toLowerCase();
+  const ch = String(log?.channel || '').toLowerCase();
+  if (t === 'phone' || ch.includes('sip') || ch.includes('phone'))
+    return { label: 'Phone', icon: '📞', cls: 'border-[var(--k-brand)]/40 text-[var(--k-brand)]' };
+  if (t === 'web' || ch.includes('web'))
+    return { label: 'Web', icon: '🌐', cls: 'border-[var(--k-green)]/40 text-[var(--k-green)]' };
+  return { label: 'Call', icon: '•', cls: 'border-muted-foreground/30 text-muted-foreground' };
+};
+
+// Icon per integration action type shown in the "Actions taken" panel.
+const actionMeta = {
+  email: { label: 'Email', emoji: '✉️', Icon: EnvelopeSimple, color: 'text-[var(--k-brand)]' },
+  calendar: { label: 'Calendar', emoji: '📅', Icon: CalendarBlank, color: 'text-[var(--k-yellow)]' },
+  crm: { label: 'CRM', emoji: '🗂️', Icon: IdentificationCard, color: 'text-[var(--k-green)]' },
+  slack: { label: 'Slack', emoji: '💬', Icon: ChatCircleDots, color: 'text-purple-400' },
+};
+
+// Last 10 digits of any phone field — robust match across +91 / spaces / leading 0
+const phoneDigits = (v) => String(v || '').replace(/\D/g, '').slice(-10);
+
+// Every phone-ish field a call log might carry, for matching against a lead.
+const logPhones = (log) => [log.lead_phone, log.to_number, log.from_number, log.dialed_number]
+  .map(phoneDigits).filter(Boolean);
 
 // Safely coerce a Firestore Timestamp, ISO string, or number to a Date
 function toDate(val) {
@@ -44,10 +100,38 @@ export default function CallAnalytics() {
   const [agentLogs, setAgentLogs] = useState([]);
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [searchParams, setSearchParams] = useSearchParams();
 
   useEffect(() => {
     loadAnalytics();
   }, []);
+
+  // Deep-link: Leads (or anywhere) can open a person's call detail via
+  // /dashboard/calls?call=<logId> or ?phone=<number>. Match once logs arrive.
+  useEffect(() => {
+    if (loading || !agentLogs.length || selectedCall) return;
+    const callId = searchParams.get('call');
+    const phone = searchParams.get('phone');
+    if (!callId && !phone) return;
+    let match = null;
+    if (callId) match = agentLogs.find(l => l.id === callId);
+    if (!match && phone) {
+      const want = phoneDigits(phone);
+      match = agentLogs.find(l => logPhones(l).includes(want));
+    }
+    if (match) setSelectedCall(match);
+  }, [loading, agentLogs, searchParams, selectedCall]);
+
+  // Clear the deep-link param when the user leaves the detail view so a
+  // back-navigation doesn't immediately re-open the same call.
+  const closeDetail = () => {
+    setSelectedCall(null);
+    if (searchParams.get('call') || searchParams.get('phone')) {
+      searchParams.delete('call');
+      searchParams.delete('phone');
+      setSearchParams(searchParams, { replace: true });
+    }
+  };
 
   const loadAnalytics = async () => {
     try {
@@ -91,10 +175,227 @@ export default function CallAnalytics() {
   };
 
   const sentimentData = [
-    { name: 'Positive', value: agentLogs.filter(l => l.sentiment === 'positive').length || 0, fill: '#10B981' },
-    { name: 'Neutral', value: agentLogs.filter(l => l.sentiment === 'neutral').length || 0, fill: '#F59E0B' },
-    { name: 'Negative', value: agentLogs.filter(l => l.sentiment === 'negative').length || 0, fill: '#EF4444' },
+    { name: 'Positive', value: agentLogs.filter(l => sentKey(l.sentiment) === 'positive').length || 0, fill: '#10B981' },
+    { name: 'Neutral', value: agentLogs.filter(l => sentKey(l.sentiment) === 'neutral').length || 0, fill: '#F59E0B' },
+    { name: 'Negative', value: agentLogs.filter(l => sentKey(l.sentiment) === 'negative').length || 0, fill: '#EF4444' },
   ];
+
+  // ---- Full-page call detail (replaces the old cramped modal) ----
+  if (selectedCall) {
+    const call = selectedCall;
+    const sk = sentKey(call.sentiment);
+    const sent = sentimentIcons[sk] || sentimentIcons.neutral;
+    const SentIcon = sent.icon;
+    const transcript = getTranscript(call);
+    const contactFields = [
+      { label: 'Name', val: call.lead_name },
+      { label: 'Company', val: call.lead_company },
+      { label: 'Email', val: call.lead_email },
+      { label: 'Phone', val: call.lead_phone || call.to_number || call.from_number },
+      { label: 'Intent', val: call.intent },
+    ].filter(f => f.val);
+    const recordingUrl = call.recording_url || call.recording || call.audio_url;
+    const title = call.lead_name || call.to_number || call.from_number || 'Inbound Call';
+    const when = toDate(call.created_at)?.toLocaleString('en-IN', {
+      day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+    }) ?? '';
+
+    return (
+      <div className="h-full flex flex-col bg-background" data-testid="call-analytics-detail">
+        {/* Sticky header bar with Back */}
+        <div className="px-4 sm:px-8 py-4 border-b border-[var(--k-border)] bg-[var(--k-surface)] flex items-center gap-4 sticky top-0 z-10">
+          <button
+            onClick={closeDetail}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[var(--k-border)] text-xs font-bold text-muted-foreground hover:bg-accent hover:text-foreground transition-all flex-shrink-0"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            Back
+          </button>
+          <div className="w-10 h-10 rounded-full bg-[var(--k-brand)]/10 flex items-center justify-center flex-shrink-0">
+            <Phone className="w-5 h-5 text-[var(--k-brand)]" weight="duotone" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-3">
+              <h1 className="text-lg font-bold text-foreground k-heading truncate">{title}</h1>
+              <Badge className={`bg-transparent border ${sent.color.replace('text-', 'border-')}/30 ${sent.color} text-[9px] px-1.5 py-0 uppercase font-bold flex items-center gap-1`}>
+                <SentIcon className="w-3 h-3" weight="fill" /> {sk}
+              </Badge>
+              {(() => { const ct = callType(call); return (
+                <Badge className={`bg-transparent border ${ct.cls} text-[9px] px-1.5 py-0 font-bold`}>
+                  {ct.icon} {ct.label}
+                </Badge>
+              ); })()}
+            </div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-[11px] text-muted-foreground">{when}</span>
+              <div className="w-1 h-1 rounded-full bg-muted-foreground/30" />
+              <span className="text-[11px] text-[var(--k-brand)] font-bold flex items-center gap-1"><Clock className="w-3 h-3" />{call.duration || '0:00'}</span>
+            </div>
+          </div>
+          <button className="hidden sm:flex items-center gap-2 px-4 py-1.5 rounded-lg border border-[var(--k-border)] text-xs font-bold text-muted-foreground hover:bg-accent hover:text-foreground transition-all flex-shrink-0">
+            <ArrowSquareOut className="w-3.5 h-3.5" />
+            Export
+          </button>
+        </div>
+
+        <ScrollArea className="flex-1">
+          <div className="max-w-6xl mx-auto px-4 sm:px-8 py-8">
+            {/* Audio player — full width */}
+            <div className="p-5 rounded-2xl bg-[var(--k-surface-elevated)] border border-[var(--k-border)] mb-6">
+              {recordingUrl ? (
+                <audio controls src={recordingUrl} className="w-full" />
+              ) : (
+                <div className="flex items-center gap-4">
+                  <button className="w-12 h-12 rounded-full bg-[var(--k-brand)] flex items-center justify-center text-white flex-shrink-0 shadow-lg shadow-[var(--k-brand)]/20">
+                    <Play className="w-6 h-6 ml-0.5" weight="fill" />
+                  </button>
+                  <div className="flex-1">
+                    <div className="h-1.5 w-full bg-white/10 rounded-full relative overflow-hidden">
+                      <div className="absolute left-0 top-0 h-full w-1/3 bg-[var(--k-brand)]" />
+                    </div>
+                    <div className="flex justify-between text-[10px] text-muted-foreground mt-2 font-mono">
+                      <span>0:00</span>
+                      <span>{call.duration || '0:45'}</span>
+                    </div>
+                  </div>
+                  <p className="hidden md:flex text-[10px] text-muted-foreground italic items-center gap-1.5 flex-shrink-0">
+                    <Headphones className="w-3 h-3" /> Recording stored on LiveKit S3
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Main + sidebar grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Main column: summary + transcript */}
+              <div className="lg:col-span-2 space-y-6">
+                {/* AI Summary */}
+                <div className="p-6 rounded-2xl bg-[var(--k-surface)] border border-[var(--k-border)]">
+                  <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-muted-foreground mb-3">
+                    <Lightning className="w-4 h-4 text-[var(--k-yellow)]" weight="fill" />
+                    AI Session Summary
+                  </div>
+                  <p className="text-sm text-foreground leading-relaxed">{call.summary || 'AI was unable to generate a summary for this short interaction.'}</p>
+                  {Array.isArray(call.topics) && call.topics.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mt-4">
+                      {call.topics.map((t, i) => (
+                        <Badge key={i} className="bg-[var(--k-brand)]/10 text-[var(--k-brand)] border-none text-[10px] px-2 py-0.5">{t}</Badge>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Transcript */}
+                <div className="p-6 rounded-2xl bg-[var(--k-surface)] border border-[var(--k-border)]">
+                  <div className="flex items-center justify-between mb-5">
+                    <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                      <Article className="w-4 h-4 text-[var(--k-brand)]" weight="fill" />
+                      Conversation Transcript
+                    </div>
+                    <Badge className="bg-accent/50 text-muted-foreground border-none text-[10px] px-2 py-0.5">Real-time STT</Badge>
+                  </div>
+                  <div className="space-y-4">
+                    {transcript.length > 0 ? transcript.map((t, i) => (
+                      <div key={i} className={`flex ${t.role === 'agent' ? 'justify-start' : 'justify-end'}`}>
+                        <div className={`max-w-[80%] rounded-2xl p-4 text-sm ${
+                          t.role === 'agent'
+                            ? 'bg-accent/20 border border-[var(--k-border)] rounded-bl-none text-foreground'
+                            : 'bg-[var(--k-brand)] text-white rounded-br-none'
+                        }`}>
+                          <div className="text-[9px] uppercase font-bold opacity-50 mb-1">{t.role === 'agent' ? 'AI Agent' : 'Customer'}</div>
+                          <p className="leading-relaxed">{t.text}</p>
+                        </div>
+                      </div>
+                    )) : (
+                      <div className="p-6 rounded-2xl border border-dashed border-[var(--k-border)] text-center">
+                        <p className="text-sm text-muted-foreground">Transcript data unavailable for this call.</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Sidebar: contact + follow-ups + meta */}
+              <div className="space-y-6">
+                {/* Extracted Contact */}
+                {(contactFields.length > 0 || call.lead_score != null) && (
+                  <div className="p-6 rounded-2xl bg-[var(--k-surface)] border border-[var(--k-border)]">
+                    <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-muted-foreground mb-4">
+                      <Info className="w-4 h-4 text-[var(--k-brand)]" weight="fill" />
+                      Extracted Contact
+                    </div>
+                    <div className="space-y-3">
+                      {contactFields.map((f, i) => (
+                        <div key={i} className="min-w-0">
+                          <div className="text-[9px] uppercase tracking-wider text-muted-foreground font-bold mb-0.5">{f.label}</div>
+                          <div className="text-sm text-foreground break-words" title={String(f.val)}>{f.val}</div>
+                        </div>
+                      ))}
+                      {call.lead_score != null && (
+                        <div className="pt-3 border-t border-[var(--k-border)] flex items-center justify-between">
+                          <span className="text-[9px] uppercase tracking-wider text-muted-foreground font-bold">Lead Score</span>
+                          <span className="text-lg font-bold text-[var(--k-green)] k-heading">{call.lead_score}/10</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Automated Follow-ups */}
+                {Array.isArray(call.actions) && call.actions.length > 0 && (
+                  <div className="p-6 rounded-2xl bg-[var(--k-surface)] border border-[var(--k-border)]">
+                    <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-muted-foreground mb-4">
+                      <Lightning className="w-4 h-4 text-[var(--k-green)]" weight="fill" />
+                      Automated Follow-ups
+                    </div>
+                    <div className="space-y-3">
+                      {call.actions.map((a, i) => {
+                        const meta = actionMeta[a.type] || { Icon: Lightning, color: 'text-muted-foreground' };
+                        const AIcon = meta.Icon;
+                        const failed = a.status === 'failed';
+                        return (
+                          <div key={i} className="flex items-start gap-3">
+                            <div className={`w-8 h-8 rounded-lg bg-accent/30 flex items-center justify-center flex-shrink-0 ${meta.color}`}>
+                              <AIcon className="w-4 h-4" weight="fill" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm text-foreground font-medium truncate">{a.label}</span>
+                                <Badge className={`text-[8px] px-1.5 py-0 uppercase font-bold border flex-shrink-0 ${failed ? 'border-red-400/30 text-red-400' : 'border-[var(--k-green)]/30 text-[var(--k-green)]'} bg-transparent`}>
+                                  {failed ? 'failed' : 'done'}
+                                </Badge>
+                              </div>
+                              {a.detail && <div className="text-[11px] text-muted-foreground break-words mt-0.5">{a.detail}</div>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Meta */}
+                <div className="p-6 rounded-2xl bg-[var(--k-surface)] border border-[var(--k-border)] space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-muted-foreground uppercase font-bold">Status</span>
+                    <span className="text-xs text-foreground font-medium capitalize">{call.status || 'completed'}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-muted-foreground uppercase font-bold">Sentiment</span>
+                    <span className={`text-xs font-bold capitalize ${sent.color}`}>{sk}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-muted-foreground uppercase font-bold">Duration</span>
+                    <span className="text-xs text-foreground font-medium">{call.duration || '0:00'}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </ScrollArea>
+      </div>
+    );
+  }
 
   return (
     <div className="h-full flex flex-col bg-background" data-testid="call-analytics">
@@ -183,12 +484,15 @@ export default function CallAnalytics() {
                 ) : (
                   <div className="grid grid-cols-1 gap-3">
                     {agentLogs.map((log) => {
-                      const sent = sentimentIcons[log.sentiment] || sentimentIcons.neutral;
+                      const sk = sentKey(log.sentiment);
+                      const sent = sentimentIcons[sk] || sentimentIcons.neutral;
                       const _d = toDate(log.created_at);
                       const callDate = _d ? _d.toLocaleString('en-IN', {
                         day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'
                       }) : 'Unknown';
-                      
+                      const title = log.lead_name || log.to_number || log.from_number || 'Inbound Call';
+                      const subtitle = [log.lead_company, log.lead_email].filter(Boolean).join(' · ');
+
                       return (
                         <div
                           key={log.id}
@@ -198,17 +502,27 @@ export default function CallAnalytics() {
                           <div className="w-12 h-12 rounded-full bg-accent/50 flex items-center justify-center group-hover:scale-110 transition-transform flex-shrink-0">
                             <Play className="w-5 h-5 text-[var(--k-brand)]" weight="fill" />
                           </div>
-                          
+
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-3 mb-1">
                                <span className="text-sm font-bold text-foreground truncate">
-                                  {log.to_number || 'Inbound Call'}
+                                  {title}
                                </span>
                                <Badge className={`bg-transparent border ${sent.color.replace('text-', 'border-')}/30 ${sent.color} text-[9px] px-1.5 py-0 uppercase font-bold`}>
-                                  {log.sentiment || 'neutral'}
+                                  {sk}
                                </Badge>
+                               {(() => { const ct = callType(log); return (
+                                 <Badge className={`bg-transparent border ${ct.cls} text-[9px] px-1.5 py-0 font-bold`}>
+                                   {ct.icon} {ct.label}
+                                 </Badge>
+                               ); })()}
+                               {(log.actions?.length > 0) && (
+                                 <span className="text-[9px] text-muted-foreground font-medium" title="Automated follow-ups">
+                                   {log.actions.map(a => actionMeta[a.type]?.emoji || '•').join(' ')}
+                                 </span>
+                               )}
                             </div>
-                            <p className="text-xs text-muted-foreground truncate max-w-2xl">{log.summary || 'Click to view call details and transcript...'}</p>
+                            <p className="text-xs text-muted-foreground truncate max-w-2xl">{subtitle || log.summary || 'Click to view call details and transcript...'}</p>
                           </div>
 
                           <div className="text-right flex-shrink-0">
@@ -234,125 +548,6 @@ export default function CallAnalytics() {
           )}
         </div>
       </ScrollArea>
-
-      {/* Call Detail Dialog */}
-      <Dialog open={!!selectedCall} onOpenChange={() => setSelectedCall(null)}>
-        <DialogContent className="sm:max-w-[800px] max-h-[90vh] p-0 overflow-hidden bg-[var(--k-surface)] border-[var(--k-border)] shadow-2xl">
-          <DialogHeader className="sr-only">
-            <DialogTitle>Call Details</DialogTitle>
-            <DialogDescription>Full recording, transcript, and AI summary of the call.</DialogDescription>
-          </DialogHeader>
-          {selectedCall && (
-            <div className="flex flex-col h-full">
-               <div className="px-6 py-5 border-b border-[var(--k-border)] bg-[var(--k-surface-elevated)] flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                     <div className="w-10 h-10 rounded-full bg-[var(--k-brand)]/10 flex items-center justify-center">
-                        <Phone className="w-5 h-5 text-[var(--k-brand)]" weight="duotone" />
-                     </div>
-                     <div>
-                        <h3 className="text-base font-bold text-foreground k-heading">{selectedCall.to_number || 'Incoming Session'}</h3>
-                        <div className="flex items-center gap-2 mt-0.5">
-                           <span className="text-[10px] text-muted-foreground uppercase font-bold">{toDate(selectedCall.created_at)?.toLocaleString() ?? ''}</span>
-                           <div className="w-1 h-1 rounded-full bg-muted-foreground/30" />
-                           <span className="text-[10px] text-[var(--k-brand)] font-bold uppercase">{selectedCall.duration || '0:00'}</span>
-                        </div>
-                     </div>
-                  </div>
-                  <button onClick={() => setSelectedCall(null)} className="p-2 rounded-full hover:bg-accent transition-colors">
-                     <X className="w-4 h-4 text-muted-foreground" />
-                  </button>
-               </div>
-
-               <ScrollArea className="flex-1 p-8">
-                  <div className="space-y-8">
-                     {/* Audio Player Placeholder */}
-                     <div className="p-6 rounded-2xl bg-black/20 border border-white/5 flex flex-col items-center">
-                        <div className="w-full flex items-center gap-4 mb-4">
-                           <button className="w-12 h-12 rounded-full bg-[var(--k-brand)] flex items-center justify-center text-white flex-shrink-0 shadow-lg shadow-[var(--k-brand)]/20">
-                              <Play className="w-6 h-6 ml-0.5" weight="fill" />
-                           </button>
-                           <div className="flex-1">
-                              <div className="h-1 w-full bg-white/10 rounded-full relative overflow-hidden">
-                                 <div className="absolute left-0 top-0 h-full w-1/3 bg-[var(--k-brand)]" />
-                              </div>
-                              <div className="flex justify-between text-[10px] text-muted-foreground mt-2 font-mono">
-                                 <span>0:15</span>
-                                 <span>{selectedCall.duration || '0:45'}</span>
-                              </div>
-                           </div>
-                        </div>
-                        <p className="text-[10px] text-muted-foreground italic flex items-center gap-1.5">
-                           <Headphones className="w-3 h-3" />
-                           Recording is stored securely on LiveKit S3 storage
-                        </p>
-                     </div>
-
-                     {/* AI Summary */}
-                     <div className="space-y-3">
-                        <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-muted-foreground">
-                           <Lightning className="w-4 h-4 text-[var(--k-yellow)]" weight="fill" />
-                           AI Session Summary
-                        </div>
-                        <div className="p-5 rounded-2xl bg-accent/10 border border-[var(--k-border)]">
-                           <p className="text-sm text-foreground leading-relaxed italic">"{selectedCall.summary || 'AI was unable to generate a summary for this short interaction.'}"</p>
-                        </div>
-                     </div>
-
-                     {/* Transcript */}
-                     <div className="space-y-4">
-                        <div className="flex items-center justify-between">
-                           <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-muted-foreground">
-                              <Article className="w-4 h-4 text-[var(--k-brand)]" weight="fill" />
-                              Conversation Transcript
-                           </div>
-                           <Badge className="bg-accent/50 text-muted-foreground border-none text-[10px] px-2 py-0.5">Real-time STT</Badge>
-                        </div>
-                        
-                        <div className="space-y-4 font-sans">
-                           {(() => { const tr = parseTranscript(selectedCall.transcript); return tr.length > 0 ? (
-                             tr.map((t, i) => (
-                               <div key={i} className={`flex ${t.role === 'agent' ? 'justify-start' : 'justify-end'}`}>
-                                  <div className={`max-w-[80%] rounded-2xl p-4 text-sm ${
-                                    t.role === 'agent' 
-                                      ? 'bg-accent/20 border border-[var(--k-border)] rounded-bl-none text-foreground' 
-                                      : 'bg-[var(--k-brand)] text-white rounded-br-none'
-                                  }`}>
-                                     <div className="text-[9px] uppercase font-bold opacity-50 mb-1">{t.role === 'agent' ? 'AI Agent' : 'Customer'}</div>
-                                     <p className="leading-relaxed">{t.text}</p>
-                                  </div>
-                               </div>
-                             ))
-                           ) : (
-                             <div className="p-6 rounded-2xl border border-dashed border-[var(--k-border)] text-center">
-                                <p className="text-sm text-muted-foreground">Transcript data unavailable for this call ID.</p>
-                             </div>
-                           ); })()}
-                        </div>
-                     </div>
-                  </div>
-               </ScrollArea>
-
-               <div className="px-6 py-4 border-t border-[var(--k-border)] bg-[var(--k-surface-elevated)] flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                     <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] text-muted-foreground uppercase font-bold">Call Score</span>
-                        <span className="text-sm font-bold text-[var(--k-green)]">{selectedCall.sentiment_score || 85}</span>
-                     </div>
-                     <div className="w-px h-4 bg-[var(--k-border)]" />
-                     <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] text-muted-foreground uppercase font-bold">Status</span>
-                        <span className="text-xs text-foreground font-medium capitalize">{selectedCall.status || 'completed'}</span>
-                     </div>
-                  </div>
-                  <button className="flex items-center gap-2 px-4 py-1.5 rounded-lg border border-[var(--k-border)] text-xs font-bold text-muted-foreground hover:bg-accent hover:text-foreground transition-all">
-                     <ArrowSquareOut className="w-3.5 h-3.5" />
-                     Export Log
-                  </button>
-               </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
