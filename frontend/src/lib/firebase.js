@@ -52,26 +52,23 @@ if (typeof window !== 'undefined') {
   };
 }
 
+// REACT_APP_FIREBASE_CONFIG may be strict JSON or pasted straight from the
+// Firebase console: a JS object literal, with or without the braces or the
+// surrounding `const firebaseConfig = { … };`. Every value is a string, so
+// the lenient path just collects `key: "value"` pairs.
 const sanitizeConfig = (raw) => {
   if (!raw) return null;
   const trimmed = raw.trim();
   try {
-    if (trimmed.startsWith('{')) return JSON.parse(trimmed);
-    const firstBrace = raw.indexOf('{');
-    const lastBrace = raw.lastIndexOf('}');
-    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-      const content = raw.substring(firstBrace, lastBrace + 1);
-      const clean = content
-        .replace(/(\/\/.*)/g, "")
-        .replace(/(\/\*[\s\S]*?\*\/)/g, "")
-        .replace(/([{,])\s*(\w+):/g, '$1"$2":')
-        .replace(/'/g, '"')
-        .replace(/,\s*([}\]])/g, '$1');
-      return JSON.parse(clean);
-    }
-  } catch (e) {
-    console.warn("Firebase: sanitize failed", e);
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch {}
+  const config = {};
+  for (const [, key, dq, sq] of trimmed.matchAll(/["']?(\w+)["']?\s*:\s*(?:"([^"]*)"|'([^']*)')/g)) {
+    config[key] = dq ?? sq;
   }
+  if (Object.keys(config).length) return config;
+  console.warn("Firebase: could not parse REACT_APP_FIREBASE_CONFIG");
   return null;
 };
 
@@ -127,9 +124,10 @@ export const initFirebase = () => {
   }
   try {
     const config = _applyAuthDomainOverride(_resolveConfigSync());
-    if (config && config.apiKey) {
-      try { sessionStorage.setItem('firebase_config', JSON.stringify(config)); } catch {}
-    }
+    // Without an apiKey getAuth() throws auth/invalid-api-key — and would keep
+    // throwing on every later getAuthInstance() call — so don't register an app.
+    if (!config || !config.apiKey) return null;
+    try { sessionStorage.setItem('firebase_config', JSON.stringify(config)); } catch {}
     const app = initializeApp(config);
     authInstance = getAuth(app);
     googleProvider = new GoogleAuthProvider();
@@ -142,7 +140,12 @@ export const initFirebase = () => {
 
 export const getAuthInstance = () => {
   if (!authInstance && getApps().length > 0) {
-    authInstance = getAuth(getApp());
+    try {
+      authInstance = getAuth(getApp());
+    } catch (error) {
+      console.error("Firebase Auth unavailable:", error.message);
+      return null;
+    }
   }
   return authInstance;
 };
@@ -189,7 +192,7 @@ export const loginWithGoogle = async () => {
 
 export const logout = async () => {
   const auth = initFirebase();
-  await signOut(auth);
+  if (auth) await signOut(auth);
   localStorage.removeItem('firebase_token');
   localStorage.removeItem('user');
 };

@@ -119,7 +119,9 @@ app.use(createProxyMiddleware({
 }));
 
 // ── Proxy /__/* → Firebase Auth handler (so custom authDomain works) ──
-const FIREBASE_PROJECT_ID = process.env.REACT_APP_FIREBASE_PROJECT_ID || '';
+const FIREBASE_PROJECT_ID = process.env.REACT_APP_FIREBASE_PROJECT_ID
+  || ((process.env.REACT_APP_FIREBASE_CONFIG || '').match(/["']?projectId["']?\s*:\s*["']([^"']+)["']/) || [])[1]
+  || '';
 
 if (FIREBASE_PROJECT_ID) {
   app.use(createProxyMiddleware({
