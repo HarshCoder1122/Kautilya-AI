@@ -17,7 +17,10 @@ const http = require('http');
 const app = express();
 const PORT = process.env.PORT || 8000;
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5000';
-const HF_TOKEN = process.env.HF_TOKEN || '';
+// Dashboard pastes often carry a trailing newline or space. Node rejects that
+// in a header value by throwing inside the proxy, which killed the whole
+// process on the first /api request (the edge then answered a bare 502).
+const HF_TOKEN = (process.env.HF_TOKEN || '').replace(/[^\x21-\x7e]/g, '');
 
 // ── Gzip/brotli compression on everything ─────────────────────────────
 try {
